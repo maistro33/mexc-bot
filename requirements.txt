@@ -1,2 +1,5 @@
 ccxt
 pyTelegramBotAPI
+ccxt
+pyTelegramBotAPI
+pandas
