@@ -11,7 +11,6 @@ PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-# Bitget Swap (Vadeli İşlemler) Bağlantısı
 ex = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -21,77 +20,105 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [STRATEJİ AYARLARI] ---
+# --- [AYARLAR] ---
 CONFIG = {
-    'trade_amount_usdt': 20.0,  # İşlem miktarı
-    'leverage': 10,             # Kaldıraç
-    'tp1_ratio': 0.75,          # %75 Kar Al (Sadık Bey Ayarı)
-    'tp1_target': 0.015,        # %1.5 karda ilk satış
-    'symbols': ['SOL/USDT:USDT', 'PNUT/USDT:USDT', 'FARTCOIN/USDT:USDT']
+    'trade_amount_usdt': 20.0,
+    'leverage': 10,
+    'tp1_ratio': 0.75,      # %75 Kar Al (Sadık Bey Ayarı)
+    'tp1_target': 0.015,    # %1.5 karda ilk satış
+    'max_coins': 15         # Hız için en hacimli 15 koin
 }
 
-# --- [GÖVDE KAPANIŞ VE HACİM KONTROLÜ] ---
-def get_signal(symbol):
+def check_fvg_and_mss(symbol):
+    """Koin analizini yapar ve detaylı rapor döner"""
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
-        # Anti-Manipülasyon: Hacim Onayı (Son mum hacmi ortalamanın üstünde mi?)
-        volumes = [b[5] for b in bars]
-        avg_vol = sum(volumes[-10:]) / 10
-        current_vol = volumes[-1]
+        if len(bars) < 50: return None, "Veri yetersiz"
         
+        # 1. FVG Kontrolü (İmbalance)
+        # Boğa FVG: 1. mumun yükseği < 3. mumun düşüğü
+        fvg_found = False
+        if bars[-3][2] < bars[-1][1]:
+            fvg_found = True
+            
+        # 2. MSS (Gövde Kapanışlı Kırılım)
         last_close = bars[-1][4]
-        prev_high = max([b[2] for b in bars[-20:-1]])
+        prev_high = max([b[2] for b in bars[-20:-5]]) # Önceki tepe
+        mss_confirmed = last_close > prev_high
         
-        # 1. Kalkan: Gövde Kapanış Onayı (Sadece iğne değil, mum üstünde kapandı mı?)
-        if last_close > prev_high and current_vol > avg_vol:
-            return 'buy'
-        return None
+        # 3. Hacim Onayı
+        vols = [b[5] for b in bars]
+        avg_vol = sum(vols[-10:]) / 10
+        current_vol = vols[-1]
+        vol_ok = current_vol > (avg_vol * 1.1)
+
+        status_msg = f"🔍 {symbol}: "
+        if fvg_found: status_msg += "✅ FVG var "
+        else: status_msg += "❌ FVG yok "
+        
+        if mss_confirmed: status_msg += "| ✅ MSS Onaylı"
+        else: status_msg += "| ❌ MSS Yok"
+
+        if fvg_found and mss_confirmed and vol_ok:
+            return 'buy', status_msg
+        return None, status_msg
     except:
-        return None
+        return None, f"⚠️ {symbol}: Analiz hatası"
+
+def main_worker():
+    bot.send_message(MY_CHAT_ID, "🛰️ Akıllı Tarama ve Simülasyon Başladı!\n(Para gelene kadar 'Yetersiz Bakiye' hatası verecektir)")
+    
+    while True:
+        try:
+            # En hacimli koinleri çek
+            markets = ex.fetch_tickers()
+            symbols = sorted(
+                [s for s in markets if '/USDT:USDT' in s],
+                key=lambda x: markets[x]['quoteVolume'],
+                reverse=True
+            )[:CONFIG['max_coins']]
+
+            report = "📊 **TARAMA RAPORU**\n"
+            signals_to_act = []
+
+            for sym in symbols:
+                signal, status = check_fvg_and_mss(sym)
+                report += status + "\n"
+                if signal:
+                    signals_to_act.append((sym, signal))
+                time.sleep(1)
+
+            # Raporu gönder (Çok uzun olmasın diye sınırlı)
+            bot.send_message(MY_CHAT_ID, report)
+
+            # Sinyal varsa işleme girmeye çalış
+            for sym, side in signals_to_act:
+                execute_trade(sym, side)
+
+        except Exception as e:
+            print(f"Döngü hatası: {e}")
+        
+        time.sleep(300) # 5 dakikada bir tarama raporu atar
 
 def execute_trade(symbol, side):
     try:
-        # 1. Kaldıraç ve İzole Mod Ayarı
+        # Bakiye 0 olsa bile burayı deneyecek
         ex.set_leverage(CONFIG['leverage'], symbol)
-        
-        # 2. Miktar Hesapla
         ticker = ex.fetch_ticker(symbol)
         price = ticker['last']
         amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        # 3. Market Emri ile Giriş
+        bot.send_message(MY_CHAT_ID, f"⚡ **{symbol} için İŞLEM DENENİYOR!**\nSinyal: {side.upper()}")
+        
+        # Bu satır bakiye 0 olduğu için hata verecek ve biz botun çalıştığını anlayacağız
         order = ex.create_market_order(symbol, side, amount)
-        bot.send_message(MY_CHAT_ID, f"🚀 **İŞLEM AÇILDI!**\n\n🪙 Koin: {symbol}\n↕️ Yön: {side.upper()}\n💰 Giriş: {price}")
         
-        # 4. %75 Kar Al (TP1) Emrini Yerleştir
-        tp_side = 'sell' if side == 'buy' else 'buy'
+        # Eğer para olsaydı buraya geçecekti
         tp_price = price * (1 + CONFIG['tp1_target']) if side == 'buy' else price * (1 - CONFIG['tp1_target'])
-        
-        ex.create_order(symbol, 'limit', tp_side, amount * CONFIG['tp1_ratio'], tp_price, {'reduceOnly': True})
-        bot.send_message(MY_CHAT_ID, f"🎯 **TP1 SET EDİLDİ!**\n💰 Hedef: {tp_price}\n📦 Miktar: %75")
+        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * 0.75, tp_price, {'reduceOnly': True})
         
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ İşlem Hatası: {str(e)}")
-
-# --- [BOT DÖNGÜSÜ] ---
-def main_worker():
-    bot.send_message(MY_CHAT_ID, "🚀 Sadık Bey, Bitget Botu SMC Kalkanlarıyla Aktif!")
-    while True:
-        for symbol in CONFIG['symbols']:
-            signal = get_signal(symbol)
-            if signal:
-                execute_trade(symbol, signal)
-            time.sleep(5)
-        time.sleep(60)
-
-@bot.message_handler(commands=['bakiye'])
-def check_balance(message):
-    try:
-        balance = ex.fetch_balance()
-        usdt = balance['total'].get('USDT', 0)
-        bot.reply_to(message, f"💰 **Bitget Güncel Kasa:** {usdt:.2f} USDT")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Bakiye çekilemedi: {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"🔔 **Bakiye Durumu:** İşlem açma aşamasına gelindi ancak borsa şunu dedi:\n`{str(e)}`")
 
 if __name__ == "__main__":
     t = threading.Thread(target=main_worker)
