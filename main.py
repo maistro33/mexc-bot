@@ -20,64 +20,82 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [GÜNCEL 15M AYARLARI] ---
+# --- [GERÇEK PARA AYARLARI] ---
 CONFIG = {
     'trade_amount_usdt': 20.0,
     'leverage': 10,
-    'tp1_ratio': 0.75,      # %75 Kar Al (Sadık Bey Ayarı)
-    'tp1_target': 0.018,    # 15M için ideal %1.8 kar hedefi
-    'max_coins': 15,        
-    'timeframe': '15m'      # Sizin istediğiniz 15 dakikalık periyot
+    'tp1_ratio': 0.75,      # Pozisyonun %75'ini kapat
+    'tp1_target': 0.015,    # %1.5 Kar Hedefi (Scalp için ideal)
+    'max_coins': 12,        # En hacimli 12 koin radarda
+    'timeframe': '15m'      
 }
 
-def check_15m_signal(symbol):
+def get_radar_analysis(symbol):
+    """Koinin FVG ve MSS durumunu kontrol eder ve rapor döner"""
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=40)
-        if len(bars) < 40: return None
+        if len(bars) < 40: return None, "⚠️ Veri Eksik"
         
-        # 1. 15M FVG Kontrolü (Daha sağlam boşluk)
-        fvg_found = bars[-3][2] < bars[-1][3]
+        # FVG Kontrolü
+        fvg = bars[-3][2] < bars[-1][3]
+        fvg_status = "✅ FVG" if fvg else "❌ FVG"
         
-        # 2. 15M MSS (Gövde Kapanışlı Yapı Kırılımı)
+        # MSS Kontrolü (Gövde Kapanışı)
         last_close = bars[-1][4]
-        # Son 15 mumun en yükseğini kırıyor mu?
         prev_high = max([b[2] for b in bars[-15:-2]])
-        mss_confirmed = last_close > prev_high
+        mss = last_close > prev_high
+        mss_status = "✅ MSS" if mss else "❌ MSS"
         
-        # 3. Hacim Onayı (Manipülasyon Kalkanı)
+        # Hacim Kontrolü
         vols = [b[5] for b in bars]
         avg_vol = sum(vols[-15:]) / 15
-        vol_ok = vols[-1] > (avg_vol * 1.2) # Ortalama hacmin %20 üzerinde
+        vol_ok = vols[-1] > (avg_vol * 1.1)
+        vol_status = "📈 Vol" if vol_ok else "📉 Vol"
 
-        if fvg_found and mss_confirmed and vol_ok:
-            return 'buy'
-        return None
+        full_status = f"{symbol}: {fvg_status} | {mss_status} | {vol_status}"
+        
+        if fvg and mss and vol_ok:
+            return 'buy', full_status
+        return None, full_status
     except:
-        return None
+        return None, f"{symbol}: ⚠️ Hata"
 
 def main_worker():
-    bot.send_message(MY_CHAT_ID, "🛡️ Sadık Bey, 15 Dakikalık 'Garanti Scalp' Modu Aktif!\nDaha sağlam ve kaliteli sinyaller taranıyor...")
+    bot.send_message(MY_CHAT_ID, "🚀 **GHOST SMC BOT AKTİF!**\nGerçek para moduna geçildi. Radar taraması başlıyor...")
     
     while True:
         try:
-            markets = ex.fetch_tickers()
-            # En hacimli ve hareketli 15 koin
-            active_symbols = sorted(
-                [s for s in markets if '/USDT:USDT' in s],
-                key=lambda x: markets[x]['quoteVolume'],
-                reverse=True
-            )[:CONFIG['max_coins']]
-
-            for sym in active_symbols:
-                signal = check_15m_signal(sym)
-                if signal:
-                    execute_trade(sym, signal)
-                time.sleep(2) # Borsa limiti için küçük mola
+            # Bakiyeyi kontrol et (Telegram'a raporla)
+            balance_info = ex.fetch_balance()
+            total_usdt = balance_info.get('USDT', {}).get('total', 0)
             
-            # 15 dakikalık mum kapanışlarını beklemek için 5 dakika mola
-            time.sleep(300)
+            # En hacimli koinleri radara al
+            markets = ex.fetch_tickers()
+            symbols = sorted([s for s in markets if '/USDT:USDT' in s], 
+                             key=lambda x: markets[x]['quoteVolume'], reverse=True)[:CONFIG['max_coins']]
+
+            radar_report = f"📡 **RADAR ANALİZ RAPORU**\n💰 Bakiye: {total_usdt:.2f} USDT\n"
+            radar_report += "----------------------------\n"
+            
+            signals_to_act = []
+            for sym in symbols:
+                signal, status_msg = get_radar_analysis(sym)
+                radar_report += status_msg + "\n"
+                if signal:
+                    signals_to_act.append((sym, signal))
+                time.sleep(1.5)
+
+            # Radarı Telegram'a gönder
+            bot.send_message(MY_CHAT_ID, radar_report)
+
+            # Onaylanan sinyaller için tetiğe bas
+            for sym, side in signals_to_act:
+                execute_trade(sym, side)
+
+            time.sleep(600) # 10 dakikada bir yeni radar raporu ve tarama
             
         except Exception as e:
+            print(f"Hata: {e}")
             time.sleep(60)
 
 def execute_trade(symbol, side):
@@ -87,19 +105,20 @@ def execute_trade(symbol, side):
         price = ticker['last']
         amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        bot.send_message(MY_CHAT_ID, f"🎯 **15M GÜÇLÜ SİNYAL!**\n🪙 {symbol}\n✅ FVG + MSS + HACİM Onaylı\nİşlem deneniyor...")
+        bot.send_message(MY_CHAT_ID, f"🔥 **İŞLEM AÇILIYOR!**\n🪙 {symbol}\n↕️ Yön: {side.upper()}\n💰 Fiyat: {price}")
         
+        # Market Giriş
         ex.create_market_order(symbol, side, amount)
         
-        # TP1 Ayarı (%75 Kapama)
+        # %75 Kar Al Emri (TP1)
         tp_price = price * (1 + CONFIG['tp1_target']) if side == 'buy' else price * (1 - CONFIG['tp1_target'])
+        time.sleep(2) # Borsanın emri işlemesi için bekleme
         ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * CONFIG['tp1_ratio'], tp_price, {'reduceOnly': True})
         
+        bot.send_message(MY_CHAT_ID, f"✅ **HEDEFLER DİZİLDİ:** %75 Kar Al emri {tp_price:.4f} seviyesine yerleştirildi.")
+
     except Exception as e:
-        if "insufficient balance" in str(e).lower() or "amount exceeds the balance" in str(e).lower():
-            bot.send_message(MY_CHAT_ID, f"🔔 **Bakiye Bekleniyor (15m):** {symbol} için kaliteli sinyal geldi ama kasa boş.")
-        else:
-            print(f"İşlem Hatası: {e}")
+        bot.send_message(MY_CHAT_ID, f"❌ **İŞLEM HATASI:** {str(e)}")
 
 if __name__ == "__main__":
     t = threading.Thread(target=main_worker)
