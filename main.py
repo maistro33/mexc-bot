@@ -11,6 +11,7 @@ PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
+# Bitget Swap (Vadeli) Bağlantısı
 ex = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -20,26 +21,27 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR - KESİN KONFİGÜRASYON] ---
+# --- [2. AYARLAR - %100 SADIK BEY KONFİGÜRASYONU] ---
 CONFIG = {
-    'trade_amount_usdt': 20.0,
-    'leverage': 10,
-    'stop_loss_ratio': 0.02,        # %2 Net Stop
-    'tp1_ratio': 0.75,              # İlk hedefte %75 sat (Sadık Bey Ayarı)
-    'tp1_target': 0.018,            # %1.8 (Komisyon sonrası net %1.5 kalır)
-    'tp2_target': 0.035,            # %3.5 (Net %3.0 kalır)
-    'tp3_target': 0.055,            # %5.5 (Net %5.0 kalır)
+    'trade_amount_usdt': 20.0,      # Giriş miktarı
+    'leverage': 10,                 # Kaldıraç
+    'stop_loss_ratio': 0.02,        # %2 Zarar Kes (Net)
+    'tp1_ratio': 0.75,              # İlk hedefte %75 satış (Kritik)
+    'tp1_target': 0.018,            # %1.8 (Komisyon sonrası net %1.5 kâr)
+    'tp2_target': 0.035,            # %3.5 (Net %3.0 kâr)
+    'tp3_target': 0.055,            # %5.5 (Net %5.0 kâr)
     'timeframe': '15m'
 }
 
 active_trades = {}
 
-# --- [3. BAKİYE SORGULAMA - ÇALIŞAN FİX] ---
+# --- [3. BAKİYE SORGULAMA - GARANTİLİ YÖNTEM] ---
 def get_safe_balance():
     try:
         balance_info = ex.fetch_balance({'type': 'swap'})
+        # Doğrudan kullanılabilir USDT bakiyesine erişim
         available = float(balance_info.get('USDT', {}).get('free', 0))
-        if available == 0:
+        if available == 0 and 'info' in balance_info:
             for item in balance_info['info']:
                 if item.get('marginAsset') == 'USDT':
                     available = float(item.get('available', 0))
@@ -53,109 +55,108 @@ def cmd_balance(message):
     total = get_safe_balance()
     bot.reply_to(message, f"💰 **Kullanılabilir Bakiye:** {total:.2f} USDT")
 
-# --- [4. HYPE'I BULAN O MEŞHUR SMC ANALİZİ] ---
+# --- [4. HYPE SMC ANALİZİ - (LİKTİDİTE + MSS + FVG + VOL)] ---
 def get_smc_analysis(symbol):
     try:
-        # Gereksiz pariteleri ele
-        if any(x in symbol for x in ["XAU", "XAG", "USDC", "EUR"]): return None
+        # Hata veren pariteleri baştan ele
+        if any(x in symbol for x in ["XAU", "XAG", "USDC", "EUR", "GBP"]): return None, None
         
-        # 1. 15M Veri
+        # Mum verilerini çek
         bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
         last_price = bars[-1][4]
         
-        # A. Likidite Alımı (Daily Swing Low)
+        # A. Likidite Alımı (Daily Low Kontrolü)
         d_bars = ex.fetch_ohlcv(symbol, timeframe='1d', limit=2)
         swing_low = d_bars[0][3]
         liq_taken = bars[-1][3] < swing_low and last_price > swing_low
-
-        # B. MSS (Market Structure Shift) - Önceki 15 mumun tepesi kırılmalı
+        
+        # B. MSS (Market Structure Shift) - Gövde Kapanış Onayı
         recent_highs = [b[2] for b in bars[-15:-1]]
         mss_ok = last_price > max(recent_highs)
-
-        # C. Hacim Onayı
+        
+        # C. FVG (Fair Value Gap)
+        fvg = bars[-3][2] < bars[-1][3]
+        
+        # D. Hacim Onayı
         vols = [b[5] for b in bars]
-        avg_vol = sum(vols[-15:])/15
-        vol_ok = vols[-1] > (avg_vol * 1.2)
+        avg_vol = sum(vols[-15:]) / 15
+        vol_ok = vols[-1] > (avg_vol * 1.25) # %25 hacim artışı şartı
 
-        if liq_taken and mss_ok and vol_ok:
-            return 'buy'
-        return None
+        # Rapor formatı (Özlediğiniz o liste)
+        status = f"{symbol}: {'✅' if fvg else '❌'} FVG | {'✅' if mss_ok else '❌'} MSS | {'📈' if vol_ok else '📉'} Vol"
+        
+        # Tüm şartlar sağlandığında 'buy' sinyali
+        if liq_taken and mss_ok and fvg and vol_ok:
+            return 'buy', status
+        return None, status
     except:
-        return None
+        return None, None
 
-# --- [5. İŞLEM YÖNETİMİ VE MEVCUT POZİSYON KORUMA] ---
-def setup_orders(symbol, side, amount, entry_price):
-    """Hem yeni hem mevcut işlemler için TP/SL dizen fonksiyon"""
+# --- [5. İŞLEM VE EMİR DİZME - ZIRHLI ZİNCİR] ---
+def execute_trade(symbol, side):
     try:
-        # 1. STOP LOSS (%100)
-        sl_p = entry_price * (1 - CONFIG['stop_loss_ratio']) if side == 'buy' else entry_price * (1 + CONFIG['stop_loss_ratio'])
-        ex.create_order(symbol, 'stop', 'sell' if side == 'buy' else 'buy', amount, None, {'reduceOnly': True, 'stopPrice': sl_p})
+        ex.set_leverage(CONFIG['leverage'], symbol)
+        ticker = ex.fetch_ticker(symbol)
+        price = ticker['last']
+        amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        # 2. TP1 (%75 Miktar)
-        tp1_p = entry_price * (1 + CONFIG['tp1_target']) if side == 'buy' else entry_price * (1 - CONFIG['tp1_target'])
-        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * CONFIG['tp1_ratio'], tp1_p, {'reduceOnly': True})
+        bot.send_message(MY_CHAT_ID, f"🚀 **HYPE SİNYALİ YAKALANDI!**\n🪙 {symbol}\n💰 Giriş: {price}")
         
-        # 3. TP2 (%12.5 Miktar)
-        tp2_p = entry_price * (1 + CONFIG['tp2_target']) if side == 'buy' else entry_price * (1 - CONFIG['tp2_target'])
-        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * 0.125, tp2_p, {'reduceOnly': True})
+        # 1. Market Giriş Emri
+        ex.create_market_order(symbol, side, amount)
+        time.sleep(2) # Borsanın işlemesi için kısa bekleme
+        
+        # 2. STOP-LOSS (%100 Miktar)
+        sl_p = price * (1 - CONFIG['stop_loss_ratio'])
+        ex.create_order(symbol, 'stop', 'sell', amount, None, {'reduceOnly': True, 'stopPrice': sl_p})
+        
+        # 3. TP1 (%75 Miktar) - Limit Emir
+        tp1_p = price * (1 + CONFIG['tp1_target'])
+        ex.create_order(symbol, 'limit', 'sell', amount * CONFIG['tp1_ratio'], tp1_p, {'reduceOnly': True})
+        
+        # 4. TP2 (%12.5 Miktar)
+        tp2_p = price * (1 + CONFIG['tp2_target'])
+        ex.create_order(symbol, 'limit', 'sell', amount * 0.125, tp2_p, {'reduceOnly': True})
 
-        # 4. TP3 (Kalan %12.5 Miktar)
-        tp3_p = entry_price * (1 + CONFIG['tp3_target']) if side == 'buy' else entry_price * (1 - CONFIG['tp3_target'])
-        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * 0.125, tp3_p, {'reduceOnly': True})
+        # 5. TP3 (%12.5 Miktar)
+        tp3_p = price * (1 + CONFIG['tp3_target'])
+        ex.create_order(symbol, 'limit', 'sell', amount * 0.125, tp3_p, {'reduceOnly': True})
 
-        bot.send_message(MY_CHAT_ID, f"✅ **{symbol} İÇİN EMİRLER DİZİLDİ**\n🛡️ SL: {sl_p:.4f}\n🎯 TP1 (%75): {tp1_p:.4f}\n🎯 TP2-3 Aktif")
+        active_trades[symbol] = True
+        bot.send_message(MY_CHAT_ID, f"✅ **EMİRLER DİZİLDİ**\n🛡️ SL: {sl_p:.4f}\n🎯 TP1 (%75): {tp1_p:.4f}\n🎯 TP2-3 Aktif.")
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"⚠️ {symbol} emir dizme hatası: {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"❌ Emir Dizme Hatası: {str(e)}")
 
-def check_existing_and_trade():
-    """Bot açıldığında mevcut pozisyonu bulur ve koruma ekler"""
-    try:
-        pos = ex.fetch_positions()
-        for p in pos:
-            side_raw = p.get('side', '')
-            amt = float(p.get('contracts', 0))
-            if amt > 0:
-                symbol = p['symbol']
-                entry_p = float(p['entryPrice'])
-                side = 'buy' if side_raw == 'long' else 'sell'
-                if symbol not in active_trades:
-                    bot.send_message(MY_CHAT_ID, f"🔎 Mevcut pozisyon bulundu: {symbol}. Koruma ekleniyor...")
-                    setup_orders(symbol, side, amt, entry_p)
-                    active_trades[symbol] = True
-    except:
-        pass
-
-# --- [6. ANA DÖNGÜ - RADAR] ---
+# --- [6. ANA DÖNGÜ - RADAR VE RAPORLAMA] ---
 def main_worker():
-    bot.send_message(MY_CHAT_ID, "🛡️ **GHOST SMC: NİHAİ MOD AKTİF**\n(HYPE Ruhu + 3-Kademeli TP + Radar)")
-    
-    # Açılışta mevcut işlemleri korumaya al
-    check_existing_and_trade()
-
+    bot.send_message(MY_CHAT_ID, "🦅 **GHOST SMC RADAR BAŞLATILDI**\nHYPE ayarları ve tüm borsa taraması aktif.")
     while True:
         try:
+            total_bal = get_safe_balance()
             markets = ex.fetch_tickers()
             all_symbols = [s for s in markets if '/USDT:USDT' in s]
             
+            # En hacimli 10 coin için rapor hazırlığı
+            top_symbols = sorted(all_symbols, key=lambda x: markets[x]['quoteVolume'], reverse=True)[:10]
+            report = f"📡 **SMC RADAR ANALİZİ**\n💰 Bakiye: {total_bal:.2f} USDT\n" + "-"*20 + "\n"
+            
             for sym in all_symbols:
-                signal = get_smc_analysis(sym)
+                signal, status = get_smc_analysis(sym)
                 
+                # Sadece en hacimli 10 tanesini rapora ekle (mesaj sınırı için)
+                if sym in top_symbols:
+                    report += f"{status}\n"
+                
+                # Sinyal varsa işleme gir
                 if signal and sym not in active_trades:
-                    ex.set_leverage(CONFIG['leverage'], sym)
-                    ticker = ex.fetch_ticker(sym)
-                    price = ticker['last']
-                    amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
-                    
-                    bot.send_message(MY_CHAT_ID, f"🚀 **HYPE SİNYALİ YAKALANDI!**\n🪙 {sym}")
-                    ex.create_market_order(sym, 'buy', amount)
-                    time.sleep(2)
-                    setup_orders(sym, 'buy', amount, price)
-                    active_trades[sym] = True
+                    execute_trade(sym, signal)
                 
-                time.sleep(0.1) # Radar hızı
-
-            time.sleep(600)
-        except:
+                time.sleep(0.05) # API koruma
+            
+            # Tur sonunda raporu gönder
+            bot.send_message(MY_CHAT_ID, report)
+            time.sleep(900) # 15 dakika bekle ve tekrarla
+        except Exception as e:
             time.sleep(60)
 
 if __name__ == "__main__":
