@@ -5,65 +5,96 @@ import os
 import threading
 
 # --- [BAĞLANTILAR] ---
-# Railway Variables kısmından çekilir
-MEXC_API = os.getenv('MEXC_API')
-MEXC_SEC = os.getenv('MEXC_SEC')
+API_KEY = os.getenv('BITGET_API')
+API_SEC = os.getenv('BITGET_SEC')
+PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-# Borsaya Bağlan (Vadeli İşlemler)
-ex = ccxt.mexc({
-    'apiKey': MEXC_API, 
-    'secret': MEXC_SEC, 
-    'options': {'defaultType': 'swap'}, 
+# Bitget Swap (Vadeli İşlemler) Bağlantısı
+ex = ccxt.bitget({
+    'apiKey': API_KEY,
+    'secret': API_SEC,
+    'password': PASSPHRASE,
+    'options': {'defaultType': 'swap'},
     'enableRateLimit': True
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-def instant_trade():
-    symbol = 'SOL/USDT:USDT'
-    amount_usdt = 20.0
-    leverage = 10
-    
+# --- [STRATEJİ AYARLARI] ---
+CONFIG = {
+    'trade_amount_usdt': 20.0,  # İşlem miktarı
+    'leverage': 10,             # Kaldıraç
+    'tp1_ratio': 0.75,          # %75 Kar Al (Sadık Bey Ayarı)
+    'tp1_target': 0.015,        # %1.5 karda ilk satış
+    'symbols': ['SOL/USDT:USDT', 'PNUT/USDT:USDT', 'FARTCOIN/USDT:USDT']
+}
+
+# --- [GÖVDE KAPANIŞ VE HACİM KONTROLÜ] ---
+def get_signal(symbol):
     try:
-        # 1. Başlangıç Mesajı
-        bot.send_message(MY_CHAT_ID, f"🚀 **TEST BAŞLADI:** {symbol} için anında emir gönderiliyor...")
+        bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+        # Anti-Manipülasyon: Hacim Onayı (Son mum hacmi ortalamanın üstünde mi?)
+        volumes = [b[5] for b in bars]
+        avg_vol = sum(volumes[-10:]) / 10
+        current_vol = volumes[-1]
         
-        # 2. Kaldıraç Ayarı (MEXC'nin istediği zorunlu parametrelerle)
-        # openType 1: Isolated, positionType 1: Long
-        ex.set_leverage(leverage, symbol, {
-            'openType': 1,     
-            'positionType': 1  
-        })
+        last_close = bars[-1][4]
+        prev_high = max([b[2] for b in bars[-20:-1]])
         
-        # 3. Güncel Fiyat ve Miktar Hesabı
+        # 1. Kalkan: Gövde Kapanış Onayı (Sadece iğne değil, mum üstünde kapandı mı?)
+        if last_close > prev_high and current_vol > avg_vol:
+            return 'buy'
+        return None
+    except:
+        return None
+
+def execute_trade(symbol, side):
+    try:
+        # 1. Kaldıraç ve İzole Mod Ayarı
+        ex.set_leverage(CONFIG['leverage'], symbol)
+        
+        # 2. Miktar Hesapla
         ticker = ex.fetch_ticker(symbol)
         price = ticker['last']
-        amount = (amount_usdt * leverage) / price
+        amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        # 4. MARKET EMRİ GÖNDER
-        order = ex.create_market_order(symbol, 'buy', amount)
+        # 3. Market Emri ile Giriş
+        order = ex.create_market_order(symbol, side, amount)
+        bot.send_message(MY_CHAT_ID, f"🚀 **İŞLEM AÇILDI!**\n\n🪙 Koin: {symbol}\n↕️ Yön: {side.upper()}\n💰 Giriş: {price}")
         
-        # 5. BAŞARI MESAJI
-        bot.send_message(MY_CHAT_ID, f"✅ **İŞLEM BAŞARIYLA AÇILDI!**\n💰 Giriş: {price}\n⚙️ Kaldıraç: {leverage}x\n\nBorsayı kontrol et ve pozisyonu manuel kapat.")
+        # 4. %75 Kar Al (TP1) Emrini Yerleştir
+        tp_side = 'sell' if side == 'buy' else 'buy'
+        tp_price = price * (1 + CONFIG['tp1_target']) if side == 'buy' else price * (1 - CONFIG['tp1_target'])
+        
+        ex.create_order(symbol, 'limit', tp_side, amount * CONFIG['tp1_ratio'], tp_price, {'reduceOnly': True})
+        bot.send_message(MY_CHAT_ID, f"🎯 **TP1 SET EDİLDİ!**\n💰 Hedef: {tp_price}\n📦 Miktar: %75")
         
     except Exception as e:
-        # Hata durumunda detaylı mesaj gönderir (403 vb.)
-        bot.send_message(MY_CHAT_ID, f"❌ **İŞLEM HATASI:** {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"❌ İşlem Hatası: {str(e)}")
 
-# --- [KOMUTLAR] ---
+# --- [BOT DÖNGÜSÜ] ---
+def main_worker():
+    bot.send_message(MY_CHAT_ID, "🚀 Sadık Bey, Bitget Botu SMC Kalkanlarıyla Aktif!")
+    while True:
+        for symbol in CONFIG['symbols']:
+            signal = get_signal(symbol)
+            if signal:
+                execute_trade(symbol, signal)
+            time.sleep(5)
+        time.sleep(60)
+
 @bot.message_handler(commands=['bakiye'])
 def check_balance(message):
     try:
         balance = ex.fetch_balance()
         usdt = balance['total'].get('USDT', 0)
-        bot.reply_to(message, f"💰 **Güncel Kasa:** {usdt:.2f} USDT")
+        bot.reply_to(message, f"💰 **Bitget Güncel Kasa:** {usdt:.2f} USDT")
     except Exception as e:
-        bot.reply_to(message, f"❌ Hata: {str(e)}")
+        bot.reply_to(message, f"❌ Bakiye çekilemedi: {str(e)}")
 
 if __name__ == "__main__":
-    # Bot başlar başlamaz işlemi dener
-    instant_trade()
-    
-    # Komutları (bakiye vb.) dinlemeye başlar
+    t = threading.Thread(target=main_worker)
+    t.daemon = True
+    t.start()
     bot.infinity_polling()
