@@ -1,101 +1,75 @@
 import ccxt
-import telebot
+import pandas as pd
 import time
-import os
-import threading
+import requests
 
-# --- [BAĞLANTILAR] ---
-MEXC_API = os.getenv('MEXC_API')
-MEXC_SEC = os.getenv('MEXC_SEC')
-TELE_TOKEN = os.getenv('TELE_TOKEN')
-MY_CHAT_ID = os.getenv('MY_CHAT_ID')
+# --- KULLANICI AYARLARI (SADIK BEY ÖZEL) ---
+API_KEY = 'BURAYA_BINANCE_API_KEY_YAZIN'
+API_SECRET = 'BURAYA_BINANCE_SECRET_YAZIN'
+TELEGRAM_TOKEN = 'BURAYA_TELEGRAM_BOT_TOKEN_YAZIN'
+TELEGRAM_CHAT_ID = 'BURAYA_CHAT_ID_YAZIN'
 
-ex = ccxt.mexc({
-    'apiKey': MEXC_API, 
-    'secret': MEXC_SEC, 
-    'options': {'defaultType': 'swap'}, 
-    'enableRateLimit': True
+# BOT PARAMETRELERİ
+USDT_AMOUNT = 20          # Her işlem için 20 USDT
+LEVERAGE = 10             # 10x Kaldıraç
+CLOSE_PERCENT_TP1 = 0.75  # %75 Kâr Al (TP1)
+SYMBOLS = ['PNUT/USDT', 'GOAT/USDT', 'TURBO/USDT', 'FARTCOIN/USDT', 'MOODENG/USDT'] # Takip listesi
+
+exchange = ccxt.binance({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'options': {'defaultType': 'future'}
 })
-bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [EKSİKSİZ AYARLAR] ---
-CONFIG = {
-    'trade_amount': 20.0,
-    'leverage': 10,
-    'tp1_ratio': 0.75,
-    'symbols': [
-        'FARTCOIN/USDT:USDT', 'PNUT/USDT:USDT', 'MOODENG/USDT:USDT', 'GOAT/USDT:USDT',
-        'PEPE/USDT:USDT', 'WIF/USDT:USDT', 'POPCAT/USDT:USDT', 'BONK/USDT:USDT',
-        'NEIRO/USDT:USDT', 'TURBO/USDT:USDT', 'FLOKI/USDT:USDT', 'MEME/USDT:USDT',
-        'SOL/USDT:USDT', 'SUI/USDT:USDT', 'AVAX/USDT:USDT', 'FET/USDT:USDT',
-        'WLD/USDT:USDT', 'SEI/USDT:USDT', 'APT/USDT:USDT', 'TIA/USDT:USDT',
-        'NEAR/USDT:USDT', 'INJ/USDT:USDT', 'ORDI/USDT:USDT', 'JUP/USDT:USDT',
-        'PYTH/USDT:USDT', 'PENDLE/USDT:USDT', 'TAO/USDT:USDT', 'RENDER/USDT:USDT',
-        'STX/USDT:USDT', 'ARKM/USDT:USDT'
-    ]
-}
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={message}"
+    requests.get(url)
 
-# Mesaj kirliliğini önlemek için takip sözlüğü
-last_alert_time = {}
+def get_data(symbol):
+    bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    return df
 
-def get_smc_signal(symbol):
+def open_position(symbol, side):
     try:
-        ohlcv = ex.fetch_ohlcv(symbol, timeframe='15m', limit=40)
-        highs = [x[2] for x in ohlcv]
-        lows = [x[3] for x in ohlcv]
-        closes = [x[4] for x in ohlcv]
+        # Kaldıraç ayarla
+        exchange.set_leverage(LEVERAGE, symbol)
+        
+        # Miktarı hesapla (20 USDT'lik kaç adet koin alınır?)
+        price = exchange.fetch_ticker(symbol)['last']
+        amount = (USDT_AMOUNT * LEVERAGE) / price
+        
+        order = exchange.create_market_order(symbol, side, amount)
+        send_telegram(f"🎯 SADIK BEY, İŞLEM AÇILDI!\nKoin: {symbol}\nYön: {side}\nMiktar: {USDT_AMOUNT} USDT\nKaldıraç: {LEVERAGE}x")
+        return order
+    except Exception as e:
+        send_telegram(f"⚠️ Hata oluştu: {e}")
 
-        r_high = max(highs[-25:-5])
-        r_low = min(lows[-25:-5])
-        now = time.time()
+def check_logic():
+    for symbol in SYMBOLS:
+        df = get_data(symbol)
+        last_close = df['close'].iloc[-1]
+        prev_close = df['close'].iloc[-2]
+        high_prev = df['high'].iloc[-2]
+        low_prev = df['low'].iloc[-2]
 
-        # SHORT ANALİZ
-        if highs[-2] > r_high and closes[-2] < r_high:
-            # 15 dakikada bir mesaj gönder (Sakinleştirici)
-            if symbol not in last_alert_time or (now - last_alert_time[symbol]) > 900:
-                bot.send_message(MY_CHAT_ID, f"🔍 **RADAR:** {symbol} likidite süpürdü. (Short onayı bekleniyor... ⏳)")
-                last_alert_time[symbol] = now
-            
-            if closes[-1] < min(lows[-10:-2]) and ohlcv[-3][3] > ohlcv[-1][2]:
-                return 'sell', closes[-1]
+        # --- HIZLI TEST MANTIĞI (Filtreler Esnetildi) ---
+        
+        # Hızlı Short: Eğer son mum bir önceki mumun en düşüğünün altında kapandıysa (Basit MSS)
+        if last_close < low_prev:
+            open_position(symbol, 'sell')
+            break # Sadece 1 işlem alması için durduruyoruz
 
-        # LONG ANALİZ
-        if lows[-2] < r_low and closes[-2] > r_low:
-            if symbol not in last_alert_time or (now - last_alert_time[symbol]) > 900:
-                bot.send_message(MY_CHAT_ID, f"🔍 **RADAR:** {symbol} likidite süpürdü. (Long onayı bekleniyor... ⏳)")
-                last_alert_time[symbol] = now
-                
-            if closes[-1] > max(highs[-10:-2]) and ohlcv[-3][2] < ohlcv[-1][3]:
-                return 'buy', closes[-1]
+        # Hızlı Long: Eğer son mum bir önceki mumun en yükseğinin üstünde kapandıysa
+        elif last_close > high_prev:
+            open_position(symbol, 'buy')
+            break # Sadece 1 işlem alması için durduruyoruz
 
-        return None, None
-    except:
-        return None, None
-
-def main_worker():
-    bot.send_message(MY_CHAT_ID, "🛡️ Sadık Bey, Sakin ve Keskin SMC Radarı Başlatıldı!")
-    while True:
-        for symbol in CONFIG['symbols']:
-            side, price = get_smc_signal(symbol)
-            if side:
-                try:
-                    ex.set_leverage(CONFIG['leverage'], symbol)
-                    ex.create_market_order(symbol, side, CONFIG['trade_amount'])
-                    bot.send_message(MY_CHAT_ID, f"🎯 **İŞLEM AÇILDI!**\n\n🪙 {symbol}\n↕️ Yön: {side.upper()}\n🚜 %75 TP1 ve Trailing Stop Aktif!")
-                    time.sleep(600) 
-                except Exception as e:
-                    print(f"İşlem hatası: {e}")
-            time.sleep(1.5) 
-        time.sleep(20)
-
-@bot.message_handler(commands=['bakiye'])
-def check_balance(message):
+print("Bot başlatıldı... Sadık Bey, ilk fırsatta işlem açılacak.")
+while True:
     try:
-        balance = ex.fetch_balance()
-        bot.reply_to(message, f"💰 Kasa: {balance['total']['USDT']:.2f} USDT\n📡 Radar 30 koin üzerinde sessizce çalışıyor.")
-    except:
-        bot.reply_to(message, "⚠️ Bağlantı hatası!")
-
-if __name__ == "__main__":
-    threading.Thread(target=main_worker, daemon=True).start()
-    bot.infinity_polling()
+        check_logic()
+        time.sleep(60) # Her dakika kontrol et
+    except Exception as e:
+        print(f"Hata: {e}")
+        time.sleep(10)
