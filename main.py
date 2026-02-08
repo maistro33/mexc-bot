@@ -20,58 +20,65 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [VOLATİLİTE AYARLARI] ---
+# --- [GÜNCEL 15M AYARLARI] ---
 CONFIG = {
     'trade_amount_usdt': 20.0,
     'leverage': 10,
-    'tp1_ratio': 0.75,
-    'tp1_target': 0.015,
-    'max_coins': 20,         # En hareketli 20 koin
-    'timeframe': '5m'        # Daha hızlı yakalamak için 5 dakikalık grafik
+    'tp1_ratio': 0.75,      # %75 Kar Al (Sadık Bey Ayarı)
+    'tp1_target': 0.018,    # 15M için ideal %1.8 kar hedefi
+    'max_coins': 15,        
+    'timeframe': '15m'      # Sizin istediğiniz 15 dakikalık periyot
 }
 
-def get_volatile_symbols():
-    """Bitget'te son 24 saatte en çok hareket edenleri bulur"""
-    try:
-        markets = ex.fetch_tickers()
-        # Sadece USDT çiftleri ve son 24 saatte %3'ten fazla hareket edenler
-        volatile = []
-        for s, data in markets.items():
-            if '/USDT:USDT' in s:
-                change = abs(float(data.get('percentage', 0)))
-                if change > 3.0: # %3'ten fazla oynaklık
-                    volatile.append(s)
-        
-        # En çok hacimden en az hacime sırala
-        sorted_volatile = sorted(volatile, key=lambda x: markets[x]['quoteVolume'], reverse=True)
-        return sorted_volatile[:CONFIG['max_coins']]
-    except:
-        return ['SOL/USDT:USDT', 'PNUT/USDT:USDT', 'XRP/USDT:USDT']
-
-def check_fvg_and_mss(symbol):
+def check_15m_signal(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=40)
-        if len(bars) < 40: return None, "Veri az"
+        if len(bars) < 40: return None
         
-        # FVG (Boğa tipi: 1. mumun tepesi < 3. mumun dibi)
-        fvg_found = bars[-3][2] < bars[-1][3] # Gap kontrolü
+        # 1. 15M FVG Kontrolü (Daha sağlam boşluk)
+        fvg_found = bars[-3][2] < bars[-1][3]
         
-        # MSS (Kısa periyotta tepenin aşılması)
+        # 2. 15M MSS (Gövde Kapanışlı Yapı Kırılımı)
         last_close = bars[-1][4]
-        local_high = max([b[2] for b in bars[-10:-2]])
-        mss_confirmed = last_close > local_high
+        # Son 15 mumun en yükseğini kırıyor mu?
+        prev_high = max([b[2] for b in bars[-15:-2]])
+        mss_confirmed = last_close > prev_high
         
-        status = f"🔥 {symbol}: "
-        if fvg_found: status += "✅ FVG "
-        else: status += "❌ FVG "
-        if mss_confirmed: status += "| ✅ MSS"
-        else: status += "| ❌ MSS"
-        
-        if fvg_found and mss_confirmed:
-            return 'buy', status
-        return None, status
+        # 3. Hacim Onayı (Manipülasyon Kalkanı)
+        vols = [b[5] for b in bars]
+        avg_vol = sum(vols[-15:]) / 15
+        vol_ok = vols[-1] > (avg_vol * 1.2) # Ortalama hacmin %20 üzerinde
+
+        if fvg_found and mss_confirmed and vol_ok:
+            return 'buy'
+        return None
     except:
-        return None, "Analiz hatası"
+        return None
+
+def main_worker():
+    bot.send_message(MY_CHAT_ID, "🛡️ Sadık Bey, 15 Dakikalık 'Garanti Scalp' Modu Aktif!\nDaha sağlam ve kaliteli sinyaller taranıyor...")
+    
+    while True:
+        try:
+            markets = ex.fetch_tickers()
+            # En hacimli ve hareketli 15 koin
+            active_symbols = sorted(
+                [s for s in markets if '/USDT:USDT' in s],
+                key=lambda x: markets[x]['quoteVolume'],
+                reverse=True
+            )[:CONFIG['max_coins']]
+
+            for sym in active_symbols:
+                signal = check_15m_signal(sym)
+                if signal:
+                    execute_trade(sym, signal)
+                time.sleep(2) # Borsa limiti için küçük mola
+            
+            # 15 dakikalık mum kapanışlarını beklemek için 5 dakika mola
+            time.sleep(300)
+            
+        except Exception as e:
+            time.sleep(60)
 
 def execute_trade(symbol, side):
     try:
@@ -80,24 +87,19 @@ def execute_trade(symbol, side):
         price = ticker['last']
         amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        bot.send_message(MY_CHAT_ID, f"⚡ **{symbol} SİNYALİ GELDİ!**\nSert hareket yakalandı, işlem deneniyor...")
+        bot.send_message(MY_CHAT_ID, f"🎯 **15M GÜÇLÜ SİNYAL!**\n🪙 {symbol}\n✅ FVG + MSS + HACİM Onaylı\nİşlem deneniyor...")
         
-        # Bakiye 0 olduğu için burası hata verecek ama işlem emrini gönderdiğini göreceğiz
         ex.create_market_order(symbol, side, amount)
         
+        # TP1 Ayarı (%75 Kapama)
+        tp_price = price * (1 + CONFIG['tp1_target']) if side == 'buy' else price * (1 - CONFIG['tp1_target'])
+        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * CONFIG['tp1_ratio'], tp_price, {'reduceOnly': True})
+        
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"🔔 **TEST BAŞARILI:** Bot işlemi açmaya çalıştı!\nBakiye Durumu: `{str(e)}`")
-
-def main_worker():
-    bot.send_message(MY_CHAT_ID, "🦅 Sadık Bey, 'Volatilite Avcısı' Modu Aktif!\nEn hareketli koinleri 5 dakikalıkta tarıyorum...")
-    while True:
-        symbols = get_volatile_symbols()
-        for sym in symbols:
-            signal, status = check_fvg_and_mss(sym)
-            if signal:
-                execute_trade(sym, signal)
-            time.sleep(1)
-        time.sleep(60) # Her dakika listeyi tazele
+        if "insufficient balance" in str(e).lower() or "amount exceeds the balance" in str(e).lower():
+            bot.send_message(MY_CHAT_ID, f"🔔 **Bakiye Bekleniyor (15m):** {symbol} için kaliteli sinyal geldi ama kasa boş.")
+        else:
+            print(f"İşlem Hatası: {e}")
 
 if __name__ == "__main__":
     t = threading.Thread(target=main_worker)
