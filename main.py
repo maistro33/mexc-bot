@@ -20,91 +20,101 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [AYARLAR] ---
+# --- [STRATEJİ AYARLARI] ---
 CONFIG = {
-    'trade_amount_usdt': 15.0,      
+    'trade_amount_usdt': 15.0,      # Kalan 72 USDT bakiyeyi korumak için
     'leverage': 10,
-    'stop_loss_ratio': 0.02,
-    'tp1_ratio': 0.75,              # Sadık Bey'in %75 TP1 kuralı
-    'tp1_target': 0.02,             # 1:2 RR hedefi için ilk adım
-    'tp2_target': 0.05              # 1:2 RR nihai hedef
+    'tp1_ratio': 0.75,              # Sizin %75 Kar Al kuralınız
+    'rr_ratio': 2.0                 # 1:2 Risk Ödül Oranı
 }
 
 active_trades = {}
 
+def get_mtf_trend(symbol):
+    """1 Günlük ve 4 Saatlik Trend Onayı"""
+    try:
+        d1 = ex.fetch_ohlcv(symbol, timeframe='1d', limit=20)
+        h4 = ex.fetch_ohlcv(symbol, timeframe='4h', limit=20)
+        d1_trend = "UP" if d1[-1][4] > sum([b[4] for b in d1])/20 else "DOWN"
+        h4_trend = "UP" if h4[-1][4] > sum([b[4] for b in h4])/20 else "DOWN"
+        return d1_trend, h4_trend
+    except: return "UNKNOWN", "UNKNOWN"
+
 def get_smc_analysis(symbol):
     try:
-        bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=100)
-        highs = [b[2] for b in bars]
-        lows = [b[3] for b in bars]
-        closes = [b[4] for b in bars]
-        vols = [b[5] for b in bars]
+        d1_t, h4_t = get_mtf_trend(symbol)
+        if d1_t != "UP" or h4_t != "UP": return None, None, None # Sadece Trend Yönüne!
 
-        # 1. ÖNEMLİ LİKİDİTE SEVİYESİ ALINACAK
-        d_bars = ex.fetch_ohlcv(symbol, timeframe='1d', limit=2)
-        daily_low = d_bars[0][3]
-        liq_taken = min(lows[-5:]) < daily_low and closes[-1] > daily_low
+        bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=60)
+        h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
 
-        # 2. TERS YÖNE DISPLACEMENT (Sert Hacimli Hareket)
-        avg_vol = sum(vols[-20:-1]) / 20
-        displacement = vols[-1] > (avg_vol * 1.8) # %80 daha fazla hacim
+        # 1. Önemli Likidite Seviyesi Alınacak
+        liq_taken = l[-1] < min(l[-20:-1]) and c[-1] > min(l[-20:-1])
+        
+        # 2. Ters Yöne Displacement (Sert Hacim)
+        vol_ok = v[-1] > (sum(v[-20:])/20 * 1.8)
 
-        # 3. MARKET YAPISININ DEĞİŞMESİ (MSS - Gövde Kapanışıyla)
-        recent_swing_high = max(highs[-20:-5])
-        mss_ok = closes[-1] > recent_swing_high
+        # 3. Market Yapısının Değişmesi (MSS - Gövde Kapanışı)
+        recent_high = max(h[-15:-1])
+        mss_ok = c[-1] > recent_high
 
-        # 4. MARKET YAPISININ DEĞİŞTİĞİ YERDEKİ FVG'DEN GİRİLECEK
-        # FVG Kontrolü: 3 mum öncesinin tepesi, son mumun dibinden küçükse GAP vardır.
-        fvg_detected = highs[-3] < lows[-1]
-        fvg_entry_price = highs[-3] # Giriş seviyemiz tam FVG başlangıcı
+        # 4. FVG Tespiti ve Giriş Noktası
+        fvg_detected = h[-3] < l[-1]
+        entry_price = h[-3] # FVG başlangıcı giriş seviyemiz
 
-        status = f"{symbol}: {'✅' if mss_ok else '❌'} MSS | {'📈' if displacement else '📉'} Vol | {'🌊' if liq_taken else '⌛'} Liq"
-
-        if liq_taken and displacement and mss_ok and fvg_detected:
-            # Sadece fiyat FVG bölgesine (fvg_entry_price) geri çekilirse girer
-            if closes[-1] <= fvg_entry_price * 1.002: 
-                return 'buy', status, fvg_entry_price
-        return None, status, None
+        if liq_taken and vol_ok and mss_ok and fvg_detected:
+            # Fiyat FVG'ye geri dönerse gir
+            if c[-1] <= entry_price * 1.002:
+                stop_loss = min(l[-5:]) # En son swing noktası
+                return 'buy', entry_price, stop_loss
+        return None, None, None
     except: return None, None, None
 
-def execute_trade(symbol, side, entry_p):
+def execute_trade(symbol, side, entry, stop):
     try:
         ex.set_leverage(CONFIG['leverage'], symbol)
-        amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / entry_p
+        amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / entry
         
-        bot.send_message(MY_CHAT_ID, f"🎯 **STRATEJİ ONAYLANDI: {symbol}**\n📍 FVG Giriş: {entry_p}\n🛡️ RR Hedefi: 1:2")
+        # 1:2 RR Hesaplama
+        risk = entry - stop
+        tp1 = entry + (risk * 1.5) # Güvenli çıkış
+        tp2 = entry + (risk * 2.0) # 1:2 RR Hedefi
+
+        bot.send_message(MY_CHAT_ID, f"🎯 **STRATEJİ ONAYLANDI: {symbol}**\n📍 Giriş: {entry}\n🛡️ Stop: {stop}\n🎯 Hedef: 1:2 RR")
         
-        # Limit Emirle FVG'den Giriş
-        ex.create_limit_buy_order(symbol, amount, entry_p)
+        # Giriş Emri
+        ex.create_limit_buy_order(symbol, amount, entry)
         time.sleep(2)
 
-        # Stop ve TP (Sizin görseldeki 1:2 RR kuralına göre)
-        sl_p = entry_p * 0.98 # En son swing noktası veya %2
-        tp1_p = entry_p * 1.02
-        tp2_p = entry_p * 1.05
+        # STOP ve TP (Bitget Garantili Trigger Limit)
+        ex.create_order(symbol, 'trigger_limit', 'sell', amount, stop, {'stopPrice': stop, 'reduceOnly': True})
+        ex.create_order(symbol, 'limit', 'sell', amount * CONFIG['tp1_ratio'], tp1, {'reduceOnly': True})
+        ex.create_order(symbol, 'limit', 'sell', amount * (1-CONFIG['tp1_ratio']), tp2, {'reduceOnly': True})
 
-        # Bitget Garantili Emirler
-        ex.create_order(symbol, 'trigger_limit', 'sell', amount, sl_p, {'stopPrice': sl_p, 'reduceOnly': True})
-        ex.create_order(symbol, 'limit', 'sell', amount * 0.75, tp1_p, {'reduceOnly': True})
-        
         active_trades[symbol] = True
+        bot.send_message(MY_CHAT_ID, "✅ **TÜM EMİRLER VE STOPLAR DİZİLDİ.**")
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"⚠️ Hata: {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"⚠️ Emir Dizme Hatası: {str(e)}")
 
 def main_worker():
-    bot.send_message(MY_CHAT_ID, "🛡️ **SMC STRATEJİ BOTU: %100 ONAY MODU**")
+    bot.send_message(MY_CHAT_ID, "🦅 **SADIK BEY ÖZEL: STRATEJİ MUHAFIZI BAŞLADI**")
     while True:
         try:
             markets = ex.fetch_tickers()
             symbols = [s for s in markets if '/USDT:USDT' in s]
-            for sym in symbols:
-                signal, status, entry_p = get_smc_analysis(sym)
+            
+            for sym in symbols[:15]: # En hacimli 15 pariteye odaklan (Hız ve doğruluk için)
+                signal, entry, stop = get_smc_analysis(sym)
                 if signal and sym not in active_trades:
-                    execute_trade(sym, signal, entry_p)
-                time.sleep(0.05)
+                    execute_trade(sym, signal, entry, stop)
+                time.sleep(0.5)
+            
+            # Hayattayım Mesajı (15 Dakikada bir)
+            bot.send_message(MY_CHAT_ID, f"📡 Tarama Tamamlandı. Aktif Takip: {len(active_trades)}")
             time.sleep(600)
         except: time.sleep(30)
 
 if __name__ == "__main__":
-    threading.Thread(target=main_worker, daemon=True).start()
+    t = threading.Thread(target=main_worker, daemon=True)
+    t.start()
     bot.infinity_polling()
