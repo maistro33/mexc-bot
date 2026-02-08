@@ -20,33 +20,41 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
+# --- [BAKİYE SORGULAMA KOMUTU] ---
+@bot.message_handler(commands=['bakiye'])
+def send_balance(message):
+    try:
+        balance_info = ex.fetch_balance()
+        total_usdt = balance_info.get('USDT', {}).get('total', 0)
+        available_usdt = balance_info.get('USDT', {}).get('free', 0)
+        msg = f"💰 **Güncel Bakiye Raporu**\n\n💵 Toplam: {total_usdt:.2f} USDT\n🔓 Kullanılabilir: {available_usdt:.2f} USDT"
+        bot.reply_to(message, msg)
+    except Exception as e:
+        bot.reply_to(message, f"❌ Bakiye çekilirken hata oluştu: {str(e)}")
+
 # --- [GERÇEK PARA AYARLARI] ---
 CONFIG = {
     'trade_amount_usdt': 20.0,
     'leverage': 10,
-    'tp1_ratio': 0.75,      # Pozisyonun %75'ini kapat
-    'tp1_target': 0.015,    # %1.5 Kar Hedefi (Scalp için ideal)
-    'max_coins': 12,        # En hacimli 12 koin radarda
-    'timeframe': '15m'      
+    'tp1_ratio': 0.75,
+    'tp1_target': 0.015,
+    'max_coins': 12,
+    'timeframe': '15m'
 }
 
 def get_radar_analysis(symbol):
-    """Koinin FVG ve MSS durumunu kontrol eder ve rapor döner"""
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=40)
-        if len(bars) < 40: return None, "⚠️ Veri Eksik"
+        if len(bars) < 40: return None, f"{symbol}: ⚠️ Veri Eksik"
         
-        # FVG Kontrolü
         fvg = bars[-3][2] < bars[-1][3]
         fvg_status = "✅ FVG" if fvg else "❌ FVG"
         
-        # MSS Kontrolü (Gövde Kapanışı)
         last_close = bars[-1][4]
         prev_high = max([b[2] for b in bars[-15:-2]])
         mss = last_close > prev_high
         mss_status = "✅ MSS" if mss else "❌ MSS"
         
-        # Hacim Kontrolü
         vols = [b[5] for b in bars]
         avg_vol = sum(vols[-15:]) / 15
         vol_ok = vols[-1] > (avg_vol * 1.1)
@@ -61,18 +69,17 @@ def get_radar_analysis(symbol):
         return None, f"{symbol}: ⚠️ Hata"
 
 def main_worker():
-    bot.send_message(MY_CHAT_ID, "🚀 **GHOST SMC BOT AKTİF!**\nGerçek para moduna geçildi. Radar taraması başlıyor...")
+    bot.send_message(MY_CHAT_ID, "🚀 **GHOST SMC BOT AKTİF!**\nRadar taraması ve bakiye takibi başladı.")
     
     while True:
         try:
-            # Bakiyeyi kontrol et (Telegram'a raporla)
-            balance_info = ex.fetch_balance()
-            total_usdt = balance_info.get('USDT', {}).get('total', 0)
-            
-            # En hacimli koinleri radara al
             markets = ex.fetch_tickers()
             symbols = sorted([s for s in markets if '/USDT:USDT' in s], 
                              key=lambda x: markets[x]['quoteVolume'], reverse=True)[:CONFIG['max_coins']]
+
+            # Bakiye Bilgisi
+            balance_info = ex.fetch_balance()
+            total_usdt = balance_info.get('USDT', {}).get('total', 0)
 
             radar_report = f"📡 **RADAR ANALİZ RAPORU**\n💰 Bakiye: {total_usdt:.2f} USDT\n"
             radar_report += "----------------------------\n"
@@ -83,19 +90,16 @@ def main_worker():
                 radar_report += status_msg + "\n"
                 if signal:
                     signals_to_act.append((sym, signal))
-                time.sleep(1.5)
+                time.sleep(1)
 
-            # Radarı Telegram'a gönder
             bot.send_message(MY_CHAT_ID, radar_report)
 
-            # Onaylanan sinyaller için tetiğe bas
             for sym, side in signals_to_act:
                 execute_trade(sym, side)
 
-            time.sleep(600) # 10 dakikada bir yeni radar raporu ve tarama
+            time.sleep(900) # 15 dakikalık periyot için daha uygun
             
         except Exception as e:
-            print(f"Hata: {e}")
             time.sleep(60)
 
 def execute_trade(symbol, side):
@@ -105,18 +109,13 @@ def execute_trade(symbol, side):
         price = ticker['last']
         amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        bot.send_message(MY_CHAT_ID, f"🔥 **İŞLEM AÇILIYOR!**\n🪙 {symbol}\n↕️ Yön: {side.upper()}\n💰 Fiyat: {price}")
-        
-        # Market Giriş
+        bot.send_message(MY_CHAT_ID, f"🔥 **İŞLEM AÇILIYOR!**\n🪙 {symbol}\n↕️ Yön: {side.upper()}")
         ex.create_market_order(symbol, side, amount)
         
-        # %75 Kar Al Emri (TP1)
         tp_price = price * (1 + CONFIG['tp1_target']) if side == 'buy' else price * (1 - CONFIG['tp1_target'])
-        time.sleep(2) # Borsanın emri işlemesi için bekleme
-        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * CONFIG['tp1_ratio'], tp_price, {'reduceOnly': True})
+        time.sleep(2)
+        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * 0.75, tp_price, {'reduceOnly': True})
         
-        bot.send_message(MY_CHAT_ID, f"✅ **HEDEFLER DİZİLDİ:** %75 Kar Al emri {tp_price:.4f} seviyesine yerleştirildi.")
-
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"❌ **İŞLEM HATASI:** {str(e)}")
 
