@@ -3,73 +3,46 @@ import pandas as pd
 import time
 import requests
 
-# --- KULLANICI AYARLARI (SADIK BEY ÖZEL) ---
-API_KEY = 'BURAYA_BINANCE_API_KEY_YAZIN'
-API_SECRET = 'BURAYA_BINANCE_SECRET_YAZIN'
-TELEGRAM_TOKEN = 'BURAYA_TELEGRAM_BOT_TOKEN_YAZIN'
-TELEGRAM_CHAT_ID = 'BURAYA_CHAT_ID_YAZIN'
+# --- BURAYI TELEFONUNUZDAN DOLDURUN ---
+API_KEY = 'MEXC_API_KEYINIZ'
+API_SECRET = 'MEXC_SECRET_KEYINIZ'
+TELEGRAM_TOKEN = 'BOT_TOKENINIZ'
+TELEGRAM_CHAT_ID = 'CHAT_ID_NUMARANIZ'
 
-# BOT PARAMETRELERİ
-USDT_AMOUNT = 20          # Her işlem için 20 USDT
-LEVERAGE = 10             # 10x Kaldıraç
-CLOSE_PERCENT_TP1 = 0.75  # %75 Kâr Al (TP1)
-SYMBOLS = ['PNUT/USDT', 'GOAT/USDT', 'TURBO/USDT', 'FARTCOIN/USDT', 'MOODENG/USDT'] # Takip listesi
+# AYARLARIMIZ
+USDT_AMOUNT = 20
+LEVERAGE = 10
+SYMBOL = 'PNUT/USDT' # Test koini
 
-exchange = ccxt.binance({
+# MEXC BAGLANTISI
+exchange = ccxt.mexc({
     'apiKey': API_KEY,
     'secret': API_SECRET,
-    'options': {'defaultType': 'future'}
+    'options': {'defaultType': 'swap'}
 })
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={message}"
-    requests.get(url)
+def send_msg(text):
+    requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={text}")
 
-def get_data(symbol):
-    bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
-    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    return df
-
-def open_position(symbol, side):
+def islem_yap():
     try:
-        # Kaldıraç ayarla
-        exchange.set_leverage(LEVERAGE, symbol)
+        # Piyasayı kontrol et ve yön seç
+        ticker = exchange.fetch_ticker(SYMBOL)
+        last_price = ticker['last']
         
-        # Miktarı hesapla (20 USDT'lik kaç adet koin alınır?)
-        price = exchange.fetch_ticker(symbol)['last']
-        amount = (USDT_AMOUNT * LEVERAGE) / price
+        # Miktar ve Kaldıraç
+        exchange.set_leverage(LEVERAGE, SYMBOL)
+        amount = (USDT_AMOUNT * LEVERAGE) / last_price
         
-        order = exchange.create_market_order(symbol, side, amount)
-        send_telegram(f"🎯 SADIK BEY, İŞLEM AÇILDI!\nKoin: {symbol}\nYön: {side}\nMiktar: {USDT_AMOUNT} USDT\nKaldıraç: {LEVERAGE}x")
-        return order
+        # TEST İŞLEMİNİ AÇ (Marketten girer)
+        order = exchange.create_market_order(SYMBOL, 'buy', amount)
+        
+        send_msg(f"✅ SADIK BEY, MEXC İŞLEMİ AÇILDI!\nKoin: {SYMBOL}\nMiktar: 20 USDT\nKaldıraç: 10x")
+        print("İşlem açıldı, bot durduruluyor.")
+        
     except Exception as e:
-        send_telegram(f"⚠️ Hata oluştu: {e}")
+        send_msg(f"❌ Hata: {e}")
 
-def check_logic():
-    for symbol in SYMBOLS:
-        df = get_data(symbol)
-        last_close = df['close'].iloc[-1]
-        prev_close = df['close'].iloc[-2]
-        high_prev = df['high'].iloc[-2]
-        low_prev = df['low'].iloc[-2]
-
-        # --- HIZLI TEST MANTIĞI (Filtreler Esnetildi) ---
-        
-        # Hızlı Short: Eğer son mum bir önceki mumun en düşüğünün altında kapandıysa (Basit MSS)
-        if last_close < low_prev:
-            open_position(symbol, 'sell')
-            break # Sadece 1 işlem alması için durduruyoruz
-
-        # Hızlı Long: Eğer son mum bir önceki mumun en yükseğinin üstünde kapandıysa
-        elif last_close > high_prev:
-            open_position(symbol, 'buy')
-            break # Sadece 1 işlem alması için durduruyoruz
-
-print("Bot başlatıldı... Sadık Bey, ilk fırsatta işlem açılacak.")
-while True:
-    try:
-        check_logic()
-        time.sleep(60) # Her dakika kontrol et
-    except Exception as e:
-        print(f"Hata: {e}")
-        time.sleep(10)
+if __name__ == "__main__":
+    send_msg("🤖 Bot MEXC için tetikte... İlk fırsatta işlem açacak.")
+    islem_yap()
