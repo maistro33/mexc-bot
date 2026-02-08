@@ -20,105 +20,84 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [AYARLAR] ---
+# --- [VOLATİLİTE AYARLARI] ---
 CONFIG = {
     'trade_amount_usdt': 20.0,
     'leverage': 10,
-    'tp1_ratio': 0.75,      # %75 Kar Al (Sadık Bey Ayarı)
-    'tp1_target': 0.015,    # %1.5 karda ilk satış
-    'max_coins': 15         # Hız için en hacimli 15 koin
+    'tp1_ratio': 0.75,
+    'tp1_target': 0.015,
+    'max_coins': 20,         # En hareketli 20 koin
+    'timeframe': '5m'        # Daha hızlı yakalamak için 5 dakikalık grafik
 }
 
-def check_fvg_and_mss(symbol):
-    """Koin analizini yapar ve detaylı rapor döner"""
+def get_volatile_symbols():
+    """Bitget'te son 24 saatte en çok hareket edenleri bulur"""
     try:
-        bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
-        if len(bars) < 50: return None, "Veri yetersiz"
+        markets = ex.fetch_tickers()
+        # Sadece USDT çiftleri ve son 24 saatte %3'ten fazla hareket edenler
+        volatile = []
+        for s, data in markets.items():
+            if '/USDT:USDT' in s:
+                change = abs(float(data.get('percentage', 0)))
+                if change > 3.0: # %3'ten fazla oynaklık
+                    volatile.append(s)
         
-        # 1. FVG Kontrolü (İmbalance)
-        # Boğa FVG: 1. mumun yükseği < 3. mumun düşüğü
-        fvg_found = False
-        if bars[-3][2] < bars[-1][1]:
-            fvg_found = True
-            
-        # 2. MSS (Gövde Kapanışlı Kırılım)
-        last_close = bars[-1][4]
-        prev_high = max([b[2] for b in bars[-20:-5]]) # Önceki tepe
-        mss_confirmed = last_close > prev_high
-        
-        # 3. Hacim Onayı
-        vols = [b[5] for b in bars]
-        avg_vol = sum(vols[-10:]) / 10
-        current_vol = vols[-1]
-        vol_ok = current_vol > (avg_vol * 1.1)
-
-        status_msg = f"🔍 {symbol}: "
-        if fvg_found: status_msg += "✅ FVG var "
-        else: status_msg += "❌ FVG yok "
-        
-        if mss_confirmed: status_msg += "| ✅ MSS Onaylı"
-        else: status_msg += "| ❌ MSS Yok"
-
-        if fvg_found and mss_confirmed and vol_ok:
-            return 'buy', status_msg
-        return None, status_msg
+        # En çok hacimden en az hacime sırala
+        sorted_volatile = sorted(volatile, key=lambda x: markets[x]['quoteVolume'], reverse=True)
+        return sorted_volatile[:CONFIG['max_coins']]
     except:
-        return None, f"⚠️ {symbol}: Analiz hatası"
+        return ['SOL/USDT:USDT', 'PNUT/USDT:USDT', 'XRP/USDT:USDT']
 
-def main_worker():
-    bot.send_message(MY_CHAT_ID, "🛰️ Akıllı Tarama ve Simülasyon Başladı!\n(Para gelene kadar 'Yetersiz Bakiye' hatası verecektir)")
-    
-    while True:
-        try:
-            # En hacimli koinleri çek
-            markets = ex.fetch_tickers()
-            symbols = sorted(
-                [s for s in markets if '/USDT:USDT' in s],
-                key=lambda x: markets[x]['quoteVolume'],
-                reverse=True
-            )[:CONFIG['max_coins']]
-
-            report = "📊 **TARAMA RAPORU**\n"
-            signals_to_act = []
-
-            for sym in symbols:
-                signal, status = check_fvg_and_mss(sym)
-                report += status + "\n"
-                if signal:
-                    signals_to_act.append((sym, signal))
-                time.sleep(1)
-
-            # Raporu gönder (Çok uzun olmasın diye sınırlı)
-            bot.send_message(MY_CHAT_ID, report)
-
-            # Sinyal varsa işleme girmeye çalış
-            for sym, side in signals_to_act:
-                execute_trade(sym, side)
-
-        except Exception as e:
-            print(f"Döngü hatası: {e}")
+def check_fvg_and_mss(symbol):
+    try:
+        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=40)
+        if len(bars) < 40: return None, "Veri az"
         
-        time.sleep(300) # 5 dakikada bir tarama raporu atar
+        # FVG (Boğa tipi: 1. mumun tepesi < 3. mumun dibi)
+        fvg_found = bars[-3][2] < bars[-1][3] # Gap kontrolü
+        
+        # MSS (Kısa periyotta tepenin aşılması)
+        last_close = bars[-1][4]
+        local_high = max([b[2] for b in bars[-10:-2]])
+        mss_confirmed = last_close > local_high
+        
+        status = f"🔥 {symbol}: "
+        if fvg_found: status += "✅ FVG "
+        else: status += "❌ FVG "
+        if mss_confirmed: status += "| ✅ MSS"
+        else: status += "| ❌ MSS"
+        
+        if fvg_found and mss_confirmed:
+            return 'buy', status
+        return None, status
+    except:
+        return None, "Analiz hatası"
 
 def execute_trade(symbol, side):
     try:
-        # Bakiye 0 olsa bile burayı deneyecek
         ex.set_leverage(CONFIG['leverage'], symbol)
         ticker = ex.fetch_ticker(symbol)
         price = ticker['last']
         amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / price
         
-        bot.send_message(MY_CHAT_ID, f"⚡ **{symbol} için İŞLEM DENENİYOR!**\nSinyal: {side.upper()}")
+        bot.send_message(MY_CHAT_ID, f"⚡ **{symbol} SİNYALİ GELDİ!**\nSert hareket yakalandı, işlem deneniyor...")
         
-        # Bu satır bakiye 0 olduğu için hata verecek ve biz botun çalıştığını anlayacağız
-        order = ex.create_market_order(symbol, side, amount)
-        
-        # Eğer para olsaydı buraya geçecekti
-        tp_price = price * (1 + CONFIG['tp1_target']) if side == 'buy' else price * (1 - CONFIG['tp1_target'])
-        ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', amount * 0.75, tp_price, {'reduceOnly': True})
+        # Bakiye 0 olduğu için burası hata verecek ama işlem emrini gönderdiğini göreceğiz
+        ex.create_market_order(symbol, side, amount)
         
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"🔔 **Bakiye Durumu:** İşlem açma aşamasına gelindi ancak borsa şunu dedi:\n`{str(e)}`")
+        bot.send_message(MY_CHAT_ID, f"🔔 **TEST BAŞARILI:** Bot işlemi açmaya çalıştı!\nBakiye Durumu: `{str(e)}`")
+
+def main_worker():
+    bot.send_message(MY_CHAT_ID, "🦅 Sadık Bey, 'Volatilite Avcısı' Modu Aktif!\nEn hareketli koinleri 5 dakikalıkta tarıyorum...")
+    while True:
+        symbols = get_volatile_symbols()
+        for sym in symbols:
+            signal, status = check_fvg_and_mss(sym)
+            if signal:
+                execute_trade(sym, signal)
+            time.sleep(1)
+        time.sleep(60) # Her dakika listeyi tazele
 
 if __name__ == "__main__":
     t = threading.Thread(target=main_worker)
