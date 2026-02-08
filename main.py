@@ -20,58 +20,52 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [ADIMLI KÂR STRATEJİSİ & AYARLAR] ---
+# --- [STRATEJİ AYARLARI] ---
 CONFIG = {
     'trade_amount_usdt': 20.0,
     'leverage': 10,
     'tp1_ratio': 0.75,              # %75 Sat
-    'tp1_target': 0.015,            # %1.5 Kar
-    'tp2_extra_usdt': 1.0,          # TP1'den sonra +1 USDT daha kar görünce takip başlar
+    'tp1_target': 0.015,            # %1.5 Kar (Komisyonlar dahil net kar odaklı)
+    'tp2_extra_usdt': 1.0,          # TP1'den sonra kasaya +1 USDT daha koy
     'trailing_callback': 0.01,      # %1 geri çekilirse takip eden stop patlar
-    'max_coins': 12,
+    'max_coins': 20,
     'timeframe': '15m'
 }
 
 active_trades = {}
 
-# --- [BAKİYE KOMUTU] ---
-@bot.message_handler(commands=['bakiye'])
-def send_balance(message):
+def get_smc_analysis(symbol):
     try:
-        balance_info = ex.fetch_balance()
-        total_usdt = balance_info.get('USDT', {}).get('total', 0)
-        bot.reply_to(message, f"💰 **Güncel Bakiye:** {total_usdt:.2f} USDT")
-    except:
-        bot.reply_to(message, "❌ Bakiye çekilemedi.")
+        # 1. Günlük Likidite Kontrolü (Balina Tuzağından Korunma)
+        d_bars = ex.fetch_ohlcv(symbol, timeframe='1d', limit=2)
+        swing_high = d_bars[0][2]
+        swing_low = d_bars[0][3]
 
-# --- [RADAR ANALİZ FONKSİYONU] ---
-def get_radar_analysis(symbol):
-    try:
-        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=40)
-        if len(bars) < 40: return None, f"{symbol}: ⚠️ Veri Eksik"
+        # 2. 15 Dakikalık Analiz
+        bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+        last_price = bars[-1][4]
         
-        # FVG Kontrolü
+        # Likidite Alımı Kontrolü
+        liq_taken = last_price > swing_high or last_price < swing_low
+        
+        # Market Yapısı Kırılımı (MSS) - Gövde Kapanış Onaylı
+        prev_highs = [b[2] for b in bars[-15:-2]]
+        mss_ok = last_price > max(prev_highs)
+        
+        # FVG (Fiyat Boşluğu)
         fvg = bars[-3][2] < bars[-1][3]
-        
-        # MSS Kontrolü (Gövde Kapanışlı)
-        last_close = bars[-1][4]
-        prev_high = max([b[2] for b in bars[-15:-2]])
-        mss = last_close > prev_high
         
         # Hacim Onayı
         vols = [b[5] for b in bars]
         avg_vol = sum(vols[-15:]) / 15
         vol_ok = vols[-1] > (avg_vol * 1.1)
 
-        status = f"{symbol}: {'✅' if fvg else '❌'} FVG | {'✅' if mss else '❌'} MSS | {'📈' if vol_ok else '📉'} Vol"
-        
-        if fvg and mss and vol_ok:
-            return 'buy', status
-        return None, status
+        if liq_taken and mss_ok and fvg and vol_ok:
+            return 'buy', "✅ BALİNA ONAYLI SİNYAL"
+        return None, None
     except:
-        return None, f"{symbol}: ⚠️ Hata"
+        return None, None
 
-# --- [İŞLEM AÇMA & HEDEF BELİRLEME] ---
 def execute_trade(symbol, side):
     try:
         ex.set_leverage(CONFIG['leverage'], symbol)
@@ -79,76 +73,63 @@ def execute_trade(symbol, side):
         entry_price = ticker['last']
         amount = (CONFIG['trade_amount_usdt'] * CONFIG['leverage']) / entry_price
         
-        bot.send_message(MY_CHAT_ID, f"🔥 **AV BAŞLADI!**\n🪙 {symbol}\n💰 Giriş: {entry_price}")
+        bot.send_message(MY_CHAT_ID, f"🚀 **BALİNA TAKİBİNDE İŞLEM AÇILDI!**\n🪙 {symbol}\n💰 Giriş: {entry_price}")
         
-        # 1. MARKET GİRİŞ
+        # 1. Market Giriş
         ex.create_market_order(symbol, side, amount)
         time.sleep(2)
         
-        # 2. TP1: %75 Limit Satış (Garanti Kâr)
+        # 2. TP1: %75 Limit Satış
         tp1_price = entry_price * (1 + CONFIG['tp1_target']) if side == 'buy' else entry_price * (1 - CONFIG['tp1_target'])
         tp1_amount = amount * CONFIG['tp1_ratio']
         ex.create_order(symbol, 'limit', 'sell' if side == 'buy' else 'buy', tp1_amount, tp1_price, {'reduceOnly': True})
         
-        # 3. TP2 & TRAILING STOP (Kalan %25 için)
-        # +1 USDT kâr eklenmiş aktivasyon fiyatı
-        extra_price_dist = CONFIG['tp2_extra_usdt'] / (amount * (1 - CONFIG['tp1_ratio']))
-        tp2_activation_price = tp1_price + extra_price_dist if side == 'buy' else tp1_price - extra_price_dist
-        
+        # 3. TP2 & Trailing Stop (+1 USDT Hedefi)
         remaining_amount = amount - tp1_amount
+        # Kalan miktar üzerinden +1 USDT kâr için gereken fiyat farkı
+        extra_dist = CONFIG['tp2_extra_usdt'] / remaining_amount
+        tp2_activation_price = tp1_price + extra_dist if side == 'buy' else tp1_price - extra_dist
+        
         params = {
             'reduceOnly': True,
             'triggerPrice': tp2_activation_price,
             'callbackRate': CONFIG['trailing_callback']
         }
         
-        # Bitget'e takip eden stop emrini gönderiyoruz
         ex.create_order(symbol, 'trailing_stop_market', 'sell' if side == 'buy' else 'buy', remaining_amount, None, params)
         
         active_trades[symbol] = True
-        bot.send_message(MY_CHAT_ID, f"✅ **HEDEFLER KURULDU:**\n- %75 TP1: {tp1_price:.4f}\n- Kalan %25: Trailing Stop (Aktifleşme: {tp2_activation_price:.4f})")
+        bot.send_message(MY_CHAT_ID, f"✅ **HEDEFLER ONAYLANDI:**\n- TP1 (%75): {tp1_price:.4f}\n- Kalan için +1 USDT Kâr & Trailing Stop Aktif.")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ **EMİR HATASI:** {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"❌ İşlem Hatası: {str(e)}")
 
-# --- [ANA ÇALIŞMA DÖNGÜSÜ] ---
 def main_worker():
-    bot.send_message(MY_CHAT_ID, "🦅 **GHOST SMC: SÜPER AVCI AKTİF!**\nRadar, Bakiye ve Gelişmiş Takip Sistemi Devrede.")
+    bot.send_message(MY_CHAT_ID, "🛡️ **GHOST SMC: BALİNA SAVAR AKTİF!**\nLikidite takibi, TP1 (%75) ve TP2 (+1 USDT Trailing) devrede.")
     
     while True:
         try:
-            # Bakiyeyi çek
-            balance_info = ex.fetch_balance()
-            total_usdt = balance_info.get('USDT', {}).get('total', 0)
-            
-            # Piyasayı tara
+            balance = ex.fetch_balance().get('USDT', {}).get('total', 0)
             markets = ex.fetch_tickers()
             symbols = sorted([s for s in markets if '/USDT:USDT' in s], 
                              key=lambda x: markets[x]['quoteVolume'], reverse=True)[:CONFIG['max_coins']]
 
-            report = f"📡 **RADAR ANALİZ RAPORU**\n💰 Bakiye: {total_usdt:.2f} USDT\n" + "-"*20 + "\n"
+            report = f"📡 **SMC RADAR RAPORU**\n💰 Bakiye: {balance:.2f} USDT\n" + "-"*20 + "\n"
             
-            signals_to_act = []
             for sym in symbols:
-                signal, status = get_radar_analysis(sym)
-                report += status + "\n"
-                if signal and sym not in active_trades:
-                    signals_to_act.append((sym, signal))
-                time.sleep(1.5)
+                signal, status = get_smc_analysis(sym)
+                # Sadece önemli aşamadaki koinleri raporla ki ekran kirlenmesin
+                if signal:
+                    execute_trade(sym, signal)
+                    report += f"{sym}: ✅ İŞLEME GİRİLDİ\n"
+                else:
+                    report += f"{sym}: ⏳ Fırsat Bekleniyor\n"
+                time.sleep(1)
 
             bot.send_message(MY_CHAT_ID, report)
-
-            for sym, side in signals_to_act:
-                execute_trade(sym, side)
-            
-            # 15 dakikalık periyot (900 saniye)
             time.sleep(900)
-        except Exception as e:
-            print(f"Döngü hatası: {e}")
+        except:
             time.sleep(60)
 
 if __name__ == "__main__":
-    t = threading.Thread(target=main_worker)
-    t.daemon = True
-    t.start()
-    bot.infinity_polling()
+    main_worker()
