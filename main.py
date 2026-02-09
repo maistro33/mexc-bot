@@ -3,9 +3,9 @@ import telebot
 import time
 import os
 import threading
+from datetime import datetime
 
 # --- [1. BAĞLANTILAR] ---
-# Railway Variables kısmına bu isimleri girdiğinizden emin olun
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
@@ -21,114 +21,128 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR] ---
+# --- [2. GÜÇLENDİRİLMİŞ AYARLAR] ---
 CONFIG = {
-    'leverage': 10,
-    'tp1_ratio': 0.75,          # Sizin %75 Kar Al kuralınız
-    'max_active_trades': 4,
-    'min_vol_24h': 10000000
+    'entry_usdt': 20.0,          # İşlem başına USDT miktarı
+    'leverage': 10,              # Kaldıraç ayarı
+    'tp1_ratio': 0.75,           # %75 Kar Al kuralı
+    'max_active_trades': 4,      # Aynı anda açık maksimum işlem
+    'min_vol_24h': 10000000,     # Hacimsiz coinlerden uzak durur
+    'rr_target': 2.0             # 1:2 RR hedefi (Görsel Madde 6)
 }
 
 active_trades = {}
 
-# --- [3. TELEGRAM KOMUTLARI - BAKİYE SORUNUNU ÇÖZER] ---
-@bot.message_handler(commands=['bakiye'])
-def send_balance(message):
-    try:
-        balance = ex.fetch_balance({'type': 'swap'})
-        free_usdt = balance['USDT']['free']
-        total_usdt = balance['USDT']['total']
-        msg = f"💰 **GÜNCEL BAKİYE RAPORU**\n\n💵 Kullanılabilir: {free_usdt:.2f} USDT\n🏦 Toplam: {total_usdt:.2f} USDT"
-        bot.reply_to(message, msg)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Bakiye çekilemedi: {str(e)}")
-
-# --- [4. STRATEJİ MOTORU - 5 ADIMLI SMC] ---
+# --- [3. SMC STRATEJİ MOTORU (Görseldeki 6 Madde)] ---
 def analyze_smc_strategy(symbol):
     try:
-        # 1G - 4S - 1S Trend Onayı
-        for tf in ['1d', '4h', '1h']:
-            bars = ex.fetch_ohlcv(symbol, timeframe=tf, limit=20)
-            if bars[-1][4] <= (sum([b[4] for b in bars]) / 20): return None, None, None
+        # Zaman Filtresi (Manipülasyon Koruması)
+        now_sec = datetime.now().second
+        if 0 <= now_sec <= 5 or 55 <= now_sec <= 59: return None, None, None, None
 
         bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
         h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
 
-        # 1- Likidite Seviyesi Alımı
-        liq_taken = l[-1] < min(l[-15:-1]) and c[-1] > min(l[-15:-1])
-        # 2- Ters Yön Displacement & 3- MSS (Gövde Kapanış)
-        mss_ok = c[-1] > max(h[-10:-1])
-        # 4- FVG Girişi
-        fvg_ok = h[-3] < l[-1]
-        entry_p = h[-3]
-        
-        if liq_taken and mss_ok and fvg_ok:
-            if c[-1] <= entry_p * 1.003:
-                stop_loss = min(l[-5:]) # En son swing noktası
-                return 'buy', entry_p, stop_loss
-        return None, None, None
-    except: return None, None, None
+        # 1- Önemli Likidite Seviyesi Alımı (Görsel Madde 1)
+        swing_low = min(l[-15:-1])
+        liq_taken = l[-1] < swing_low and c[-1] > swing_low
 
-# --- [5. EMİR SİSTEMİ - STOP VE TP GARANTİLİ] ---
-def execute_trade(symbol, side, entry, stop):
+        # 2 & 3- MSS & Displacement (Gövde Kapanış Onaylı) (Görsel Madde 2-3)
+        recent_high = max(h[-10:-1])
+        mss_ok = c[-1] > recent_high # Sadece gövde kapanışı (Anti-stop hunting)
+        
+        # Hacim Onayı (Ekstra Kalkan)
+        avg_vol = sum(v[-6:-1]) / 5
+        vol_ok = v[-1] > avg_vol
+
+        # 4- Market Yapısının Değiştiği Yerdeki FVG (Görsel Madde 4)
+        fvg_ok = h[-3] < l[-1] 
+        entry_price = h[-3] # FVG başlangıç seviyesi
+        
+        if liq_taken and mss_ok and vol_ok and fvg_ok:
+            if c[-1] <= entry_price * 1.005: # Çok kaçmadıysa gir
+                # 5- Stop Seviyesi (En Son Swing Noktası) (Görsel Madde 5)
+                stop_loss = min(l[-5:])
+                return 'LONG', c[-1], stop_loss, "BOĞA FVG"
+        
+        return None, None, None, None
+    except: return None, None, None, None
+
+# --- [4. MESAJ FORMATI (Görsel Uyumu)] ---
+def send_telegram_signal(symbol, side, price, fvg_type):
+    msg = (f"🎯 **SADIK BEY, FIRSAT YAKALANDI!**\n\n"
+           f"🌚 **Koin:** {symbol.split(':')[0]}\n"
+           f"🔄 **Trend Dönüşü (MSS):** ONAYLANDI\n"
+           f"🕳️ **Boşluk Analizi (FVG):** {fvg_type} ✅\n"
+           f"📊 **Yön:** {'📈 YUKARI (LONG)' if side == 'LONG' else '📉 AŞAĞI (SHORT)'}\n"
+           f"💰 **Fiyat:** {price:.4f}\n"
+           f"🛡️ **Strateji:** {CONFIG['entry_usdt']} USDT | {CONFIG['leverage']}x | %75 TP1")
+    bot.send_message(MY_CHAT_ID, msg)
+
+# --- [5. EMİR YÖNETİMİ] ---
+def execute_trade(symbol, side, entry, stop, fvg_type):
     try:
-        balance = ex.fetch_balance({'type': 'swap'})
-        free_usdt = float(balance['USDT']['free'])
-        trade_val = free_usdt / 4  # Bakiyeyi 4'e bölerek risk yönetimi
-
         ex.set_leverage(CONFIG['leverage'], symbol)
-        amount = (trade_val * CONFIG['leverage']) / entry
+        amount = (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry
         
-        # 1:2 RR Hedefleme (Resimdeki 6. madde)
+        # RR Hesaplama
         risk = entry - stop
         tp1 = entry + (risk * 1.5)
-        tp2 = entry + (risk * 2.0) # Tam 1:2 RR
+        tp2 = entry + (risk * CONFIG['rr_target'])
 
-        bot.send_message(MY_CHAT_ID, f"🚀 **STRATEJİ ONAYLANDI: {symbol}**\n📍 Giriş: {entry:.4f}\n🛡️ Stop: {stop:.4f}")
+        send_telegram_signal(symbol, side, entry, fvg_type)
+
+        # Giriş
+        ex.create_market_order(symbol, 'buy' if side == 'LONG' else 'sell', amount)
+        time.sleep(1)
+
+        # Stop Loss
+        ex.create_order(symbol, 'trigger_limit', 'sell' if side == 'LONG' else 'buy', 
+                         amount, stop, {'stopPrice': stop, 'reduceOnly': True})
         
-        # Market Giriş
-        ex.create_market_order(symbol, side, amount)
-        time.sleep(2)
-
-        # Stop Loss (Trigger Limit)
-        ex.create_order(symbol, 'trigger_limit', 'sell', amount, stop, {'stopPrice': stop, 'reduceOnly': True})
-        # TP1 (%75 Kapatma)
-        ex.create_order(symbol, 'limit', 'sell', amount * 0.75, tp1, {'reduceOnly': True})
-        # TP2 (%25 Kapatma - 1:2 RR)
-        ex.create_order(symbol, 'limit', 'sell', amount * 0.25, tp2, {'reduceOnly': True})
+        # TP1 (%75)
+        ex.create_order(symbol, 'limit', 'sell' if side == 'LONG' else 'buy', 
+                         amount * CONFIG['tp1_ratio'], tp1, {'reduceOnly': True})
+        
+        # TP2 (%25)
+        ex.create_order(symbol, 'limit', 'sell' if side == 'LONG' else 'buy', 
+                         amount * (1 - CONFIG['tp1_ratio']), tp2, {'reduceOnly': True})
 
         active_trades[symbol] = True
-        bot.send_message(MY_CHAT_ID, f"✅ **EMİRLER DİZİLDİ**\n🎯 TP1: {tp1:.4f}\n🎯 TP2 (1:2 RR): {tp2:.4f}")
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"⚠️ Emir Hatası: {str(e)}")
 
-# --- [6. RADAR DÖNGÜSÜ] ---
-def main_radar():
+# --- [6. EKSTRA KOMUTLAR] ---
+@bot.message_handler(commands=['bakiye'])
+def get_balance(message):
+    balance = ex.fetch_balance({'type': 'swap'})
+    bot.reply_to(message, f"💰 **BAKİYE:** {balance['USDT']['free']:.2f} USDT")
+
+@bot.message_handler(commands=['radar'])
+def get_radar(message):
+    tickers = ex.fetch_tickers()
+    report = "📡 **RADAR:** " + ", ".join([s.split(':')[0] for s in list(tickers.keys())[:5]])
+    bot.send_message(MY_CHAT_ID, report)
+
+# --- [7. ANA DÖNGÜ] ---
+def main_loop():
+    bot.send_message(MY_CHAT_ID, "🚀 Bot Başlatıldı. Borsayı tarıyorum...")
     while True:
         try:
             markets = ex.fetch_tickers()
             symbols = [s for s in markets if '/USDT:USDT' in s]
             
-            # Radar Analiz Raporu Gönder (Her turda)
-            report = "📡 **RADAR ANALİZ**\n"
-            movers = sorted(symbols, key=lambda x: abs(markets[x]['percentage']), reverse=True)[:5]
-            for s in movers:
-                report += f"🔥 {s.split(':')[0]}: %{markets[s]['percentage']:.2f}\n"
-            bot.send_message(MY_CHAT_ID, report)
-
             for sym in symbols:
                 if sym in active_trades: continue
                 if markets[sym]['quoteVolume'] < CONFIG['min_vol_24h']: continue
 
-                signal, entry, stop = analyze_smc_strategy(sym)
-                if signal and len(active_trades) < CONFIG['max_active_trades']:
-                    execute_trade(sym, signal, entry, stop)
-                time.sleep(0.2)
-
-            time.sleep(600) # 10 Dakikada bir tur
+                side, entry, stop, fvg = analyze_smc_strategy(sym)
+                if side and len(active_trades) < CONFIG['max_active_trades']:
+                    execute_trade(sym, side, entry, stop, fvg)
+                time.sleep(0.1)
+            time.sleep(300) # 5 dakikada bir tarama
         except: time.sleep(30)
 
 if __name__ == "__main__":
-    # Telegram ve Radar'ı aynı anda çalıştırır
-    threading.Thread(target=main_radar, daemon=True).start()
+    threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling()
