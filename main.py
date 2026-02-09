@@ -22,19 +22,19 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR] ---
+# --- [2. SCALP AYARLARI] ---
 CONFIG = {
-    'entry_usdt': 20.0,          # İşlem başı miktar
-    'leverage': 10,              # Kaldıraç
-    'tp1_ratio': 0.75,           # TP1'de %75 kapanış
+    'entry_usdt': 20.0,          
+    'leverage': 10,              
+    'tp1_ratio': 0.75,           
     'max_active_trades': 4,      
-    'min_vol_24h': 10000000,     # Minimum 10M hacim
-    'rr_target': 1.5             # Risk/Ödül oranı
+    'min_vol_24h': 5000000,      # Scalp için hacim eşiğini 5M'e çektik (Fırsat artması için)
+    'rr_target': 1.3,            # Scalp'ta daha hızlı TP (1.3 Risk/Ödül)
+    'timeframe': '5m'            # Vur-kaç modu: 5 Dakika
 }
 
 active_trades = {}
 
-# --- [YARDIMCI: HASSASİYET AYARI] ---
 def round_amount(symbol, amount):
     try:
         market = ex.market(symbol)
@@ -45,31 +45,37 @@ def round_amount(symbol, amount):
         return int(amount)
     except: return round(amount, 2)
 
-# --- [3. ANALİZ MOTORU (RADAR)] ---
+# --- [3. SCALP ANALİZ MOTORU] ---
 def analyze_smc_strategy(symbol):
     try:
         now_sec = datetime.now().second
-        if now_sec < 5 or now_sec > 55: return None, None, None, None
+        if now_sec < 3 or now_sec > 57: return None, None, None, None
 
-        bars = ex.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=50)
         h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
 
-        # Anti-Manipülasyon: Gövde Kapanış ve Hacim Onayı
+        # 1. Likidite Alımı (5m'de son 15 mum)
         swing_low = min(l[-15:-1])
         liq_taken = l[-1] < swing_low
-        recent_high = max(h[-10:-1])
-        mss_ok = c[-1] > recent_high # Gövde kapanış onayı
-        avg_vol = sum(v[-6:-1]) / 5
         
-        if liq_taken and mss_ok and v[-1] > avg_vol:
-            return 'LONG', c[-1], min(l[-5:]), "SMC_Hacimli_Onay"
+        # 2. MSS & Gövde Kapanış (Direnç üstü kapanış)
+        recent_high = max(h[-8:-1])
+        mss_ok = c[-1] > recent_high 
+        
+        # 3. Hacim Onayı (Son mumun hacmi, son 10 mumun ortalamasını %20 geçmeli)
+        avg_vol = sum(v[-11:-1]) / 10
+        vol_ok = v[-1] > (avg_vol * 1.2)
+        
+        if liq_taken and mss_ok and vol_ok:
+            # Entry: Mevcut fiyat, Stop: Son 5 mumun en düşüğü
+            return 'LONG', c[-1], min(l[-5:]), "SCALP_5M_MSS"
+            
         return None, None, None, None
     except: return None, None, None, None
 
-# --- [4. POZİSYON TAKİP (TP1 -> BE, TP2/3 -> KASAYA KAR)] ---
+# --- [4. SCALP TAKİP SİSTEMİ] ---
 def monitor_trade(symbol, entry, stop, tp1, amount):
     stage = 0 
-    # 1 USDT net kar için gereken fiyat hareketini hesaplar
     price_step = 1.0 / (amount / CONFIG['leverage']) 
     
     while symbol in active_trades:
@@ -77,58 +83,43 @@ def monitor_trade(symbol, entry, stop, tp1, amount):
             ticker = ex.fetch_ticker(symbol)
             price = ticker['last']
             
-            # --- STAGE 0: TP1 (%75) ALINDI, STOP GİRİŞE ---
+            # STAGE 0 -> TP1 & STOP GİRİŞE
             if stage == 0 and price >= tp1:
-                ex.cancel_all_orders(symbol) # Eski stopu sil
+                ex.cancel_all_orders(symbol)
                 time.sleep(1)
                 pos = ex.fetch_positions([symbol])
                 if pos and float(pos[0]['contracts']) > 0:
                     rem_qty = round_amount(symbol, float(pos[0]['contracts']))
-                    # Yeni Stop: Giriş Seviyesi (Break Even)
                     ex.create_order(symbol, 'trigger_market', 'sell', rem_qty, params={'stopPrice': entry, 'reduceOnly': True})
-                    bot.send_message(MY_CHAT_ID, f"✅ {symbol} TP1 (%75) Alındı.\nStop girişe ({entry}) çekildi.")
+                    bot.send_message(MY_CHAT_ID, f"⚡ SCALP TP1! {symbol}\nKalan miktar için stop girişe çekildi.")
                     stage = 1
 
-            # --- STAGE 1 & 2: KADEMELİ 1 USDT KAR KİLİTLEME ---
+            # STAGE 1 & 2 -> 1 USDT Kâr Kilitleme
             elif stage in [1, 2] and price >= (tp1 + (price_step * stage)):
                 sell_qty = round_amount(symbol, (1.0 * CONFIG['leverage']) / price)
                 ex.create_market_order(symbol, 'sell', sell_qty, params={'reduceOnly': True})
-                bot.send_message(MY_CHAT_ID, f"💰 {symbol} TP{stage+1}: 1 USDT kar kasaya atıldı. Stop girişte devam.")
+                bot.send_message(MY_CHAT_ID, f"💰 SCALP TP{stage+1}: 1 USDT Kasada! ({symbol})")
                 stage += 1
 
-            # Pozisyon kontrol (Kapandıysa döngüden çık)
             pos = ex.fetch_positions([symbol])
             if not pos or float(pos[0]['contracts']) <= 0:
                 if symbol in active_trades: del active_trades[symbol]
-                bot.send_message(MY_CHAT_ID, f"🏁 {symbol} İşlemi bitti.")
                 break
                 
-            time.sleep(20)
-        except Exception as e:
-            time.sleep(10)
+            time.sleep(10) # Scalp'ta daha sık kontrol (10 sn)
+        except:
+            time.sleep(5)
 
-# --- [5. TELEGRAM KOMUTLARI] ---
+# --- [5. ANA DÖNGÜ & KOMUTLAR] ---
 @bot.message_handler(commands=['bakiye'])
 def send_balance(message):
     try:
         bal = ex.fetch_balance({'type': 'swap'})
-        usdt = bal['total']['USDT']
-        bot.reply_to(message, f"💰 **Güncel Bakiye:** {usdt:.2f} USDT")
-    except Exception as e:
-        bot.reply_to(message, "⚠️ Bakiye çekilemedi.")
+        bot.reply_to(message, f"💰 Bakiye: {bal['total']['USDT']:.2f} USDT")
+    except: pass
 
-@bot.message_handler(commands=['durum'])
-def send_status(message):
-    if not active_trades:
-        bot.reply_to(message, "🔍 Şu an aktif işlem yok. Radar çalışıyor...")
-    else:
-        txt = "📊 **Aktif Pozisyonlar:**\n"
-        for s in active_trades: txt += f"- {s}\n"
-        bot.reply_to(message, txt)
-
-# --- [6. ANA DÖNGÜ] ---
 def main_loop():
-    bot.send_message(MY_CHAT_ID, "🚀 Bot Başlatıldı.\nRadar: Aktif 📡\nTP1: %75 + Stop Girişe\nTP2/3: +1 USDT Kâr Kilidi")
+    bot.send_message(MY_CHAT_ID, "🏃 SCALP MODU AKTİF! (5 Dakikalık Radar)\nTP1: %75 + Stop Giriş\nHacim & Gövde Onayı devrede.")
     while True:
         try:
             markets = ex.fetch_tickers()
@@ -141,7 +132,6 @@ def main_loop():
                 side, entry, stop, fvg = analyze_smc_strategy(sym)
                 
                 if side and len(active_trades) < CONFIG['max_active_trades']:
-                    # İşlemi İcra Et
                     ex.set_leverage(CONFIG['leverage'], sym)
                     amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
                     tp1 = entry + ((entry - stop) * CONFIG['rr_target'])
@@ -149,21 +139,17 @@ def main_loop():
                     ex.create_market_order(sym, 'buy', amount)
                     active_trades[sym] = True
                     
-                    # İlk Stop ve Limit TP1
                     ex.create_order(sym, 'trigger_market', 'sell', amount, params={'stopPrice': stop, 'reduceOnly': True})
                     ex.create_order(sym, 'limit', 'sell', round_amount(sym, amount * CONFIG['tp1_ratio']), tp1, {'reduceOnly': True})
 
-                    bot.send_message(MY_CHAT_ID, f"🎯 **İŞLEM AÇILDI: {sym}**\nGiriş: {entry:.4f}\nTP1 (%75): {tp1:.4f}\nStop: {stop:.4f}")
-                    
+                    bot.send_message(MY_CHAT_ID, f"🚀 **VUR-KAÇ BAŞLADI: {sym}**\nEntry: {entry:.4f}\nTP1: {tp1:.4f}\nStop: {stop:.4f}")
                     threading.Thread(target=monitor_trade, args=(sym, entry, stop, tp1, amount), daemon=True).start()
                 
-                time.sleep(0.1)
-            time.sleep(300) 
-        except Exception as e:
-            time.sleep(30)
+                time.sleep(0.05)
+            time.sleep(60) # Scalp için 1 dakika bekle ve yeniden tara
+        except: time.sleep(10)
 
 if __name__ == "__main__":
-    # Borsayı önceden yükle
     ex.load_markets()
     threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling()
