@@ -17,7 +17,10 @@ ex = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
     'password': PASSPHRASE,
-    'options': {'defaultType': 'swap'},
+    'options': {
+        'defaultType': 'swap',
+        'positionMode': True  # HATA ÇÖZÜMÜ: Hedge Mode (Çift Yönlü) desteğini aktif eder
+    },
     'enableRateLimit': True
 })
 bot = telebot.TeleBot(TELE_TOKEN)
@@ -26,7 +29,7 @@ bot = telebot.TeleBot(TELE_TOKEN)
 CONFIG = {
     'entry_usdt': 20.0,          
     'leverage': 10,              
-    'tp1_ratio': 0.75,           # %75 Kâr Al (Sizin isteğiniz üzerine)
+    'tp1_ratio': 0.75,           # %75 Kâr Al
     'max_active_trades': 4,      
     'min_vol_24h': 5000000,      
     'rr_target': 1.3,            
@@ -46,7 +49,7 @@ def round_amount(symbol, amount):
         return int(amount)
     except: return round(amount, 2)
 
-# --- [3. SMC ANALİZ] ---
+# --- [3. SMC ANALİZ MOTORU] ---
 def analyze_smc_strategy(symbol):
     try:
         now_sec = datetime.now().second
@@ -77,24 +80,24 @@ def analyze_smc_strategy(symbol):
         return None, None, None, None
     except: return None, None, None, None
 
-# --- [4. 5 DK RADAR VE TAKİP] ---
+# --- [4. TAKİP VE RAPORLAMA] ---
 def report_loop():
     while True:
         try:
-            time.sleep(300) # İsteğiniz üzerine 5 dakikaya düşürüldü
+            time.sleep(300) # 5 dakikada bir radar mesajı
             if scanned_list:
                 msg = f"📡 **SMC RADAR AKTİF**\n"
-                msg += f"🔍 {len(scanned_list)} coin taranıyor.\n"
+                msg += f"🔍 {len(scanned_list)} coin analiz ediliyor.\n"
                 msg += f"📈 Aktif İşlem: {len(active_trades)}"
                 bot.send_message(MY_CHAT_ID, msg)
         except: pass
 
 def monitor_trade(symbol, side, entry, stop, tp1, amount):
-    stage = 0 
     while symbol in active_trades:
         try:
             time.sleep(15)
             pos = ex.fetch_positions([symbol])
+            # Pozisyon kapandıysa (stop veya manuel) listeden sil
             if not pos or float(pos[0]['contracts']) == 0:
                 if symbol in active_trades: del active_trades[symbol]
                 bot.send_message(MY_CHAT_ID, f"🏁 {symbol} işlemi kapandı.")
@@ -111,7 +114,7 @@ def main_loop():
                 [s for s in markets if '/USDT:USDT' in s],
                 key=lambda x: markets[x]['quoteVolume'] if markets[x]['quoteVolume'] else 0,
                 reverse=True
-            )[:150] 
+            )[:150] # En hacimli 150 coin
             
             scanned_list = sorted_symbols
             
@@ -123,14 +126,15 @@ def main_loop():
                     ex.set_leverage(CONFIG['leverage'], sym)
                     amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
                     
+                    # Hedge Mode için emir yönleri (Long için Long_Exit, Short için Short_Exit)
+                    exit_side = 'sell' if side == 'buy' else 'buy'
+                    
                     if side == 'buy':
                         tp1 = entry + ((entry - stop) * CONFIG['rr_target'])
-                        exit_side = 'sell'
                     else:
                         tp1 = entry - ((stop - entry) * CONFIG['rr_target'])
-                        exit_side = 'buy'
 
-                    # 1. Giriş Emri
+                    # 1. Ana Giriş Emri
                     ex.create_market_order(sym, side, amount)
                     active_trades[sym] = True
                     time.sleep(1)
@@ -138,24 +142,32 @@ def main_loop():
                     # 2. Stop Loss (Trigger Market - Hedge Uyumlu)
                     ex.create_order(sym, 'trigger_market', exit_side, amount, params={'stopPrice': stop, 'reduceOnly': True})
                     
-                    # 3. TP1 (Trigger Market - %75 Kar Al)
+                    # 3. TP1 (%75 Kâr Al - Trigger Market)
                     tp1_qty = round_amount(sym, amount * CONFIG['tp1_ratio'])
                     ex.create_order(sym, 'trigger_market', exit_side, tp1_qty, params={'stopPrice': tp1, 'reduceOnly': True})
 
-                    bot.send_message(MY_CHAT_ID, f"🚀 **YENİ İŞLEM**\n{sym} ({side.upper()})\nGiriş: {entry}\nStop: {stop}\nTP1: {tp1}")
+                    bot.send_message(MY_CHAT_ID, f"🚀 **YENİ {side.upper()} İŞLEMİ**\n{sym}\nGiriş: {entry}\nStop: {stop}\nTP1: {tp1}")
                     threading.Thread(target=monitor_trade, args=(sym, side, entry, stop, tp1, amount), daemon=True).start()
                 
                 time.sleep(0.1)
             time.sleep(15) 
         except Exception as e:
-            print(f"Hata: {e}")
+            print(f"Hata oluştu: {e}")
             time.sleep(10)
 
+# Telegram Komutları
 @bot.message_handler(commands=['bakiye'])
 def send_balance(message):
     try:
         bal = ex.fetch_balance({'type': 'swap'})
-        bot.reply_to(message, f"💰 Bakiye: {bal['total']['USDT']:.2f} USDT")
+        bot.reply_to(message, f"💰 Güncel Bakiye: {bal['total']['USDT']:.2f} USDT")
+    except: pass
+
+@bot.message_handler(commands=['durum'])
+def send_status(message):
+    try:
+        msg = f"📡 **Bot Durumu: AKTİF**\n🔍 Taranan: {len(scanned_list)} Coin\n📈 Aktif İşlem: {len(active_trades)}"
+        bot.reply_to(message, msg)
     except: pass
 
 if __name__ == "__main__":
