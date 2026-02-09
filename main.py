@@ -19,7 +19,7 @@ ex = ccxt.bitget({
     'password': PASSPHRASE,
     'options': {
         'defaultType': 'swap',
-        'positionMode': True  # HATA ÇÖZÜMÜ: Hedge Mode (Çift Yönlü) desteğini aktif eder
+        'positionMode': True  # KESİN ÇÖZÜM: Hedge Mode uyumunu zorunlu kılar
     },
     'enableRateLimit': True
 })
@@ -27,12 +27,12 @@ bot = telebot.TeleBot(TELE_TOKEN)
 
 # --- [2. AYARLAR] ---
 CONFIG = {
-    'entry_usdt': 20.0,          
-    'leverage': 10,              
-    'tp1_ratio': 0.75,           # %75 Kâr Al
+    'entry_usdt': 20.0,          # Giriş miktarı (USDT)
+    'leverage': 10,              # Kaldıraç
+    'tp1_ratio': 0.75,           # %75 Kâr Al (TP1)
     'max_active_trades': 4,      
     'min_vol_24h': 5000000,      
-    'rr_target': 1.3,            
+    'rr_target': 1.3,            # Risk Ödül Oranı
     'timeframe': '5m'            
 }
 
@@ -49,17 +49,22 @@ def round_amount(symbol, amount):
         return int(amount)
     except: return round(amount, 2)
 
-# --- [3. SMC ANALİZ MOTORU] ---
+# --- [3. SMC ANALİZ MOTORU - ANTİ-MANİPÜLASYON] ---
 def analyze_smc_strategy(symbol):
     try:
+        # Zaman Filtresi: Mum açılış/kapanış saniyelerinde bekler
         now_sec = datetime.now().second
         if now_sec < 3 or now_sec > 57: return None, None, None, None
 
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=50)
+        # Gövde Kapanış Onayı (Body Close) için veriler
         h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
 
+        # LİKİDİTE ALIMI (İğne Atma)
         swing_low = min(l[-15:-1])
         liq_taken_long = l[-1] < swing_low
+        
+        # MSS (Market Yapısı Kırılımı) + GÖVDE KAPANIŞ ONAYI
         recent_high = max(h[-8:-1])
         mss_long = c[-1] > recent_high 
         
@@ -68,6 +73,7 @@ def analyze_smc_strategy(symbol):
         recent_low = min(l[-8:-1])
         mss_short = c[-1] < recent_low 
 
+        # HACİM ONAYLI MSS
         avg_vol = sum(v[-11:-1]) / 10
         vol_ok = v[-1] > (avg_vol * 1.2)
         
@@ -84,7 +90,7 @@ def analyze_smc_strategy(symbol):
 def report_loop():
     while True:
         try:
-            time.sleep(300) # 5 dakikada bir radar mesajı
+            time.sleep(300)
             if scanned_list:
                 msg = f"📡 **SMC RADAR AKTİF**\n"
                 msg += f"🔍 {len(scanned_list)} coin analiz ediliyor.\n"
@@ -97,14 +103,13 @@ def monitor_trade(symbol, side, entry, stop, tp1, amount):
         try:
             time.sleep(15)
             pos = ex.fetch_positions([symbol])
-            # Pozisyon kapandıysa (stop veya manuel) listeden sil
             if not pos or float(pos[0]['contracts']) == 0:
                 if symbol in active_trades: del active_trades[symbol]
                 bot.send_message(MY_CHAT_ID, f"🏁 {symbol} işlemi kapandı.")
                 break
         except: break
 
-# --- [5. ANA DÖNGÜ VE EMİR SİSTEMİ] ---
+# --- [5. ANA DÖNGÜ] ---
 def main_loop():
     global scanned_list
     while True:
@@ -114,7 +119,7 @@ def main_loop():
                 [s for s in markets if '/USDT:USDT' in s],
                 key=lambda x: markets[x]['quoteVolume'] if markets[x]['quoteVolume'] else 0,
                 reverse=True
-            )[:150] # En hacimli 150 coin
+            )[:150] 
             
             scanned_list = sorted_symbols
             
@@ -126,8 +131,9 @@ def main_loop():
                     ex.set_leverage(CONFIG['leverage'], sym)
                     amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
                     
-                    # Hedge Mode için emir yönleri (Long için Long_Exit, Short için Short_Exit)
+                    # Hedge Mode Emir Yönleri
                     exit_side = 'sell' if side == 'buy' else 'buy'
+                    pos_side = 'long' if side == 'buy' else 'short'
                     
                     if side == 'buy':
                         tp1 = entry + ((entry - stop) * CONFIG['rr_target'])
@@ -135,16 +141,16 @@ def main_loop():
                         tp1 = entry - ((stop - entry) * CONFIG['rr_target'])
 
                     # 1. Ana Giriş Emri
-                    ex.create_market_order(sym, side, amount)
+                    ex.create_market_order(sym, side, amount, params={'posSide': pos_side})
                     active_trades[sym] = True
                     time.sleep(1)
 
-                    # 2. Stop Loss (Trigger Market - Hedge Uyumlu)
-                    ex.create_order(sym, 'trigger_market', exit_side, amount, params={'stopPrice': stop, 'reduceOnly': True})
+                    # 2. Stop Loss (Hedge Mode Uyumlu)
+                    ex.create_order(sym, 'trigger_market', exit_side, amount, params={'stopPrice': stop, 'reduceOnly': True, 'posSide': pos_side})
                     
-                    # 3. TP1 (%75 Kâr Al - Trigger Market)
+                    # 3. TP1 (%75 Kâr Al)
                     tp1_qty = round_amount(sym, amount * CONFIG['tp1_ratio'])
-                    ex.create_order(sym, 'trigger_market', exit_side, tp1_qty, params={'stopPrice': tp1, 'reduceOnly': True})
+                    ex.create_order(sym, 'trigger_market', exit_side, tp1_qty, params={'stopPrice': tp1, 'reduceOnly': True, 'posSide': pos_side})
 
                     bot.send_message(MY_CHAT_ID, f"🚀 **YENİ {side.upper()} İŞLEMİ**\n{sym}\nGiriş: {entry}\nStop: {stop}\nTP1: {tp1}")
                     threading.Thread(target=monitor_trade, args=(sym, side, entry, stop, tp1, amount), daemon=True).start()
@@ -152,7 +158,7 @@ def main_loop():
                 time.sleep(0.1)
             time.sleep(15) 
         except Exception as e:
-            print(f"Hata oluştu: {e}")
+            print(f"Hata: {e}")
             time.sleep(10)
 
 # Telegram Komutları
