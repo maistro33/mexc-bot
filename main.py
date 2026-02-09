@@ -6,7 +6,7 @@ import threading
 import math
 from datetime import datetime
 
-# --- [1. BAĞLANTILAR - RAILWAY/ENV UYUMLU] ---
+# --- [1. BAĞLANTILAR] ---
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
@@ -81,10 +81,10 @@ def analyze_smc_strategy(symbol):
 def report_loop():
     while True:
         try:
-            time.sleep(300) 
+            time.sleep(600) # 10 dakikada bir rapor
             if scanned_list:
-                msg = f"📊 **Bot Aktif - İlk 20 Tarama Raporu**\n"
-                msg += f"✅ İzlenen koinler analiz ediliyor.\n"
+                msg = f"📊 **Radar Aktif: Tüm Borsa Taranıyor**\n"
+                msg += f"🔍 Hacimli {len(scanned_list)} coin analizde.\n"
                 msg += f"📈 Aktif İşlem Sayısı: {len(active_trades)}"
                 bot.send_message(MY_CHAT_ID, msg)
         except: pass
@@ -119,15 +119,16 @@ def monitor_trade(symbol, side, entry, stop, tp1, amount):
 # --- [5. ANA DÖNGÜ] ---
 def main_loop():
     global scanned_list
-    print("Bot başlatıldı...") # Railway logları için
+    print("Bot başlatıldı...") 
     while True:
         try:
             markets = ex.fetch_tickers()
+            # [:20] SINIRINI KALDIRDIK, TÜM HACİMLİ COİNLERİ ALIYORUZ
             sorted_symbols = sorted(
                 [s for s in markets if '/USDT:USDT' in s],
                 key=lambda x: markets[x]['quoteVolume'] if markets[x]['quoteVolume'] else 0,
                 reverse=True
-            )[:20]
+            )[:150] # Hacmi yüksek olan ilk 150 coini tarar (Tüm aktif piyasa)
             
             scanned_list = sorted_symbols
             
@@ -156,7 +157,7 @@ def main_loop():
                     threading.Thread(target=monitor_trade, args=(sym, side, entry, stop, tp1, amount), daemon=True).start()
                 
                 time.sleep(0.1)
-            time.sleep(30)
+            time.sleep(15) # Tarama döngüsünü hızlandırdık
         except Exception as e:
             print(f"Hata: {e}")
             time.sleep(10)
