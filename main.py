@@ -20,6 +20,17 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
+# --- [AYARLAR] ---
+CONFIG = {
+    'entry_usdt': 20.0,
+    'leverage': 10,
+    'tp1_ratio': 0.75,
+    'max_active_trades': 3,
+    'timeframe': '5m'
+}
+
+active_trades = {}
+
 def round_amount(symbol, amount):
     try:
         market = ex.market(symbol)
@@ -27,42 +38,64 @@ def round_amount(symbol, amount):
         return round(amount, int(-math.log10(prec))) if prec < 1 else int(amount)
     except: return round(amount, 2)
 
-def start_test():
-    bot.send_message(MY_CHAT_ID, "🚀 TEK YÖNLÜ MOD AKTİF: Emirler gönderiliyor...")
-    
-    # Test için BTC/USDT seçildi
-    sym = 'BTC/USDT:USDT'
-    
+def analyze_market(symbol):
     try:
-        # Borsa modunu bot tarafında Tek Yönlü'ye zorla
-        ex.set_position_mode(False, sym) 
-        time.sleep(1)
-        
-        ex.set_leverage(10, sym)
-        ticker = ex.fetch_ticker(sym)
-        entry = ticker['last']
-        
-        # Test parametreleri: %1 Stop, %1 TP
-        stop = entry * 0.99  
-        tp1 = entry * 1.01   
-        amount = round_amount(sym, (20.0 * 10) / entry)
+        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=50)
+        h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
+        recent_high, recent_low = max(h[-15:-1]), min(l[-15:-1])
+        avg_vol = sum(v[-10:-1]) / 10
+        if v[-1] > (avg_vol * 1.2):
+            if c[-1] > recent_high: return 'buy', c[-1], min(l[-5:]), "LONG"
+            if c[-1] < recent_low: return 'sell', c[-1], max(h[-5:]), "SHORT"
+        return None, None, None, None
+    except: return None, None, None, None
 
-        # 1. Giriş Emri (En garantili format)
-        ex.create_market_order(sym, 'buy', amount)
-        time.sleep(1)
+def main_loop():
+    bot.send_message(MY_CHAT_ID, "🦅 **SMC BOT GÜNCELLENDİ**\nBorsa moduna tam uyum sağlandı. Av başlıyor!")
+    while True:
+        try:
+            markets = ex.fetch_tickers()
+            symbols = [s for s in markets if '/USDT:USDT' in s and (markets[s]['quoteVolume'] or 0) > 1000000]
+            
+            for sym in symbols[:150]:
+                if sym in active_trades or len(active_trades) >= CONFIG['max_active_trades']: continue
+                
+                side, entry, stop, label = analyze_market(sym)
+                if side:
+                    # 1. ADIM: Borsanın modunu anlık öğren
+                    pos_mode = ex.fetch_position_mode(sym)
+                    is_hedge = pos_mode['hedge'] # True ise Hedge, False ise One-way
+                    
+                    ex.set_leverage(CONFIG['leverage'], sym)
+                    amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
+                    
+                    # 2. ADIM: Giriş Emri (Moda göre parametre ekle)
+                    params = {'posSide': 'long' if side == 'buy' else 'short'} if is_hedge else {}
+                    ex.create_market_order(sym, side, amount, params=params)
+                    time.sleep(1)
 
-        # 2. Stop Loss (Borsanın beklediği sade format)
-        ex.create_order(sym, 'trigger_market', 'sell', amount, params={'stopPrice': stop, 'reduceOnly': True})
-        
-        # 3. TP1 (%75)
-        tp1_qty = round_amount(sym, amount * 0.75)
-        ex.create_order(sym, 'trigger_market', 'sell', tp1_qty, params={'stopPrice': tp1, 'reduceOnly': True})
+                    # 3. ADIM: Stop Loss ve TP (%75)
+                    exit_side = 'sell' if side == 'buy' else 'buy'
+                    close_params = {'stopPrice': stop, 'reduceOnly': True}
+                    if is_hedge: close_params['posSide'] = 'long' if side == 'buy' else 'short'
+                    
+                    # Stop Loss
+                    ex.create_order(sym, 'trigger_market', exit_side, amount, params=close_params)
+                    
+                    # TP (%75)
+                    tp_params = close_params.copy()
+                    risk = abs(entry - stop)
+                    tp_params['stopPrice'] = entry + (risk * 1.5) if side == 'buy' else entry - (risk * 1.5)
+                    ex.create_order(sym, 'trigger_market', exit_side, round_amount(sym, amount * CONFIG['tp1_ratio']), params=tp_params)
 
-        bot.send_message(MY_CHAT_ID, f"✅ İŞLEM BAŞARILI!\n{sym} açıldı.\nStop Loss ve %75 TP emirleri dizildi. Lütfen Bitget'ten kontrol edin.")
-        
-    except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"⚠️ Hata: {str(e)}\n(Not: Eğer borsa mod hatası verirse, Bitget uygulamasından Position Mode'u 'One-way' yapıp tekrar deneyin.)")
+                    active_trades[sym] = True
+                    bot.send_message(MY_CHAT_ID, f"🎯 **İŞLEM AÇILDI** ({'Hedge' if is_hedge else 'Tek Yönlü'})\n{sym}\nTP1 (%75) ve Stop dizildi.")
+                
+                time.sleep(0.05)
+            time.sleep(10)
+        except Exception as e:
+            time.sleep(10)
 
 if __name__ == "__main__":
     ex.load_markets()
-    start_test()
+    main_loop()
