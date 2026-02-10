@@ -27,29 +27,30 @@ def round_amount(symbol, amount):
         return round(math.floor(amount / step) * step, 4)
     except: return round(amount, 3)
 
-# --- [2. HATASIZ TEST OPERASYONU] ---
+# --- [2. FİNAL TEST OPERASYONU] ---
 def run_final_test():
-    bot.send_message(MY_CHAT_ID, "🚀 **AYARLAR TAMAM! TEST BAŞLIYOR**\nSingle-Asset modunda BTC operasyonu başlıyor...")
+    bot.send_message(MY_CHAT_ID, "🚀 **AYARLAR VE API GÜNCELLENDİ**\nSingle-Asset modunda BTC testi başlıyor...")
     
     try:
         symbol = 'BTC/USDT:USDT'
         ex.load_markets()
-        ex.set_leverage(10, symbol)
+        ex.set_leverage(10, symbol) # Kaldıraç ayarı
         
         ticker = ex.fetch_ticker(symbol)
         entry = ticker['last']
         
-        # Test Seviyeleri (%1.0 aralık)
+        # SL/TP Seviyeleri (%1.0)
         stop = round(entry * 0.99, 1) 
         tp1 = round(entry * 1.01, 1)
+        # Sizin istediğiniz 20 USDT giriş tutarı
         amount = round_amount(symbol, (20.0 * 10) / entry)
         
         # 1. GİRİŞ (LONG)
         ex.create_market_order(symbol, 'buy', amount, params={'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, f"✅ 1/3: BTC Long açıldı.\nFiyat: {entry}")
+        bot.send_message(MY_CHAT_ID, f"✅ 1/3: BTC Long açıldı (Giriş: {entry})")
         time.sleep(2)
 
-        # 2. STOP LOSS (Plan Order Metodu)
+        # 2. STOP LOSS (Planlı Emir)
         ex.privatePostMixOrderPlacePlanOrder({
             'symbol': 'BTCUSDT_UMCBL',
             'marginCoin': 'USDT',
@@ -61,9 +62,9 @@ def run_final_test():
             'posSide': 'long',
             'reduceOnly': 'true'
         })
-        bot.send_message(MY_CHAT_ID, f"✅ 2/3: Stop Loss dizildi.\nSeviye: {stop}")
+        bot.send_message(MY_CHAT_ID, f"✅ 2/3: Stop Loss dizildi: {stop}")
 
-        # 3. %75 KÂR AL (Özel Ayarınız)
+        # 3. %75 KÂR AL (Sizin özel isteğiniz: Close_Percentage_TP1 = 75%)
         tp_qty = round_amount(symbol, amount * 0.75)
         ex.privatePostMixOrderPlacePlanOrder({
             'symbol': 'BTCUSDT_UMCBL',
@@ -76,12 +77,12 @@ def run_final_test():
             'posSide': 'long',
             'reduceOnly': 'true'
         })
-        bot.send_message(MY_CHAT_ID, f"✅ 3/3: %75 Kâr Al dizildi.\nSeviye: {tp1}")
+        bot.send_message(MY_CHAT_ID, f"✅ 3/3: %75 Kâr Al dizildi: {tp1}")
 
-        bot.send_message(MY_CHAT_ID, "🏁 **MÜKEMMEL SONUÇ!**\nBitget 'Planlı Emirler' (Plan Orders) kısmına bakabilirsin Sadık Bey. Bu iş bu sefer bitti!")
+        bot.send_message(MY_CHAT_ID, "🏁 **BAŞARILI!**\nSadık Bey, yeni API ve Single-Asset moduyla tüm engelleri aştık. 'Planlı Emirler' sekmesini kontrol edebilirsin.")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ TEKNİK HATA: {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"❌ Hata: {str(e)}")
 
 if __name__ == "__main__":
     run_final_test()
