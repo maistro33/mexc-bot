@@ -12,7 +12,6 @@ PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-# Bağlantı Ayarları
 ex = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -22,11 +21,11 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR] ---
+# --- [2. AYARLARINIZ] ---
 CONFIG = {
     'entry_usdt': 20.0,
     'leverage': 10,
-    'tp1_ratio': 0.75,
+    'tp1_ratio': 0.75,   # %75 Kar Al (TP1)
     'max_active_trades': 3,
     'timeframe': '5m'
 }
@@ -50,9 +49,9 @@ def send_status(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Bakiye çekilemedi: {str(e)}")
 
-# --- [4. ANA DÖNGÜ] ---
+# --- [4. ANA STRATEJİ VE DÖNGÜ] ---
 def main_loop():
-    bot.send_message(MY_CHAT_ID, "🦅 **SMC BOT SIFIRLANDI & BAŞLADI**\nMod hataları giderildi. Bakiye için /durum yazabilirsiniz.")
+    bot.send_message(MY_CHAT_ID, "🦅 **BOT SIFIRLANDI VE BAŞLADI**\nYazım hatası giderildi, borsa modu otomatik uyumda!")
     
     while True:
         try:
@@ -62,7 +61,7 @@ def main_loop():
             for sym in symbols[:150]:
                 if sym in active_trades or len(active_trades) >= CONFIG['max_active_trades']: continue
                 
-                # Basit SMC Analizi (Gövde Kapanış)
+                # Market Analizi (Anti-Manipülasyon: Gövde Kapanış)
                 bars = ex.fetch_ohlcv(sym, timeframe=CONFIG['timeframe'], limit=30)
                 c = [b[4] for b in bars]
                 h = [b[2] for b in bars]
@@ -75,7 +74,7 @@ def main_loop():
                 elif c[-1] < recent_low: side = 'sell'
 
                 if side:
-                    # Borsa Moduna Göre Ayarla (Hedge/One-way hatasını çözen kısım)
+                    # Borsa Moduna Göre Ayarla (Hedge/One-way hatasını otomatik çözer)
                     pos_mode = ex.fetch_position_mode(sym)
                     is_hedge = pos_mode['hedge']
                     
@@ -83,12 +82,12 @@ def main_loop():
                     entry = c[-1]
                     amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
                     
-                    # Giriş
+                    # Giriş Emri
                     params = {'posSide': 'long' if side == 'buy' else 'short'} if is_hedge else {}
                     ex.create_market_order(sym, side, amount, params=params)
                     time.sleep(1)
 
-                    # SL ve %75 TP
+                    # Stop Loss ve %75 TP
                     exit_side = 'sell' if side == 'buy' else 'buy'
                     risk = entry * 0.01 
                     stop = entry - risk if side == 'buy' else entry + risk
@@ -97,15 +96,16 @@ def main_loop():
                     close_params = {'stopPrice': stop, 'reduceOnly': True}
                     if is_hedge: close_params['posSide'] = 'long' if side == 'buy' else 'short'
                     
-                    # Stop ve TP Emirleri
-                    ex.create_order(sym, 'trigger_market', exit_side, amount, params=close_params)
+                    # Emirleri Diz
+                    ex.create_order(sym, 'trigger_market', exit_side, amount, params=close_params) # Stop
                     
                     tp_params = close_params.copy()
                     tp_params['stopPrice'] = tp1
-                    ex.create_order(sym, 'trigger_market', exit_side, round_amount(sym, amount * CONFIG['tp1_ratio']), params=tp_params)
+                    tp_qty = round_amount(sym, amount * CONFIG['tp1_ratio'])
+                    ex.create_order(sym, 'trigger_market', exit_side, tp_qty, params=tp_params) # %75 TP
 
                     active_trades[sym] = True
-                    bot.send_message(MY_CHAT_ID, f"🎯 **İşlem Açıldı:** {sym}\nMod: {'Hedge' if is_hedge else 'Tek Yönlü'}\nStop ve %75 TP dizildi.")
+                    bot.send_message(MY_CHAT_ID, f"🎯 **İşlem Açıldı:** {sym}\nStop ve %75 TP1 dizildi.")
                 
                 time.sleep(0.1)
             time.sleep(15)
@@ -113,7 +113,7 @@ def main_loop():
             time.sleep(10)
 
 if __name__ == "__main__":
-    # Telegram dinlemeyi başlat
+    # Telegram dinlemeyi başlat (daemon=True ile çökme önlenir)
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     ex.load_markets()
     main_loop()
