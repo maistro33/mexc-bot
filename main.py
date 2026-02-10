@@ -39,7 +39,7 @@ CONFIG = {
 active_trades = {}
 scanned_list = []
 
-# --- [3. TP/SL KOYMA FONKSİYONU] ---
+# --- [3. TP/SL KOYMA FONKSİYONU (güncellendi)] ---
 def place_tpsl(symbol, plan_type, trigger_price, hold_side, qty):
     """plan_type: 'pos_profit' (TP) veya 'pos_loss' (SL)"""
     try:
@@ -50,8 +50,10 @@ def place_tpsl(symbol, plan_type, trigger_price, hold_side, qty):
             'triggerPrice': ex.price_to_precision(symbol, trigger_price),
             'triggerType': 'mark_price',
             'holdSide': hold_side,
+            'posSide': hold_side,              # Ek: hedge modda stabilite için
             'reduceOnly': True,
             'executePrice': '0',
+            'marginCoin': 'USDT'               # Ek: USDT perpetual için
         }
         
         if qty:
@@ -72,7 +74,7 @@ def place_tpsl(symbol, plan_type, trigger_price, hold_side, qty):
         print(f"TPSL Hatası: {e}")
         return None
 
-# --- [4. TEST İÇİN HEMEN İŞLEM KOMUTLARI] ---
+# --- [4. TEST KOMUTLARI (tradeSide eklendi)] ---
 @bot.message_handler(commands=['testlong'])
 def test_long(message):
     symbol = 'BTC/USDT:USDT'
@@ -80,16 +82,26 @@ def test_long(message):
         ex.set_leverage(CONFIG['leverage'], symbol)
         ticker = ex.fetch_ticker(symbol)
         entry = ticker['last']
-        stop = entry * 0.985          # %1.5 aşağı stop (test)
+        stop = entry * 0.985
         tp1 = entry + (entry - stop) * CONFIG['rr_target']
         
         amount = ex.amount_to_precision(symbol, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
         
-        # Giriş emri
-        ex.create_order(symbol, 'market', 'buy', amount, params={'posSide': 'long'})
+        # Giriş emri - hedge için tradeSide: 'open' zorunlu
+        ex.create_order(
+            symbol,
+            'market',
+            'buy',
+            amount,
+            params={
+                'posSide': 'long',
+                'tradeSide': 'open',           # <<< ÇÖZÜM BURADA
+                'marginMode': 'isolated',
+                'marginCoin': 'USDT'
+            }
+        )
         time.sleep(2.5)
         
-        # TP/SL
         place_tpsl(symbol, 'pos_loss', stop, 'long', amount)
         tp1_qty = ex.amount_to_precision(symbol, float(amount) * CONFIG['tp1_ratio'])
         place_tpsl(symbol, 'pos_profit', tp1, 'long', tp1_qty)
@@ -113,7 +125,18 @@ def test_short(message):
         
         amount = ex.amount_to_precision(symbol, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
         
-        ex.create_order(symbol, 'market', 'sell', amount, params={'posSide': 'short'})
+        ex.create_order(
+            symbol,
+            'market',
+            'sell',
+            amount,
+            params={
+                'posSide': 'short',
+                'tradeSide': 'open',           # <<< ÇÖZÜM BURADA
+                'marginMode': 'isolated',
+                'marginCoin': 'USDT'
+            }
+        )
         time.sleep(2.5)
         
         place_tpsl(symbol, 'pos_loss', stop, 'short', amount)
@@ -127,7 +150,7 @@ def test_short(message):
     except Exception as e:
         bot.reply_to(message, f"Test hatası: {str(e)}")
 
-# --- [5. RAPORLAMA VE TAKİP] ---
+# --- [5. RAPOR VE TAKİP] ---
 def report_loop():
     while True:
         try:
@@ -148,15 +171,12 @@ def monitor_trade(symbol):
                 break
         except: break
 
-# --- [6. TEST MODU SMC ANALİZ (KURALLAR GEVŞETİLMİŞ)] ---
+# --- [6. TEST MODU SMC (kurallar gevşetilmiş)] ---
 def analyze_smc_strategy(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=50)
         h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
 
-        # Zaman filtresi KALDIRILDI (test için)
-        
-        # Gevşetilmiş koşullar
         swing_low = min(l[-10:-1])
         liq_taken_long = l[-1] < swing_low
         
@@ -168,11 +188,10 @@ def analyze_smc_strategy(symbol):
         recent_low = min(l[-5:-1])
         mss_short = c[-1] < recent_low 
 
-        # Hacim onayı KALDIRILDI
-        vol_ok = True
+        vol_ok = True  # Test için hacim filtresi kaldırıldı
 
         if vol_ok:
-            if liq_taken_long or mss_long:   # OR ile kolay tetikleme
+            if liq_taken_long or mss_long:
                 return 'buy', c[-1], min(l[-5:]), "TEST_LONG"
             if liq_taken_short or mss_short:
                 return 'sell', c[-1], max(h[-5:]), "TEST_SHORT"
@@ -182,7 +201,7 @@ def analyze_smc_strategy(symbol):
         print(f"SMC hata: {e}")
         return None, None, None, None
 
-# --- [7. ANA DÖNGÜ] ---
+# --- [7. ANA DÖNGÜ (giriş emrine tradeSide eklendi)] ---
 def main_loop():
     global scanned_list
     while True:
@@ -212,12 +231,22 @@ def main_loop():
                     else:
                         tp1 = entry - ((stop - entry) * CONFIG['rr_target'])
 
-                    # Giriş
-                    ex.create_order(sym, 'market', side, amount, params={'posSide': pos_side})
+                    # Giriş emri - hedge için tradeSide ekli
+                    ex.create_order(
+                        sym,
+                        'market',
+                        side,
+                        amount,
+                        params={
+                            'posSide': pos_side,
+                            'tradeSide': 'open',           # <<< ÇÖZÜM BURADA
+                            'marginMode': 'isolated',
+                            'marginCoin': 'USDT'
+                        }
+                    )
                     active_trades[sym] = True
                     time.sleep(2.5)
 
-                    # TP/SL
                     place_tpsl(sym, 'pos_loss', stop, pos_side, amount)
                     tp1_qty = ex.amount_to_precision(sym, float(amount) * CONFIG['tp1_ratio'])
                     place_tpsl(sym, 'pos_profit', tp1, pos_side, tp1_qty)
@@ -226,7 +255,7 @@ def main_loop():
                     threading.Thread(target=monitor_trade, args=(sym,), daemon=True).start()
                 
                 time.sleep(0.1)
-            time.sleep(5)   # Test için hızlı tarama (sonra 15'e çıkar)
+            time.sleep(5)  # Test için hızlı, sonra 15 yap
         except Exception as e:
             print(f"Ana döngü hatası: {e}")
             time.sleep(10)
@@ -243,10 +272,10 @@ def send_balance(message):
 def send_status(message):
     bot.reply_to(message, f"📡 Bot AKTİF\nTaranan coin: {len(scanned_list)}\nAktif işlem: {len(active_trades)}")
 
-# Başlatma
+# Başlat
 if __name__ == "__main__":
     ex.load_markets()
-    ex.set_position_mode(True)   # Hedge Mode'u API üzerinden de zorla
+    ex.set_position_mode(True, params={'marginMode': 'isolated'})  # Hedge + isolated zorla
     threading.Thread(target=report_loop, daemon=True).start()
     threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling()
