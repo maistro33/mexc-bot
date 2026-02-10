@@ -4,6 +4,95 @@ import time
 import os
 import math
 
+# --- [1. BAĞLANTILAR] ---
+API_KEY = os.getenv('BITGET_API')
+API_SEC = os.getenv('BITGET_SEC')
+PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+TELE_TOKEN = os.getenv('TELE_TOKEN')
+MY_CHAT_ID = os.getenv('MY_CHAT_ID')
+
+ex = ccxt.bitget({
+    'apiKey': API_KEY,
+    'secret': API_SEC,
+    'password': PASSPHRASE,
+    'options': {'defaultType': 'swap'},
+    'enableRateLimit': True
+})
+bot = telebot.TeleBot(TELE_TOKEN)
+
+def round_amount(symbol, amount):
+    try:
+        market = ex.market(symbol)
+        step = market['precision']['amount']
+        return round(math.floor(amount / step) * step, 4)
+    except: return round(amount, 3)
+
+# --- [2. ANA STRATEJİ: 20 USDT GİRİŞ & %75 TP1] ---
+def run_final_bot(symbol='BTC/USDT:USDT'):
+    bot.send_message(MY_CHAT_ID, "🚀 **İŞLEM BAŞLIYOR**\nMod: Multi-Asset | Giriş: 20 USDT | TP1: %75")
+    
+    try:
+        ex.load_markets()
+        ex.set_leverage(10, symbol) # 10x Kaldıraç ayarı
+        
+        ticker = ex.fetch_ticker(symbol)
+        last_price = ticker['last']
+        
+        # --- HESAPLAMA ---
+        # 20 USDT * 10 Kaldıraç = 200 USDT'lik BTC miktarı
+        amount = round_amount(symbol, (20.0 * 10) / last_price)
+        
+        # Seviyeler (%1 mesafe)
+        stop_price = round(last_price * 0.99, 1) 
+        tp1_price = round(last_price * 1.01, 1)
+        
+        # --- 1. ADIM: GİRİŞ (LONG) ---
+        ex.create_market_buy_order(symbol, amount, params={'posSide': 'long'})
+        bot.send_message(MY_CHAT_ID, f"✅ Giriş Yapıldı: {last_price}\nMiktar: {amount} BTC")
+        time.sleep(2)
+
+        # --- 2. ADIM: STOP LOSS ---
+        ex.privatePostMixOrderPlacePlanOrder({
+            'symbol': 'BTCUSDT_UMCBL',
+            'marginCoin': 'USDT',
+            'size': str(amount),
+            'triggerPrice': str(stop_price),
+            'triggerType': 'market_price',
+            'side': 'sell',
+            'orderType': 'market',
+            'posSide': 'long',
+            'reduceOnly': 'true'
+        })
+        bot.send_message(MY_CHAT_ID, f"🛑 Stop Loss Aktif: {stop_price}")
+
+        # --- 3. ADIM: %75 KADEMELİ KAR AL (TP1) ---
+        tp_qty = round_amount(symbol, amount * 0.75)
+        ex.privatePostMixOrderPlacePlanOrder({
+            'symbol': 'BTCUSDT_UMCBL',
+            'marginCoin': 'USDT',
+            'size': str(tp_qty),
+            'triggerPrice': str(tp1_price),
+            'triggerType': 'market_price',
+            'side': 'sell',
+            'orderType': 'market',
+            'posSide': 'long',
+            'reduceOnly': 'true'
+        })
+        bot.send_message(MY_CHAT_ID, f"💰 %75 Kâr Al (TP1) Aktif: {tp1_price}")
+
+        bot.send_message(MY_CHAT_ID, "🏁 **TÜM EMİRLER BAŞARIYLA DİZİLDİ**")
+
+    except Exception as e:
+        bot.send_message(MY_CHAT_ID, f"❌ Hata: {str(e)}")
+
+if __name__ == "__main__":
+    run_final_bot()
+import ccxt
+import telebot
+import time
+import os
+import math
+
 # --- [1. BAĞLANTILAR VE DEĞİŞKENLER] ---
 # Railway Variables kısmına girdiğiniz isimlerle aynı olmalı
 API_KEY = os.getenv('BITGET_API')
