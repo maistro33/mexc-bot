@@ -1,183 +1,125 @@
 import ccxt
-import telebot
+import pandas as pd
+import pandas_ta as ta
 import time
-import os
-import threading
-import math
+import requests
+import telebot
 from datetime import datetime
 
-# --- [1. BAĞLANTILAR] ---
-API_KEY = os.getenv('BITGET_API')
-API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
-TELE_TOKEN = os.getenv('TELE_TOKEN')
-MY_CHAT_ID = os.getenv('MY_CHAT_ID')
+# --- KONFİGÜRASYON VE AYARLAR (Agresif Mod) ---
+API_KEY = 'BURAYA_API_KEY_YAZIN'
+API_SECRET = 'BURAYA_SECRET_KEY_YAZIN'
+API_PASSWORD = 'BURAYA_PASSWORD_YAZIN'
+TELEGRAM_TOKEN = 'BURAYA_TELEGRAM_TOKEN_YAZIN'
+CHAT_ID = 'BURAYA_CHAT_ID_YAZIN'
 
-ex = ccxt.bitget({
+# Strateji Parametreleri
+SYMBOL_COUNT = 150          # Tarama yapılacak coin sayısı
+TIMEFRAME = '5m'            # Daha hızlı sinyal için 5 dakikalık (Agresif)
+LEVERAGE = 10               # Kaldıraç: 10x
+USDT_AMOUNT = 20            # Giriş miktarı: 20 USDT
+
+# Kar Al ve Zarar Durdur (Sizin istediğiniz %75 TP1 ayarıyla)
+CLOSE_PERCENTAGE_TP1 = 0.75 
+TP1_RATIO = 0.015           # %1.5 kârda TP1
+TP2_RATIO = 0.030           # %3.0 kârda TP2
+STOP_LOSS_RATIO = 0.01      # %1 stop
+
+# Agresiflik Ayarları (Strateji aynı, onay eşikleri düşük)
+VOLUME_CONFIRMATION_FACTOR = 1.2  # %20 hacim artışı yeterli (Önceden 1.5 idi)
+BODY_CLOSE_ONLY = True           # Gövde kapanış onayı hala aktif (Güvenlik için)
+
+# --- BOT BAŞLANGIÇ ---
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bitget = ccxt.bitget({
     'apiKey': API_KEY,
-    'secret': API_SEC,
-    'password': PASSPHRASE,
-    'options': {
-        'defaultType': 'swap',
-        'positionMode': True  # KESİN ÇÖZÜM: Hedge Mode uyumunu zorunlu kılar
-    },
-    'enableRateLimit': True
+    'secret': API_SECRET,
+    'password': API_PASSWORD,
+    'options': {'defaultType': 'swap'}
 })
-bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR] ---
-CONFIG = {
-    'entry_usdt': 20.0,          # Giriş miktarı (USDT)
-    'leverage': 10,              # Kaldıraç
-    'tp1_ratio': 0.75,           # %75 Kâr Al (TP1)
-    'max_active_trades': 4,      
-    'min_vol_24h': 5000000,      
-    'rr_target': 1.3,            # Risk Ödül Oranı
-    'timeframe': '5m'            
-}
-
-active_trades = {}
-scanned_list = [] 
-
-def round_amount(symbol, amount):
+def send_telegram_msg(message):
     try:
-        market = ex.market(symbol)
-        precision = market['precision']['amount']
-        if precision < 1:
-            step = int(-math.log10(precision))
-            return round(amount, step)
-        return int(amount)
-    except: return round(amount, 2)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}"
+        requests.get(url)
+    except Exception as e:
+        print(f"Telegram Hatası: {e}")
 
-# --- [3. SMC ANALİZ MOTORU - ANTİ-MANİPÜLASYON] ---
-def analyze_smc_strategy(symbol):
+def get_symbols():
     try:
-        # Zaman Filtresi: Mum açılış/kapanış saniyelerinde bekler
-        now_sec = datetime.now().second
-        if now_sec < 3 or now_sec > 57: return None, None, None, None
+        markets = bitget.fetch_markets()
+        symbols = [m['symbol'] for m in markets if m['quote'] == 'USDT' and m['active']]
+        # Hacme göre sırala ve ilk 150'yi al
+        return symbols[:SYMBOL_COUNT]
+    except:
+        return []
 
-        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=50)
-        # Gövde Kapanış Onayı (Body Close) için veriler
-        h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
+def get_data(symbol):
+    try:
+        ohlcv = bitget.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        return df
+    except:
+        return None
 
-        # LİKİDİTE ALIMI (İğne Atma)
-        swing_low = min(l[-15:-1])
-        liq_taken_long = l[-1] < swing_low
+def check_strategy(df):
+    if df is None or len(df) < 20: return None
+    
+    # Göstergeler
+    df['ema20'] = ta.ema(df['close'], length=20)
+    df['rsi'] = ta.rsi(df['close'], length=14)
+    avg_volume = df['volume'].rolling(window=10).mean().iloc[-2]
+    current_volume = df['volume'].iloc[-1]
+    
+    last_close = df['close'].iloc[-1]
+    prev_high = df['high'].iloc[-5:-1].max()
+    prev_low = df['low'].iloc[-5:-1].min()
+    
+    # Agresif Onay: Hacim ortalamanın üzerindeyse ve gövde kırılımı varsa
+    volume_ok = current_volume > (avg_volume * VOLUME_CONFIRMATION_FACTOR)
+    
+    # LONG: Fiyat önceki tepenin üzerinde kapandıysa ve hacim destekliyorsa
+    if last_close > prev_high and volume_ok:
+        return 'buy'
+    
+    # SHORT: Fiyat önceki dibin altında kapandıysa ve hacim destekliyorsa
+    if last_close < prev_low and volume_ok:
+        return 'sell'
         
-        # MSS (Market Yapısı Kırılımı) + GÖVDE KAPANIŞ ONAYI
-        recent_high = max(h[-8:-1])
-        mss_long = c[-1] > recent_high 
-        
-        swing_high = max(h[-15:-1])
-        liq_taken_short = h[-1] > swing_high
-        recent_low = min(l[-8:-1])
-        mss_short = c[-1] < recent_low 
+    return None
 
-        # HACİM ONAYLI MSS
-        avg_vol = sum(v[-11:-1]) / 10
-        vol_ok = v[-1] > (avg_vol * 1.2)
+def execute_trade(symbol, side):
+    try:
+        # Hedge Modu Onayı (Zorunlu)
+        bitget.set_position_mode(True, symbol)
+        bitget.set_leverage(LEVERAGE, symbol)
         
-        if vol_ok:
-            if liq_taken_long and mss_long:
-                return 'buy', c[-1], min(l[-5:]), "LONG_SMC"
-            if liq_taken_short and mss_short:
-                return 'sell', c[-1], max(h[-5:]), "SHORT_SMC"
-            
-        return None, None, None, None
-    except: return None, None, None, None
+        amount = USDT_AMOUNT / bitget.fetch_ticker(symbol)['last']
+        
+        # Ana Emir (Hedge Mode için 'long' veya 'short' olarak gönderilir)
+        pos_side = 'long' if side == 'buy' else 'short'
+        order = bitget.create_market_order(symbol, side, amount, params={'pos_side': pos_side})
+        
+        msg = f"🚀 AGRESİF İŞLEM AÇILDI\nSembol: {symbol}\nYön: {pos_side}\nMiktar: {USDT_AMOUNT} USDT"
+        send_telegram_msg(msg)
+        
+    except Exception as e:
+        print(f"İşlem Hatası ({symbol}): {e}")
 
-# --- [4. TAKİP VE RAPORLAMA] ---
-def report_loop():
+def main():
+    send_telegram_msg("⚡ Bot Agresif Modda Başlatıldı! 150 Coin Taranıyor...")
     while True:
-        try:
-            time.sleep(300)
-            if scanned_list:
-                msg = f"📡 **SMC RADAR AKTİF**\n"
-                msg += f"🔍 {len(scanned_list)} coin analiz ediliyor.\n"
-                msg += f"📈 Aktif İşlem: {len(active_trades)}"
-                bot.send_message(MY_CHAT_ID, msg)
-        except: pass
-
-def monitor_trade(symbol, side, entry, stop, tp1, amount):
-    while symbol in active_trades:
-        try:
-            time.sleep(15)
-            pos = ex.fetch_positions([symbol])
-            if not pos or float(pos[0]['contracts']) == 0:
-                if symbol in active_trades: del active_trades[symbol]
-                bot.send_message(MY_CHAT_ID, f"🏁 {symbol} işlemi kapandı.")
-                break
-        except: break
-
-# --- [5. ANA DÖNGÜ] ---
-def main_loop():
-    global scanned_list
-    while True:
-        try:
-            markets = ex.fetch_tickers()
-            sorted_symbols = sorted(
-                [s for s in markets if '/USDT:USDT' in s],
-                key=lambda x: markets[x]['quoteVolume'] if markets[x]['quoteVolume'] else 0,
-                reverse=True
-            )[:150] 
+        symbols = get_symbols()
+        for symbol in symbols:
+            df = get_data(symbol)
+            signal = check_strategy(df)
             
-            scanned_list = sorted_symbols
-            
-            for sym in sorted_symbols:
-                if sym in active_trades: continue
-                side, entry, stop, msg_type = analyze_smc_strategy(sym)
+            if signal:
+                execute_trade(symbol, signal)
+                time.sleep(2) # Borsayı yormamak için
                 
-                if side and len(active_trades) < CONFIG['max_active_trades']:
-                    ex.set_leverage(CONFIG['leverage'], sym)
-                    amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
-                    
-                    # Hedge Mode Emir Yönleri
-                    exit_side = 'sell' if side == 'buy' else 'buy'
-                    pos_side = 'long' if side == 'buy' else 'short'
-                    
-                    if side == 'buy':
-                        tp1 = entry + ((entry - stop) * CONFIG['rr_target'])
-                    else:
-                        tp1 = entry - ((stop - entry) * CONFIG['rr_target'])
-
-                    # 1. Ana Giriş Emri
-                    ex.create_market_order(sym, side, amount, params={'posSide': pos_side})
-                    active_trades[sym] = True
-                    time.sleep(1)
-
-                    # 2. Stop Loss (Hedge Mode Uyumlu)
-                    ex.create_order(sym, 'trigger_market', exit_side, amount, params={'stopPrice': stop, 'reduceOnly': True, 'posSide': pos_side})
-                    
-                    # 3. TP1 (%75 Kâr Al)
-                    tp1_qty = round_amount(sym, amount * CONFIG['tp1_ratio'])
-                    ex.create_order(sym, 'trigger_market', exit_side, tp1_qty, params={'stopPrice': tp1, 'reduceOnly': True, 'posSide': pos_side})
-
-                    bot.send_message(MY_CHAT_ID, f"🚀 **YENİ {side.upper()} İŞLEMİ**\n{sym}\nGiriş: {entry}\nStop: {stop}\nTP1: {tp1}")
-                    threading.Thread(target=monitor_trade, args=(sym, side, entry, stop, tp1, amount), daemon=True).start()
-                
-                time.sleep(0.1)
-            time.sleep(15) 
-        except Exception as e:
-            print(f"Hata: {e}")
-            time.sleep(10)
-
-# Telegram Komutları
-@bot.message_handler(commands=['bakiye'])
-def send_balance(message):
-    try:
-        bal = ex.fetch_balance({'type': 'swap'})
-        bot.reply_to(message, f"💰 Güncel Bakiye: {bal['total']['USDT']:.2f} USDT")
-    except: pass
-
-@bot.message_handler(commands=['durum'])
-def send_status(message):
-    try:
-        msg = f"📡 **Bot Durumu: AKTİF**\n🔍 Taranan: {len(scanned_list)} Coin\n📈 Aktif İşlem: {len(active_trades)}"
-        bot.reply_to(message, msg)
-    except: pass
+        print(f"{datetime.now()} - Tarama Tamamlandı.")
+        time.sleep(15) # 15 saniyede bir yeni tarama
 
 if __name__ == "__main__":
-    ex.load_markets()
-    threading.Thread(target=report_loop, daemon=True).start()
-    threading.Thread(target=main_loop, daemon=True).start()
-    bot.infinity_polling()
+    main()
