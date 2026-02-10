@@ -1,30 +1,25 @@
 import ccxt
 import pandas as pd
-import pandas_ta as ta
 import time
 import requests
-import telebot
 from datetime import datetime
 
-# --- KİMLİK BİLGİLERİ (Lütfen Eksiksiz Doldurun) ---
+# --- KİMLİK BİLGİLERİ (Eksiksiz Doldurun) ---
 API_KEY = 'BURAYA_API_KEY'
 API_SECRET = 'BURAYA_SECRET'
 API_PASSWORD = 'BURAYA_PASSWORD'
 TELEGRAM_TOKEN = 'BURAYA_TOKEN'
 CHAT_ID = 'BURAYA_CHAT_ID'
 
-# --- AGRESİF AYARLAR (Strateji Aynı, Onaylar Hızlı) ---
+# --- AGRESİF AYARLAR ---
 SYMBOL_COUNT = 150
-TIMEFRAME = '5m'            # 5 dakikalık mumlar (Hızlı sinyal)
-LEVERAGE = 10               # 10x kaldıraç
-USDT_AMOUNT = 20            # 20 USDT giriş
-CLOSE_PERCENTAGE_TP1 = 0.75 # TP1'de %75 kapatma
+TIMEFRAME = '5m'            # Hızlı sinyal için 5 dakika
+LEVERAGE = 10
+USDT_AMOUNT = 20
+VOLUME_FACTOR = 1.15        # %15 hacim artışı yeterli (Agresif)
+CLOSE_PERCENTAGE_TP1 = 0.75 # Sizin istediğiniz TP1 oranı
 
-# Strateji Onay Eşikleri (Agresif Mod)
-VOLUME_FACTOR = 1.15        # %15 hacim artışı yeterli
-BODY_CLOSE_ONLY = True      # Sahte iğnelerden koruma hala aktif
-
-# --- KURULUM ---
+# --- BOT KURULUM ---
 bitget = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -36,53 +31,61 @@ bitget = ccxt.bitget({
 def send_msg(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={'chat_id': CHAT_ID, 'text': text}, timeout=10)
-    except: pass
+        params = {'chat_id': CHAT_ID, 'text': text}
+        requests.get(url, params=params, timeout=10)
+    except:
+        pass
 
 def get_signal(symbol):
     try:
-        ohlcv = bitget.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=50)
+        ohlcv = bitget.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=30)
         df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
         
-        # Göstergeler
-        avg_vol = df['v'].rolling(20).mean().iloc[-2]
+        # Manuel RSI ve Hacim Hesaplama (Kütüphane gerektirmez, çökme yapmaz)
+        avg_vol = df['v'].iloc[-11:-1].mean()
         curr_vol = df['v'].iloc[-1]
         last_c = df['c'].iloc[-1]
-        prev_h = df['h'].iloc[-10:-1].max()
-        prev_l = df['l'].iloc[-10:-1].min()
         
-        # Agresif Koşul: Hacim + Kırılım
+        # Son 10 mumun en yükseği ve en düşüğü (Market Structure)
+        prev_h = df['h'].iloc[-11:-1].max()
+        prev_l = df['l'].iloc[-11:-1].min()
+        
         vol_ok = curr_vol > (avg_vol * VOLUME_FACTOR)
         
+        # LONG: Önceki tepenin üzerinde gövde kapanışı + Hacim
         if last_c > prev_h and vol_ok: return 'buy'
+        # SHORT: Önceki dibin altında gövde kapanışı + Hacim
         if last_c < prev_l and vol_ok: return 'sell'
+        
         return None
-    except: return None
+    except:
+        return None
 
 def open_pos(symbol, side):
     try:
-        # Hedge Mode ve Kaldıraç Zorlaması
+        # Hedge Modu ve Kaldıraç Ayarı
         try: bitget.set_position_mode(True, symbol)
         except: pass
-        bitget.set_leverage(LEVERAGE, symbol)
+        try: bitget.set_leverage(LEVERAGE, symbol)
+        except: pass
         
-        price = bitget.fetch_ticker(symbol)['last']
+        ticker = bitget.fetch_ticker(symbol)
+        price = ticker['last']
         amount = USDT_AMOUNT / price
         pos_side = 'long' if side == 'buy' else 'short'
         
-        # Ana Giriş
+        # Market Giriş Emri
         bitget.create_market_order(symbol, side, amount, params={'posSide': pos_side})
         
-        # TP/SL Hesaplama
-        tp_price = price * 1.02 if side == 'buy' else price * 0.98
-        sl_price = price * 0.99 if side == 'buy' else price * 1.01
-        
-        send_msg(f"🚀 İŞLEM AÇILDI ({TIMEFRAME} Agresif)\nSembol: {symbol}\nYön: {pos_side}\nBakiye: {USDT_AMOUNT} USDT")
+        msg = f"🚀 AGRESİF İŞLEM AÇILDI\nSembol: {symbol}\nYön: {pos_side}\nMiktar: {USDT_AMOUNT} USDT\nZaman: {TIMEFRAME}"
+        send_msg(msg)
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"İşlem Hatası ({symbol}): {e}")
 
 def main():
-    send_msg("🤖 Bot Agresif Modda Yeniden Başlatıldı. 150 Coin Taranıyor...")
+    send_msg("🤖 Bot Agresif & Stabil Modda Başlatıldı. 150 Coin Taranıyor...")
+    print("Bot çalışıyor...")
+    
     while True:
         try:
             markets = bitget.fetch_markets()
@@ -94,10 +97,10 @@ def main():
                     open_pos(s, sig)
                     time.sleep(1)
             
-            print(f"{datetime.now()} - Tarama Bitti.")
+            print(f"{datetime.now()} - Tarama Başarıyla Tamamlandı.")
             time.sleep(20)
         except Exception as e:
-            print(f"Döngü Hatası: {e}")
+            print(f"Hata oluştu: {e}")
             time.sleep(30)
 
 if __name__ == "__main__":
