@@ -12,6 +12,7 @@ PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
+# Direkt One-way mod odaklı bağlantı
 ex = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -21,16 +22,15 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. HIZLI TEST AYARLARI] ---
+# --- [2. AYARLARINIZ] ---
 CONFIG = {
     'entry_usdt': 20.0,
     'leverage': 10,
-    'tp1_ratio': 0.75,
-    'max_test_trades': 2 # Sadece 2 işlem açıp duracak
+    'tp1_ratio': 0.75,   # %75 Kar Al
+    'max_test_trades': 2 # Test için sadece 2 işlem açar
 }
 
-active_test_count = 0
-
+# --- [3. YARDIMCI FONKSİYONLAR] ---
 def round_amount(symbol, amount):
     try:
         market = ex.market(symbol)
@@ -38,60 +38,61 @@ def round_amount(symbol, amount):
         return round(amount, int(-math.log10(prec))) if prec < 1 else int(amount)
     except: return round(amount, 2)
 
-# --- [3. HIZLI TEST DÖNGÜSÜ] ---
-def quick_test_loop():
-    global active_test_count
-    bot.send_message(MY_CHAT_ID, "🚀 HIZLI TEST MODU: Analiz beklenmiyor, ilk fırsata dalınacak!")
+@bot.message_handler(commands=['durum', 'bakiye'])
+def send_status(message):
+    try:
+        balance = ex.fetch_balance()
+        usdt_free = balance.get('USDT', {}).get('free', 0)
+        bot.reply_to(message, f"💰 **Güncel Bakiye:** {usdt_free:.2f} USDT\n🦅 Radar Aktif (Test Modu)")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Hata: {str(e)}")
+
+# --- [4. ANA TEST DÖNGÜSÜ] ---
+def simple_test_loop():
+    count = 0
+    bot.send_message(MY_CHAT_ID, "🚀 **HIZLI TEST BAŞLIYOR**\nMod: Tek Yönlü (One-way)\nHedef: İşlem açıp %75 TP ve SL dizmek.")
     
-    while active_test_count < CONFIG['max_test_trades']:
+    while count < CONFIG['max_test_trades']:
         try:
+            # En hacimli pariteyi al
             markets = ex.fetch_tickers()
-            # En hacimli 5 pariteyi al (Hemen işlem gelsin diye)
             symbols = sorted([s for s in markets if '/USDT:USDT' in s], 
-                             key=lambda x: markets[x]['quoteVolume'] or 0, reverse=True)[:5]
+                             key=lambda x: markets[x]['quoteVolume'] or 0, reverse=True)
             
-            for sym in symbols:
-                if active_test_count >= CONFIG['max_test_trades']: break
-                
-                # Borsa Moduna Göre Ayarla
-                pos_mode = ex.fetch_position_mode(sym)
-                is_hedge = pos_mode['hedge']
+            for sym in symbols[:10]:
+                if count >= CONFIG['max_test_trades']: break
                 
                 ex.set_leverage(CONFIG['leverage'], sym)
                 ticker = ex.fetch_ticker(sym)
                 entry = ticker['last']
                 
-                # Test için çok yakın hedefler (%0.5 Stop, %0.5 TP)
-                stop = entry * 0.995 
-                tp1 = entry * 1.005
+                # SL/TP Seviyeleri (%0.7 mesafe)
+                stop = entry * 0.993 
+                tp1 = entry * 1.007
                 amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
                 
-                # Giriş (LONG)
-                params = {'posSide': 'long'} if is_hedge else {}
-                ex.create_market_order(sym, 'buy', amount, params=params)
-                time.sleep(1)
+                # 1. Giriş (Long - Tek Yönlü)
+                bot.send_message(MY_CHAT_ID, f"🔄 {sym} için işlem gönderiliyor...")
+                ex.create_market_order(sym, 'buy', amount)
+                time.sleep(2)
 
-                # SL ve TP Emirleri
-                close_params = {'stopPrice': stop, 'reduceOnly': True}
-                if is_hedge: close_params['posSide'] = 'long'
+                # 2. Stop Loss (Tek Yönlü modda posSide YOKTUR)
+                ex.create_order(sym, 'trigger_market', 'sell', amount, params={'stopPrice': stop, 'reduceOnly': True})
                 
-                ex.create_order(sym, 'trigger_market', 'sell', amount, params=close_params) # Stop
-                
-                tp_params = close_params.copy()
-                tp_params['stopPrice'] = tp1
+                # 3. %75 Kar Al
                 tp_qty = round_amount(sym, amount * CONFIG['tp1_ratio'])
-                ex.create_order(sym, 'trigger_market', 'sell', tp_qty, params=tp_params) # %75 TP
+                ex.create_order(sym, 'trigger_market', 'sell', tp_qty, params={'stopPrice': tp1, 'reduceOnly': True})
 
-                active_test_count += 1
-                bot.send_message(MY_CHAT_ID, f"✅ TEST İŞLEMİ {active_test_count} AÇILDI!\nParite: {sym}\nLütfen Bitget 'Açık Emirler' kısmını kontrol edin.")
-                time.sleep(5)
+                count += 1
+                bot.send_message(MY_CHAT_ID, f"✅ **BAŞARILI!**\nParite: {sym}\nBitget 'Açık Emirler' kısmını şimdi kontrol edin. SL ve %75 TP orada olmalı.")
+                time.sleep(10)
                 
-            time.sleep(10)
+            time.sleep(30)
         except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"⚠️ Test hatası: {str(e)}")
-            time.sleep(10)
+            bot.send_message(MY_CHAT_ID, f"⚠️ Test Hatası: {str(e)}")
+            time.sleep(15)
 
 if __name__ == "__main__":
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     ex.load_markets()
-    quick_test_loop()
+    simple_test_loop()
