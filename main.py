@@ -3,6 +3,7 @@ import telebot
 import time
 import os
 import math
+import threading
 
 # --- [1. BAĞLANTILAR] ---
 API_KEY = os.getenv('BITGET_API')
@@ -11,6 +12,7 @@ PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
+# 'positionMode': True ayarı Hedge modu zorunlu kılar
 ex = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -27,9 +29,9 @@ def round_amount(symbol, amount):
         return round(amount, int(-math.log10(prec))) if prec < 1 else int(amount)
     except: return round(amount, 2)
 
-# --- [2. MÜHÜRLEYİCİ TEST OPERASYONU] ---
+# --- [2. MÜHÜRLEYİCİ TEST] ---
 def run_final_test():
-    bot.send_message(MY_CHAT_ID, "🚀 TEST BAŞLADI: BTC'ye dalıyorum, emirleri dizip haber vereceğim...")
+    bot.send_message(MY_CHAT_ID, "🚀 **SON TEST BAŞLADI**\nBTC'ye dalıyorum. Lütfen borsanın HEDGE modda olduğunu teyit edin.")
     
     try:
         sym = 'BTC/USDT:USDT'
@@ -37,31 +39,31 @@ def run_final_test():
         ticker = ex.fetch_ticker(sym)
         entry = ticker['last']
         
-        # Test Seviyeleri (%0.5 mesafe)
-        stop = entry * 0.995 
-        tp1 = entry * 1.005
+        # %1 Mesafe ile SL/TP
+        stop = entry * 0.99 
+        tp1 = entry * 1.01
         amount = round_amount(sym, (20.0 * 10) / entry)
         
-        # 1. Giriş (Hedge Mode - Long)
+        # 1. GİRİŞ (LONG)
         ex.create_market_order(sym, 'buy', amount, params={'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, "✅ 1/3: BTC Long pozisyonu açıldı.")
+        bot.send_message(MY_CHAT_ID, "✅ 1/3: BTC Pozisyonu açıldı.")
         time.sleep(2)
 
-        # 2. Stop Loss (Hedge Mode - Long Kapat)
+        # 2. STOP LOSS (LONG KAPAT)
         ex.create_order(sym, 'trigger_market', 'sell', amount, 
                          params={'stopPrice': stop, 'reduceOnly': True, 'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, "✅ 2/3: Stop Loss emri borsaya iletildi.")
+        bot.send_message(MY_CHAT_ID, "✅ 2/3: Stop Loss dizildi.")
         
-        # 3. %75 Kar Al (Hedge Mode - Long Kapat)
+        # 3. %75 TP1 (LONG KAPAT)
         tp_qty = round_amount(sym, amount * 0.75)
         ex.create_order(sym, 'trigger_market', 'sell', tp_qty, 
                          params={'stopPrice': tp1, 'reduceOnly': True, 'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, "✅ 3/3: %75 Kâr Al (TP1) emri borsaya iletildi.")
+        bot.send_message(MY_CHAT_ID, "✅ 3/3: %75 Kar Al dizildi.")
 
-        bot.send_message(MY_CHAT_ID, f"🏁 **TEST TAMAMLANDI!**\nŞimdi Bitget'e girin, BTC 'Açık Emirler' kısmında Stop ve TP'yi göreceksiniz. Oradaysalar bu iş bitmiştir!")
+        bot.send_message(MY_CHAT_ID, "🏁 **İŞLEM TAMAM!** Bitget 'Açık Emirler' kısmına bakabilirsin.")
         
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"⚠️ Hata oluştu: {str(e)}")
+        bot.send_message(MY_CHAT_ID, f"❌ Hata: {str(e)}")
 
 if __name__ == "__main__":
     ex.load_markets()
