@@ -7,7 +7,6 @@ import math
 from datetime import datetime
 
 # --- [1. BAĞLANTILAR] ---
-# Railway ortam değişkenlerinden veya doğrudan buraya yazarak doldurun
 API_KEY = os.getenv('BITGET_API') or 'BURAYA_API_KEY'
 API_SEC = os.getenv('BITGET_SEC') or 'BURAYA_SECRET'
 PASSPHRASE = os.getenv('BITGET_PASSPHRASE') or 'BURAYA_PASSWORD'
@@ -26,15 +25,15 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AGRESİF AYARLAR] ---
+# --- [2. GÜVENLİ VE ÇEVİK AYARLAR] ---
 CONFIG = {
     'entry_usdt': 20.0,          # 20 USDT Giriş
     'leverage': 10,              # 10x Kaldıraç
-    'tp1_ratio': 0.75,           # %75 Kâr Al (Sizin istediğiniz)
-    'max_active_trades': 5,      # Aynı anda 5 işleme kadar izin (Agresif)
-    'min_vol_24h': 1000000,      # Hacim alt sınırını düşürdüm (Daha çok coin taranır)
-    'rr_target': 1.2,            # Kâr hedefini biraz yakına çektim (Hızlı çıkış)
-    'timeframe': '5m'            # 5 Dakikalık periyot
+    'tp1_ratio': 0.75,           # %75 Kâr Al
+    'max_active_trades': 5,      
+    'min_vol_24h': 1000000,      
+    'rr_target': 1.3,            # Güvenli Risk-Ödül Oranı
+    'timeframe': '5m'            
 }
 
 active_trades = {}
@@ -50,56 +49,47 @@ def round_amount(symbol, amount):
         return int(amount)
     except: return round(amount, 2)
 
-# --- [3. SMC ANALİZ MOTORU - AGRESİF MOD] ---
+# --- [3. SMC ANALİZ MOTORU - ÇEVİK MOD] ---
 def analyze_smc_strategy(symbol):
     try:
-        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=40)
+        # Daha hızlı analiz için mum sayısını 30'a indirdim
+        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=30)
         h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
 
-        # LİKİDİTE ALIMI (Agresif: Son 10 muma bakıyoruz)
-        swing_low = min(l[-10:-1])
+        # LİKİDİTE ALIMI (Daha çevik: Son 7 mum)
+        swing_low = min(l[-7:-1])
         liq_taken_long = l[-1] < swing_low
         
-        # MSS (Market Yapısı Kırılımı) - Agresif: Son 5 mumun en yükseği
+        # MSS (Market Yapısı Kırılımı) - Hızlı onay
         recent_high = max(h[-5:-1])
         mss_long = c[-1] > recent_high 
         
-        swing_high = max(h[-10:-1])
+        swing_high = max(h[-7:-1])
         liq_taken_short = h[-1] > swing_high
         recent_low = min(l[-5:-1])
         mss_short = c[-1] < recent_low 
 
-        # AGRESİF HACİM ONAYI (%10 Artış yeterli)
+        # GÜVENLİK: Hacim Onayı (%10) - Balon hareketleri engeller
         avg_vol = sum(v[-6:-1]) / 5
         vol_ok = v[-1] > (avg_vol * 1.1)
         
         if vol_ok:
             if liq_taken_long and mss_long:
+                # Long sinyali: Güvenli stop seviyesi
                 return 'buy', c[-1], min(l[-3:]), "LONG_SMC"
             if liq_taken_short and mss_short:
+                # Short sinyali: Güvenli stop seviyesi
                 return 'sell', c[-1], max(h[-3:]), "SHORT_SMC"
             
         return None, None, None, None
     except: return None, None, None, None
 
-# --- [4. TAKİP VE RAPORLAMA] ---
-def report_loop():
-    while True:
-        try:
-            time.sleep(600) # 10 dakikada bir rapor
-            if scanned_list:
-                msg = f"📡 **SMC AGRESİF RADAR**\n"
-                msg += f"🔍 {len(scanned_list)} coin taranıyor.\n"
-                msg += f"📈 Aktif İşlem: {len(active_trades)}"
-                bot.send_message(MY_CHAT_ID, msg)
-        except: pass
-
+# --- [4. TAKİP DÖNGÜSÜ] ---
 def monitor_trade(symbol):
     while symbol in active_trades:
         try:
-            time.sleep(20)
+            time.sleep(15)
             pos = ex.fetch_positions([symbol])
-            # Pozisyon kapandıysa listeden çıkar
             if not pos or float(pos[0]['contracts']) == 0:
                 if symbol in active_trades: del active_trades[symbol]
                 break
@@ -111,7 +101,6 @@ def main_loop():
     while True:
         try:
             markets = ex.fetch_tickers()
-            # Hacmi 1M USDT üzerindeki coinleri tara
             sorted_symbols = [
                 s for s in markets if '/USDT:USDT' in s 
                 and (markets[s]['quoteVolume'] if markets[s]['quoteVolume'] else 0) > CONFIG['min_vol_24h']
@@ -124,7 +113,7 @@ def main_loop():
                 side, entry, stop, msg_type = analyze_smc_strategy(sym)
                 
                 if side and len(active_trades) < CONFIG['max_active_trades']:
-                    # Kaldıraç ve Mod Ayarı
+                    # Hızlı borsa yapılandırması
                     try:
                         ex.set_leverage(CONFIG['leverage'], sym)
                         ex.set_position_mode(True, sym)
@@ -134,27 +123,23 @@ def main_loop():
                     exit_side = 'sell' if side == 'buy' else 'buy'
                     pos_side = 'long' if side == 'buy' else 'short'
                     
-                    # TP ve Stop Hesaplama
                     risk = abs(entry - stop)
                     tp1 = entry + (risk * CONFIG['rr_target']) if side == 'buy' else entry - (risk * CONFIG['rr_target'])
 
-                    # 1. Giriş Emri
+                    # Giriş ve TP/SL Emirleri
                     ex.create_market_order(sym, side, amount, params={'posSide': pos_side})
                     active_trades[sym] = True
                     time.sleep(1)
 
-                    # 2. Stop Loss
                     ex.create_order(sym, 'trigger_market', exit_side, amount, params={'stopPrice': stop, 'reduceOnly': True, 'posSide': pos_side})
-                    
-                    # 3. TP1 (%75)
                     tp1_qty = round_amount(sym, amount * CONFIG['tp1_ratio'])
                     ex.create_order(sym, 'trigger_market', exit_side, tp1_qty, params={'stopPrice': tp1, 'reduceOnly': True, 'posSide': pos_side})
 
-                    bot.send_message(MY_CHAT_ID, f"⚡ **AGRESİF İŞLEM AÇILDI**\n{sym}\nYön: {side.upper()}\nGiriş: {entry}\nTP1 (%75): {tp1}\nStop: {stop}")
+                    bot.send_message(MY_CHAT_ID, f"🦅 **ÇEVİK AVCI: İŞLEM AÇILDI**\n{sym}\nYön: {side.upper()}\nGiriş: {entry}\nTP1 (%75): {tp1}\nStop: {stop}")
                     threading.Thread(target=monitor_trade, args=(sym,), daemon=True).start()
                 
-                time.sleep(0.05) # Tarama hızını artırdım
-            time.sleep(10) 
+                time.sleep(0.01) # Ultra hızlı tarama geçişi
+            time.sleep(5) # Yeni tarama için sadece 5 saniye bekle
         except Exception as e:
             time.sleep(10)
 
@@ -163,18 +148,17 @@ def main_loop():
 def send_balance(message):
     try:
         bal = ex.fetch_balance({'type': 'swap'})
-        bot.reply_to(message, f"💰 Kasa: {bal['total']['USDT']:.2f} USDT")
+        bot.reply_to(message, f"💰 Kasa Durumu: {bal['total']['USDT']:.2f} USDT")
     except: pass
 
 @bot.message_handler(commands=['durum'])
 def send_status(message):
     try:
-        msg = f"📡 **Agresif Mod: AKTİF**\n🔍 Taranan: {len(scanned_list)} Coin\n📈 Aktif: {len(active_trades)}"
+        msg = f"🛡️ **Mod: Güvenli & Çevik**\n🔍 Taranan: {len(scanned_list)} Coin\n📈 Aktif: {len(active_trades)}"
         bot.reply_to(message, msg)
     except: pass
 
 if __name__ == "__main__":
     ex.load_markets()
-    threading.Thread(target=report_loop, daemon=True).start()
     threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling()
