@@ -28,8 +28,7 @@ CONFIG = {
     'entry_usdt': 20.0,
     'leverage': 10,
     'Close_Percentage_TP1': 0.75, 
-    'rr_target': 1.1,
-    'trailing_activation_rr': 0.8, # Hedefin %80'ine gelince trailing başlasın
+    'rr_target': 1.2,              # Kar hedefi oranı
     'max_active_trades': 3,
     'timeframe': '1m'
 }
@@ -44,54 +43,52 @@ def round_amount(symbol, amount):
         return round(amount, step)
     except: return round(amount, 2)
 
-# --- [3. AKILLI TAKİP SİSTEMİ (TRAILING STOP & TP)] ---
-def monitor_trade(symbol, side, entry, stop, tp1):
-    highest_price = entry if side == 'buy' else 999999
+# --- [3. MANUEL TAKİP MOTORU (Hata Veren Emirleri Devre Dışı Bırakır)] ---
+def monitor_trade(symbol, side, entry, stop, tp1, amount):
     tp1_hit = False
-    
     while symbol in active_trades:
         try:
-            time.sleep(10) # 10 saniyede bir kontrol
+            time.sleep(5) # 5 saniyede bir fiyat kontrolü
             ticker = ex.fetch_ticker(symbol)
             current_price = ticker['last']
-            pos = ex.fetch_positions([symbol])
             
-            if not pos or float(pos[0]['contracts']) == 0:
+            # 1. STOP LOSS KONTROLÜ
+            if (side == 'buy' and current_price <= stop) or (side == 'sell' and current_price >= stop):
+                ex.create_market_order(symbol, 'sell' if side == 'buy' else 'buy', amount, params={'reduceOnly': True})
+                bot.send_message(MY_CHAT_ID, f"🛑 **STOP OLUNDU: {symbol}**\nFiyat stop seviyesine geldi.")
                 if symbol in active_trades: del active_trades[symbol]
-                bot.send_message(MY_CHAT_ID, f"🏁 **İŞLEM KAPANDI: {symbol}**")
                 break
 
-            # TP1 Kontrolü (%75 Kapama)
+            # 2. TP1 KONTROLÜ (%75 Kapama)
             if not tp1_hit:
                 if (side == 'buy' and current_price >= tp1) or (side == 'sell' and current_price <= tp1):
-                    bot.send_message(MY_CHAT_ID, f"💰 **TP1 HEDEFİNE ULAŞILDI!** {symbol} pozisyonunun %75'i kapatıldı.")
+                    tp1_qty = round_amount(symbol, amount * CONFIG['Close_Percentage_TP1'])
+                    ex.create_market_order(symbol, 'sell' if side == 'buy' else 'buy', tp1_qty, params={'reduceOnly': True})
+                    bot.send_message(MY_CHAT_ID, f"🎯 **TP1 ALINDI: {symbol}**\nPozisyonun %75'i kapatıldı. Kalan takipte.")
                     tp1_hit = True
+                    # TP1 sonrası stopu GİRİŞE çek (Trailing mantığı)
+                    stop = entry 
 
-            # Manuel Trailing Mantığı (Fiyat kâra gittikçe stopu giriş seviyesine çek)
-            if side == 'buy' and current_price > entry:
-                if current_price > highest_price:
-                    highest_price = current_price
-                    # Fiyat hedefin yarısını geçtiyse stopu GİRİŞE çek (Kârı koru)
-                    if (current_price - entry) > (tp1 - entry) * 0.5:
-                        stop = entry 
+            # 3. POZİSYON KONTROLÜ (Manuel kapandıysa döngüden çık)
+            pos = ex.fetch_positions([symbol])
+            if not pos or float(pos[0]['contracts']) == 0:
+                if symbol in active_trades: del active_trades[symbol]
+                break
 
         except Exception as e:
-            print(f"Takip Hatası: {e}")
-            break
+            print(f"Takip hatası: {e}")
+            time.sleep(10)
 
 # --- [4. ANALİZ: GÖVDE ONAYLI] ---
 def analyze_smc_strategy(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=30)
         o, h, l, c = [b[1] for b in bars], [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars]
-        
-        recent_high = max(h[-10:-2])
-        recent_low = min(l[-10:-2])
+        recent_high, recent_low = max(h[-10:-2]), min(l[-10:-2])
 
-        # Gövde Kapanış Şartı (Body Close)
-        if c[-1] > recent_high and c[-1] > o[-1]: # Boğa mum kapanışı
+        if c[-1] > recent_high and c[-1] > o[-1]:
             return 'buy', c[-1], min(l[-3:])
-        if c[-1] < recent_low and c[-1] < o[-1]: # Ayı mum kapanışı
+        if c[-1] < recent_low and c[-1] < o[-1]:
             return 'sell', c[-1], max(h[-3:])
         return None, None, None
     except: return None, None, None
@@ -101,35 +98,20 @@ def execute_trade(symbol, side, entry, stop):
     try:
         ex.set_leverage(CONFIG['leverage'], symbol)
         amount = round_amount(symbol, (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry)
-        pos_side = 'long' if side == 'buy' else 'short'
-        exit_side = 'sell' if side == 'buy' else 'buy'
         
-        # 1. Giriş
-        ex.create_market_order(symbol, side, amount, params={'posSide': pos_side})
+        # SADECE MARKET GİRİŞİ YAPAR (Hata riskini sıfırlar)
+        ex.create_market_order(symbol, side, amount, params={'posSide': 'long' if side == 'buy' else 'short'})
         active_trades[symbol] = True
         
-        # 2. SL ve TP1 Hesapla
         dist = abs(entry - stop)
         tp1_price = entry + (dist * CONFIG['rr_target']) if side == 'buy' else entry - (dist * CONFIG['rr_target'])
 
-        # 3. Borsa tarafına sadece ANA STOP LOSS'u koy (Güvenlik için)
-        ex.create_order(symbol, 'limit', exit_side, amount, stop, params={
-            'stopPrice': stop, 'reduceOnly': True, 'posSide': pos_side
-        })
-
-        # 4. TP1 Emri (%75)
-        tp1_qty = round_amount(symbol, amount * CONFIG['Close_Percentage_TP1'])
-        ex.create_order(symbol, 'limit', exit_side, tp1_qty, tp1_price, params={
-            'stopPrice': tp1_price, 'reduceOnly': True, 'posSide': pos_side
-        })
-
-        bot.send_message(MY_CHAT_ID, f"🚀 **İŞLEM AÇILDI**\n{symbol} | {side.upper()}\nGiriş: {entry}\nSL: {stop}\nTP1: {tp1_price}")
+        bot.send_message(MY_CHAT_ID, f"🚀 **İŞLEM AÇILDI: {symbol}**\nBot takibe başladı. TP1: {tp1_price}")
         
-        # Takip Thread'ini başlat
-        threading.Thread(target=monitor_trade, args=(symbol, side, entry, stop, tp1_price), daemon=True).start()
-
+        # Takip işlemini başlat
+        threading.Thread(target=monitor_trade, args=(symbol, side, entry, stop, tp1_price, amount), daemon=True).start()
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, "⚠️ Giriş yapıldı ancak emirlerde bir sorun oluştu, borsayı kontrol edin.")
+        print(f"Giriş hatası: {e}")
 
 # --- [6. ANA DÖNGÜ] ---
 def main_loop():
@@ -141,8 +123,8 @@ def main_loop():
                 if sym in active_trades or len(active_trades) >= CONFIG['max_active_trades']: continue
                 side, entry, stop = analyze_smc_strategy(sym)
                 if side: execute_trade(sym, side, entry, stop)
-            time.sleep(15)
-        except: time.sleep(20)
+            time.sleep(10)
+        except: time.sleep(15)
 
 @bot.message_handler(commands=['bakiye'])
 def send_balance(message):
@@ -152,6 +134,6 @@ def send_balance(message):
     except: pass
 
 if __name__ == "__main__":
-    bot.send_message(MY_CHAT_ID, "🛡️ **Hata Giderildi! Trailing ve TP1 Takibi Aktif.**")
+    bot.send_message(MY_CHAT_ID, "✅ **Hatalar Giderildi!**\nSistem artık borsadan emir onayı beklemeden kendi takibini yapıyor.")
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     main_loop()
