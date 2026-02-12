@@ -23,13 +23,13 @@ ex = ccxt.bitget({
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR - SENİN PARAMETRELERİN] ---
+# --- [2. AYARLAR] ---
 CONFIG = {
     'entry_usdt': 20.0,
     'leverage': 10,
-    'Close_Percentage_TP1': 0.75, # %75 TP1'de kapanır
-    'rr_tp1': 1.1,                 # İlk hedef (Risk/Ödül 1.1)
-    'rr_tp2': 2.0,                 # İkinci hedef (Kalan %25 için)
+    'Close_Percentage_TP1': 0.75, 
+    'rr_tp1': 1.1,                 # TP1 hedefi (Risk/Ödül 1.1)
+    'rr_tp2': 2.2,                 # TP2 hedefi (Risk/Ödül 2.2)
     'max_active_trades': 3,
     'timeframe': '1m'
 }
@@ -44,7 +44,7 @@ def round_amount(symbol, amount):
         return round(amount, step)
     except: return round(amount, 2)
 
-# --- [3. İZLEME: MESAJLAR İÇİN] ---
+# --- [3. İZLEME VE MESAJLAŞMA] ---
 def monitor_trade(symbol):
     while symbol in active_trades:
         try:
@@ -52,31 +52,26 @@ def monitor_trade(symbol):
             pos = ex.fetch_positions([symbol])
             if not pos or float(pos[0]['contracts']) == 0:
                 if symbol in active_trades: del active_trades[symbol]
-                bot.send_message(MY_CHAT_ID, f"🏁 **İŞLEM KAPANDI: {symbol}**\nHedeften veya stoptan çıkış yapıldı.")
+                bot.send_message(MY_CHAT_ID, f"🏁 **İŞLEM TAMAMLANDI: {symbol}**")
                 break
         except: break
 
-# --- [4. ANALİZ: GÖVDE ONAYLI SMC] ---
+# --- [4. ANALİZ: GÖVDE ONAYLI] ---
 def analyze_smc_strategy(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=35)
-        o, h, l, c, v = [b[1] for b in bars], [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
+        o, h, l, c = [b[1] for b in bars], [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars]
+        
+        recent_high, recent_low = max(h[-10:-2]), min(l[-10:-2])
 
-        avg_vol = sum(v[-11:-1]) / 10
-        if v[-1] < (avg_vol * 1.1): return None, None, None
-
-        recent_high = max(h[-10:-2])
-        recent_low = min(l[-10:-2])
-
-        # Gövde Kapanış (Body Close) Onayı
-        if c[-1] > recent_high and c[-1] > o[-1]:
+        if c[-1] > recent_high and c[-1] > o[-1]: # Gövde üstte kapattı
             return 'buy', c[-1], min(l[-3:])
-        if c[-1] < recent_low and c[-1] < o[-1]:
+        if c[-1] < recent_low and c[-1] < o[-1]: # Gövde altta kapattı
             return 'sell', c[-1], max(h[-3:])
         return None, None, None
     except: return None, None, None
 
-# --- [5. EMİR YÖNETİMİ - TP1 & TP2] ---
+# --- [5. EMİR YÖNETİMİ - TP1/TP2 SİSTEMİ] ---
 def execute_trade(symbol, side, entry, stop):
     try:
         ex.set_leverage(CONFIG['leverage'], symbol)
@@ -84,37 +79,37 @@ def execute_trade(symbol, side, entry, stop):
         pos_side = 'long' if side == 'buy' else 'short'
         exit_side = 'sell' if side == 'buy' else 'buy'
         
-        # 1. Market Giriş
+        # 1. MARKET GİRİŞ
         ex.create_market_order(symbol, side, amount, params={'posSide': pos_side})
         active_trades[symbol] = True
         
-        # 2. Hedef Hesaplamaları
+        # Hedef Hesaplama
         dist = abs(entry - stop)
         tp1_price = entry + (dist * CONFIG['rr_tp1']) if side == 'buy' else entry - (dist * CONFIG['rr_tp1'])
         tp2_price = entry + (dist * CONFIG['rr_tp2']) if side == 'buy' else entry - (dist * CONFIG['rr_tp2'])
 
-        # 3. STOP LOSS (Tüm Pozisyon İçin)
+        # 2. SABİT STOP LOSS (Limit Tipi - En Garanti)
         ex.create_order(symbol, 'limit', exit_side, amount, stop, params={
             'stopPrice': stop, 'reduceOnly': True, 'posSide': pos_side
         })
 
-        # 4. TP1 (%75)
+        # 3. TP1 (%75)
         tp1_qty = round_amount(symbol, amount * CONFIG['Close_Percentage_TP1'])
         ex.create_order(symbol, 'limit', exit_side, tp1_qty, tp1_price, params={
             'stopPrice': tp1_price, 'reduceOnly': True, 'posSide': pos_side
         })
 
-        # 5. TP2 (Kalan %25)
+        # 4. TP2 (Kalan %25)
         tp2_qty = round_amount(symbol, amount - tp1_qty)
         ex.create_order(symbol, 'limit', exit_side, tp2_qty, tp2_price, params={
             'stopPrice': tp2_price, 'reduceOnly': True, 'posSide': pos_side
         })
 
-        bot.send_message(MY_CHAT_ID, f"🚀 **İŞLEM AÇILDI: {symbol}**\nYön: {side.upper()}\nSL: {stop}\nTP1(%75): {tp1_price}\nTP2(%25): {tp2_price}")
+        bot.send_message(MY_CHAT_ID, f"🚀 **İŞLEM AÇILDI: {symbol}**\nSL: {stop}\nTP1 (%75): {tp1_price}\nTP2 (%25): {tp2_price}")
         threading.Thread(target=monitor_trade, args=(symbol,), daemon=True).start()
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, "⚠️ Emirlerde sorun oluştu. Borsa limitlerini kontrol edin.")
+        bot.send_message(MY_CHAT_ID, "⚠️ Emir gönderilirken borsa reddetti, bakiyeyi kontrol edin.")
 
 # --- [6. ANA DÖNGÜ] ---
 def main_loop():
@@ -133,10 +128,10 @@ def main_loop():
 def send_balance(message):
     try:
         bal = ex.fetch_balance({'type': 'swap'})
-        bot.reply_to(message, f"💰 Kasa: {bal['total']['USDT']:.2f} USDT")
+        bot.reply_to(message, f"💰 Güncel Kasa: {bal['total']['USDT']:.2f} USDT")
     except: pass
 
 if __name__ == "__main__":
-    bot.send_message(MY_CHAT_ID, "✅ **Yeni Sistem Aktif!**\nTP1 (%75) - TP2 (%25) - Sabit SL yayında.")
+    bot.send_message(MY_CHAT_ID, "✅ **Sabit TP1-TP2 Sistemi Yayında!**\nTrailing kapatıldı, hatalar giderildi.")
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     main_loop()
