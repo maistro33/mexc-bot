@@ -35,7 +35,7 @@ def send_msg(text):
     try: bot.send_message(MY_CHAT_ID, text, parse_mode="Markdown")
     except: pass
 
-# --- [3. ANALİZ MOTORU - LONG & SHORT] ---
+# --- [3. ANALİZ MOTORU] ---
 def get_signal(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe='1m', limit=30)
@@ -43,9 +43,7 @@ def get_signal(symbol):
         avg_v = sum(v[-10:-1]) / 9
         vol_ok = v[-1] > (avg_v * CONFIG['vol_threshold'])
         
-        # LONG: Likidite süpürme (dip) + yukarı kırılım
         long_setup = l[-1] < min(l[-20:-5]) and c[-1] > max(c[-5:-1])
-        # SHORT: Likidite süpürme (tepe) + aşağı kırılım
         short_setup = h[-1] > max(h[-20:-5]) and c[-1] < min(c[-5:-1])
 
         if vol_ok and long_setup: return 'long'
@@ -57,9 +55,8 @@ def get_signal(symbol):
 def monitor(symbol, entry, amount, side):
     while symbol in active_trades:
         try:
-            time.sleep(1)
+            time.sleep(2)
             curr = float(ex.fetch_ticker(symbol)['last'])
-            # Kar/Zarar hesaplama (Side'a göre)
             tp = entry * (1 + CONFIG['tp_target']) if side == 'long' else entry * (1 - CONFIG['tp_target'])
             sl = entry * (1 - CONFIG['sl_target']) if side == 'long' else entry * (1 + CONFIG['sl_target'])
             
@@ -67,7 +64,6 @@ def monitor(symbol, entry, amount, side):
             hit_sl = (side == 'long' and curr <= sl) or (side == 'short' and curr >= sl)
 
             if hit_tp or hit_sl:
-                # Kapatırken Hedge Mode parametresine dikkat
                 pos_side = 'long' if side == 'long' else 'short'
                 exit_side = 'sell' if side == 'long' else 'buy'
                 ex.create_order(symbol, 'market', exit_side, amount, params={'posSide': pos_side})
@@ -80,7 +76,7 @@ def monitor(symbol, entry, amount, side):
 
 # --- [5. ANA DÖNGÜ] ---
 def main_loop():
-    send_msg("🚀 **V22 AKTİF: LONG & SHORT RADARI**\n300+ Coin çift yönlü taranıyor.")
+    send_msg("🚀 **RADAR AKTİF**\nSinyaller taranıyor...")
     while True:
         try:
             tickers = ex.fetch_tickers()
@@ -95,58 +91,44 @@ def main_loop():
                         amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
                         try:
                             ex.set_leverage(CONFIG['leverage'], s)
-                            # HEDGE VE ONE-WAY UYUMLU EMİR
                             side = 'buy' if signal == 'long' else 'sell'
                             ex.create_order(symbol=s, type='market', side=side, amount=amt, 
                                             params={'posSide': signal, 'tdMode': 'isolated'})
                             
                             active_trades[s] = True
-                            send_msg(f"🔥 **İŞLEM AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}\nFiyat: {p}")
+                            send_msg(f"🔥 **İŞLEM AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}")
                             threading.Thread(target=monitor, args=(s, p, amt, signal), daemon=True).start()
                         except: pass
                 time.sleep(0.05)
             time.sleep(5)
         except: time.sleep(10)
 
-# --- [6. BAŞLATICI] ---
+# --- [6. KOMUTLAR] ---
 @bot.message_handler(commands=['durum'])
 def get_status(message):
-    bot.reply_to(message, f"📡 Radar Aktif\n📈 İşlem: {len(active_trades)}\nYön: Long & Short")
-
-if __name__ == "__main__":
-    # main_loop artık burada tanımlı ve erişilebilir
-    threading.Thread(target=main_loop, daemon=True).start()
-    bot.infinity_polling(timeout=20, long_polling_timeout=10)
-@bot.message_handler(commands=['bakiye'])
+    bot.reply_to(message, f"📡 Radar Aktif\n📈 İşlem: {len(active_trades)}")
 
 @bot.message_handler(commands=['bakiye'])
 def get_balance(message):
     try:
+        # Bitget V2 API uyumlu bakiye çekme
         bal = ex.fetch_balance()
-        # 1. Yol: Standart bakiye
+        # Birinci öncelik: Toplam USDT bakiyesi
         usdt = bal.get('USDT', {}).get('total', 0)
-        
-        # 2. Yol: Eğer yukarıdaki boşsa 'total' sözlüğünden çek
-        if usdt == 0:
-            usdt = bal.get('total', {}).get('USDT', 0)
-            
-        # 3. Yol: Eğer hala 0 ise (V2 vadeli hesaplar için)
-        if usdt == 0 and 'info' in bal:
-            for item in bal['info'].get('data', []):
+        # Eğer yukarıdaki boşsa, Bitget'in iç yapısından (V2) dene
+        if usdt == 0 and 'info' in bal and 'data' in bal['info']:
+            for item in bal['info']['data']:
                 if item.get('marginCoin') == 'USDT':
                     usdt = float(item.get('available', 0))
                     break
+        
+        bot.reply_to(message, f"💰 **Güncel Bakiyen:** {usdt:.2f} USDT")
+    except Exception as e:
+        bot.reply_to(message, "⚠️ Bakiye şu an alınamadı.")
 
-        bot.reply_to(message, f"💰 **Güncel Bakiyen:** {usdt:.2f} USDT")
-    except Exception as e:
-        print(f"Bakiye Hatası: {e}")
-        bot.reply_to(message, "⚠️ Bakiye şu an borsadan alınamadı.")
-O def get_balance(message):
-    try:
-        # Senin 'ex' bağlantını kullanarak bakiye çekiyoruz
-        bal = ex.fetch_balance()
-        # USDT miktarını en güvenli yoldan alıyoruz
-        usdt = bal['total']['USDT'] if 'USDT' in bal['total'] else 0
-        bot.reply_to(message, f"💰 **Güncel Bakiyen:** {usdt:.2f} USDT")
-    except Exception as e:
-        bot.reply_to(message, "⚠️ Bakiye şu an çekilemedi, lütfen tekrar dene.")
+# --- [7. BAŞLATICI] ---
+if __name__ == "__main__":
+    # Döngüyü başlat
+    threading.Thread(target=main_loop, daemon=True).start()
+    # Telegram'ı dinle
+    bot.infinity_polling(timeout=20, long_polling_timeout=10)
