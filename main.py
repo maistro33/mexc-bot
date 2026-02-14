@@ -18,15 +18,15 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AYARLAR] ---
+# --- [2. PROFESYONEL SMC AYARLARI] ---
 CONFIG = {
-    'entry_usdt': 15.0,
-    'leverage': 10,
-    'tp_target': 0.035, 
-    'sl_target': 0.018, 
-    'max_active_trades': 3,
-    'vol_threshold': 1.4,
-    'blacklist': ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'XRP/USDT:USDT', 'SOL/USDT:USDT']
+    'entry_usdt': 20.0,    # Senin istediğin giriş miktarı
+    'leverage': 10,        # Risk yönetimi için 10x
+    'tp_target': 0.045,    # %4.5 Kar (Kaliteli işlem meyvesi)
+    'sl_target': 0.018,    # %1.8 Stop (Dar stop, yüksek R/R)
+    'max_active_trades': 2, # Sadece en kaliteli 2 fırsat
+    'vol_threshold': 1.8,  # Normalin 1.8 katı hacim (Para girişi şartı)
+    'blacklist': ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'XRP/USDT:USDT']
 }
 
 active_trades = {}
@@ -35,69 +35,102 @@ def send_msg(text):
     try: bot.send_message(MY_CHAT_ID, text, parse_mode="Markdown")
     except: pass
 
-# --- [3. ANALİZ MOTORU] ---
-def get_signal(symbol):
+# --- [3. KESKİN NİŞANCI ANALİZ MOTORU] ---
+def get_sniper_signal(symbol):
     try:
-        bars = ex.fetch_ohlcv(symbol, timeframe='1m', limit=30)
-        c, l, h, v = [b[4] for b in bars], [b[3] for b in bars], [b[2] for b in bars], [b[5] for b in bars]
-        avg_v = sum(v[-10:-1]) / 9
+        # 5 Dakikalık mumlar: Sniper girişler için en dengeli zaman dilimi
+        bars = ex.fetch_ohlcv(symbol, timeframe='5m', limit=40)
+        o = [b[1] for b in bars] # Open
+        h = [b[2] for b in bars] # High
+        l = [b[3] for b in bars] # Low
+        c = [b[4] for b in bars] # Close
+        v = [b[5] for b in bars] # Volume
+        
+        # Likidite Bölgeleri (Son 30 mumun en yükseği ve en düşüğü)
+        prev_high = max(h[-30:-1])
+        prev_low = min(l[-30:-1])
+        
+        # Hacim Onayı (Kurumsal para girişi var mı?)
+        avg_v = sum(v[-20:-1]) / 19
         vol_ok = v[-1] > (avg_v * CONFIG['vol_threshold'])
-        long_setup = l[-1] < min(l[-20:-5]) and c[-1] > max(c[-5:-1])
-        short_setup = h[-1] > max(h[-20:-5]) and c[-1] < min(c[-5:-1])
-        if vol_ok and long_setup: return 'long'
-        if vol_ok and short_setup: return 'short'
+
+        # --- [AYI TUZAĞI & BULLISH MSS (LONG)] ---
+        # 1. Fiyat eski dibin altına iğne attı (Likidite süpürdü)
+        # 2. AMA mumun gövdesi eski dibin ÜZERİNDE kapandı (Gövde Kapanış Onayı)
+        # 3. Mevcut mum yeşil ve hacimli
+        if vol_ok and l[-1] < prev_low and c[-1] > prev_low:
+            if c[-1] > o[-1]: # Yeşil gövde
+                return 'long'
+
+        # --- [BOĞA TUZAĞI & BEARISH MSS (SHORT)] ---
+        # 1. Fiyat eski tepenin üstüne iğne attı (Stopları patlattı)
+        # 2. AMA mumun gövdesi eski tepenin ALTINDA kapandı (Manipülasyon Kalkanı)
+        # 3. Mevcut mum kırmızı ve hacimli
+        if vol_ok and h[-1] > prev_high and c[-1] < prev_high:
+            if c[-1] < o[-1]: # Kırmızı gövde
+                return 'short'
+
         return None
     except: return None
 
-# --- [4. TEST İŞLEMİ (PARAMETRESİZ SAF EMİR)] ---
-def run_startup_test():
-    try:
-        symbol = 'DOGE/USDT:USDT'
-        ticker = ex.fetch_ticker(symbol)
-        p = float(ticker['last'])
-        amt = (10.0 * CONFIG['leverage']) / p
-        
-        ex.set_leverage(CONFIG['leverage'], symbol)
-        
-        # 40774 HATASI İÇİN SON ÇARE:
-        # Tüm opsiyonel parametreleri (posSide, tdMode vb.) sildik.
-        # Borsa emri senin paneldeki 'Tek Yönlü' ayarına göre KENDİ açacak.
-        ex.create_order(symbol, 'market', 'buy', amt)
-        
-        send_msg(f"🧪 **TEST BAŞARILI!**\nDeneme İşlemi Açıldı: {symbol}")
-    except Exception as e:
-        send_msg(f"❌ Test Hatası: {e}\n⚠️ Eğer hala olmuyorsa: Bitget uygulamasında 'İşlem Tercihleri' kısmından Pozisyon Modunu bir kez 'Hedge' yapıp sonra tekrar 'Tek Yönlü' yapmayı dene.")
+# --- [4. HAYALET TAKİP MOTORU] ---
+def monitor(symbol, entry, amount, side):
+    while symbol in active_trades:
+        try:
+            time.sleep(3)
+            ticker = ex.fetch_ticker(symbol)
+            curr = float(ticker['last'])
+            
+            # Kar Al ve Stop Seviyeleri (Hafızada gizli)
+            tp = entry * (1 + CONFIG['tp_target']) if side == 'long' else entry * (1 - CONFIG['tp_target'])
+            sl = entry * (1 - CONFIG['sl_target']) if side == 'long' else entry * (1 + CONFIG['sl_target'])
+            
+            hit_tp = (side == 'long' and curr >= tp) or (side == 'short' and curr <= tp)
+            hit_sl = (side == 'long' and curr <= sl) or (side == 'short' and curr >= sl)
 
-# --- [5. ANA DÖNGÜ] ---
+            if hit_tp or hit_sl:
+                # Hedge Mod çıkış emri (Borsanın istediği formatta)
+                exit_side = 'sell' if side == 'long' else 'buy'
+                ex.create_order(symbol, 'market', exit_side, amount, params={'posSide': side})
+                
+                status = "💰 **KAR ALINDI**" if hit_tp else "🛑 **STOP OLUNDU**"
+                send_msg(f"{status}\nKoin: {symbol}\nKâr/Zarar: %{CONFIG['tp_target']*100 if hit_tp else -CONFIG['sl_target']*100}")
+                del active_trades[symbol]
+                break
+        except: break
+
+# --- [5. ANA RADAR DÖNGÜSÜ] ---
 def main_loop():
-    send_msg("🚀 **RADAR V34 AKTİF**\nParametresiz saf emir modu devrede.")
-    run_startup_test()
+    send_msg("🎯 **SNIPER RADAR V36 AKTİF**\nSadece garantili SMC sinyalleri taranıyor...")
     while True:
         try:
             tickers = ex.fetch_tickers()
-            symbols = [s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']]
-            for s in symbols[:150]:
+            # Saçma coinleri ele: Sadece hacmi yüksek ilk 100 coin
+            symbols = sorted([s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']], 
+                            key=lambda x: tickers[x]['quoteVolume'] if tickers[x]['quoteVolume'] else 0, reverse=True)[:100]
+            
+            for s in symbols:
                 if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
-                    signal = get_signal(s)
+                    signal = get_sniper_signal(s)
                     if signal:
                         p = float(tickers[s]['last'])
                         amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
                         try:
+                            # İşlem Öncesi Son Hazırlık
                             ex.set_leverage(CONFIG['leverage'], s)
-                            # Gerçek işlemlerde de parametresiz gönderiyoruz
-                            ex.create_order(s, 'market', 'buy' if signal == 'long' else 'sell', amt)
+                            # Emir Gönderimi (Hedge Mode uyumlu)
+                            side = 'buy' if signal == 'long' else 'sell'
+                            ex.create_order(symbol=s, type='market', side=side, amount=amt, params={'posSide': signal})
+                            
                             active_trades[s] = True
-                            send_msg(f"🔥 **İŞLEM AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}")
+                            send_msg(f"🎯 **SNIPER GİRİŞİ YAPILDI!**\nKoin: {s}\nYön: {signal.upper()}\nAnaliz: Likidite Süpürme + Gövde Onayı")
+                            threading.Thread(target=monitor, args=(s, p, amt, signal), daemon=True).start()
                         except: pass
-                time.sleep(0.05)
+                time.sleep(0.1)
             time.sleep(10)
         except: time.sleep(15)
 
-# --- [6. KOMUTLAR] ---
-@bot.message_handler(commands=['durum'])
-def get_status(message):
-    bot.reply_to(message, f"📡 Radar Aktif\n📈 Aktif İşlem: {len(active_trades)}")
-
+# --- [6. TELEGRAM KOMUTLARI] ---
 @bot.message_handler(commands=['bakiye'])
 def get_balance(message):
     try:
@@ -105,8 +138,13 @@ def get_balance(message):
         usdt = bal.get('USDT', {}).get('total', 0)
         bot.reply_to(message, f"💰 **Net Bakiye:** {usdt:.2f} USDT")
     except:
-        bot.reply_to(message, "⚠️ Bakiye çekilemedi.")
+        bot.reply_to(message, "⚠️ Bakiye şu an çekilemedi.")
+
+@bot.message_handler(commands=['durum'])
+def get_status(message):
+    bot.reply_to(message, f"📡 **Radar Durumu:** Aktif\n🎯 **Açık Sniper:** {len(active_trades)}")
 
 if __name__ == "__main__":
+    # Çakışma hatasını önlemek için (Conflict 409)
     threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling()
