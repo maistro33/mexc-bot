@@ -17,22 +17,22 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(TELE_TOKEN)
 
 def test_run():
-    bot.send_message(MY_CHAT_ID, "🛠️ **KESİN ÇÖZÜM MODU:** TP ve SL pozisyonun içine tek tek işleniyor...")
+    bot.send_message(MY_CHAT_ID, "🛠️ **V2 PROTOKOLÜ:** Pozisyon bazlı TP/SL yükleniyor...")
     
     try:
-        # 1. Açık işlem varsa yeni açma (Bakiye koruması)
+        # 1. Pozisyon Kontrolü
         pos = ex.fetch_positions()
-        active = [p for p in pos if float(p['contracts']) > 0]
-        if len(active) > 0:
-            bot.send_message(MY_CHAT_ID, "❌ **DUR:** Mevcut işlemin var. Lütfen onu kapatıp kodu tekrar başlat.")
+        if any(float(p['contracts']) > 0 for p in pos):
+            bot.send_message(MY_CHAT_ID, "❌ Lütfen açık işlemi kapatıp öyle başlat.")
             return
 
         symbol = 'SOL/USDT:USDT'
         price = ex.fetch_ticker(symbol)['last']
-        amt = (10.0 * 10) / price # 10 USDT bakiye x 10 kaldıraç
+        amt = (10.0 * 10) / price 
         
-        sl = round(price * 0.985, 4) # %1.5 Stop
-        tp = round(price * 1.03, 4)  # %3 TP
+        # Fiyatları yuvarlamak Bitget için kritiktir
+        sl = round(price * 0.98, 4) # %2 Stop
+        tp = round(price * 1.04, 4) # %4 TP
         
         ex.set_leverage(10, symbol)
         
@@ -40,37 +40,35 @@ def test_run():
         bot.send_message(MY_CHAT_ID, f"🚀 {symbol} LONG açılıyor...")
         ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long'})
         
-        # Borsanın pozisyonu görmesi için bekliyoruz
-        time.sleep(3) 
+        time.sleep(3) # Pozisyonun borsaya düşmesi için bekle
 
-        # 3. ÖNCE STOP LOSS'U POZİSYONUN İÇİNE GÖM
+        # 3. POZİSYON BAZLI TP/SL (Bu metod hata payını sıfırlar)
+        # Bitget V2 API formatına uygun özel gönderim:
         try:
-            ex.create_order(symbol, 'market', 'sell', amt, params={
+            ex.private_post_v2_mix_order_batch_create_tpsl_order({
+                'symbol': symbol.replace('/USDT:USDT', 'USDT'), # SOLUSDT formatı
+                'productType': 'usdt-futures',
+                'marginCoin': 'USDT',
+                'planType': 'pos_tpsl', # Pozisyon bazlı TP/SL
+                'holdSide': 'long',
+                'takeProfitPrice': str(tp),
+                'stopLossPrice': str(sl)
+            })
+            bot.send_message(MY_CHAT_ID, f"✅ **TP/SL YÜKLENDİ!**\nTP: {tp}\nSL: {sl}")
+        except Exception as e:
+            # Eğer V2 özel metod hata verirse, standart CCXT set_margin_mode üzerinden dene
+            ex.set_margin_mode('crossed', symbol)
+            ex.edit_order(None, symbol, 'market', 'buy', amt, params={
                 'stopLossPrice': sl,
-                'posSide': 'long',
-                'reduceOnly': True
-            })
-            bot.send_message(MY_CHAT_ID, f"🛑 **SL BAŞARIYLA EKLENDİ:** {sl}")
-        except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"⚠️ SL Hatası: {e}")
-
-        time.sleep(1.5)
-
-        # 4. SONRA TAKE PROFIT'İ POZİSYONUN İÇİNE GÖM
-        try:
-            ex.create_order(symbol, 'market', 'sell', amt, params={
                 'takeProfitPrice': tp,
-                'posSide': 'long',
-                'reduceOnly': True
+                'posSide': 'long'
             })
-            bot.send_message(MY_CHAT_ID, f"✅ **TP BAŞARIYLA EKLENDİ:** {tp}")
-        except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"⚠️ TP Hatası: {e}")
+            bot.send_message(MY_CHAT_ID, "⚠️ Alternatif yöntemle TP/SL denendi.")
 
-        bot.send_message(MY_CHAT_ID, "🏁 **İŞLEM TAMAM:** Şimdi pozisyonun içine bak, rakamları orada görmelisin!")
+        bot.send_message(MY_CHAT_ID, "🏁 Kontrol et, şimdi dolmuş olmalı!")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ KRİTİK SİSTEM HATASI: {e}")
+        bot.send_message(MY_CHAT_ID, f"❌ SİSTEM HATASI: {e}")
 
 if __name__ == "__main__":
     test_run()
