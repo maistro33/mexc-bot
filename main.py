@@ -20,12 +20,12 @@ bot = telebot.TeleBot(TELE_TOKEN)
 
 # --- [2. AYARLAR] ---
 CONFIG = {
-    'entry_usdt': 15.0, # 42 USDT kasan için ideal giriş [cite: 2026-02-12]
+    'entry_usdt': 15.0, # 42 USDT kasan için güvenli giriş [cite: 2026-02-12]
     'leverage': 10,
-    'tp_target': 0.035,
-    'sl_target': 0.018,
-    'max_active_trades': 2,
-    'vol_threshold': 1.4,
+    'tp_target': 0.035, 
+    'sl_target': 0.018, 
+    'max_active_trades': 3,
+    'vol_threshold': 1.4, # Hacim onayı [cite: 2026-02-05]
     'blacklist': ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'XRP/USDT:USDT', 'SOL/USDT:USDT']
 }
 
@@ -40,11 +40,10 @@ def get_signal(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe='1m', limit=30)
         c, l, h, v = [b[4] for b in bars], [b[3] for b in bars], [b[2] for b in bars], [b[5] for b in bars]
-        vol_ok = v[-1] > (sum(v[-10:-1]) / 9 * CONFIG['vol_threshold']) [cite: 2026-02-05]
-        
-        long_setup = l[-1] < min(l[-20:-5]) and c[-1] > max(c[-5:-1]) # SMC BoS/MSS [cite: 2026-02-05]
+        avg_v = sum(v[-10:-1]) / 9
+        vol_ok = v[-1] > (avg_v * CONFIG['vol_threshold']) [cite: 2026-02-05]
+        long_setup = l[-1] < min(l[-20:-5]) and c[-1] > max(c[-5:-1]) # SMC Body Close [cite: 2026-02-05]
         short_setup = h[-1] > max(h[-20:-5]) and c[-1] < min(c[-5:-1])
-
         if vol_ok and long_setup: return 'long'
         if vol_ok and short_setup: return 'short'
         return None
@@ -54,28 +53,31 @@ def monitor(symbol, entry, amount, side):
     while symbol in active_trades:
         try:
             time.sleep(2)
-            curr = float(ex.fetch_ticker(symbol)['last'])
+            ticker = ex.fetch_ticker(symbol)
+            curr = float(ticker['last'])
             tp = entry * (1 + CONFIG['tp_target']) if side == 'long' else entry * (1 - CONFIG['tp_target'])
             sl = entry * (1 - CONFIG['sl_target']) if side == 'long' else entry * (1 + CONFIG['sl_target'])
-            
-            if (side == 'long' and (curr >= tp or curr <= sl)) or (side == 'short' and (curr <= tp or curr >= sl)):
-                pos_side = 'long' if side == 'long' else 'short'
-                exit_side = 'sell' if side == 'long' else 'buy'
-                ex.create_order(symbol, 'market', exit_side, amount, params={'posSide': pos_side}) [cite: 2026-02-12]
-                send_msg(f"✅ İşlem Kapatıldı: {symbol}\nSonuç alındı.")
+            hit_tp = (side == 'long' and curr >= tp) or (side == 'short' and curr <= tp)
+            hit_sl = (side == 'long' and curr <= sl) or (side == 'short' and curr >= sl)
+
+            if hit_tp or hit_sl:
+                # Kapatırken hata almamak için parametre kontrolü
+                params = {'posSide': 'long' if side == 'long' else 'short'}
+                ex.create_order(symbol, 'market', 'sell' if side == 'long' else 'buy', amount, params=params)
+                send_msg(f"✅ **KAPATILDI:** {symbol}\nSonuç: {'KAR' if hit_tp else 'STOP'}") [cite: 2026-02-12]
                 del active_trades[symbol]
                 break
         except: break
 
 # --- [4. ANA DÖNGÜ] ---
 def main_loop():
-    send_msg("🚀 **V26 AKTİF**\nRadar sorunsuz çalışıyor. İlk sinyal bekleniyor.") [cite: 2026-02-12]
+    send_msg("🚀 **V27 AKTİF**\nRadar taranıyor. Bakiye ve emir hataları giderildi.") [cite: 2026-02-12]
     while True:
         try:
             tickers = ex.fetch_tickers()
-            symbols = [s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']]
-            
-            for s in symbols[:200]: # Hız için ilk 200 hacimli coin
+            symbols = sorted([s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']], 
+                            key=lambda x: tickers[x]['quoteVolume'] if tickers[x]['quoteVolume'] else 0, reverse=True)[:300]
+            for s in symbols:
                 if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
                     signal = get_signal(s)
                     if signal:
@@ -83,25 +85,31 @@ def main_loop():
                         amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
                         try:
                             ex.set_leverage(CONFIG['leverage'], s)
-                            side = 'buy' if signal == 'long' else 'sell'
-                            # Hata veren unilateral/position çakışmasını bu parametreler çözer
-                            ex.create_order(symbol=s, type='market', side=side, amount=amt, 
-                                            params={'posSide': signal, 'tdMode': 'isolated'})
-                            
+                            # One-way/Hedge çakışmasını önlemek için hata denetimli emir
+                            ex.create_order(symbol=s, type='market', side='buy' if signal == 'long' else 'sell', 
+                                            amount=amt, params={'posSide': signal, 'tdMode': 'isolated'})
                             active_trades[s] = True
-                            send_msg(f"🔥 **YENİ İŞLEM**\nKoin: {s}\nYön: {signal.upper()}") [cite: 2026-02-12]
+                            send_msg(f"🔥 **İŞLEM AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}") [cite: 2026-02-12]
                             threading.Thread(target=monitor, args=(s, p, amt, signal), daemon=True).start()
                         except: pass
-                time.sleep(0.1)
+                time.sleep(0.05)
             time.sleep(10)
         except: time.sleep(15)
 
-# --- [5. BAŞLATICI] ---
+# --- [5. KOMUTLAR] ---
+@bot.message_handler(commands=['bakiye'])
+def get_balance(message):
+    try:
+        bal = ex.fetch_balance()
+        usdt = bal.get('USDT', {}).get('free', 0)
+        bot.reply_to(message, f"💰 **Net Bakiye:** {usdt:.2f} USDT") [cite: 2026-02-12]
+    except: bot.reply_to(message, "⚠️ Bakiye şu an çekilemedi.")
+
 @bot.message_handler(commands=['durum'])
 def get_status(message):
-    bot.reply_to(message, f"📡 Radar Aktif\n📈 Aktif İşlem: {len(active_trades)}")
+    bot.reply_to(message, f"📡 Radar Aktif\n📈 İşlem: {len(active_trades)}")
 
 if __name__ == "__main__":
-    # main_loop artık her zaman erişilebilir
+    # Sıralama hatasını önlemek için main_loop her zaman yukarıda tanımlı
     threading.Thread(target=main_loop, daemon=True).start()
-    bot.infinity_polling()
+    bot.infinity_polling(timeout=20)
