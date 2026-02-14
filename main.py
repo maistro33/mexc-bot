@@ -18,96 +18,77 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. SERT SMC AYARLARI] ---
+# --- [2. SERT VE GÜVENLİ AYARLAR] ---
 CONFIG = {
-    'entry_usdt': 10.0,    # Sabit 10 USDT (Senin istediğin)
+    'entry_usdt': 10.0,    # Senin istediğin sabit 10 USDT
     'leverage': 10,
-    'rr_ratio': 2.0,       # Resimdeki 1:2 Risk-Reward oranı
-    'sl_pct': 0.015,       # %1.5 Stop
-    'vol_threshold': 2.0,  # Normalin 2 katı hacim (Resimdeki 'Displacement')
-    'max_active_trades': 1, # Hata payını sıfırlamak için teker teker
+    'rr_ratio': 2.0,       # Resimdeki 1:2 Hedef Oranı
+    'sl_pct': 0.015,       # %1.5 Stop (Dar stop)
+    'vol_threshold': 2.5,  # Hacim 2.5 katı olmalı (Gerçek kırılım)
+    'max_active_trades': 1, # Hata payını sıfırlamak için tek işlem
     'blacklist': ['BTC/USDT:USDT', 'ETH/USDT:USDT']
 }
 
-active_trades = {}
-
-def send_msg(text):
-    try: bot.send_message(MY_CHAT_ID, text, parse_mode="Markdown")
-    except: pass
-
-# --- [3. RESİMDEKİ STRATEJİ MOTORU (SMC + FVG)] ---
+# --- [3. RESİMDEKİ SMC MOTORU] ---
 def get_smc_signal(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe='5m', limit=50)
-        h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
+        h, l, c, v, o = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars], [b[1] for b in bars]
         
-        # 1. Likidite Süpürme (Liquidity Sweep)
-        sweep_high = max(h[-40:-5])
-        sweep_low = min(l[-40:-5])
+        # 1. Likidite Süpürme (Sweep)
+        prev_high, prev_low = max(h[-40:-5]), min(l[-40:-5])
         
         # 2. Hacim Onayı (Displacement)
         avg_v = sum(v[-20:-5]) / 15
-        is_displaced = v[-1] > (avg_v * CONFIG['vol_threshold'])
+        vol_ok = v[-1] > (avg_v * CONFIG['vol_threshold'])
 
-        # SHORT SİNYALİ (Resimdeki Ayı Senaryosu)
-        if is_displaced and h[-2] > sweep_high and c[-1] < sweep_low:
-            fvg_gap = h[-3] - l[-1] # Basit FVG tespiti
-            if fvg_gap > 0:
-                return 'short', c[-1]
+        # SHORT: Tepe süpürüldü, sert hacimli kırmızı mum geldi
+        if vol_ok and h[-2] > prev_high and c[-1] < prev_low and c[-1] < o[-1]:
+            return 'short', c[-1]
 
-        # LONG SİNYALİ (Resimdeki Boğa Senaryosu)
-        if is_displaced and l[-2] < sweep_low and c[-1] > sweep_high:
-            fvg_gap = h[-1] - l[-3]
-            if fvg_gap > 0:
-                return 'long', c[-1]
+        # LONG: Dip süpürüldü, sert hacimli yeşil mum geldi
+        if vol_ok and l[-2] < prev_low and c[-1] > prev_high and c[-1] > o[-1]:
+            return 'long', c[-1]
 
         return None, None
     except: return None, None
 
-# --- [4. ANA DÖNGÜ & SERT STOP SİSTEMİ] ---
+# --- [4. ANA DÖNGÜ & BORSAYA EMİR GÖNDERİMİ] ---
 def main_loop():
-    send_msg("🛡️ **V38 SMC SNIPER AKTİF**\nResimdeki 1:2 RR ve Hard Stop devrede.")
+    send_msg("🚀 **V39 SMC PRO AKTİF**\nHard Stop & 10 USDT Sabitlendi.")
     while True:
         try:
             tickers = ex.fetch_tickers()
             symbols = [s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']]
             
-            for s in symbols[:100]:
-                if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
-                    signal, entry_price = get_smc_signal(s)
-                    if signal:
-                        # Miktar Hesaplama
-                        amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry_price
-                        
-                        # Stop ve TP Hesaplama (Resimdeki 1:2 RR)
-                        sl = entry_price * (1 + CONFIG['sl_pct']) if signal == 'short' else entry_price * (1 - CONFIG['sl_pct'])
-                        tp = entry_price * (1 - (CONFIG['sl_pct'] * CONFIG['rr_ratio'])) if signal == 'short' else entry_price * (1 + (CONFIG['sl_pct'] * CONFIG['rr_ratio']))
+            # Açık pozisyon kontrolü (Borsadan direkt sorgu)
+            positions = ex.fetch_positions()
+            active_symbols = [p['symbol'] for p in positions if float(p['contracts']) > 0]
+
+            if len(active_symbols) < CONFIG['max_active_trades']:
+                for s in symbols[:80]: # İlk 80 en hacimli koin
+                    signal, price = get_smc_signal(s)
+                    if signal and s not in active_symbols:
+                        amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / price
+                        sl = price * (1 + CONFIG['sl_pct']) if signal == 'short' else price * (1 - CONFIG['sl_pct'])
+                        tp = price * (1 - (CONFIG['sl_pct'] * CONFIG['rr_ratio'])) if signal == 'short' else price * (1 + (CONFIG['sl_pct'] * CONFIG['rr_ratio']))
 
                         try:
                             ex.set_leverage(CONFIG['leverage'], s)
-                            
-                            # ANA EMİR
-                            order = ex.create_order(s, 'market', 'sell' if signal == 'short' else 'buy', amt, params={'posSide': signal})
-                            
-                            # BORSAYA STOP VE TP EMİRLERİNİ YAZ (HARD STOP)
-                            # Bu kısım bot donsa bile paranı korur
+                            # 1. ANA MARKET GİRİŞİ
+                            ex.create_order(s, 'market', 'sell' if signal == 'short' else 'buy', amt, params={'posSide': signal})
+                            # 2. BORSAYA STOP VE TP YAZIMI (AYRI EMİR)
                             ex.create_order(s, 'market', 'buy' if signal == 'short' else 'sell', amt, 
                                             params={'posSide': signal, 'stopLossPrice': sl, 'takeProfitPrice': tp})
                             
-                            active_trades[s] = True
-                            send_msg(f"🎯 **SMC İŞLEMİ AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}\n💰 Giriş: {entry_price}\n🛑 SL: {sl:.4f}\n✅ TP: {tp:.4f}")
+                            send_msg(f"🎯 **SMC SNIPER GİRİŞ!**\nKoin: {s}\nYön: {signal.upper()}\n💰 Giriş: {price}\n🛑 SL: {sl:.4f}\n✅ TP: {tp:.4f}")
+                            time.sleep(5) # Emirler işlensin
+                            break 
                         except Exception as e:
-                            send_msg(f"⚠️ Emir Hatası: {e}")
-            
-            # Aktif işlem takibi (Hafızayı temizlemek için)
-            for s in list(active_trades.keys()):
-                pos = ex.fetch_position(s)
-                if float(pos['entryPrice']) == 0:
-                    del active_trades[s]
-                    send_msg(f"ℹ️ {s} işlemi borsada kapandı.")
-                    
+                            print(f"Emir hatası: {e}")
+            time.sleep(15)
+        except Exception as e:
             time.sleep(20)
-        except: time.sleep(30)
 
 # --- [5. KOMUTLAR] ---
 @bot.message_handler(commands=['bakiye'])
@@ -115,8 +96,18 @@ def get_balance(message):
     try:
         bal = ex.fetch_balance()
         usdt = bal.get('USDT', {}).get('total', 0)
-        bot.reply_to(message, f"💰 **Net Bakiye:** {usdt:.2f} USDT")
-    except: bot.reply_to(message, "⚠️ Hata.")
+        bot.reply_to(message, f"💰 **Bakiye:** {usdt:.2f} USDT")
+    except: bot.reply_to(message, "⚠️ API Bağlantı Hatası!")
+
+@bot.message_handler(commands=['durum'])
+def get_status(message):
+    try:
+        pos = ex.fetch_positions()
+        active = [p['symbol'] for p in pos if float(p['contracts']) > 0]
+        msg = "🟢 Radar Aktif\n"
+        msg += f"📈 Aktif İşlem: {active if active else 'Yok'}"
+        bot.reply_to(message, msg)
+    except: bot.reply_to(message, "⚠️ Durum çekilemedi.")
 
 if __name__ == "__main__":
     threading.Thread(target=main_loop, daemon=True).start()
