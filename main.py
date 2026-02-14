@@ -17,51 +17,49 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(TELE_TOKEN)
 
 def test_run():
-    bot.send_message(MY_CHAT_ID, "🧪 **TP/SL TESTİ BAŞLADI:** Bir saniye içinde işlem açılacak...")
+    bot.send_message(MY_CHAT_ID, "🧪 **DENEME 3:** TP/SL doğrudan pozisyonun içine yükleniyor...")
     
     try:
-        # 1. Test için uygun bir koin seç (BTC/ETH hariç rastgele biri)
         tickers = ex.fetch_tickers()
-        symbol = [s for s in tickers if '/USDT:USDT' in s and 'BTC' not in s and 'ETH' not in s][0]
+        symbol = [s for s in tickers if '/USDT:USDT' in s and 'BTC' not in s][:1][0]
         
         price = tickers[symbol]['last']
-        amt = (5.0 * 10) / price # 5 USDT x 10 Kaldıraç
+        amt = (5.0 * 10) / price 
         
-        # Test için çok dar hedefler (%0.5)
-        sl = price * 0.995 # %0.5 Stop
-        tp = price * 1.005 # %0.5 TP
+        sl = round(price * 0.99, 4)  # %1 Stop
+        tp = round(price * 1.02, 4)  # %2 TP
         
         ex.set_leverage(10, symbol)
         
-        # 2. MARKET GİRİŞ (Alış)
-        order = ex.create_order(symbol, 'market', 'buy', amt)
-        bot.send_message(MY_CHAT_ID, f"✅ Giriş Başarılı: {symbol}\nŞimdi TP/SL gönderiliyor...")
+        # 1. POZİSYONU AÇ (MARKET BUY)
+        print(f"{symbol} için pozisyon açılıyor...")
+        ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long'})
         
-        time.sleep(2) # Borsanın pozisyonu işlemesi için kısa bekleme
+        time.sleep(2) # Borsanın pozisyonu kaydetmesi için süre tanıyalım
 
-        # 3. TP ve SL EMİRLERİ (Bitget Tetikleyici/Planlı Emir Yapısı)
-        # Zarar Durdur
-        ex.create_order(symbol, 'limit', 'sell', amt, None, {
-            'stopPrice': sl,
-            'triggerType': 'market',
-            'reduceOnly': True
-        })
+        # 2. TP/SL'Yİ POZİSYONUN İÇİNE GÖM (set_margin_mode yerine set_trading_layer gibi)
+        # Bitget'te bu işlem için özel bir metod kullanılır:
+        try:
+            ex.private_post_mix_v1_order_modify_tpsl({
+                'symbol': symbol.replace('/USDT:USDT', '_UMCBL'), # Bitget API formatı
+                'marginCoin': 'USDT',
+                'orderId': None, # Pozisyona bağlamak için
+                'stopLoss': str(sl),
+                'takeProfit': str(tp),
+                'holdSide': 'long'
+            })
+        except:
+            # Eğer yukarıdaki özel metod çalışmazsa standart ccxt metodunu zorlayalım:
+            ex.edit_order(None, symbol, 'market', 'buy', amt, price, params={
+                'stopLossPrice': sl,
+                'takeProfitPrice': tp,
+                'posSide': 'long'
+            })
         
-        # Kâr Al
-        ex.create_order(symbol, 'limit', 'sell', amt, None, {
-            'stopPrice': tp,
-            'triggerType': 'market',
-            'reduceOnly': True
-        })
-        
-        msg = (f"🎯 **TEST TAMAMLANDI!**\n\n"
-               f"Lütfen Bitget uygulamasında şuraya bak:\n"
-               f"1. **Açık Pozisyonlar:** İşlemi gör.\n"
-               f"2. **Planlı Emirler (Trigger/Plan Orders):** Burada SL ({sl:.4f}) ve TP ({tp:.4f}) emirlerini görmelisin.")
-        bot.send_message(MY_CHAT_ID, msg)
+        bot.send_message(MY_CHAT_ID, f"🎯 **BAŞARILI!**\nKoin: {symbol}\nŞimdi pozisyonun içine bak, TP: {tp} ve SL: {sl} olarak yüklenmiş olmalı.")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ TEST HATASI: {e}")
+        bot.send_message(MY_CHAT_ID, f"❌ HATA: {e}")
 
 if __name__ == "__main__":
     test_run()
