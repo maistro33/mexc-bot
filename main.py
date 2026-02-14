@@ -17,49 +17,43 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(TELE_TOKEN)
 
 def test_run():
-    bot.send_message(MY_CHAT_ID, "🧪 **DENEME 3:** TP/SL doğrudan pozisyonun içine yükleniyor...")
+    bot.send_message(MY_CHAT_ID, "⚠️ **SON DENEME:** Bitget V2 Protokolü ile TP/SL yükleniyor...")
     
     try:
-        tickers = ex.fetch_tickers()
-        symbol = [s for s in tickers if '/USDT:USDT' in s and 'BTC' not in s][:1][0]
-        
-        price = tickers[symbol]['last']
+        # 1. Mevcut pozisyonları kontrol et (Üst üste açmayı önlemek için)
+        pos = ex.fetch_positions()
+        active = [p for p in pos if float(p['contracts']) > 0]
+        if len(active) > 0:
+            bot.send_message(MY_CHAT_ID, "❌ HATA: Zaten açık işlemin var. Lütfen kapatıp tekrar dene.")
+            return
+
+        # 2. Sembol seçimi
+        symbol = 'SOL/USDT:USDT' # Test için sabit ve likit bir koin
+        price = ex.fetch_ticker(symbol)['last']
         amt = (5.0 * 10) / price 
         
-        sl = round(price * 0.99, 4)  # %1 Stop
-        tp = round(price * 1.02, 4)  # %2 TP
+        sl = round(price * 0.985, 4) # %1.5 Stop
+        tp = round(price * 1.03, 4)  # %3 TP
         
         ex.set_leverage(10, symbol)
         
-        # 1. POZİSYONU AÇ (MARKET BUY)
-        print(f"{symbol} için pozisyon açılıyor...")
-        ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long'})
+        # 3. ANA GİRİŞ VE TP/SL'Yİ TEK PAKETTE GÖNDER (En Garanti Yol)
+        # Bitget V2 API, giriş emriyle birlikte parametreleri bu formatta kabul eder
+        params = {
+            'stopLossPrice': sl,
+            'takeProfitPrice': tp,
+            'posSide': 'long',
+            'holdSide': 'long',
+            'mgnMode': 'crossed'
+        }
         
-        time.sleep(2) # Borsanın pozisyonu kaydetmesi için süre tanıyalım
-
-        # 2. TP/SL'Yİ POZİSYONUN İÇİNE GÖM (set_margin_mode yerine set_trading_layer gibi)
-        # Bitget'te bu işlem için özel bir metod kullanılır:
-        try:
-            ex.private_post_mix_v1_order_modify_tpsl({
-                'symbol': symbol.replace('/USDT:USDT', '_UMCBL'), # Bitget API formatı
-                'marginCoin': 'USDT',
-                'orderId': None, # Pozisyona bağlamak için
-                'stopLoss': str(sl),
-                'takeProfit': str(tp),
-                'holdSide': 'long'
-            })
-        except:
-            # Eğer yukarıdaki özel metod çalışmazsa standart ccxt metodunu zorlayalım:
-            ex.edit_order(None, symbol, 'market', 'buy', amt, price, params={
-                'stopLossPrice': sl,
-                'takeProfitPrice': tp,
-                'posSide': 'long'
-            })
+        bot.send_message(MY_CHAT_ID, f"🚀 {symbol} girişi yapılıyor...")
+        ex.create_order(symbol, 'market', 'buy', amt, None, params)
         
-        bot.send_message(MY_CHAT_ID, f"🎯 **BAŞARILI!**\nKoin: {symbol}\nŞimdi pozisyonun içine bak, TP: {tp} ve SL: {sl} olarak yüklenmiş olmalı.")
+        bot.send_message(MY_CHAT_ID, f"🎯 **İŞLEM AÇILDI!**\nLütfen şimdi POZİSYONUN İÇİNE bak.\nEğer yine yoksa, Bitget 'Hedge Mode' ayarın API erişimini kısıtlıyor olabilir.")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ HATA: {e}")
+        bot.send_message(MY_CHAT_ID, f"❌ SİSTEM HATASI: {e}")
 
 if __name__ == "__main__":
     test_run()
