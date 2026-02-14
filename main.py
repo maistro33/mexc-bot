@@ -18,15 +18,14 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. PRO SNIPER & TRAILING AYARLARI] ---
+# --- [2. SERT SMC AYARLARI] ---
 CONFIG = {
-    'entry_usdt': 20.0,
+    'entry_usdt': 10.0,    # Sabit 10 USDT (Senin istediğin)
     'leverage': 10,
-    'tp_target': 0.05,       # %5 Ana Hedef
-    'sl_target': 0.018,      # %1.8 Başlangıç Stopu
-    'trailing_activation': 0.02, # %2 kâra geçince Trailing aktif olur
-    'max_active_trades': 2,
-    'vol_threshold': 1.8,
+    'rr_ratio': 2.0,       # Resimdeki 1:2 Risk-Reward oranı
+    'sl_pct': 0.015,       # %1.5 Stop
+    'vol_threshold': 2.0,  # Normalin 2 katı hacim (Resimdeki 'Displacement')
+    'max_active_trades': 1, # Hata payını sıfırlamak için teker teker
     'blacklist': ['BTC/USDT:USDT', 'ETH/USDT:USDT']
 }
 
@@ -36,88 +35,88 @@ def send_msg(text):
     try: bot.send_message(MY_CHAT_ID, text, parse_mode="Markdown")
     except: pass
 
-# --- [3. ANALİZ MOTORU (V36 İLE AYNI - GÜVENLİ)] ---
-def get_sniper_signal(symbol):
+# --- [3. RESİMDEKİ STRATEJİ MOTORU (SMC + FVG)] ---
+def get_smc_signal(symbol):
     try:
-        bars = ex.fetch_ohlcv(symbol, timeframe='5m', limit=40)
-        o, h, l, c, v = [b[1] for b in bars], [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
-        prev_high, prev_low = max(h[-30:-1]), min(l[-30:-1])
-        avg_v = sum(v[-20:-1]) / 19
-        vol_ok = v[-1] > (avg_v * CONFIG['vol_threshold'])
+        bars = ex.fetch_ohlcv(symbol, timeframe='5m', limit=50)
+        h, l, c, v = [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], [b[5] for b in bars]
+        
+        # 1. Likidite Süpürme (Liquidity Sweep)
+        sweep_high = max(h[-40:-5])
+        sweep_low = min(l[-40:-5])
+        
+        # 2. Hacim Onayı (Displacement)
+        avg_v = sum(v[-20:-5]) / 15
+        is_displaced = v[-1] > (avg_v * CONFIG['vol_threshold'])
 
-        if vol_ok and l[-1] < prev_low and c[-1] > prev_low and c[-1] > o[-1]: return 'long'
-        if vol_ok and h[-1] > prev_high and c[-1] < prev_high and c[-1] < o[-1]: return 'short'
-        return None
-    except: return None
+        # SHORT SİNYALİ (Resimdeki Ayı Senaryosu)
+        if is_displaced and h[-2] > sweep_high and c[-1] < sweep_low:
+            fvg_gap = h[-3] - l[-1] # Basit FVG tespiti
+            if fvg_gap > 0:
+                return 'short', c[-1]
 
-# --- [4. GELİŞMİŞ TAKİP MOTORU (TRAILING STOP)] ---
-def monitor(symbol, entry, amount, side):
-    # Başlangıç stop seviyesi
-    current_sl = entry * (1 - CONFIG['sl_target']) if side == 'long' else entry * (1 + CONFIG['sl_target'])
-    trailing_active = False
-    
-    while symbol in active_trades:
-        try:
-            time.sleep(3)
-            ticker = ex.fetch_ticker(symbol)
-            curr = float(ticker['last'])
-            
-            pnl = (curr - entry) / entry if side == 'long' else (entry - curr) / entry
+        # LONG SİNYALİ (Resimdeki Boğa Senaryosu)
+        if is_displaced and l[-2] < sweep_low and c[-1] > sweep_high:
+            fvg_gap = h[-1] - l[-3]
+            if fvg_gap > 0:
+                return 'long', c[-1]
 
-            # 1. Trailing Stop Aktivasyonu & Breakeven
-            if not trailing_active and pnl >= CONFIG['trailing_activation']:
-                trailing_active = True
-                current_sl = entry  # Stopu giriş seviyesine çek (Risk-Free)
-                send_msg(f"🛡️ **GÜVENLİ MOD:** {symbol} kârda! Stop giriş seviyesine çekildi (Breakeven).")
+        return None, None
+    except: return None, None
 
-            # 2. Dinamik Stop Güncelleme (Fiyat ilerledikçe stopu taşı)
-            if trailing_active:
-                if side == 'long':
-                    new_sl = curr * (1 - 0.015) # Fiyatın %1.5 arkasından takip et
-                    if new_sl > current_sl: current_sl = new_sl
-                else:
-                    new_sl = curr * (1 + 0.015)
-                    if new_sl < current_sl: current_sl = new_sl
-
-            # 3. Çıkış Kontrolleri
-            hit_tp = pnl >= CONFIG['tp_target']
-            hit_sl = (side == 'long' and curr <= current_sl) or (side == 'short' and curr >= current_sl)
-
-            if hit_tp or hit_sl:
-                exit_side = 'sell' if side == 'long' else 'buy'
-                ex.create_order(symbol, 'market', exit_side, amount, params={'posSide': side})
-                
-                msg = "💰 **KÂR ALINDI**" if hit_tp else "🛡️ **TAKİP EDEN STOP TETİKLENDİ**"
-                send_msg(f"{msg}\nKoin: {symbol}\nÇıkış Fiyatı: {curr}")
-                del active_trades[symbol]
-                break
-        except: break
-
-# --- [5. ANA DÖNGÜ & BAŞLATICI] ---
+# --- [4. ANA DÖNGÜ & SERT STOP SİSTEMİ] ---
 def main_loop():
-    send_msg("🎯 **V37 PRO SNIPER AKTİF**\nTrailing Stop & Breakeven devrede.")
+    send_msg("🛡️ **V38 SMC SNIPER AKTİF**\nResimdeki 1:2 RR ve Hard Stop devrede.")
     while True:
         try:
             tickers = ex.fetch_tickers()
-            symbols = sorted([s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']], 
-                            key=lambda x: tickers[x]['quoteVolume'] if tickers[x]['quoteVolume'] else 0, reverse=True)[:100]
-            for s in symbols:
+            symbols = [s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']]
+            
+            for s in symbols[:100]:
                 if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
-                    signal = get_sniper_signal(s)
+                    signal, entry_price = get_smc_signal(s)
                     if signal:
-                        p = float(tickers[s]['last'])
-                        amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
+                        # Miktar Hesaplama
+                        amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / entry_price
+                        
+                        # Stop ve TP Hesaplama (Resimdeki 1:2 RR)
+                        sl = entry_price * (1 + CONFIG['sl_pct']) if signal == 'short' else entry_price * (1 - CONFIG['sl_pct'])
+                        tp = entry_price * (1 - (CONFIG['sl_pct'] * CONFIG['rr_ratio'])) if signal == 'short' else entry_price * (1 + (CONFIG['sl_pct'] * CONFIG['rr_ratio']))
+
                         try:
                             ex.set_leverage(CONFIG['leverage'], s)
-                            ex.create_order(symbol=s, type='market', side='buy' if signal == 'long' else 'sell', 
-                                            amount=amt, params={'posSide': signal})
+                            
+                            # ANA EMİR
+                            order = ex.create_order(s, 'market', 'sell' if signal == 'short' else 'buy', amt, params={'posSide': signal})
+                            
+                            # BORSAYA STOP VE TP EMİRLERİNİ YAZ (HARD STOP)
+                            # Bu kısım bot donsa bile paranı korur
+                            ex.create_order(s, 'market', 'buy' if signal == 'short' else 'sell', amt, 
+                                            params={'posSide': signal, 'stopLossPrice': sl, 'takeProfitPrice': tp})
+                            
                             active_trades[s] = True
-                            send_msg(f"🎯 **SNIPER GİRİŞİ!**\nKoin: {s}\nYön: {signal.upper()}")
-                            threading.Thread(target=monitor, args=(s, p, amt, signal), daemon=True).start()
-                        except: pass
-                time.sleep(0.1)
-            time.sleep(10)
-        except: time.sleep(15)
+                            send_msg(f"🎯 **SMC İŞLEMİ AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}\n💰 Giriş: {entry_price}\n🛑 SL: {sl:.4f}\n✅ TP: {tp:.4f}")
+                        except Exception as e:
+                            send_msg(f"⚠️ Emir Hatası: {e}")
+            
+            # Aktif işlem takibi (Hafızayı temizlemek için)
+            for s in list(active_trades.keys()):
+                pos = ex.fetch_position(s)
+                if float(pos['entryPrice']) == 0:
+                    del active_trades[s]
+                    send_msg(f"ℹ️ {s} işlemi borsada kapandı.")
+                    
+            time.sleep(20)
+        except: time.sleep(30)
+
+# --- [5. KOMUTLAR] ---
+@bot.message_handler(commands=['bakiye'])
+def get_balance(message):
+    try:
+        bal = ex.fetch_balance()
+        usdt = bal.get('USDT', {}).get('total', 0)
+        bot.reply_to(message, f"💰 **Net Bakiye:** {usdt:.2f} USDT")
+    except: bot.reply_to(message, "⚠️ Hata.")
 
 if __name__ == "__main__":
     threading.Thread(target=main_loop, daemon=True).start()
