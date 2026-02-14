@@ -49,7 +49,7 @@ def get_signal(symbol):
         return None
     except: return None
 
-# --- [4. TEST İŞLEMİ (ONE-WAY MOD UYUMLU)] ---
+# --- [4. TEST İŞLEMİ (PARAMETRESİZ SAF EMİR)] ---
 def run_startup_test():
     try:
         symbol = 'DOGE/USDT:USDT'
@@ -59,26 +59,24 @@ def run_startup_test():
         
         ex.set_leverage(CONFIG['leverage'], symbol)
         
-        # TEK YÖNLÜ (ONE-WAY) MOD İÇİN EMİR:
-        # posSide 'net' olarak gönderilmelidir. Bu, tek yönlü modun anahtarıdır.
-        ex.create_order(symbol=symbol, type='market', side='buy', amount=amt, params={'posSide': 'net'})
+        # 40774 HATASI İÇİN SON ÇARE:
+        # Tüm opsiyonel parametreleri (posSide, tdMode vb.) sildik.
+        # Borsa emri senin paneldeki 'Tek Yönlü' ayarına göre KENDİ açacak.
+        ex.create_order(symbol, 'market', 'buy', amt)
         
-        send_msg(f"🧪 **TEST BAŞARILI!**\nDeneme İşlemi Açıldı: {symbol}\nMod: Tek Yönlü (Net)")
+        send_msg(f"🧪 **TEST BAŞARILI!**\nDeneme İşlemi Açıldı: {symbol}")
     except Exception as e:
-        send_msg(f"❌ Test Hatası: {e}\n(Tek yönlü mod parametresi gönderildi, bakiye ve API yetkilerini kontrol et.)")
+        send_msg(f"❌ Test Hatası: {e}\n⚠️ Eğer hala olmuyorsa: Bitget uygulamasında 'İşlem Tercihleri' kısmından Pozisyon Modunu bir kez 'Hedge' yapıp sonra tekrar 'Tek Yönlü' yapmayı dene.")
 
 # --- [5. ANA DÖNGÜ] ---
 def main_loop():
-    send_msg("🚀 **RADAR V33 AKTİF**\nTek Yönlü (One-way) mod uyumu sağlandı.")
-    
-    # Bot açılır açılmaz test işlemini yap
+    send_msg("🚀 **RADAR V34 AKTİF**\nParametresiz saf emir modu devrede.")
     run_startup_test()
-    
     while True:
         try:
             tickers = ex.fetch_tickers()
             symbols = [s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']]
-            for s in symbols[:200]:
+            for s in symbols[:150]:
                 if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
                     signal = get_signal(s)
                     if signal:
@@ -86,10 +84,8 @@ def main_loop():
                         amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
                         try:
                             ex.set_leverage(CONFIG['leverage'], s)
-                            # Tüm emirlerde 'net' parametresi kullanılıyor
-                            side = 'buy' if signal == 'long' else 'sell'
-                            ex.create_order(symbol=s, type='market', side=side, amount=amt, params={'posSide': 'net'})
-                            
+                            # Gerçek işlemlerde de parametresiz gönderiyoruz
+                            ex.create_order(s, 'market', 'buy' if signal == 'long' else 'sell', amt)
                             active_trades[s] = True
                             send_msg(f"🔥 **İŞLEM AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}")
                         except: pass
@@ -100,7 +96,7 @@ def main_loop():
 # --- [6. KOMUTLAR] ---
 @bot.message_handler(commands=['durum'])
 def get_status(message):
-    bot.reply_to(message, f"📡 Radar Aktif\n📈 İşlem: {len(active_trades)}")
+    bot.reply_to(message, f"📡 Radar Aktif\n📈 Aktif İşlem: {len(active_trades)}")
 
 @bot.message_handler(commands=['bakiye'])
 def get_balance(message):
