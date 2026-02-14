@@ -49,7 +49,7 @@ def get_signal(symbol):
         return None
     except: return None
 
-# --- [4. TEST İŞLEMİ (KESİN ÇÖZÜM)] ---
+# --- [4. TEST İŞLEMİ (ONE-WAY MOD UYUMLU)] ---
 def run_startup_test():
     try:
         symbol = 'DOGE/USDT:USDT'
@@ -59,23 +59,26 @@ def run_startup_test():
         
         ex.set_leverage(CONFIG['leverage'], symbol)
         
-        # 40774 HATASI İÇİN: Tüm modlarda çalışan en yalın emir tipi
-        # 'params' tamamen kaldırıldı, borsa kendi varsayılanını kullanacak
-        ex.create_order(symbol=symbol, type='market', side='buy', amount=amt)
+        # TEK YÖNLÜ (ONE-WAY) MOD İÇİN EMİR:
+        # posSide 'net' olarak gönderilmelidir. Bu, tek yönlü modun anahtarıdır.
+        ex.create_order(symbol=symbol, type='market', side='buy', amount=amt, params={'posSide': 'net'})
         
-        send_msg(f"🧪 **TEST BAŞARILI!**\nDeneme İşlemi Açıldı: {symbol}\nFiyat: {p}")
+        send_msg(f"🧪 **TEST BAŞARILI!**\nDeneme İşlemi Açıldı: {symbol}\nMod: Tek Yönlü (Net)")
     except Exception as e:
-        send_msg(f"❌ Test Hatası: {e}\n(Eğer hala olmuyorsa Bitget Ayarlarından 'Position Mode'u kontrol et.)")
+        send_msg(f"❌ Test Hatası: {e}\n(Tek yönlü mod parametresi gönderildi, bakiye ve API yetkilerini kontrol et.)")
 
 # --- [5. ANA DÖNGÜ] ---
 def main_loop():
-    send_msg("🚀 **RADAR V31 AKTİF**\nBorsa uyum modu (Mod-Bağımsız) devrede.")
+    send_msg("🚀 **RADAR V33 AKTİF**\nTek Yönlü (One-way) mod uyumu sağlandı.")
+    
+    # Bot açılır açılmaz test işlemini yap
     run_startup_test()
+    
     while True:
         try:
             tickers = ex.fetch_tickers()
             symbols = [s for s in tickers if '/USDT:USDT' in s and s not in CONFIG['blacklist']]
-            for s in symbols[:150]:
+            for s in symbols[:200]:
                 if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
                     signal = get_signal(s)
                     if signal:
@@ -83,8 +86,10 @@ def main_loop():
                         amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
                         try:
                             ex.set_leverage(CONFIG['leverage'], s)
-                            # Yalın emir yapısı
-                            ex.create_order(symbol=s, type='market', side='buy' if signal == 'long' else 'sell', amount=amt)
+                            # Tüm emirlerde 'net' parametresi kullanılıyor
+                            side = 'buy' if signal == 'long' else 'sell'
+                            ex.create_order(symbol=s, type='market', side=side, amount=amt, params={'posSide': 'net'})
+                            
                             active_trades[s] = True
                             send_msg(f"🔥 **İŞLEM AÇILDI!**\nKoin: {s}\nYön: {signal.upper()}")
                         except: pass
