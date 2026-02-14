@@ -1,6 +1,7 @@
 import ccxt
 import os
 import telebot
+import time
 
 # --- [BAĞLANTILAR] ---
 API_KEY = os.getenv('BITGET_API')
@@ -16,45 +17,51 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(TELE_TOKEN)
 
 def test_run():
-    print("🚀 TEST BAŞLADI...")
-    bot.send_message(MY_CHAT_ID, "🧪 **TEST BAŞLADI:** Hemen bir işlem açılıyor...")
+    bot.send_message(MY_CHAT_ID, "🧪 **TP/SL TESTİ BAŞLADI:** Bir saniye içinde işlem açılacak...")
     
     try:
-        # En hacimli ilk koini seç (Hızlı test için)
+        # 1. Test için uygun bir koin seç (BTC/ETH hariç rastgele biri)
         tickers = ex.fetch_tickers()
-        symbol = [s for s in tickers if '/USDT:USDT' in s and 'BTC' not in s][0]
+        symbol = [s for s in tickers if '/USDT:USDT' in s and 'BTC' not in s and 'ETH' not in s][0]
         
         price = tickers[symbol]['last']
         amt = (5.0 * 10) / price # 5 USDT x 10 Kaldıraç
         
-        # Test için dar limitler
-        sl = price * 0.99  # %1 Stop
-        tp = price * 1.01  # %1 TP
+        # Test için çok dar hedefler (%0.5)
+        sl = price * 0.995 # %0.5 Stop
+        tp = price * 1.005 # %0.5 TP
         
         ex.set_leverage(10, symbol)
         
-        # 1. Market Giriş
+        # 2. MARKET GİRİŞ (Alış)
         order = ex.create_order(symbol, 'market', 'buy', amt)
-        print(f"✅ Giriş Yapıldı: {symbol}")
+        bot.send_message(MY_CHAT_ID, f"✅ Giriş Başarılı: {symbol}\nŞimdi TP/SL gönderiliyor...")
         
-        # 2. TP ve SL Emirleri
-        ex.create_order(symbol, 'market', 'sell', amt, params={
-            'stopLossPrice': sl, 
-            'takeProfitPrice': tp
+        time.sleep(2) # Borsanın pozisyonu işlemesi için kısa bekleme
+
+        # 3. TP ve SL EMİRLERİ (Bitget Tetikleyici/Planlı Emir Yapısı)
+        # Zarar Durdur
+        ex.create_order(symbol, 'limit', 'sell', amt, None, {
+            'stopPrice': sl,
+            'triggerType': 'market',
+            'reduceOnly': True
         })
         
-        msg = (f"🎯 **TEST İŞLEMİ AÇILDI!**\n"
-               f"Koin: {symbol}\n"
-               f"Giriş: {price}\n"
-               f"🛑 SL: {sl:.4f}\n"
-               f"✅ TP: {tp:.4f}\n\n"
-               f"Şimdi borsadan (Bitget) açık emirlerini kontrol et!")
+        # Kâr Al
+        ex.create_order(symbol, 'limit', 'sell', amt, None, {
+            'stopPrice': tp,
+            'triggerType': 'market',
+            'reduceOnly': True
+        })
+        
+        msg = (f"🎯 **TEST TAMAMLANDI!**\n\n"
+               f"Lütfen Bitget uygulamasında şuraya bak:\n"
+               f"1. **Açık Pozisyonlar:** İşlemi gör.\n"
+               f"2. **Planlı Emirler (Trigger/Plan Orders):** Burada SL ({sl:.4f}) ve TP ({tp:.4f}) emirlerini görmelisin.")
         bot.send_message(MY_CHAT_ID, msg)
-        print("🚀 TEST BAŞARIYLA TAMAMLANDI. Bot duruyor.")
 
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"❌ TEST HATASI: {e}")
-        print(f"Hata: {e}")
 
 if __name__ == "__main__":
     test_run()
