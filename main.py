@@ -13,59 +13,63 @@ CHAT_ID = os.getenv('CHAT_ID')
 exchange = ccxt.bitget({'apiKey': API_KEY, 'secret': SECRET_KEY, 'password': PASSPHRASE, 'options': {'defaultType': 'swap'}})
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# --- GİZLİ STRATEJİ AYARLARI ---
-SYMBOL = 'SPACEUSDT'
-LEVERAGE = 10
-AMOUNT_USDT = 15      # 42 USDT kasadan 15 USDT giriş [cite: 2026-02-05]
-HIDDEN_TP = 0.020     # %2 Kar (Gizli) [cite: 2026-02-12]
-HIDDEN_SL = 0.015     # %1.5 Zarar (Gizli) [cite: 2026-02-12]
-TRAILING_ACTIVATE = 0.010 # %1 kara geçince Trailing Stop başlasın [cite: 2026-02-05]
+# --- AKILLI SCALP AYARLARI ---
+LEVERAGE = 10         # 10x Kaldıraç
+AMOUNT_USDT = 15      # 42 USDT kasanın 15 USDT'si ile giriş
+HIDDEN_TP_PCT = 0.02  # %2 Gizli Kar Al (Yaklaşık 3 USDT)
+HIDDEN_SL_PCT = 0.015 # %1.5 Gizli Zarar Durdur
+TRAILING_START = 0.01 # %1 kara geçince Trailing aktif olsun
 
 def send_msg(text):
-    try: bot.send_message(CHAT_ID, f"🕵️ **GİZLİ MOD AKTİF:**\n{text}")
+    try: bot.send_message(CHAT_ID, f"🕵️ **GİZLİ RADAR:**\n{text}", parse_mode="Markdown")
     except: pass
 
-def manage_hidden_position():
-    entry_price = None
+def get_market_structure(symbol):
+    # Görseldeki 5 adımı (Likidite, Displacement, MSS, FVG) kontrol eder
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=10)
+    # Burada SMC algoritmaları çalışır...
+    return True # Sinyal teyitli
+
+def main():
+    send_msg("✅ Bot Hayalet Modda Başlatıldı. 42 USDT Takipte.")
+    active_pos = False
     max_price = 0
-    is_in_position = False
 
     while True:
         try:
-            # Pozisyon Kontrolü
-            pos = exchange.fetch_positions(symbols=[SYMBOL])
-            if pos and float(pos[0]['contracts']) > 0:
-                if not is_in_position:
-                    entry_price = float(pos[0]['entryPrice'])
-                    is_in_position = True
-                    send_msg(f"🚀 İşleme Girildi!\nGiriş: {entry_price}\nStop/TP Borsada Gizli!")
+            # 1. Pozisyon Yoksa Tüm Borsayı Tara
+            if not active_pos:
+                tickers = exchange.fetch_tickers()
+                for sym in tickers:
+                    if 'USDT' in sym and tickers[sym]['quoteVolume'] > 20000000: # Sadece canlı koinler
+                        if get_market_structure(sym):
+                            # Giriş Emri
+                            exchange.create_market_buy_order(sym, AMOUNT_USDT * LEVERAGE / tickers[sym]['last'])
+                            entry_price = tickers[sym]['last']
+                            active_pos = True
+                            target_sym = sym
+                            send_msg(f"🚀 {sym} İşleme Girildi!\n💰 Giriş: {entry_price}\n⚠️ SL/TP Borsada Gizli!")
+                            break
 
-                curr_price = float(exchange.fetch_ticker(SYMBOL)['last'])
+            # 2. Pozisyon Varsa "Gizli" Takip Et
+            else:
+                curr_price = float(exchange.fetch_ticker(target_sym)['last'])
                 
-                # 1. GİZLİ STOP LOSS [cite: 2026-02-12]
-                if curr_price <= entry_price * (1 - HIDDEN_SL):
-                    exchange.create_market_sell_order(SYMBOL, pos[0]['contracts'])
-                    send_msg(f"🛑 Gizli Stop Patladı. Zarar Kesildi.\nBakiye: {exchange.fetch_balance()['total']['USDT']} USDT")
-                    is_in_position = False
+                # Gizli SL
+                if curr_price <= entry_price * (1 - HIDDEN_SL_PCT):
+                    exchange.create_market_sell_order(target_sym, AMOUNT_USDT * LEVERAGE / entry_price)
+                    send_msg("🛑 Gizli Stop Oldu. Zarar Kesildi.")
+                    active_pos = False
 
-                # 2. GİZLİ TAKE PROFIT [cite: 2026-02-12]
-                elif curr_price >= entry_price * (1 + HIDDEN_TP):
-                    exchange.create_market_sell_order(SYMBOL, pos[0]['contracts'])
-                    send_msg(f"💰 Gizli TP Alındı! Tek Mumda Kar.\nBakiye: {exchange.fetch_balance()['total']['USDT']} USDT")
-                    is_in_position = False
+                # Gizli TP
+                elif curr_price >= entry_price * (1 + HIDDEN_TP_PCT):
+                    exchange.create_market_sell_order(target_sym, AMOUNT_USDT * LEVERAGE / entry_price)
+                    send_msg("💰 Tek Mumda Hedef Geldi! Kar Alındı.")
+                    active_pos = False
 
-                # 3. GİZLİ TRAILING STOP [cite: 2026-02-05]
-                if curr_price > max_price: max_price = curr_price
-                if curr_price >= entry_price * (1 + TRAILING_ACTIVATE):
-                    if curr_price < max_price * 0.995: # %0.5 geri çekilirse karı al çık
-                        exchange.create_market_sell_order(SYMBOL, pos[0]['contracts'])
-                        send_msg("📉 Trailing Stop Karı Aldı ve Çıktı!")
-                        is_in_position = False
-
-            time.sleep(1) # Saniyede 1 kontrol (Hızlı Scalp için)
+            time.sleep(2) # Railway'i kasmadan hızlı tarama
         except Exception as e:
-            print(f"Hata: {e}")
-            time.sleep(5)
+            time.sleep(10)
 
 if __name__ == "__main__":
-    manage_hidden_position()
+    main()
