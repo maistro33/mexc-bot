@@ -117,3 +117,36 @@ if __name__ == "__main__":
     # main_loop artık burada tanımlı ve erişilebilir
     threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling(timeout=20, long_polling_timeout=10)
+@bot.message_handler(commands=['bakiye'])
+
+@bot.message_handler(commands=['bakiye'])
+def get_balance(message):
+    try:
+        bal = ex.fetch_balance()
+        # 1. Yol: Standart bakiye
+        usdt = bal.get('USDT', {}).get('total', 0)
+        
+        # 2. Yol: Eğer yukarıdaki boşsa 'total' sözlüğünden çek
+        if usdt == 0:
+            usdt = bal.get('total', {}).get('USDT', 0)
+            
+        # 3. Yol: Eğer hala 0 ise (V2 vadeli hesaplar için)
+        if usdt == 0 and 'info' in bal:
+            for item in bal['info'].get('data', []):
+                if item.get('marginCoin') == 'USDT':
+                    usdt = float(item.get('available', 0))
+                    break
+
+        bot.reply_to(message, f"💰 **Güncel Bakiyen:** {usdt:.2f} USDT")
+    except Exception as e:
+        print(f"Bakiye Hatası: {e}")
+        bot.reply_to(message, "⚠️ Bakiye şu an borsadan alınamadı.")
+O def get_balance(message):
+    try:
+        # Senin 'ex' bağlantını kullanarak bakiye çekiyoruz
+        bal = ex.fetch_balance()
+        # USDT miktarını en güvenli yoldan alıyoruz
+        usdt = bal['total']['USDT'] if 'USDT' in bal['total'] else 0
+        bot.reply_to(message, f"💰 **Güncel Bakiyen:** {usdt:.2f} USDT")
+    except Exception as e:
+        bot.reply_to(message, "⚠️ Bakiye şu an çekilemedi, lütfen tekrar dene.")
