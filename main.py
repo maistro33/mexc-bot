@@ -14,55 +14,52 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(os.getenv('TELE_TOKEN'))
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-def test_run():
-    bot.send_message(MY_CHAT_ID, "🚀 **SON NOKTA TESTİ:** Planlı Emirler protokolü...")
+def virtual_trade():
+    bot.send_message(MY_CHAT_ID, "🛡️ **SANAL TAKİP MODU AKTİF:** Bot fiyatı izliyor, borsa emri beklenmiyor...")
     
     try:
         symbol = 'SOL/USDT:USDT'
-        price = ex.fetch_ticker(symbol)['last']
-        amt = (10.0 * 10) / price 
+        ticker = ex.fetch_ticker(symbol)
+        entry_price = ticker['last']
+        amt = (10.0 * 10) / entry_price 
         
-        sl = round(price * 0.98, 4)
-        tp = round(price * 1.05, 4)
+        # Hedefler
+        sl_level = round(entry_price * 0.985, 4) # %1.5 Zarar Kes
+        tp_level = round(entry_price * 1.03, 4)  # %3 Kar Al
         
         ex.set_leverage(10, symbol)
         
-        # 1. ADIM: POZİSYONU AÇ
-        # Sadece giriş emri gönderiyoruz, içine hiçbir TP/SL karıştırmıyoruz.
+        # 1. Pozisyonu Aç
         ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, "📈 Pozisyon açıldı. Planlı emirler yükleniyor...")
-        
-        time.sleep(3)
+        bot.send_message(MY_CHAT_ID, f"🚀 Giriş yapıldı: {entry_price}\n🎯 TP: {tp_level}\n🛑 SL: {sl_level}\nBot nöbete başladı...")
 
-        # 2. ADIM: STOP LOSS (PLANLI EMİR OLARAK)
-        # Bitget'in reddedemeyeceği 'trigger' formatı:
-        try:
-            ex.create_order(symbol, 'limit', 'sell', amt, None, {
-                'stopPrice': sl,
-                'triggerType': 'market',
-                'posSide': 'long',
-                'reduceOnly': True
-            })
-            bot.send_message(MY_CHAT_ID, f"🛑 SL Planlı Emirlere Eklendi: {sl}")
-        except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"⚠️ SL Hatası: {e}")
-
-        time.sleep(1)
-
-        # 3. ADIM: TAKE PROFIT (PLANLI EMİR OLARAK)
-        try:
-            ex.create_order(symbol, 'limit', 'sell', amt, None, {
-                'stopPrice': tp,
-                'triggerType': 'market',
-                'posSide': 'long',
-                'reduceOnly': True
-            })
-            bot.send_message(MY_CHAT_ID, f"✅ TP Planlı Emirlere Eklendi: {tp}")
-        except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"⚠️ TP Hatası: {e}")
+        # 2. Takip Döngüsü (Bot burada bekçilik yapar)
+        while True:
+            try:
+                current_ticker = ex.fetch_ticker(symbol)
+                current_price = current_ticker['last']
+                
+                # Kar Al Kontrolü
+                if current_price >= tp_level:
+                    ex.create_order(symbol, 'market', 'sell', amt, params={'posSide': 'long', 'reduceOnly': True})
+                    bot.send_message(MY_CHAT_ID, f"✅ **KAR ALINDI!** Fiyat: {current_price}\nİşlem bot tarafından kapatıldı.")
+                    break
+                
+                # Zarar Kes Kontrolü
+                if current_price <= sl_level:
+                    ex.create_order(symbol, 'market', 'sell', amt, params={'posSide': 'long', 'reduceOnly': True})
+                    bot.send_message(MY_CHAT_ID, f"🛑 **STOP OLUNDU!** Fiyat: {current_price}\nZarar kesildi.")
+                    break
+                
+                # Her 5 saniyede bir kontrol et (Borsayı yormadan)
+                time.sleep(5)
+                
+            except Exception as e:
+                print(f"Döngü hatası: {e}")
+                time.sleep(10)
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ SİSTEM HATASI: {e}")
+        bot.send_message(MY_CHAT_ID, f"❌ HATA: {e}")
 
 if __name__ == "__main__":
-    test_run()
+    virtual_trade()
