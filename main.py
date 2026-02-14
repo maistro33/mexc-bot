@@ -14,52 +14,68 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(os.getenv('TELE_TOKEN'))
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-def virtual_trade():
-    bot.send_message(MY_CHAT_ID, "🛡️ **SANAL TAKİP MODU AKTİF:** Bot fiyatı izliyor, borsa emri beklenmiyor...")
-    
-    try:
-        symbol = 'SOL/USDT:USDT'
-        ticker = ex.fetch_ticker(symbol)
-        entry_price = ticker['last']
-        amt = (10.0 * 10) / entry_price 
-        
-        # Hedefler
-        sl_level = round(entry_price * 0.985, 4) # %1.5 Zarar Kes
-        tp_level = round(entry_price * 1.03, 4)  # %3 Kar Al
-        
-        ex.set_leverage(10, symbol)
-        
-        # 1. Pozisyonu Aç
-        ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, f"🚀 Giriş yapıldı: {entry_price}\n🎯 TP: {tp_level}\n🛑 SL: {sl_level}\nBot nöbete başladı...")
+# --- [STRATEJİ AYARLARI] ---
+SYMBOL = 'SOL/USDT:USDT'
+LEVERAGE = 10
+USDT_AMOUNT = 10.0
+TP1_RATIO = 1.015       # %1.5 kârda yarısını kapat
+SL_RATIO = 0.985        # %1.5 zarar kes (başlangıç)
+TRAILING_DIST = 0.015   # %1.5 mesafeden takip et (Trailing)
+BE_PLUS = 1.002         # Stopu girişin %0.20 üzerine taşı (Komisyon koruması)
 
-        # 2. Takip Döngüsü (Bot burada bekçilik yapar)
+def send_msg(text):
+    try:
+        bot.send_message(MY_CHAT_ID, text, parse_mode='Markdown')
+    except: pass
+
+def start_trade():
+    try:
+        # 1. HAZIRLIK VE GİRİŞ
+        price = ex.fetch_ticker(SYMBOL)['last']
+        amt = (USDT_AMOUNT * LEVERAGE) / price
+        ex.set_leverage(LEVERAGE, SYMBOL)
+        
+        ex.create_order(SYMBOL, 'market', 'buy', amt, params={'posSide': 'long'})
+        
+        entry_price = price
+        sl_price = round(entry_price * SL_RATIO, 4)
+        tp1_price = round(entry_price * TP1_RATIO, 4)
+        
+        send_msg(f"🚀 **İşlem Başladı (SOL)**\n💰 Giriş: {entry_price}\n🛑 İlk Stop: {sl_price}\n🎯 TP1 Hedefi: {tp1_price}")
+
+        tp1_done = False
+        trailing_sl = sl_price
+        
         while True:
-            try:
-                current_ticker = ex.fetch_ticker(symbol)
-                current_price = current_ticker['last']
+            time.sleep(5) # 5 saniyede bir kontrol
+            curr_price = ex.fetch_ticker(SYMBOL)['last']
+            
+            # A. ZARAR KES KONTROLÜ
+            if curr_price <= trailing_sl:
+                ex.create_order(SYMBOL, 'market', 'sell', amt, params={'posSide': 'long', 'reduceOnly': True})
+                send_msg(f"🛑 **Stop Kapatıldı!**\nFiyat: {curr_price}\nİşlem sonlandırıldı.")
+                break
+
+            # B. TP1 KONTROLÜ (YARISINI KAPAT & BE+ TAŞI)
+            if not tp1_done and curr_price >= tp1_price:
+                half_amt = amt / 2
+                ex.create_order(SYMBOL, 'market', 'sell', half_amt, params={'posSide': 'long', 'reduceOnly': True})
+                amt = half_amt # Kalan miktar
+                tp1_done = True
                 
-                # Kar Al Kontrolü
-                if current_price >= tp_level:
-                    ex.create_order(symbol, 'market', 'sell', amt, params={'posSide': 'long', 'reduceOnly': True})
-                    bot.send_message(MY_CHAT_ID, f"✅ **KAR ALINDI!** Fiyat: {current_price}\nİşlem bot tarafından kapatıldı.")
-                    break
-                
-                # Zarar Kes Kontrolü
-                if current_price <= sl_level:
-                    ex.create_order(symbol, 'market', 'sell', amt, params={'posSide': 'long', 'reduceOnly': True})
-                    bot.send_message(MY_CHAT_ID, f"🛑 **STOP OLUNDU!** Fiyat: {current_price}\nZarar kesildi.")
-                    break
-                
-                # Her 5 saniyede bir kontrol et (Borsayı yormadan)
-                time.sleep(5)
-                
-            except Exception as e:
-                print(f"Döngü hatası: {e}")
-                time.sleep(10)
+                # Stopu Girişin %0.20 üstüne taşı (Risk-Free)
+                trailing_sl = round(entry_price * BE_PLUS, 4)
+                send_msg(f"✅ **TP1 Tamamlandı!**\nPozisyonun %50'si satıldı.\n🛡️ **Risk-Free Modu:** Stop seviyesi {trailing_sl} (BE+) noktasına taşındı. Artık zarar ihtimali yok!")
+
+            # C. TRAILING STOP KONTROLÜ (TP1'den sonra çalışır)
+            if tp1_done:
+                potential_sl = round(curr_price * (1 - TRAILING_DIST), 4)
+                if potential_sl > trailing_sl:
+                    trailing_sl = potential_sl
+                    send_msg(f"🔄 **Trailing Güncellendi**\nYeni Takip Seviyesi: {trailing_sl}")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"❌ HATA: {e}")
+        send_msg(f"❌ Hata: {str(e)}")
 
 if __name__ == "__main__":
-    virtual_trade()
+    start_trade()
