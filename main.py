@@ -3,7 +3,6 @@ import time
 import telebot
 import os
 import threading
-import math
 from datetime import datetime
 
 # --- [1. BAĞLANTILAR] ---
@@ -14,115 +13,97 @@ TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
 ex = ccxt.bitget({
-    'apiKey': API_KEY,
-    'secret': API_SEC,
-    'password': PASSPHRASE,
+    'apiKey': API_KEY, 'secret': API_SEC, 'password': PASSPHRASE,
     'options': {'defaultType': 'swap', 'defaultMarketMode': 'one_way'},
     'enableRateLimit': True
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. AGRESİF SCALP AYARLARI] ---
+# --- [2. RADAR & SMC AYARLARI] ---
 CONFIG = {
-    'entry_usdt': 15.0,          # 42 USDT bakiye için ideal giriş [cite: 2026-02-05]
-    'leverage': 10,              # Memecoin oynaklığı için 10x güvenlidir [cite: 2026-02-05]
-    'max_active_trades': 2,      # Bakiyeyi bölerek riski dağıtıyoruz [cite: 2026-02-12]
-    'volatility_threshold': 1.5, # Hacim patlaması (Ortalamanın 1.5 katı) [cite: 2026-02-05]
-    'tp_target': 0.03,           # %3 Kâr hedefi (Hızlı çıkış) [cite: 2026-02-12]
-    'sl_target': 0.015,          # %1.5 Zarar durdur (Kasa koruması) [cite: 2026-02-12]
-    'timeframe': '1m'            # En hızlı tepki için 1 dakikalık grafik
+    'entry_usdt': 15.0,
+    'leverage': 10,
+    'tp_target': 0.03, # %3 Kar
+    'sl_target': 0.015, # %1.5 Zarar
+    'max_active_trades': 2
 }
 
 active_trades = {}
 
-def round_amount(symbol, amount):
+# --- [3. TELEGRAM KOMUTLARI - TAMİR EDİLDİ] ---
+@bot.message_handler(commands=['bakiye'])
+def get_balance(message):
     try:
-        market = ex.market(symbol)
-        precision = market['precision']['amount']
-        step = int(-math.log10(precision)) if precision < 1 else 0
-        return round(amount, step) if step > 0 else int(amount)
-    except: return round(amount, 2)
+        bal = ex.fetch_balance({'type': 'swap'})
+        total = bal['total']['USDT']
+        bot.reply_to(message, f"💰 **Güncel Bakiye:** {total:.2f} USDT")
+    except Exception as e: bot.reply_to(message, "Bakiye alınamadı.")
 
-# --- [3. MEMECOIN & VOLATİLİTE RADARI] ---
-def is_high_potential(symbol):
+@bot.message_handler(commands=['durum'])
+def get_status(message):
+    msg = f"📡 **Radar Aktif**\n📈 Aktif İşlem: {len(active_trades)}\n🎯 Strateji: SMC + FVG + MSS"
+    bot.reply_to(message, msg)
+
+# --- [4. SMC + FVG RADAR MOTORU] ---
+def is_smc_setup(symbol):
     try:
-        # Zaman Filtresi: Manipülasyon koruması [cite: 2026-02-05]
-        now_sec = datetime.now().second
-        if now_sec < 2 or now_sec > 58: return False
+        bars = ex.fetch_ohlcv(symbol, timeframe='1m', limit=30)
+        c = [b[4] for b in bars] # Kapanışlar
+        l = [b[3] for b in bars] # En düşükler
+        h = [b[2] for b in bars] # En yüksekler
+        v = [b[5] for b in bars] # Hacim
 
-        bars = ex.fetch_ohlcv(symbol, timeframe=CONFIG['timeframe'], limit=20)
-        v = [b[5] for b in bars] # Hacim verileri
-        c = [b[4] for b in bars] # Kapanış verileri
+        # 1. Likidite & MSS Onayı [cite: 2026-02-05]
+        swing_low = min(l[-20:-5])
+        liq_taken = l[-1] < swing_low
+        mss_confirmed = c[-1] > max(c[-5:-1]) # Gövde kapanış [cite: 2026-02-05]
+        
+        # 2. FVG Taraması (Fair Value Gap)
+        # Örnek: 3 mum önceki mumun tepesi ile mevcut mumun dibi arasındaki boşluk
+        fvg_exists = l[-1] > h[-3] 
+        
+        # 3. Hacim Patlaması [cite: 2026-02-05]
+        vol_ok = v[-1] > (sum(v[-10:-1]) / 9 * 1.5)
 
-        avg_vol = sum(v[-11:-1]) / 10
-        # 1. Hacim Patlaması Onayı [cite: 2026-02-05]
-        vol_ok = v[-1] > (avg_vol * CONFIG['volatility_threshold'])
-        
-        # 2. SMC Kuralı: Likidite sonrası güçlü gövde kapanışı [cite: 2026-02-05]
-        is_bullish = c[-1] > max(c[-5:-1]) 
-        
-        return vol_ok and is_bullish
+        if liq_taken and mss_confirmed and vol_ok:
+            return True
+        return False
     except: return False
 
-# --- [4. GİZLİ TAKİP MOTORU] ---
-def hidden_monitor(symbol, side, entry, amount):
-    """Borsaya emir göndermeden saniyelik takip yapar [cite: 2026-02-12]"""
-    tp_price = entry * (1 + CONFIG['tp_target'])
-    sl_price = entry * (1 - CONFIG['sl_target'])
-    
+# --- [5. GİZLİ TAKİP] ---
+def monitor(symbol, entry, amount):
+    tp, sl = entry * (1 + CONFIG['tp_target']), entry * (1 - CONFIG['sl_target'])
     while symbol in active_trades:
         try:
-            ticker = ex.fetch_ticker(symbol)
-            curr_p = ticker['last']
-            
-            # Gizli Kar Al: %3 gördüğü an kaçar [cite: 2026-02-12]
-            if curr_p >= tp_price:
+            curr = ex.fetch_ticker(symbol)['last']
+            if curr >= tp or curr <= sl:
                 ex.create_market_order(symbol, 'sell', amount)
-                bot.send_message(MY_CHAT_ID, f"💰 **KAR ALINDI!**\n{symbol}\nKâr: %3\nBakiye Büyüyor!")
+                msg = "💰 KAR ALINDI" if curr >= tp else "🛑 ZARAR KESİLDİ"
+                bot.send_message(MY_CHAT_ID, f"{msg}\nKoin: {symbol}")
                 del active_trades[symbol]
                 break
-                
-            # Gizli Stop: %1.5 düştüğü an korur [cite: 2026-02-05]
-            if curr_p <= sl_price:
-                ex.create_market_order(symbol, 'sell', amount)
-                bot.send_message(MY_CHAT_ID, f"🛑 **ZARAR KESİLDİ**\n{symbol}\nKasa Korumaya Alındı.")
-                del active_trades[symbol]
-                break
-                
-            time.sleep(1) # Memecoinler için 1 saniyelik takip
+            time.sleep(1)
         except: break
 
 def main_loop():
-    bot.send_message(MY_CHAT_ID, "🚀 **SNIPER V11 AKTİF**\n🎯 Hedef: Yeni & Hareketli Memecoinler\n🕵️ Mod: Gizli Hızlı Scalp")
+    bot.send_message(MY_CHAT_ID, "🚀 **SNIPER V12 BAŞLATILDI**\nSMC & FVG Radarı Devrede.")
     while True:
         try:
-            markets = ex.fetch_tickers()
-            # En yüksek hacimli ilk 50 koin (Memecoinler genelde buradadır)
-            sorted_symbols = sorted(
-                [s for s in markets if '/USDT:USDT' in s],
-                key=lambda x: markets[x]['quoteVolume'] if markets[x]['quoteVolume'] else 0,
-                reverse=True
-            )[:50]
-            
-            for sym in sorted_symbols:
-                if sym in active_trades or len(active_trades) >= CONFIG['max_active_trades']: continue
-                
-                if is_high_potential(sym):
-                    price = markets[sym]['last']
-                    ex.set_leverage(CONFIG['leverage'], sym)
-                    amount = round_amount(sym, (CONFIG['entry_usdt'] * CONFIG['leverage']) / price)
-                    
-                    # Giriş (Tek Yönlü Mod) [cite: 2026-02-12]
-                    ex.create_market_order(sym, 'buy', amount)
-                    active_trades[sym] = True
-                    
-                    bot.send_message(MY_CHAT_ID, f"🔥 **SICAK FIRSAT YAKALANDI**\nKoin: {sym}\nGiriş: {price}\n🚀 Hızlı Kâr Bekleniyor...")
-                    threading.Thread(target=hidden_monitor, args=(sym, 'buy', price, amount), daemon=True).start()
-                
-            time.sleep(10) 
-        except Exception as e:
+            tickers = ex.fetch_tickers()
+            symbols = sorted([s for s in tickers if '/USDT:USDT' in s], key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
+            for s in symbols:
+                if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
+                    if is_smc_setup(s):
+                        p = tickers[s]['last']
+                        amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
+                        ex.create_market_order(s, 'buy', amt)
+                        active_trades[s] = True
+                        bot.send_message(MY_CHAT_ID, f"🔥 **İŞLEM AÇILDI**\n{s}\nGiriş: {p}")
+                        threading.Thread(target=monitor, args=(s, p, amt), daemon=True).start()
             time.sleep(10)
+        except: time.sleep(10)
 
 if __name__ == "__main__":
-    ex.load_markets()
-    main_loop()
+    # Hem radarı hem Telegram'ı aynı anda çalıştırır
+    threading.Thread(target=main_loop, daemon=True).start()
+    bot.infinity_polling()
