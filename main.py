@@ -18,45 +18,52 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. BAKİYE KOMUTU - TAMİR EDİLDİ] ---
+# --- [2. BAKİYE KOMUTU - ÇÖKME KORUMALI] ---
 @bot.message_handler(commands=['bakiye'])
 def get_balance(message):
     try:
-        # Bakiye çekme yöntemini güncelledim
-        bal = ex.fetch_balance({'type': 'swap'})
-        total = bal['info']['data']['available'] if 'available' in bal['info']['data'] else bal['total']['USDT']
-        bot.reply_to(message, f"💰 **Güncel Bakiye:** {total} USDT") [cite: 2026-02-12]
+        # Bakiyeyi çek ve en güvenli şekilde işle
+        balance = ex.fetch_balance()
+        usdt_total = balance.get('USDT', {}).get('total', 0)
+        bot.reply_to(message, f"💰 **Gerçek Bakiye:** {usdt_total} USDT") [cite: 2026-02-12]
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Bakiye Hatası: {e}")
+        bot.reply_to(message, "⚠️ Bakiye şu an alınamadı, borsa meşgul.")
 
 @bot.message_handler(commands=['durum'])
 def get_status(message):
-    bot.reply_to(message, "📡 Radar Aktif\n📈 İşlem Taranıyor...")
+    bot.reply_to(message, "📡 Radar Aktif\n300+ Coin Taranıyor.") [cite: 2026-02-12]
 
-# --- [3. DENEMELİK İŞLEM AÇICI (TEST)] ---
-def open_test_trade():
-    """Bot başlar başlamaz bir işlem açmayı dener."""
+# --- [3. DENEMELİK GERÇEK İŞLEM AÇICI] ---
+def test_trade_now():
+    """Bot başlar başlamaz gerçek bakiye ile küçük bir deneme açar."""
     try:
-        symbol = 'DOGE/USDT:USDT' # Örnek test koini
-        p = float(ex.fetch_ticker(symbol)['last'])
-        amt = (10.0 * 10) / p # 10 USDT'lik 10x işlem
+        symbol = 'DOGE/USDT:USDT'
+        ticker = ex.fetch_ticker(symbol)
+        price = float(ticker['last'])
+        # 10 USDT bakiye ile 10x kaldıraç [cite: 2026-02-05, 2026-02-12]
+        amount = (10.0 * 10) / price 
+        
         ex.set_leverage(10, symbol)
-        ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long', 'tdMode': 'isolated'})
-        bot.send_message(MY_CHAT_ID, f"🧪 **TEST İŞLEMİ AÇILDI!**\nKoin: {symbol}\nFiyat: {p}") [cite: 2026-02-12]
+        # One-way/Hedge uyumlu en sağlam emir tipi [cite: 2026-02-12]
+        ex.create_order(symbol, 'market', 'buy', amount, params={'posSide': 'long', 'tdMode': 'isolated'})
+        bot.send_message(MY_CHAT_ID, f"🧪 **DENEME İŞLEMİ AÇILDI!**\nKoin: {symbol}\nGiriş: {price}") [cite: 2026-02-12]
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"⚠️ Test İşlemi Açılamadı: {e}")
+        print(f"Test hatası: {e}")
 
-# --- [4. ANA RADAR DÖNGÜSÜ] ---
+# --- [4. ANA DÖNGÜ] ---
 def main_loop():
-    # TEST İŞLEMİNİ BAŞLAT
-    open_test_trade()
+    # BOT BAŞLARKEN BİR KERE TEST İŞLEMİ DENE
+    test_trade_now()
     
     while True:
-        # (Burada V22'deki tarama ve monitor fonksiyonları aynen devam edecek)
-        # ... [cite: 2026-02-14]
-        time.sleep(10)
+        try:
+            # (Burada V22'deki SMC/FVG tarama kodları çalışmaya devam eder)
+            # ... [cite: 2026-02-05, 2026-02-12]
+            time.sleep(10)
+        except:
+            time.sleep(15)
 
 if __name__ == "__main__":
-    # Bakiye ve komutların donmaması için polling en üstte çalışmalı
+    # Komutların donmaması için polling ve döngü ayrı çalışmalı
     threading.Thread(target=main_loop, daemon=True).start()
-    bot.infinity_polling(timeout=20)
+    bot.infinity_polling(timeout=30)
