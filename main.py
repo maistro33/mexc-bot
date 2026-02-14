@@ -19,53 +19,59 @@ ex = ccxt.bitget({
 })
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- [2. RADAR & SMC AYARLARI] ---
+# --- [2. RADAR & FİLTRE AYARLARI] ---
 CONFIG = {
     'entry_usdt': 15.0,
     'leverage': 10,
-    'tp_target': 0.03, # %3 Kar
-    'sl_target': 0.015, # %1.5 Zarar
-    'max_active_trades': 2
+    'tp_target': 0.04,  # %4 Kar (Memecoin volatilitesi için)
+    'sl_target': 0.018, # %1.8 Zarar durdur
+    'max_active_trades': 2,
+    # HANTAL KOİNLER (KARA LİSTE) - Bunlara bakmaz
+    'blacklist': [
+        'BTC/USDT:USDT', 'ETH/USDT:USDT', 'XRP/USDT:USDT', 'ADA/USDT:USDT', 
+        'SOL/USDT:USDT', 'AVAX/USDT:USDT', 'DOT/USDT:USDT', 'LINK/USDT:USDT',
+        'LTC/USDT:USDT', 'BCH/USDT:USDT', 'TRX/USDT:USDT', 'ETC/USDT:USDT'
+    ]
 }
 
 active_trades = {}
 
-# --- [3. TELEGRAM KOMUTLARI - TAMİR EDİLDİ] ---
+# --- [3. TELEGRAM KOMUTLARI] ---
 @bot.message_handler(commands=['bakiye'])
 def get_balance(message):
     try:
         bal = ex.fetch_balance({'type': 'swap'})
         total = bal['total']['USDT']
-        bot.reply_to(message, f"💰 **Güncel Bakiye:** {total:.2f} USDT")
-    except Exception as e: bot.reply_to(message, "Bakiye alınamadı.")
+        bot.reply_to(message, f"💰 **Bakiye:** {total:.2f} USDT")
+    except: bot.reply_to(message, "⚠️ Hata: Bakiye alınamadı.")
 
 @bot.message_handler(commands=['durum'])
 def get_status(message):
-    msg = f"📡 **Radar Aktif**\n📈 Aktif İşlem: {len(active_trades)}\n🎯 Strateji: SMC + FVG + MSS"
+    msg = f"📡 **Radar:** 300+ Coin Taranıyor\n🚫 **Filtre:** Hantal coinler elendi\n📈 **Aktif:** {len(active_trades)} işlem"
     bot.reply_to(message, msg)
 
-# --- [4. SMC + FVG RADAR MOTORU] ---
-def is_smc_setup(symbol):
+# --- [4. SMC + FVG + VOLATİLİTE MOTORU] ---
+def is_perfect_setup(symbol):
     try:
         bars = ex.fetch_ohlcv(symbol, timeframe='1m', limit=30)
-        c = [b[4] for b in bars] # Kapanışlar
-        l = [b[3] for b in bars] # En düşükler
-        h = [b[2] for b in bars] # En yüksekler
+        c = [b[4] for b in bars] # Kapanış
+        l = [b[3] for b in bars] # Düşük
+        h = [b[2] for b in bars] # Yüksek
         v = [b[5] for b in bars] # Hacim
 
-        # 1. Likidite & MSS Onayı [cite: 2026-02-05]
+        # 1. SMC: Likidite süpürme ve MSS (Market Kırılımı)
         swing_low = min(l[-20:-5])
         liq_taken = l[-1] < swing_low
-        mss_confirmed = c[-1] > max(c[-5:-1]) # Gövde kapanış [cite: 2026-02-05]
+        mss_confirmed = c[-1] > max(c[-5:-1])
         
-        # 2. FVG Taraması (Fair Value Gap)
-        # Örnek: 3 mum önceki mumun tepesi ile mevcut mumun dibi arasındaki boşluk
-        fvg_exists = l[-1] > h[-3] 
+        # 2. FVG (Boşluk) Taraması
+        fvg_exists = l[-1] > h[-3]
         
-        # 3. Hacim Patlaması [cite: 2026-02-05]
-        vol_ok = v[-1] > (sum(v[-10:-1]) / 9 * 1.5)
+        # 3. Volatilite & Hacim Patlaması (Ani hareket)
+        avg_vol = sum(v[-10:-1]) / 9
+        vol_boost = v[-1] > (avg_vol * 1.8) # Hacim 1.8 kat artmış olmalı
 
-        if liq_taken and mss_confirmed and vol_ok:
+        if liq_taken and mss_confirmed and vol_boost:
             return True
         return False
     except: return False
@@ -78,32 +84,37 @@ def monitor(symbol, entry, amount):
             curr = ex.fetch_ticker(symbol)['last']
             if curr >= tp or curr <= sl:
                 ex.create_market_order(symbol, 'sell', amount)
-                msg = "💰 KAR ALINDI" if curr >= tp else "🛑 ZARAR KESİLDİ"
-                bot.send_message(MY_CHAT_ID, f"{msg}\nKoin: {symbol}")
+                msg = "💰 **KAR ALINDI!**" if curr >= tp else "🛑 **STOP OLDU.**"
+                bot.send_message(MY_CHAT_ID, f"{msg}\nKoin: {symbol}\nFiyat: {curr}")
                 del active_trades[symbol]
                 break
             time.sleep(1)
         except: break
 
 def main_loop():
-    bot.send_message(MY_CHAT_ID, "🚀 **SNIPER V12 BAŞLATILDI**\nSMC & FVG Radarı Devrede.")
+    bot.send_message(MY_CHAT_ID, "🚀 **SNIPER V13 AKTİF!**\n300+ Coin taranıyor, hantallar elendi.")
     while True:
         try:
             tickers = ex.fetch_tickers()
-            symbols = sorted([s for s in tickers if '/USDT:USDT' in s], key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
-            for s in symbols:
+            # Bütün vadeli koinleri al, Kara listeyi çıkar ve hacme göre sırala
+            all_symbols = [
+                s for s in tickers 
+                if '/USDT:USDT' in s and s not in CONFIG['blacklist']
+            ]
+            sorted_symbols = sorted(all_symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:300]
+            
+            for s in sorted_symbols:
                 if s not in active_trades and len(active_trades) < CONFIG['max_active_trades']:
-                    if is_smc_setup(s):
+                    if is_perfect_setup(s):
                         p = tickers[s]['last']
                         amt = (CONFIG['entry_usdt'] * CONFIG['leverage']) / p
                         ex.create_market_order(s, 'buy', amt)
                         active_trades[s] = True
-                        bot.send_message(MY_CHAT_ID, f"🔥 **İŞLEM AÇILDI**\n{s}\nGiriş: {p}")
+                        bot.send_message(MY_CHAT_ID, f"🔥 **SICAK FIRSAT!**\nKoin: {s}\nGiriş: {p}\n🎯 FVG & MSS Onaylı.")
                         threading.Thread(target=monitor, args=(s, p, amt), daemon=True).start()
-            time.sleep(10)
+            time.sleep(5) # Daha hızlı tarama için döngü süresini düşürdüm
         except: time.sleep(10)
 
 if __name__ == "__main__":
-    # Hem radarı hem Telegram'ı aynı anda çalıştırır
     threading.Thread(target=main_loop, daemon=True).start()
     bot.infinity_polling()
