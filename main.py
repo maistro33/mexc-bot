@@ -15,7 +15,7 @@ bot = telebot.TeleBot(os.getenv('TELE_TOKEN'))
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
 def test_run():
-    bot.send_message(MY_CHAT_ID, "🛠️ **V4 SON DENEME:** Emirler tek tek ve gecikmeli gidiyor...")
+    bot.send_message(MY_CHAT_ID, "🚀 **SON NOKTA TESTİ:** Planlı Emirler protokolü...")
     
     try:
         symbol = 'SOL/USDT:USDT'
@@ -28,35 +28,41 @@ def test_run():
         ex.set_leverage(10, symbol)
         
         # 1. ADIM: POZİSYONU AÇ
+        # Sadece giriş emri gönderiyoruz, içine hiçbir TP/SL karıştırmıyoruz.
         ex.create_order(symbol, 'market', 'buy', amt, params={'posSide': 'long'})
-        bot.send_message(MY_CHAT_ID, "🚀 Pozisyon açıldı. 5 saniye bekleniyor...")
+        bot.send_message(MY_CHAT_ID, "📈 Pozisyon açıldı. Planlı emirler yükleniyor...")
         
-        time.sleep(5) # Borsanın kendine gelmesi için uzun süre
+        time.sleep(3)
 
-        # 2. ADIM: SADECE STOP LOSS GÖNDER
+        # 2. ADIM: STOP LOSS (PLANLI EMİR OLARAK)
+        # Bitget'in reddedemeyeceği 'trigger' formatı:
         try:
-            ex.create_order(symbol, 'market', 'sell', amt, params={
-                'stopLossPrice': sl,
-                'posSide': 'long'
+            ex.create_order(symbol, 'limit', 'sell', amt, None, {
+                'stopPrice': sl,
+                'triggerType': 'market',
+                'posSide': 'long',
+                'reduceOnly': True
             })
-            bot.send_message(MY_CHAT_ID, f"🛑 SL eklendi: {sl}")
+            bot.send_message(MY_CHAT_ID, f"🛑 SL Planlı Emirlere Eklendi: {sl}")
         except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"❌ SL Hatası: {e}")
+            bot.send_message(MY_CHAT_ID, f"⚠️ SL Hatası: {e}")
 
-        time.sleep(2) # İki emir çakışmasın diye bekleme
+        time.sleep(1)
 
-        # 3. ADIM: SADECE TAKE PROFIT GÖNDER
+        # 3. ADIM: TAKE PROFIT (PLANLI EMİR OLARAK)
         try:
-            ex.create_order(symbol, 'market', 'sell', amt, params={
-                'takeProfitPrice': tp,
-                'posSide': 'long'
+            ex.create_order(symbol, 'limit', 'sell', amt, None, {
+                'stopPrice': tp,
+                'triggerType': 'market',
+                'posSide': 'long',
+                'reduceOnly': True
             })
-            bot.send_message(MY_CHAT_ID, f"✅ TP eklendi: {tp}")
+            bot.send_message(MY_CHAT_ID, f"✅ TP Planlı Emirlere Eklendi: {tp}")
         except Exception as e:
-            bot.send_message(MY_CHAT_ID, f"❌ TP Hatası: {e}")
+            bot.send_message(MY_CHAT_ID, f"⚠️ TP Hatası: {e}")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"⚠️ Genel Hata: {e}")
+        bot.send_message(MY_CHAT_ID, f"❌ SİSTEM HATASI: {e}")
 
 if __name__ == "__main__":
     test_run()
