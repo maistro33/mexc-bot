@@ -19,8 +19,9 @@ MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 LEVERAGE = 10           
 MAX_ACTIVE_TRADES = 3   
 RR_RATIO = 2.0          
-TP1_PERCENT = 0.8       
-BE_PLUS_RATIO = 1.001   
+TP1_ACTIVATE_LEVEL = 0.8  # %0.8 karda koruma aktif olur
+# Komisyonları karşılamak için girişin %0.15 önüne stop koyar
+BE_COMMISSION_OFFSET = 0.0015 
 
 active_trades = {}
 
@@ -43,16 +44,14 @@ def check_smc_signal(symbol):
         min_l = min([x[3] for x in recent])
         m3, m2, m1 = ohlcv[-3], ohlcv[-2], ohlcv[-1]
         
-        # Long
         if m2[3] < min_l and m1[4] > m2[2] and m1[3] > m3[2]:
             return {'side': 'long', 'entry': (m1[3] + m3[2]) / 2, 'sl': m2[3]}
-        # Short
         if m2[2] > max_h and m1[4] < m2[3] and m1[2] < m3[3]:
             return {'side': 'short', 'entry': (m1[2] + m3[3]) / 2, 'sl': m2[2]}
         return None
     except: return None
 
-# --- [İŞLEM VE TAKİP YÖNETİMİ] ---
+# --- [TAKİP VE YÖNETİM] ---
 def manage_trades():
     global active_trades
     while True:
@@ -63,30 +62,34 @@ def manage_trades():
                 pnl = round(((curr_p - t['entry']) if t['side'] == 'long' else (t['entry'] - curr_p)) / t['entry'] * 100 * LEVERAGE, 2)
                 active_trades[symbol]['pnl'] = pnl
 
-                # TP1 & Risk-Free
-                if not t['tp1_done'] and pnl >= TP1_PERCENT:
-                    ex.create_order(symbol, 'market', 'sell' if t['side'] == 'long' else 'buy', t['amt'] * 0.5, params={'posSide': t['side'], 'reduceOnly': True})
-                    active_trades[symbol].update({
-                        'tp1_done': True, 'amt': t['amt'] * 0.5, 
-                        'sl': t['entry'] * (BE_PLUS_RATIO if t['side'] == 'long' else (2 - BE_PLUS_RATIO))
-                    })
-                    send_msg(f"🛡️ **{symbol} TP1 ALINDI!**\nKârın yarısı kasada. Stop girişe çekildi, takip devam ediyor... 📈")
+                # KOMİSYON KORUMALI TRAILING
+                if not t['trailing_active'] and pnl >= TP1_ACTIVATE_LEVEL:
+                    # Stopu komisyonları kurtaracak şekilde girişin biraz önüne taşı
+                    if t['side'] == 'long':
+                        new_sl = t['entry'] * (1 + BE_COMMISSION_OFFSET)
+                    else:
+                        new_sl = t['entry'] * (1 - BE_COMMISSION_OFFSET)
+                    
+                    active_trades[symbol].update({'trailing_active': True, 'sl': new_sl})
+                    send_msg(f"🛡️ **{symbol} KOMİSYON KORUMASI AKTİF!**\nKâr %{pnl} oldu. Stop, borsa masraflarını kurtaracak şekilde girişin üzerine çekildi. 📈")
 
-                # Çıkış Kontrolü
+                # KAPANIŞ KONTROLÜ
                 hit_tp = (curr_p >= t['tp']) if t['side'] == 'long' else (curr_p <= t['tp'])
                 hit_sl = (curr_p <= t['sl']) if t['side'] == 'long' else (curr_p >= t['sl'])
 
                 if hit_tp or hit_sl:
-                    ex.create_order(symbol, 'market', 'sell' if t['side'] == 'long' else 'buy', active_trades[symbol]['amt'], params={'posSide': t['side'], 'reduceOnly': True})
-                    res = "✅ HEDEF GELDİ" if hit_tp else "🛑 STOP/BE+ KAPANDI"
-                    send_msg(f"🏁 **{symbol} {res}!**\nFinal PNL: %{pnl}")
+                    side_close = 'sell' if t['side'] == 'long' else 'buy'
+                    ex.create_order(symbol, 'market', side_close, t['amt'], params={'posSide': t['side'], 'reduceOnly': True})
+                    
+                    status = "🎯 HEDEF VURULDU" if hit_tp else "🛡️ KOMİSYONLU STOP (BE+) KAPANDI"
+                    send_msg(f"🏁 **{symbol} KAPATILDI**\nFinal PNL: %{pnl}\nKasa masraflar hariç korundu. ✅")
                     del active_trades[symbol]
             time.sleep(10)
         except: time.sleep(10)
 
-# --- [RADAR VE RAPORLAMA] ---
+# --- [RADAR DÖNGÜSÜ] ---
 def radar_loop():
-    send_msg("🕵️ **SMC Ultimate Radar Yayında!**\n200 coin taranıyor, detaylı raporlama aktif.")
+    send_msg("🕵️ **SMC Komisyon Korumalı Radar Başladı!**")
     while True:
         if len(active_trades) < MAX_ACTIVE_TRADES:
             tickers = ex.fetch_tickers()
@@ -97,7 +100,7 @@ def radar_loop():
                 sig = check_smc_signal(symbol)
                 if sig:
                     free_bal = get_free_balance()
-                    entry_usdt = free_bal * 0.2
+                    entry_usdt = free_bal * 0.25 
                     if entry_usdt < 5: continue 
                     
                     try:
@@ -111,34 +114,20 @@ def radar_loop():
                         
                         active_trades[symbol] = {
                             'side': sig['side'], 'entry': price, 'amt': amt, 
-                            'sl': sig['sl'], 'tp': tp_price, 'tp1_done': False, 'pnl': 0
+                            'sl': sig['sl'], 'tp': tp_price, 'trailing_active': False, 'pnl': 0
                         }
                         
-                        # Detaylı Giriş Mesajı (Dünkü gibi)
-                        report = (f"🚀 **YENİ İŞLEM AÇILDI!**\n\n"
+                        report = (f"🚀 **YENİ AV BAŞLADI!**\n\n"
                                   f"💎 **Coin:** {symbol}\n"
-                                  f"↕️ **Yön:** {sig['side'].upper()}\n"
                                   f"💰 **Giriş:** {round(price, 5)}\n"
-                                  f"🎯 **Hedef (TP):** {round(tp_price, 5)}\n"
-                                  f"🛡️ **Stop (SL):** {round(sig['sl'], 5)}\n"
+                                  f"🎯 **TP:** {round(tp_price, 5)}\n"
+                                  f"🛡️ **İLK SL:** {round(sig['sl'], 5)}\n"
                                   f"━━━━━━━━━━━━━━\n"
-                                  f"🛰️ **Takip:** Sanal Takip Başlatıldı.")
+                                  f"🛡️ **Mod:** Komisyon Korumalı BE+ Aktif.")
                         send_msg(report)
                         time.sleep(2)
                     except: pass
         time.sleep(20)
-
-@bot.message_handler(commands=['bakiye'])
-def cmd_bakiye(m):
-    b = get_free_balance()
-    bot.reply_to(m, f"💰 **Kasa:** {round(b, 2)} USDT")
-
-@bot.message_handler(commands=['durum'])
-def cmd_durum(m):
-    if not active_trades: bot.reply_to(m, "💤 Pusuya devam..."); return
-    txt = "📊 **Aktif Avlar:**\n"
-    for s, t in active_trades.items(): txt += f"\n🔹 {s} | {t['side'].upper()} | %{t['pnl']}"
-    bot.reply_to(m, txt)
 
 if __name__ == "__main__":
     threading.Thread(target=lambda: bot.infinity_polling()).start()
