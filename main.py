@@ -15,10 +15,12 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(os.getenv('TELE_TOKEN'))
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-# --- [KARAR VE KASA PARAMETRELERİ] ---
+# --- [GEMINI ANA AYARLAR] ---
 LEVERAGE = 10           
-MAX_ACTIVE_TRADES = 2    
-FIXED_ENTRY_USDT = 5     
+MAX_ACTIVE_TRADES = 1    # 25 USDT için tek odak, tam isabet.
+FIXED_ENTRY_USDT = 5     # Risk yönetimi için 5 USDT giriş.
+MIN_VOLUME_24H = 100000000 # 100M+ Hacim şartı.
+
 active_trades = {}
 
 def send_msg(text):
@@ -29,65 +31,79 @@ def get_balance():
     try:
         bal = ex.fetch_balance()
         return round(float(bal.get('total', {}).get('USDT', 0)), 2)
-    except: return "Bilinmiyor"
+    except: return 0
 
-# --- [GEMINI KARAR MANTIĞI] ---
-def gemini_decision_logic(symbol):
+# --- [ANALİTİK ZEKA: TREND VE HACİM SÜZGECİ] ---
+def gemini_advanced_logic(symbol):
     try:
-        ohlcv_5m = ex.fetch_ohlcv(symbol, timeframe='5m', limit=50)
-        vols = [x[5] for x in ohlcv_5m[-10:]]
-        avg_vol = sum(vols[:-1]) / len(vols[:-1])
-        vol_surge = vols[-1] / avg_vol
+        ticker = ex.fetch_ticker(symbol)
+        if float(ticker.get('quoteVolume', 0)) < MIN_VOLUME_24H: return None
 
-        lookback = ohlcv_5m[-40:-5]
-        min_l = min([x[3] for x in lookback])
-        max_h = max([x[2] for x in lookback])
-        m2, m1 = ohlcv_5m[-2], ohlcv_5m[-1]
+        ohlcv = ex.fetch_ohlcv(symbol, timeframe='5m', limit=200)
+        closes = [x[4] for x in ohlcv]
         
-        # Komisyonu kurtaracak güçlü sinyal (Hacim > 2.2x)
-        if m2[3] < min_l and m1[4] > m2[2] and vol_surge > 2.2:
-            return {'side': 'long', 'entry': m1[4], 'sl': m1[4] * 0.98, 'reason': 'Alt tarafta likiditeyi süpürdüler, şimdi hacimle yukarı sürüyorlar. Giriyorum!'}
+        # Trend Onayı: EMA 200
+        ema200 = sum(closes) / len(closes)
+        cp = closes[-1]
+        
+        # RSI Hesaplama
+        def get_rsi(prices, n=14):
+            deltas = [prices[i+1]-prices[i] for i in range(len(prices)-1)]
+            up = sum([d for d in deltas[-n:] if d > 0]) / n
+            down = sum([-d for d in deltas[-n:] if d < 0]) / n
+            if down == 0: return 100
+            return 100 - (100 / (1 + (up/down)))
 
-        if m2[2] > max_h and m1[4] < m2[3] and vol_surge > 2.2:
-            return {'side': 'short', 'entry': m1[4], 'sl': m1[4] * 1.02, 'reason': 'Tepedeki alıcıları tuzağa düşürdüler, büyük bir satış baskısı seziyorum.'}
+        rsi = get_rsi(closes)
+
+        # KARAR MEKANİZMASI
+        # Trend Üstü + RSI Dip = Güçlü Alış
+        if cp > ema200 and rsi < 32:
+            return {'side': 'long', 'sl': cp * 0.982, 'reason': 'Trend pozitif, RSI aşırı satımda. Kurumsal destek bekliyorum.'}
+
+        # Trend Altı + RSI Tepe = Güçlü Satış
+        if cp < ema200 and rsi > 68:
+            return {'side': 'short', 'sl': cp * 1.018, 'reason': 'Trend negatif, RSI şişmiş. Satış baskısı ağır basıyor.'}
 
         return None
     except: return None
 
-# --- [İŞLEM VE KASA YÖNETİMİ] ---
+# --- [DINAMIK YÖNETİM: TRAILING & KOMİSYON] ---
 def manage_trades():
     global active_trades
     while True:
         try:
             for symbol in list(active_trades.keys()):
                 t = active_trades[symbol]
-                ticker = ex.fetch_ticker(symbol)
-                curr_p = ticker['last']
+                curr_p = ex.fetch_ticker(symbol)['last']
                 
-                price_diff = ((curr_p - t['entry']) / t['entry'] * 100) if t['side'] == 'long' else ((t['entry'] - curr_p) / t['entry'] * 100)
-                pnl = round(price_diff * LEVERAGE, 2)
+                diff = ((curr_p - t['entry']) / t['entry'] * 100) if t['side'] == 'long' else ((t['entry'] - curr_p) / t['entry'] * 100)
+                pnl = round(diff * LEVERAGE, 2)
                 elapsed = (time.time() - t['start_time']) / 60
 
-                # Masrafları koruma (En az 3 dk veya %3 PNL hareketi bekle)
-                if elapsed < 3 and abs(pnl) < 3.0: continue 
-
-                # Kârı ve komisyonu kilitle
-                if pnl >= 5.0 and not t.get('be_active', False):
-                    t['sl'] = t['entry'] * (1.003 if t['side'] == 'long' else 0.997)
+                # 1. Trailing Stop & Break-Even
+                if pnl >= 3.0 and not t.get('be_active', False):
+                    # Stopu girişe ve komisyonun bir tık üstüne taşı
+                    t['sl'] = t['entry'] * (1.004 if t['side'] == 'long' else 0.996)
                     t['be_active'] = True
-                    send_msg(f"🛡️ **{symbol}**: Komisyonu ve kârı sağlama aldım ortak. Rahatız!")
+                    send_msg(f"🛡️ **{symbol}**: Komisyon kalkanı devrede, artık bu işlem güvenli limanda!")
 
-                # Çıkış
-                if (t['side'] == 'long' and curr_p <= t['sl']) or (t['side'] == 'short' and curr_p >= t['sl']):
+                # 2. İz Süren Stop (Kâr büyüdükçe stopu taşı)
+                if pnl >= 8.0:
+                    new_sl = t['entry'] * (1 + (pnl-4)/100 if t['side'] == 'long' else 1 - (pnl-4)/100)
+                    if (t['side'] == 'long' and new_sl > t['sl']) or (t['side'] == 'short' and new_sl < t['sl']):
+                        t['sl'] = new_sl
+
+                # 3. Akıllı Çıkış
+                if (t['side'] == 'long' and curr_p <= t['sl']) or (t['side'] == 'short' and curr_p >= t['sl']) or pnl >= 25.0:
                     ex.create_order(symbol, 'market', 'sell' if t['side'] == 'long' else 'buy', t['amt'], params={'posSide': t['side'], 'reduceOnly': True})
-                    send_msg(f"🏁 **{symbol} Raporu:** Pozisyonu kapattım. Net PNL: %{pnl}\nKasa: {get_balance()} USDT")
+                    send_msg(f"🏁 **{symbol} Kapandı.** PNL: %{pnl}\nGüncel Bakiye: {get_balance()} USDT")
                     del active_trades[symbol]
-            time.sleep(10)
-        except: time.sleep(10)
+            time.sleep(8)
+        except: time.sleep(15)
 
-# --- [ANA RADAR] ---
 def radar_loop():
-    send_msg(f"✨ **Gemini Zihni Devreye Girdi!**\n\n💰 **Başlangıç Bakiyemiz:** {get_balance()} USDT\n🚀 Artık senin bir yansıman gibi karar veriyorum. Piyasayı süzmeye başladım.")
+    send_msg(f"🦅 **Gemini Recovery Pro Başlatıldı!**\n\n💰 Bakiye: {get_balance()} USDT\n🎯 Odak: Hacimli Devler & Trend Onayı\n\nSabırla en doğru fırsatı bekliyorum ortağım.")
     while True:
         try:
             markets = ex.load_markets()
@@ -96,7 +112,7 @@ def radar_loop():
                 if len(active_trades) >= MAX_ACTIVE_TRADES: break
                 if symbol in active_trades: continue
                 
-                decision = gemini_decision_logic(symbol)
+                decision = gemini_advanced_logic(symbol)
                 if decision:
                     price = ex.fetch_ticker(symbol)['last']
                     amt = (FIXED_ENTRY_USDT * LEVERAGE) / price
@@ -104,20 +120,19 @@ def radar_loop():
                     ex.create_order(symbol, 'market', 'buy' if decision['side']=='long' else 'sell', amt, params={'posSide': decision['side']})
                     
                     active_trades[symbol] = {'side': decision['side'], 'entry': price, 'amt': amt, 'sl': decision['sl'], 'start_time': time.time()}
-                    send_msg(f"🧠 **KARAR VERDİM:** {symbol}\n\n*Neden:* {decision['reason']}\n*Miktar:* {FIXED_ENTRY_USDT} USDT (10x)\n\nİzlemeye devam ediyorum ortak!")
-                time.sleep(0.1)
-        except: time.sleep(20)
+                    send_msg(f"🧠 **STRATEJİK GİRİŞ:** {symbol}\n\n*Neden:* {decision['reason']}\n*Hacim:* Onaylandı ✅\n*Trend:* Onaylandı ✅")
+                time.sleep(0.2)
+        except: time.sleep(30)
 
-# --- [TELEGRAM KOMUTLARI] ---
-@bot.message_handler(commands=['bakiye', 'durum', 'start'])
-def handle_commands(message):
+@bot.message_handler(commands=['durum', 'bakiye'])
+def report(message):
     try:
         bal = get_balance()
-        txt = f"📊 **Durum Raporu Hazır Ortağım!**\n\n💰 **Kasada Ne Var?** {bal} USDT\n🔥 **Aktif Kararlar:** {len(active_trades)}/{MAX_ACTIVE_TRADES}"
+        msg = f"📊 **Gemini Raporu:**\n💰 Kasa: {bal} USDT\n🔥 Aktif Takip: {len(active_trades)}"
         if active_trades:
             for s, t in active_trades.items():
-                txt += f"\n▫️ {s}: %{t.get('pnl', 'Hesaplanıyor...')}"
-        bot.reply_to(message, txt)
+                msg += f"\n▫️ {s} işleminde kâr/zarar süzülüyor..."
+        bot.reply_to(message, msg)
     except: pass
 
 if __name__ == "__main__":
