@@ -17,10 +17,11 @@ MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
 # --- [AYARLAR] ---
 LEVERAGE = 10           
-MAX_ACTIVE_TRADES = 3   
-TRAIL_ACTIVATE_PNL = 0.8  # Takip %0.8 kârda başlar
-TRAIL_DISTANCE = 0.005     # Fiyatı %0.5 geriden takip eder (Esneklik payı)
-BE_COMMISSION_OFFSET = 0.0015 # Komisyon kalkanı
+MAX_ACTIVE_TRADES = 4    # Aynı anda 4 işleme kadar izin (Her biri 10 USDT)
+FIXED_ENTRY_USDT = 10    # Her işlemde sabit 10 USDT giriş
+TRAIL_ACTIVATE_PNL = 0.8 # Takip %0.8 kârda başlar
+TRAIL_DISTANCE = 0.005   # Fiyatı %0.5 geriden takip eder
+BE_COMMISSION_OFFSET = 0.0015 
 
 active_trades = {}
 
@@ -50,7 +51,7 @@ def check_smc_signal(symbol):
         return None
     except: return None
 
-# --- [GERÇEK TRAILING YÖNETİMİ] ---
+# --- [GERÇEK TRAILING VE İŞLEM YÖNETİMİ] ---
 def manage_trades():
     global active_trades
     while True:
@@ -61,40 +62,39 @@ def manage_trades():
                 pnl = round(((curr_p - t['entry']) if t['side'] == 'long' else (t['entry'] - curr_p)) / t['entry'] * 100 * LEVERAGE, 2)
                 active_trades[symbol]['pnl'] = pnl
 
-                # 1. Trailing Aktivasyonu ve Stop Güncelleme
+                # İZ SÜREN STOP (TRAILING) GÜNCELLEME
                 if pnl >= TRAIL_ACTIVATE_PNL:
                     if t['side'] == 'long':
                         potential_sl = curr_p * (1 - TRAIL_DISTANCE)
-                        # Stopu sadece yukarı taşır, asla aşağı çekmez
                         if potential_sl > t['sl']:
                             active_trades[symbol]['sl'] = potential_sl
                             if not t['trailing_active']:
                                 active_trades[symbol]['trailing_active'] = True
-                                send_msg(f"🏃 **{symbol} TAKİP BAŞLADI!**\nFiyat yükseldikçe stop arkasından gelecek. Hedef sınırı kaldırıldı.")
+                                send_msg(f"🏃 **{symbol} İZ SÜREN STOP AKTİF!**\nFiyat yükseldikçe stop peşinden geliyor.")
                     else: # Short
                         potential_sl = curr_p * (1 + TRAIL_DISTANCE)
                         if potential_sl < t['sl']:
                             active_trades[symbol]['sl'] = potential_sl
                             if not t['trailing_active']:
                                 active_trades[symbol]['trailing_active'] = True
-                                send_msg(f"🏃 **{symbol} TAKİP BAŞLADI!**")
+                                send_msg(f"🏃 **{symbol} İZ SÜREN STOP AKTİF!**")
 
-                # 2. Stop Kapanış Kontrolü
+                # KAPANIŞ KONTROLÜ
                 hit_sl = (curr_p <= t['sl']) if t['side'] == 'long' else (curr_p >= t['sl'])
 
                 if hit_sl:
                     side_close = 'sell' if t['side'] == 'long' else 'buy'
                     ex.create_order(symbol, 'market', side_close, t['amt'], params={'posSide': t['side'], 'reduceOnly': True})
                     
-                    status = "🛡️ TRAILING STOP KAPANDI" if t['trailing_active'] else "🛑 STOPLANDI"
+                    status = "🛡️ TRAILING STOPLA KAPANDI" if t['trailing_active'] else "🛑 STOPLANDI"
                     send_msg(f"🏁 **{symbol} KAPATILDI**\nSonuç: {status}\nFinal PNL: %{pnl}\nKasa süpürüldü. ✅")
                     del active_trades[symbol]
-            time.sleep(8) # Daha sık kontrol
+            time.sleep(8)
         except: time.sleep(8)
 
 # --- [RADAR DÖNGÜSÜ] ---
 def radar_loop():
-    send_msg("🕵️ **SMC Gerçek Trailing Radar Aktif!**\nSınır yok, fiyat nereye stop oraya.")
+    send_msg(f"🕵️ **SMC Sabit {FIXED_ENTRY_USDT} USDT Radar Başladı!**")
     while True:
         if len(active_trades) < MAX_ACTIVE_TRADES:
             tickers = ex.fetch_tickers()
@@ -102,15 +102,17 @@ def radar_loop():
             
             for symbol in pairs:
                 if len(active_trades) >= MAX_ACTIVE_TRADES: break
+                if symbol in active_trades: continue
+                
                 sig = check_smc_signal(symbol)
                 if sig:
                     free_bal = get_free_balance()
-                    entry_usdt = free_bal * 0.2 
-                    if entry_usdt < 5: continue 
+                    # Bakiye kontrolü: 10 USDT var mı?
+                    if free_bal < FIXED_ENTRY_USDT: continue 
                     
                     try:
                         price = ex.fetch_ticker(symbol)['last']
-                        amt = (entry_usdt * LEVERAGE) / price
+                        amt = (FIXED_ENTRY_USDT * LEVERAGE) / price
                         
                         ex.set_leverage(LEVERAGE, symbol)
                         ex.create_order(symbol, 'market', 'buy' if sig['side']=='long' else 'sell', amt, params={'posSide': sig['side']})
@@ -120,12 +122,12 @@ def radar_loop():
                             'sl': sig['sl'], 'trailing_active': False, 'pnl': 0
                         }
                         
-                        report = (f"🚀 **YENİ AV BAŞLADI!**\n\n"
+                        report = (f"🚀 **YENİ AV BAŞLADI (10 USDT)**\n\n"
                                   f"💎 **Coin:** {symbol}\n"
                                   f"💰 **Giriş:** {round(price, 5)}\n"
                                   f"🛡️ **İlk SL:** {round(sig['sl'], 5)}\n"
                                   f"━━━━━━━━━━━━━━\n"
-                                  f"🏃 **Mod:** Gerçek Trailing (Sınırsız Takip)")
+                                  f"🏃 **Mod:** Sabit Giriş + Gerçek Trailing")
                         send_msg(report)
                         time.sleep(2)
                     except: pass
