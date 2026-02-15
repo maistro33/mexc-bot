@@ -15,13 +15,13 @@ ex = ccxt.bitget({
 bot = telebot.TeleBot(os.getenv('TELE_TOKEN'))
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
-# --- [PROFESYONEL AYARLAR] ---
+# --- [PROFESYONEL KASA KORUMA AYARLARI] ---
 LEVERAGE = 10           
-MAX_ACTIVE_TRADES = 3    # Sayıyı azalttık, öze odaklandık
-FIXED_ENTRY_USDT = 10    
-TRAIL_ACTIVATE_PNL = 1.0 # Takip %1.0 kârda başlar (Daha garantici)
-TRAIL_DISTANCE = 0.007   # %0.7 geriden takip (İğnelerden korunmak için esnettik)
-MIN_DISPLACEMENT = 0.004 # Mumun en az %0.4 boyunda olması şart (Güç göstergesi)
+MAX_ACTIVE_TRADES = 3    
+FIXED_ENTRY_USDT = 10    # 34 USDT bakiyen için en güvenli miktar
+TRAIL_ACTIVATE_PNL = 1.2 # %1.2 kâra ulaşmadan takip başlamaz (Masraf koruması)
+TRAIL_DISTANCE = 0.008   # %0.8 geriden takip (Fiyatın nefes alması için)
+MIN_DISPLACEMENT = 0.005 # %0.5'lik sert mum şartı (Kaliteli giriş)
 
 active_trades = {}
 
@@ -39,30 +39,26 @@ def get_free_balance():
 def check_smc_signal(symbol):
     try:
         ohlcv = ex.fetch_ohlcv(symbol, timeframe='5m', limit=100)
-        # Likidite alanı için daha geniş bakıyoruz (Son 40 mum)
         lookback = ohlcv[-45:-5]
         max_h = max([x[2] for x in lookback])
         min_l = min([x[3] for x in lookback])
         
         m3, m2, m1 = ohlcv[-3], ohlcv[-2], ohlcv[-1]
-        
-        # Hareketin sertliği (Displacement) hesaplama
         move_size = abs(m1[4] - m1[1]) / m1[1]
 
-        # LONG: Likidite süpürülmüş mü? + Mum yeterince sert mi? + FVG var mı?
+        # LONG: Likidite süpürme + Sert mum + FVG
         if m2[3] < min_l and m1[4] > m2[2] and move_size >= MIN_DISPLACEMENT:
-            if m1[3] > m3[2]: # Net FVG boşluğu
+            if m1[3] > m3[2]:
                 return {'side': 'long', 'entry': (m1[3] + m3[2]) / 2, 'sl': m2[3]}
         
-        # SHORT
+        # SHORT: Likidite süpürme + Sert mum + FVG
         if m2[2] > max_h and m1[4] < m2[3] and move_size >= MIN_DISPLACEMENT:
-            if m1[2] < m3[3]: # Net FVG boşluğu
+            if m1[2] < m3[3]:
                 return {'side': 'short', 'entry': (m1[2] + m3[3]) / 2, 'sl': m2[2]}
-        
         return None
     except: return None
 
-# --- [GELİŞMİŞ TRAILING YÖNETİMİ] ---
+# --- [GELİŞMİŞ TRAILING VE KOMİSYON KALKANI] ---
 def manage_trades():
     global active_trades
     while True:
@@ -72,40 +68,49 @@ def manage_trades():
                 curr_p = ex.fetch_ticker(symbol)['last']
                 pnl = round(((curr_p - t['entry']) if t['side'] == 'long' else (t['entry'] - curr_p)) / t['entry'] * 100 * LEVERAGE, 2)
                 
-                # Trailing Güncelleme
+                # 🛡️ 1. ADIM: KOMİSYON KALKANI (BE+)
+                # PNL %0.8 olduğunda stopu girişe (ve azıcık üzerine) çek
+                if pnl >= 0.8 and not t.get('be_active', False):
+                    # Girişin %0.2 önüne koy ki borsa masrafı çıksın
+                    offset = 0.002 
+                    new_sl = t['entry'] * (1 + offset) if t['side'] == 'long' else t['entry'] * (1 - offset)
+                    active_trades[symbol]['sl'] = new_sl
+                    active_trades[symbol]['be_active'] = True
+                    send_msg(f"🛡️ **{symbol} KOMİSYON KALKANI AKTİF!**\nStop girişe (BE+) çekildi. Artık bu işlemden zarar etmeyeceksin.")
+
+                # 🏃 2. ADIM: GERÇEK TRAILING
                 if pnl >= TRAIL_ACTIVATE_PNL:
                     if t['side'] == 'long':
                         potential_sl = curr_p * (1 - TRAIL_DISTANCE)
                         if potential_sl > t['sl']:
                             active_trades[symbol]['sl'] = potential_sl
-                            if not t['trailing_active']:
-                                active_trades[symbol]['trailing_active'] = True
-                                send_msg(f"🎯 **{symbol} HEDEFE KİLİTLENDİ!**\nSert hareket yakalandı, iz süren stop devrede.")
+                            active_trades[symbol]['trailing_active'] = True
                     else:
                         potential_sl = curr_p * (1 + TRAIL_DISTANCE)
                         if potential_sl < t['sl']:
                             active_trades[symbol]['sl'] = potential_sl
-                            if not t['trailing_active']:
-                                active_trades[symbol]['trailing_active'] = True
+                            active_trades[symbol]['trailing_active'] = True
                 
-                # Çıkış
+                # 🏁 3. ADIM: KAPANIŞ KONTROLÜ
                 hit_sl = (curr_p <= t['sl']) if t['side'] == 'long' else (curr_p >= t['sl'])
                 if hit_sl:
                     ex.create_order(symbol, 'market', 'sell' if t['side'] == 'long' else 'buy', t['amt'], params={'posSide': t['side'], 'reduceOnly': True})
-                    msg = "✅ **KÂRLI TAKİP SONLANDI**" if t['trailing_active'] else "🛑 **STRATEJİ STOP**"
-                    send_msg(f"{msg}\n**{symbol}**\nPNL: %{pnl}\nKasa süpürüldü. ✅")
+                    status = "✅ KÂRLI TAKİP" if t.get('trailing_active') else "🛡️ KOMİSYON KORUMALI KAPANIŞ"
+                    if pnl < 0 and not t.get('be_active'): status = "🛑 STOP"
+                    
+                    send_msg(f"{status}\n**{symbol}**\nFinal PNL: %{pnl}\nKasa süpürüldü. ✅")
                     del active_trades[symbol]
-            time.sleep(7)
-        except: time.sleep(7)
+            time.sleep(6)
+        except: time.sleep(6)
 
-# --- [RADAR] ---
+# --- [RADAR DÖNGÜSÜ] ---
 def radar_loop():
-    send_msg("🦅 **KESKİN NİŞANCI SMC RADARI AKTİF!**\nSadece en sert ve hacimli dönüşler taranıyor.")
+    send_msg(f"🕵️ **Keskin Nişancı Radar Aktif!**\nBakiye: {get_free_balance()} USDT\nMod: Kasa Koruma + Trailing")
     while True:
         if len(active_trades) < MAX_ACTIVE_TRADES:
             tickers = ex.fetch_tickers()
-            # İlk 75 en hacimli (Güvenli Liman)
-            pairs = sorted([s for s in tickers if '/USDT:USDT' in s], key=lambda x: tickers[x]['quoteVolume'] or 0, reverse=True)[:75]
+            # Hacmi yüksek olan ilk 100 coin (SMC buralarda çalışır)
+            pairs = sorted([s for s in tickers if '/USDT:USDT' in s], key=lambda x: tickers[x]['quoteVolume'] or 0, reverse=True)[:100]
             
             for symbol in pairs:
                 if len(active_trades) >= MAX_ACTIVE_TRADES: break
@@ -120,8 +125,11 @@ def radar_loop():
                         ex.set_leverage(LEVERAGE, symbol)
                         ex.create_order(symbol, 'market', 'buy' if sig['side']=='long' else 'sell', amt, params={'posSide': sig['side']})
                         
-                        active_trades[symbol] = {'side': sig['side'], 'entry': price, 'amt': amt, 'sl': sig['sl'], 'trailing_active': False}
-                        send_msg(f"🏹 **YENİ AV YAKALANDI!**\n\n💎 **Coin:** {symbol}\n💰 **Miktar:** 10 USDT\n🛡️ **SL Seviyesi:** {round(sig['sl'], 5)}\n🚀 Sert hareket onaylandı!")
+                        active_trades[symbol] = {
+                            'side': sig['side'], 'entry': price, 'amt': amt, 
+                            'sl': sig['sl'], 'trailing_active': False, 'be_active': False
+                        }
+                        send_msg(f"🏹 **YENİ AV: {symbol}**\n💰 10 USDT dalış yapıldı.\n🛡️ İlk SL: {round(sig['sl'], 5)}\n🚀 Kasa koruma sistemi devrede!")
                         time.sleep(2)
                     except: pass
         time.sleep(15)
