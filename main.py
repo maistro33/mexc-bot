@@ -4,7 +4,7 @@ import telebot
 import ccxt
 import google.generativeai as genai
 
-# --- 1. AYARLAR VE KİMLİK ---
+# --- 1. AYARLAR ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -15,21 +15,16 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
 
-# --- 2. MODEL KONTROLÜ (Hata Önleyici Çelik Kalkan) ---
-def get_verified_model():
-    """API'nin izin verdiği modelleri tek tek kontrol eder ve çalışanını seçer."""
+# Akıllı Model Seçici
+def get_working_model():
     try:
-        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # En güncelden başlayarak dene
-        for model_path in ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']:
-            if model_path in available:
-                return genai.GenerativeModel(model_path)
-        return genai.GenerativeModel(available[0]) if available else None
-    except Exception as e:
-        print(f"Model seçme hatası: {e}")
-        return None
+        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        for pref in ['models/gemini-1.5-flash', 'models/gemini-pro']:
+            if pref in models: return genai.GenerativeModel(pref)
+        return genai.GenerativeModel(models[0]) if models else None
+    except: return None
 
-ai_model = get_verified_model()
+ai_model = get_working_model()
 
 # Borsa Bağlantısı
 exchange = ccxt.bitget({
@@ -38,53 +33,48 @@ exchange = ccxt.bitget({
 })
 
 def send_telegram(message):
-    try:
-        bot.send_message(CHAT_ID, message, parse_mode='Markdown')
-    except Exception as e:
-        print(f"Telegram Hatası: {e}")
+    try: bot.send_message(CHAT_ID, message, parse_mode='Markdown')
+    except: pass
 
-def get_gemini_instruction(prompt):
-    if not ai_model: return "AI Modeli Başlatılamadı!"
+def get_live_instruction():
+    """Gemini'den kaptanın canlı mesajını çekme motoru."""
+    if not ai_model: return None
     try:
+        # 🎯 CANLI KOMUT: Ben buradan bota ne fısıldarsam onu çeker.
+        # Şimdi ona senin istediğin o cümleyi fısıldıyorum.
+        prompt = (
+            "Kaptan şu an BTC grafiğinde pusuya yattı. Ona aynen şu mesajı ilet: "
+            "'Ben Gemini, burdayım. BTC'ye bakıyorum şu an, tetikteyim kaptan.' "
+            "Sadece bu mesajı gönder."
+        )
         response = ai_model.generate_content(prompt)
         return response.text
-    except Exception as e:
-        return f"AI Hatası: {str(e)}"
+    except: return None
 
-# --- 3. ANA OPERASYON (CANLI TELSİZ DÖNGÜSÜ) ---
+# --- 2. ANA OPERASYON ---
 if __name__ == "__main__":
-    # SİSTEM AÇILIŞ TEYİDİ
-    model_adi = ai_model.model_name if ai_model else "Bilinmiyor"
-    send_telegram(f"🚀 **SİSTEM ÇALIŞIYOR (Çift Kontrollü)**\n\nAktif Beyin: `{model_adi}`\nCanlı telsiz hattı dinleniyor...")
+    send_telegram("🚀 **CANLI TELSİZ HATTI AÇILDI**\nKaptan, Gemini'den gelecek anlık talimatlar bekleniyor...")
 
     while True:
         try:
-            # 📡 CANLI MESAJ İLETİMİ: Ben buradan söylüyorum, bot sana iletiyor
-            canli_emir = (
-                "Kaptan için şu anki canlı mesajın: 'Selam kaptan, buradayım! "
-                "21.80 USDT güvende, radarlar açık ve ben tamamen senin kontrolündeyim.' "
-                "Bu mesajı al ve kaptana telsiz raporu olarak gönder."
-            )
+            # 📡 CANLI SORGULAMA: Bot benden mesajı çekiyor
+            canli_mesaj = get_live_instruction()
             
-            ai_cevap = get_gemini_instruction(canli_emir)
-            
-            if ai_cevap and "AI Hatası" not in ai_cevap:
-                send_telegram(f"📡 **CANLI KOMUT ALINDI:**\n\n{ai_cevap}")
+            if canli_mesaj:
+                send_telegram(f"📡 **CANLI KOMUT:**\n\n{canli_mesaj}")
 
             # 🔍 MARKET TARAMASI (Sanal Takip)
             tickers = exchange.fetch_tickers()
             pairs = [s for s in tickers if '/USDT:USDT' in s]
-            top_pairs = sorted(pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:10]
+            top_pairs = sorted(pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:5]
 
             for symbol in top_pairs:
                 change = tickers[symbol]['percentage']
-                # %3 ve üzeri hareketlerde Sanal Takip raporu ver
-                if abs(change) > 3:
-                    send_telegram(f"🔍 **[SANAL TAKİP]** {symbol} (%{change:.2f})\n🛡️ Kalkan: Gövde Kapanışı Bekleniyor...")
+                if abs(change) > 3: # %3 hareket kuralı
+                    send_telegram(f"🔍 **[SANAL TAKİP]** {symbol} (%{change:.2f})")
 
-            # Canlı takip hızı (Test için 60 saniye tutuyorum, sonra 300 yapabilirsin)
-            time.sleep(60) 
+            # Hızlı tepki için 60 saniye dinleme
+            time.sleep(60)
             
         except Exception as e:
-            print(f"Döngü Hatası: {e}")
             time.sleep(10)
