@@ -2,63 +2,72 @@ import os
 import time
 import google.generativeai as genai
 from bitget.mix.market import MarketApi
-from bitget.mix.order import OrderApi
-import pandas as pd
 import requests
+import pandas as pd
 
-# --- API BAĞLANTILARI ---
+# --- RAILWAY'DEKİ İSİMLERİNE GÖRE AYARLADIM ---
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+TELE_TOKEN = os.getenv("TELE_TOKEN")
+MY_CHAT_ID = os.getenv("MY_CHAT_ID")
+# Bitget değişkenlerini de senin paneline göre eşleştiriyorum
+BG_KEY = os.getenv("BITGET_API_KEY")
+BG_SECRET = os.getenv("BITGET_SECRET")
+BG_PW = os.getenv("BITGET_PASSWORD")
+
+# Gemini Kurulumu
 genai.configure(api_key=GEMINI_KEY)
-ai_model = genai.GenerativeModel('gemini-pro')
+ai_brain = genai.GenerativeModel('gemini-pro')
 
-def get_market_data():
-    """Bitget'ten ETH verilerini çeker."""
+def telegram_yaz(mesaj):
+    if not TELE_TOKEN or not MY_CHAT_ID:
+        print("Telegram bilgileri eksik!")
+        return
+    url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": MY_CHAT_ID, "text": mesaj})
+
+def get_market_summary():
     try:
-        market = MarketApi(os.getenv("BITGET_API_KEY"), os.getenv("BITGET_SECRET"), os.getenv("BITGET_PASSWORD"), use_server_time=True)
-        # Son 50 mumu çekiyoruz
-        candles = market.candles('ETHUSDT', '15m', limit='50')
-        df = pd.DataFrame(candles, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'extra'])
-        return df.tail(10).to_string() # Son 10 mumu özetle
+        # Bitget'ten veri çekme simülasyonu/basit çekim
+        market = MarketApi(BG_KEY, BG_SECRET, BG_PW, use_server_time=True)
+        candles = market.candles('ETHUSDT', '15m', limit='20')
+        # Veriyi metne dönüştür ki Gemini okuyabilsin
+        return str(candles[-5:]) 
     except Exception as e:
-        return f"Veri çekme hatası: {e}"
+        return f"Veri hatası: {e}"
 
-def gemini_analiz_ve_karar(data):
-    """Veriyi bana gönderir ve benden emir bekler."""
+def gemini_karar_ver(data):
     prompt = f"""
-    Sen efsanevi bir kripto trader'sın. İşte son piyasa verileri:
-    {data}
-    
-    Talimat:
-    1. Piyasa çok oynaksa 'BEKLE' de.
-    2. Net bir PUMP veya DUMP varsa yönü (AL/SAT) belirt.
-    3. 21 USDT kasa için güvenli kaldıracı söyle.
-    
-    Format: KARAR: [AL/SAT/BEKLE] | KALDIRAC: [X] | NEDEN: [Kısa not]
+    Sen benim kripto trade asistanımsın. Veriler: {data}
+    Kasa: 21 USDT. Risk: Minimal. 
+    1. Pump/Dump ihtimalini değerlendir.
+    2. Kararını AL, SAT veya BEKLE olarak söyle.
+    3. Nedenini açıkla ve kaldıracı (max 10x) belirt.
+    Format: [KARAR] | [KALDIRAC] | [NEDEN]
     """
     try:
-        response = ai_model.generate_content(prompt)
+        response = ai_brain.generate_content(prompt)
         return response.text
     except:
-        return "KARAR: BEKLE | HATA"
-
-def telegram_gonder(mesaj):
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    requests.get(f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={mesaj}")
+        return "BEKLE | Bağlantı sorunu."
 
 def main():
-    telegram_gonder("🚀 Gemini AI Kontrolü Ele Aldı! İlk analiz başlıyor...")
+    print("Sistem başlatıldı...")
+    telegram_yaz("🦅 Gemini AI Core: Bağlantı kuruldu! Değişkenler eşleşti. Radar aktif!")
+    
     while True:
-        market_summary = get_market_data()
-        karar = gemini_analiz_ve_karar(market_summary)
-        
-        # Sadece karar değiştiğinde veya fırsat olduğunda mesaj atar
-        if "AL" in karar or "SAT" in karar:
-            telegram_gonder(f"🎯 GEMINI KARARI:\n{karar}")
-            # Burada işlem açma kodu devreye girecek
+        try:
+            data = get_market_summary()
+            karar = gemini_karar_ver(data)
             
-        print(f"Analiz Tamam: {karar}")
-        time.sleep(300) # 5 dakikada bir kontrol et
+            # Sadece fırsat gördüğünde mesaj atar
+            if "AL" in karar or "SAT" in karar:
+                telegram_yaz(f"🎯 FIRSAT ANALİZİ:\n{karar}")
+            
+            print(f"Döngü tamam: {karar}")
+            time.sleep(300) # 5 dakikada bir kontrol
+        except Exception as e:
+            print(f"Hata: {e}")
+            time.sleep(60)
 
 if __name__ == "__main__":
     main()
