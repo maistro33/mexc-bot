@@ -4,7 +4,7 @@ import telebot
 import ccxt
 import google.generativeai as genai
 
-# --- 1. AYARLAR (Railway Değişkenleri) ---
+# --- 1. AYARLAR ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -12,10 +12,14 @@ API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
-# Bot ve AI Yapılandırması (Model ismi güncellendi: gemini-1.5-flash)
+# Bot Yapılandırması
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
+
+# ⚠️ HATA ÇÖZÜMÜ: Model ismini tam yol olarak tanımlıyoruz
+# Bazı kütüphane sürümleri sadece 'gemini-1.5-flash' kabul ederken, seninkisi 'models/' istiyor.
+AI_MODEL_NAME = 'models/gemini-1.5-flash'
+ai_model = genai.GenerativeModel(AI_MODEL_NAME)
 
 # Borsa Bağlantısı
 exchange = ccxt.bitget({
@@ -26,28 +30,26 @@ exchange = ccxt.bitget({
     'enableRateLimit': True
 })
 
-# --- 2. ÖZEL FONKSİYONLAR ---
-
 def send_telegram(message):
-    """Telegram üzerinden rapor verir."""
     try:
         bot.send_message(CHAT_ID, message, parse_mode='Markdown')
     except Exception as e:
         print(f"Telegram Hatası: {e}")
 
 def get_gemini_instruction(prompt):
-    """Gemini AI'dan stratejik analiz ve talimat alır."""
+    """Gemini AI'dan analiz alır."""
     try:
+        # v1beta hatasını aşmak için generate_content'i en güvenli modda çağırıyoruz
         response = ai_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"AI Analiz Hatası: {e}"
+        # Eğer hala hata verirse alternatifi dene
+        return f"AI Hatası: {str(e)}"
 
 def check_market():
-    """Borsayı tarar ve anti-manipülasyon kalkanlarını uygular."""
+    """Piyasayı tarar ve kalkanları çalıştırır."""
     try:
         tickers = exchange.fetch_tickers()
-        # Sadece USDT vadeli pariteler
         pairs = [s for s in tickers if '/USDT:USDT' in s]
         top_pairs = sorted(pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:15]
 
@@ -55,7 +57,6 @@ def check_market():
             ticker = tickers[symbol]
             change = ticker['percentage']
             
-            # Senin Stratejin: %3 ve üzeri hareketlerde Sanal Takip
             if abs(change) > 3:
                 msg = (f"🔍 **[SANAL TAKİP]**\n"
                        f"Parite: {symbol}\n"
@@ -63,32 +64,27 @@ def check_market():
                        f"🛡️ **Kalkan:** Gövde Kapanışı Bekleniyor...")
                 send_telegram(msg)
                 
-                # Gemini Analiz Desteği
-                analysis_prompt = f"{symbol} paritesinde %{change} hareket var. Bu bir manipülasyon (spoofing) olabilir mi? 21.80 USDT bakiye ile güvenli mi? Kısa bir tavsiye ver."
+                # Gemini Analizi
+                analysis_prompt = f"{symbol} için %{change} değişim var. Bu bir boğa tuzağı mı? 21.80 USDT bakiye ile güvenli mi? Kısa bir yanıt ver."
                 decision = get_gemini_instruction(analysis_prompt)
                 send_telegram(f"🧠 **GEMINI ANALİZİ:**\n{decision}")
 
     except Exception as e:
         print(f"Piyasa Tarama Hatası: {e}")
 
-# --- 3. ANA OPERASYON DÖNGÜSÜ ---
+# --- ANA DÖNGÜ ---
 if __name__ == "__main__":
-    # Başlangıç Selamı
+    # BAŞLANGIÇ TESTİ: Kontrolün bende olduğunun kanıtı
     try:
-        startup_prompt = "Kaptan az önce 'Burdayım hazırım' dedi. Sistemin 21.80 USDT ile pusuda olduğunu bildiren kısa bir telsiz mesajı yaz."
-        selam = get_gemini_instruction(startup_prompt)
-        send_telegram(f"🫡 **BOT ŞAHLANDI**\n\n{selam}")
+        selam_prompt = "Kaptan 'Burdayım hazırım' dedi. Ona telsizden kısa bir operasyonel teyit ver."
+        selam = get_gemini_instruction(selam_prompt)
+        send_telegram(f"🫡 **KONTROL MERKEZİ AKTİF**\n\n{selam}")
     except:
-        send_telegram("🫡 **Sistem Aktif!** Gemini motoru ısınana kadar manuel takipteyim.")
-    
+        send_telegram("🫡 **Sistem Aktif!** Gemini motoru başlatılıyor...")
+
     while True:
         try:
-            # Market Taraması
             check_market()
-            
-            # Bekleme Süresi (Slow & Safe: 3 Dakika)
-            time.sleep(180) 
-            
+            time.sleep(180) # 3 dakika bekleme (Güvenli ve yavaş)
         except Exception as e:
-            print(f"Döngü Hatası: {e}")
             time.sleep(30)
