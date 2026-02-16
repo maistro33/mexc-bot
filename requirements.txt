@@ -1,7 +1,3 @@
-python-bitget
-requests
+pyTelegramBotAPI
+ccxt
 google-generativeai
-pandas
-pandas_ta
-python-telegram-bot==20.3
-
