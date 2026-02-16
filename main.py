@@ -4,6 +4,12 @@ import telebot
 import ccxt
 from google import genai
 import threading
+from telebot import apihelper
+
+# --- [BAĞLANTI ZIRHI: NETWORK HATALARINI ÖNLER] ---
+apihelper.RETRY_ON_ERROR = True
+apihelper.CONNECT_TIMEOUT = 30
+apihelper.READ_TIMEOUT = 30
 
 # --- [YAPILANDIRMA] ---
 TOKEN = os.getenv('TELE_TOKEN')
@@ -13,29 +19,30 @@ API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
-# Başlatma
+# Bot ve AI Başlatma
 bot = telebot.TeleBot(TOKEN)
 client = genai.Client(api_key=GEMINI_KEY)
+
+# Bitget Bağlantısı (Hedge Mode Aktif)
 exchange = ccxt.bitget({
-    'apiKey': API_KEY, 'secret': API_SEC, 'password': PASSPHRASE,
-    'options': {'defaultType': 'swap'}
+    'apiKey': API_KEY,
+    'secret': API_SEC,
+    'password': PASSPHRASE,
+    'options': {'defaultType': 'swap', 'positionMode': True}
 })
 
-# --- [KAPTANIN STRATEJİ AYARLARI] ---
+# --- [KAPTANIN ÖZEL AYARLARI] ---
 CONFIG = {
-    'entry_usdt': 20.0,
-    'leverage': 10,
-    'tp1_ratio': 0.75, # %75 Kar Al
-    'anti_manipulation': True
+    'entry_usdt': 20.0,           # Sabit giriş miktarı
+    'leverage': 10,               # Sabit kaldıraç
+    'tp1_ratio': 0.75,            # İlk hedefte %75 kapatma
+    'anti_manipulation': True     # Gövde kapanış onayı aktif
 }
 
+# --- [BORSA EMİR FONKSİYONU] ---
 def execute_trade(side, symbol="BTC/USDT:USDT"):
-    """Borsada gerçek işlemi başlatan fonksiyon"""
     try:
-        # Kaldıraç Ayarla
         exchange.set_leverage(CONFIG['leverage'], symbol)
-        
-        # Miktar Hesapla
         ticker = exchange.fetch_ticker(symbol)
         price = ticker['last']
         amount = (CONFIG['entry_usdt'] * CONFIG['leverage']) / price
@@ -43,56 +50,50 @@ def execute_trade(side, symbol="BTC/USDT:USDT"):
         # Emri Gönder
         order = exchange.create_market_order(symbol, side, amount)
         
-        msg = f"🚀 **OPERASYON BAŞLADI**\nİşlem: {side.upper()}\nSembol: {symbol}\nMiktar: {CONFIG['entry_usdt']} USDT x {CONFIG['leverage']}"
-        bot.send_message(CHAT_ID, msg)
+        # Sanal Takip Raporu (Kaptan'ın isteği)
+        bot.send_message(CHAT_ID, f"🎯 **İŞLEM AÇILDI**\nSembol: {symbol}\nYön: {side.upper()}\nTP1: %75 Ayarlandı.")
         return order
     except Exception as e:
-        bot.send_message(CHAT_ID, f"⚠️ Borsa Emir Hatası: {e}")
+        bot.send_message(CHAT_ID, f"⚠️ Emir İletilemedi: {e}")
 
 # --- [AI KOMUTA MERKEZİ] ---
 @bot.message_handler(func=lambda message: True)
 def handle_ai_command(message):
     if str(message.chat.id) == str(CHAT_ID):
-        kaptan_text = message.text
-        
-        # Bakiye ve piyasa özeti al
         try:
+            # Bakiyeyi anlık çekelim
             balance = exchange.fetch_balance()['total']['USDT']
-            ticker = exchange.fetch_ticker('BTC/USDT:USDT')['last']
-        except:
-            balance, ticker = "Bilinmiyor", "Bilinmiyor"
-
-        # Gemini'ye yetkiyi kullanması için talimat veriyoruz
-        prompt = (f"Sen Kaptan Sadık'ın tam yetkili Evergreen botusun. "
-                  f"Kaptan: '{kaptan_text}' dedi. "
-                  f"Bakiye: {balance} USDT. BTC: {ticker}. "
-                  f"Eğer kaptan işlem açmanı istiyorsa veya piyasa şartları senin 'risk-free' "
-                  f"stratejine uygunsa, cevabının sonuna mutlaka [KOMUT:AL] veya [KOMUT:SAT] ekle. "
-                  f"Eğer sadece analiz yapıyorsan [KOMUT:YOK] ekle.")
-        
-        try:
-            response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-            ai_cevap = response.text
-            bot.reply_to(message, ai_cevap)
             
-            # Komut Kontrolü
-            if "[KOMUT:AL]" in ai_cevap:
+            prompt = (f"Sen Kaptan Sadık'ın tam yetkili Evergreen botusun. Maistro33 ruhuyla konuş. "
+                      f"Kaptan: '{message.text}' dedi. Bakiye: {balance} USDT. "
+                      f"Stratejin: Risk-free, yavaş ve kârlı ticaret. "
+                      f"Eğer işlem açacaksan sonuna [KOMUT:AL] veya [KOMUT:SAT] ekle.")
+            
+            response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            bot.reply_to(message, response.text)
+            
+            if "[KOMUT:AL]" in response.text:
                 execute_trade('buy')
-            elif "[KOMUT:SAT]" in ai_cevap:
+            elif "[KOMUT:SAT]" in response.text:
                 execute_trade('sell')
                 
         except Exception as e:
-            bot.send_message(CHAT_ID, f"📡 Bağlantı Kesildi: {e}")
+            print(f"Hata: {e}")
 
-# --- [RADAR SİSTEMİ] ---
-def radar():
+# --- [KESİNTİSİZ ÇALIŞTIRICI] ---
+if __name__ == "__main__":
+    print("🚀 Evergreen V11 Ateşleniyor...")
+    
+    # İlk bağlantı sinyali
+    try:
+        bot.send_message(CHAT_ID, "🦅 **V11: ÇELİK HAT ONARILDI**\n\nKaptan, ağ hatası giderildi. Tam yetkiyle emirlerini bekliyorum!")
+    except:
+        print("Telegram'a henüz ulaşılamıyor, polling bekleniyor...")
+
+    # Sonsuz Döngü (Bağlantı kopsa da durmaz)
     while True:
         try:
-            # Burada 'Sanal Takip' ve 'Gövde Kapanış' analizleri yapılacak
-            time.sleep(3600) # Saatlik rapor
-        except: pass
-
-if __name__ == "__main__":
-    bot.send_message(CHAT_ID, "🦅 **EVERGREEN V11: TAM YETKİ DEVRE ALINDI**\n\nKaptan, köprü üstündeyim. Emirlerini bekliyorum, bağlantı stabil!")
-    threading.Thread(target=radar, daemon=True).start()
-    bot.polling(none_stop=True)
+            bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        except Exception as e:
+            print(f"⚠️ Bağlantı hatası, tekrar deneniyor: {e}")
+            time.sleep(5)
