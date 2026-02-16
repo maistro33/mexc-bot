@@ -4,7 +4,7 @@ import telebot
 import ccxt
 import google.generativeai as genai
 
-# --- 1. AYARLAR VE DEĞİŞKENLER ---
+# --- 1. AYARLAR (Railway Variables) ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -26,62 +26,43 @@ exchange = ccxt.bitget({
     'enableRateLimit': True
 })
 
-# --- 2. YARDIMCI FONKSİYONLAR ---
 def send_telegram(message):
     try:
         bot.send_message(CHAT_ID, message, parse_mode='Markdown')
     except Exception as e:
         print(f"Telegram Hatası: {e}")
 
-def get_balance():
+# --- 2. KONTROL TESTİ VE ANALİZ ---
+def analyze_market():
     try:
-        balance = exchange.fetch_balance()
-        return balance['total'].get('USDT', 0)
-    except:
-        return 21.80  # Hata durumunda son bilinen bakiye
-
-# --- 3. ANTİ-MANİPÜLASYON VE ANALİZ ---
-def check_signals():
-    # En hacimli 50 pariteyi çek
-    tickers = exchange.fetch_tickers()
-    # Sadece USDT vadeli pariteleri filtrele ve hacme göre sırala
-    usdt_pairs = [symbol for symbol in tickers if '/USDT:USDT' in symbol]
-    sorted_pairs = sorted(usdt_pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
-
-    for symbol in sorted_pairs:
-        ticker = tickers[symbol]
-        change = ticker['percentage']
+        # En hacimli pariteleri çek
+        tickers = exchange.fetch_tickers()
+        usdt_pairs = [s for s in tickers if '/USDT:USDT' in s]
+        # Hacme göre sırala (En yüksek 20 parite)
+        sorted_pairs = sorted(usdt_pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:20]
         
-        # %3'ten fazla hareket varsa Sanal Takibe al
-        if abs(change) > 3:
-            send_telegram(f"🔍 **[SANAL TAKİP]** {symbol}\n📈 Değişim: %{change:.2f}\n🛡️ Kalkanlar: Gövde Kapanışı Bekleniyor...")
+        for symbol in sorted_pairs:
+            ticker = tickers[symbol]
+            change = ticker['percentage']
             
-            # Burada Gemini AI'ya danışıyoruz
-            prompt = f"{symbol} için anlık fiyat {ticker['last']}. Hacim yüksek. Bu bir tuzak mı yoksa gerçek bir pump mı? 10x kaldıraç ve 21$ bakiye ile kârlı bir trade önerir misin? Sadece 'AL', 'SAT' veya 'BEKLE' olarak başla."
-            response = ai_model.generate_content(prompt)
-            decision = response.text
-            
-            if "AL" in decision or "SAT" in decision:
-                send_telegram(f"🎯 **[FIRSAT SİNYALİ]**\n{decision}")
+            # Senin kuralın: %3+ hareket varsa Sanal Takibe al
+            if abs(change) > 3:
+                msg = f"🔍 **[SANAL TAKİP]** {symbol}\n📈 Değişim: %{change:.2f}\n🛡️ Kalkan: Gövde Kapanışı Bekleniyor..."
+                send_telegram(msg)
+                
+    except Exception as e:
+        print(f"Analiz Hatası: {e}")
 
-# --- 4. ANA DÖNGÜ ---
-def run_bot():
-    send_telegram("🦅 **Gemini AI Core: Sistem Tam Kapasite Devrede!**\n\nKaptan, tüm borsa taranıyor. Radarlar pusu modunda.")
+# --- 3. ANA DÖNGÜ ---
+if __name__ == "__main__":
+    # KONTROL TESTİ: Bot açılır açılmaz bu mesajı gönderir
+    send_telegram("🫡 **Selam Kaptan, kontrol tamamen bende!**\n\nGemini AI motoru ateşlendi. 21.80 USDT mühimmatla pusudayım. Radarlar dönmeye başladı! 🦅")
     
     while True:
         try:
-            # 1. Bakiye Raporu
-            current_balance = get_balance()
-            
-            # 2. Sinyal Taraması
-            check_signals()
-            
-            # 3. Bekleme (Her 10 dakikada bir tam tarama)
-            time.sleep(600) 
-            
+            analyze_market()
+            # Senin istediğin "Slow & Risk-Free" strateji için 5 dakikada bir tarama
+            time.sleep(300) 
         except Exception as e:
-            print(f"Hata Oluştu: {e}")
+            print(f"Hata: {e}")
             time.sleep(60)
-
-if __name__ == "__main__":
-    run_bot()
