@@ -1,73 +1,92 @@
 import os
 import time
+import telebot
 import google.generativeai as genai
-from bitget.mix.market import MarketApi
-import requests
-import pandas as pd
+import ccxt
+import threading
 
-# --- RAILWAY'DEKİ İSİMLERİNE GÖRE AYARLADIM ---
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-TELE_TOKEN = os.getenv("TELE_TOKEN")
-MY_CHAT_ID = os.getenv("MY_CHAT_ID")
-# Bitget değişkenlerini de senin paneline göre eşleştiriyorum
-BG_KEY = os.getenv("BITGET_API_KEY")
-BG_SECRET = os.getenv("BITGET_SECRET")
-BG_PW = os.getenv("BITGET_PASSWORD")
+# --- [DEĞİŞKENLERİNLE TAM UYUM] ---
+# Railway panelindeki isimlerinle birebir eşleşti:
+api_key = os.getenv('BITGET_API')
+secret = os.getenv('BITGET_SEC')
+password = os.getenv('BITGET_PASSPHRASE')
+tele_token = os.getenv('TELE_TOKEN')
+chat_id = os.getenv('MY_CHAT_ID')
+gemini_key = os.getenv('GEMINI_API_KEY')
 
-# Gemini Kurulumu
-genai.configure(api_key=GEMINI_KEY)
+# --- [BAĞLANTILAR] ---
+# Bitget Bağlantısı
+ex = ccxt.bitget({
+    'apiKey': api_key,
+    'secret': secret,
+    'password': password,
+    'options': {'defaultType': 'swap'},
+    'enableRateLimit': True
+})
+
+# Telegram ve Gemini Bağlantısı
+bot = telebot.TeleBot(tele_token)
+genai.configure(api_key=gemini_key)
 ai_brain = genai.GenerativeModel('gemini-pro')
 
-def telegram_yaz(mesaj):
-    if not TELE_TOKEN or not MY_CHAT_ID:
-        print("Telegram bilgileri eksik!")
-        return
-    url = f"https://api.telegram.org/bot{TELE_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": MY_CHAT_ID, "text": mesaj})
-
-def get_market_summary():
+def send_msg(text):
     try:
-        # Bitget'ten veri çekme simülasyonu/basit çekim
-        market = MarketApi(BG_KEY, BG_SECRET, BG_PW, use_server_time=True)
-        candles = market.candles('ETHUSDT', '15m', limit='20')
-        # Veriyi metne dönüştür ki Gemini okuyabilsin
-        return str(candles[-5:]) 
-    except Exception as e:
-        return f"Veri hatası: {e}"
+        bot.send_message(chat_id, text, parse_mode='Markdown')
+    except:
+        pass
 
-def gemini_karar_ver(data):
-    prompt = f"""
-    Sen benim kripto trade asistanımsın. Veriler: {data}
-    Kasa: 21 USDT. Risk: Minimal. 
-    1. Pump/Dump ihtimalini değerlendir.
-    2. Kararını AL, SAT veya BEKLE olarak söyle.
-    3. Nedenini açıkla ve kaldıracı (max 10x) belirt.
-    Format: [KARAR] | [KALDIRAC] | [NEDEN]
-    """
+# --- [GEMINI KARAR MEKANİZMASI] ---
+def gemini_analiz():
     try:
+        # Piyasadan verileri çekelim (Örn: ETH)
+        ticker = ex.fetch_ticker('ETH/USDT:USDT')
+        ohlcv = ex.fetch_ohlcv('ETH/USDT:USDT', timeframe='15m', limit=10)
+        
+        market_data = f"Fiyat: {ticker['last']}, Son Mumlar: {str(ohlcv[-5:])}"
+        
+        prompt = f"""
+        Sen profesyonel bir tradersın. Veriler: {market_data}
+        Kasa: 21 USDT. Görevin:
+        1. Fiyat hareketini yorumla. PUMP/DUMP riski var mı?
+        2. Eğer fırsat varsa 'AL' veya 'SAT' de.
+        3. Kararsızsan 'BEKLE' de.
+        4. Kaldıracı sen belirle (max 10x).
+        Format: [KARAR] | [KALDIRAC] | [NEDEN]
+        """
+        
         response = ai_brain.generate_content(prompt)
         return response.text
-    except:
-        return "BEKLE | Bağlantı sorunu."
+    except Exception as e:
+        return f"Analiz Hatası: {e}"
 
-def main():
-    print("Sistem başlatıldı...")
-    telegram_yaz("🦅 Gemini AI Core: Bağlantı kuruldu! Değişkenler eşleşti. Radar aktif!")
+# --- [ANA DÖNGÜ] ---
+def radar_loop():
+    send_msg("🦅 **Gemini AI Core: Radarlar Açıldı!**\n\nDeğişkenlerin bağlandı, 21 doları büyütmek için pusuya yatıyorum. Her adımı sana raporlayacağım.")
     
     while True:
         try:
-            data = get_market_summary()
-            karar = gemini_karar_ver(data)
+            karar = gemini_analiz()
             
-            # Sadece fırsat gördüğünde mesaj atar
+            # Eğer karar AL veya SAT ise (Bekle değilse) Telegram'a yaz
             if "AL" in karar or "SAT" in karar:
-                telegram_yaz(f"🎯 FIRSAT ANALİZİ:\n{karar}")
+                send_telegram_report(karar)
+                # Buraya otomatik işlem emri eklenebilir
             
-            print(f"Döngü tamam: {karar}")
-            time.sleep(300) # 5 dakikada bir kontrol
+            print(f"Sanal Takip: {karar}")
+            time.sleep(300) # 5 dakikada bir kontrol et
         except Exception as e:
             print(f"Hata: {e}")
             time.sleep(60)
 
+def send_telegram_report(analysis):
+    report = (f"🎯 **GEMINI AI FIRSAT ANALİZİ**\n\n"
+              f"{analysis}\n"
+              f"━━━━━━━━━━━━━━\n"
+              f"⚡ **Durum:** İzleniyor...")
+    send_msg(report)
+
 if __name__ == "__main__":
-    main()
+    # Telegram dinleyiciyi başlat
+    threading.Thread(target=lambda: bot.infinity_polling()).start()
+    # Radarı başlat
+    radar_loop()
