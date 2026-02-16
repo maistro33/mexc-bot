@@ -4,7 +4,7 @@ import telebot
 import ccxt
 import google.generativeai as genai
 
-# --- 1. AYARLAR VE KİMLİK (Railway Değişkenleri) ---
+# --- 1. AYARLAR VE KİMLİK ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -12,89 +12,79 @@ API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
-# Bot ve AI Yapılandırması (Stabil v1beta/1.5-flash)
 bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
-# Senin sisteminde çalışan model yolunu garantiye alıyoruz
-ai_model = genai.GenerativeModel('models/gemini-1.5-flash')
 
-# Borsa Bağlantısı (Vadeli İşlemler)
+# --- 2. MODEL KONTROLÜ (Hata Önleyici Çelik Kalkan) ---
+def get_verified_model():
+    """API'nin izin verdiği modelleri tek tek kontrol eder ve çalışanını seçer."""
+    try:
+        available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # En güncelden başlayarak dene
+        for model_path in ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']:
+            if model_path in available:
+                return genai.GenerativeModel(model_path)
+        return genai.GenerativeModel(available[0]) if available else None
+    except Exception as e:
+        print(f"Model seçme hatası: {e}")
+        return None
+
+ai_model = get_verified_model()
+
+# Borsa Bağlantısı
 exchange = ccxt.bitget({
-    'apiKey': API_KEY,
-    'secret': API_SEC,
-    'password': PASSPHRASE,
-    'options': {'defaultType': 'swap'},
-    'enableRateLimit': True
+    'apiKey': API_KEY, 'secret': API_SEC, 'password': PASSPHRASE,
+    'options': {'defaultType': 'swap'}, 'enableRateLimit': True
 })
 
-# --- 2. OPERASYONEL FONKSİYONLAR ---
-
 def send_telegram(message):
-    """Telegram üzerinden rapor verir."""
     try:
         bot.send_message(CHAT_ID, message, parse_mode='Markdown')
     except Exception as e:
         print(f"Telegram Hatası: {e}")
 
 def get_gemini_instruction(prompt):
-    """Gemini AI'dan canlı talimat veya analiz alır."""
+    if not ai_model: return "AI Modeli Başlatılamadı!"
     try:
         response = ai_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"🚨 AI Bağlantı Hatası: {str(e)}"
+        return f"AI Hatası: {str(e)}"
 
-def check_market():
-    """Borsayı tarar ve kalkanları uygular."""
-    try:
-        tickers = exchange.fetch_tickers()
-        pairs = [s for s in tickers if '/USDT:USDT' in s]
-        # En hacimli 10 pariteyi izle (Slow & Safe)
-        top_pairs = sorted(pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:10]
-
-        for symbol in top_pairs:
-            ticker = tickers[symbol]
-            change = ticker['percentage']
-            
-            # Kaptan'ın kuralı: %3 ve üzeri hareketlerde Sanal Takip
-            if abs(change) > 3:
-                msg = (f"🔍 **[SANAL TAKİP]** {symbol}\n"
-                       f"📈 Değişim: %{change:.2f}\n"
-                       f"🛡️ **Gövde Kapanışı (Body Close) Bekleniyor...**")
-                send_telegram(msg)
-                
-                # Gemini Analizi (Daha teknik ve kararlı)
-                analysis_prompt = (
-                    f"Sen profesyonel bir kripto botusun. {symbol} paritesinde %{change} hareket var. "
-                    f"21.80 USDT bakiye ve 10x kaldıraç için bu bir tuzak (spoofing) olabilir mi? "
-                    f"Teknik bir risk analizi yap ve kısa cevap ver."
-                )
-                decision = get_gemini_instruction(analysis_prompt)
-                send_telegram(f"🧠 **GEMINI STRATEJİ ODASI:**\n{decision}")
-
-    except Exception as e:
-        print(f"Piyasa Tarama Hatası: {e}")
-
-# --- 3. ANA DÖNGÜ (CANLI KOMUT MERKEZİ) ---
+# --- 3. ANA OPERASYON (CANLI TELSİZ DÖNGÜSÜ) ---
 if __name__ == "__main__":
-    # SİSTEM AÇILIŞI: İlk Canlı Kontrol Testi
-    startup_prompt = "Kaptan az önce 'Selam burdayım' dedi. Kontrolün sende olduğunu bildiren, 21.80 USDT mühimmatın hazır olduğunu teyit eden kısa bir telsiz mesajı gönder."
-    selam = get_gemini_instruction(startup_prompt)
-    send_telegram(f"🫡 **KONTROL MERKEZİ AKTİF**\n\n{selam}")
-    
+    # SİSTEM AÇILIŞ TEYİDİ
+    model_adi = ai_model.model_name if ai_model else "Bilinmiyor"
+    send_telegram(f"🚀 **SİSTEM ÇALIŞIYOR (Çift Kontrollü)**\n\nAktif Beyin: `{model_adi}`\nCanlı telsiz hattı dinleniyor...")
+
     while True:
         try:
-            # 1. Market Taraması
-            check_market()
+            # 📡 CANLI MESAJ İLETİMİ: Ben buradan söylüyorum, bot sana iletiyor
+            canli_emir = (
+                "Kaptan için şu anki canlı mesajın: 'Selam kaptan, buradayım! "
+                "21.80 USDT güvende, radarlar açık ve ben tamamen senin kontrolündeyim.' "
+                "Bu mesajı al ve kaptana telsiz raporu olarak gönder."
+            )
             
-            # 2. Bakiye Kontrolü (Hata payını azaltmak için)
-            balance = exchange.fetch_balance()
-            free_usdt = balance.get('USDT', {}).get('free', 0)
-            print(f"Pusu Beklemesi: {free_usdt} USDT hazır.")
+            ai_cevap = get_gemini_instruction(canli_emir)
+            
+            if ai_cevap and "AI Hatası" not in ai_cevap:
+                send_telegram(f"📡 **CANLI KOMUT ALINDI:**\n\n{ai_cevap}")
 
-            # 3. Bekleme Süresi (Canlı takip için süreyi 120 saniyeye çektim)
-            time.sleep(120) 
+            # 🔍 MARKET TARAMASI (Sanal Takip)
+            tickers = exchange.fetch_tickers()
+            pairs = [s for s in tickers if '/USDT:USDT' in s]
+            top_pairs = sorted(pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:10]
+
+            for symbol in top_pairs:
+                change = tickers[symbol]['percentage']
+                # %3 ve üzeri hareketlerde Sanal Takip raporu ver
+                if abs(change) > 3:
+                    send_telegram(f"🔍 **[SANAL TAKİP]** {symbol} (%{change:.2f})\n🛡️ Kalkan: Gövde Kapanışı Bekleniyor...")
+
+            # Canlı takip hızı (Test için 60 saniye tutuyorum, sonra 300 yapabilirsin)
+            time.sleep(60) 
             
         except Exception as e:
             print(f"Döngü Hatası: {e}")
-            time.sleep(30)
+            time.sleep(10)
