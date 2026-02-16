@@ -4,7 +4,7 @@ import telebot
 import ccxt
 import google.generativeai as genai
 
-# --- 1. AYARLAR (Railway Variables) ---
+# --- 1. AYARLAR VE KİMLİK (Railway'den Çeker) ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -17,7 +17,7 @@ bot = telebot.TeleBot(TOKEN)
 genai.configure(api_key=GEMINI_KEY)
 ai_model = genai.GenerativeModel('gemini-pro')
 
-# Bitget Bağlantısı
+# Bitget Bağlantısı (Vadeli İşlemler - Swap)
 exchange = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -26,43 +26,66 @@ exchange = ccxt.bitget({
     'enableRateLimit': True
 })
 
+# --- 2. FONKSİYONLAR ---
+
 def send_telegram(message):
+    """Telegram üzerinden rapor verir."""
     try:
         bot.send_message(CHAT_ID, message, parse_mode='Markdown')
     except Exception as e:
         print(f"Telegram Hatası: {e}")
 
-# --- 2. KONTROL TESTİ VE ANALİZ ---
-def analyze_market():
+def get_gemini_instruction(prompt):
+    """Gemini AI'dan stratejik karar alır."""
     try:
-        # En hacimli pariteleri çek
+        response = ai_model.generate_content(prompt)
+        return response.text
+    except:
+        return "BEKLE"
+
+def check_market():
+    """Borsayı tarar ve kalkanları kontrol eder."""
+    try:
+        # En hacimli pariteleri çekiyoruz
         tickers = exchange.fetch_tickers()
-        usdt_pairs = [s for s in tickers if '/USDT:USDT' in s]
-        # Hacme göre sırala (En yüksek 20 parite)
-        sorted_pairs = sorted(usdt_pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:20]
-        
+        # Sadece USDT vadeli pariteler
+        pairs = [s for s in tickers if '/USDT:USDT' in s]
+        sorted_pairs = sorted(pairs, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:30]
+
         for symbol in sorted_pairs:
             ticker = tickers[symbol]
             change = ticker['percentage']
             
-            # Senin kuralın: %3+ hareket varsa Sanal Takibe al
+            # Senin kuralın: %3+ hareket varsa Sanal Takip başlat
             if abs(change) > 3:
-                msg = f"🔍 **[SANAL TAKİP]** {symbol}\n📈 Değişim: %{change:.2f}\n🛡️ Kalkan: Gövde Kapanışı Bekleniyor..."
-                send_telegram(msg)
+                # 🛡️ KALKAN 1: Sanal Takip Raporu
+                send_telegram(f"🔍 **[SANAL TAKİP]** {symbol}\n📈 Değişim: %{change:.2f}\n🛡️ Durum: Gövde Kapanışı ve Hacim Onayı Bekleniyor...")
                 
-    except Exception as e:
-        print(f"Analiz Hatası: {e}")
+                # 🛡️ KALKAN 2: Gemini Analizi
+                prompt = f"{symbol} paritesinde %{change} hareket var. Hacim yüksek. Bu bir tuzak (spoofing) olabilir mi? Gövde kapanışı onayıyla 10x kaldıraç için güvenli mi? Sadece kısa bir analiz ve KARAR (AL/SAT/BEKLE) ver."
+                decision = get_gemini_instruction(prompt)
+                
+                # Eğer Gemini onay verirse (Şimdilik sadece raporluyoruz)
+                if "AL" in decision or "SAT" in decision:
+                    send_telegram(f"🎯 **[FIRSAT ONAYLANDI]**\n{decision}")
 
-# --- 3. ANA DÖNGÜ ---
+    except Exception as e:
+        print(f"Market Tarama Hatası: {e}")
+
+# --- 3. ANA DÖNGÜ (OPERASYON MERKEZİ) ---
 if __name__ == "__main__":
-    # KONTROL TESTİ: Bot açılır açılmaz bu mesajı gönderir
-    send_telegram("🫡 **Selam Kaptan, kontrol tamamen bende!**\n\nGemini AI motoru ateşlendi. 21.80 USDT mühimmatla pusudayım. Radarlar dönmeye başladı! 🦅")
+    # Başlangıç Mesajı (Kontrolün bende olduğunun kanıtı)
+    startup_msg = get_gemini_instruction("Kaptan'a (kullanıcıya) sistemin senin kontrolünde açıldığını, 21.80 USDT'nin pusuda olduğunu ve radarların çalıştığını anlatan çok kısa, havalı bir selam yaz.")
+    send_telegram(f"🫡 **SİSTEM ŞAHLANDI**\n\n{startup_msg}")
     
     while True:
         try:
-            analyze_market()
-            # Senin istediğin "Slow & Risk-Free" strateji için 5 dakikada bir tarama
+            # Bakiyeyi kontrol et ve raporla (Her döngüde değil, 30 dakikada bir yapabilirsin)
+            check_market()
+            
+            # Senin istediğin "Slow & Risk-Free" strateji için 5 dakika (300 saniye) bekleme
             time.sleep(300) 
+            
         except Exception as e:
-            print(f"Hata: {e}")
+            print(f"Döngü Hatası: {e}")
             time.sleep(60)
