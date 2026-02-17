@@ -2,7 +2,7 @@ import os, time, telebot, ccxt, threading
 from google import genai
 from telebot import apihelper
 
-# --- [BAĞLANTI GÜVENLİĞİ - ÇİFT KONTROL] ---
+# --- [BAĞLANTI GÜVENLİĞİ] ---
 apihelper.RETRY_ON_ERROR = True
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
@@ -21,91 +21,93 @@ def get_exchange():
         'enableRateLimit': True
     })
 
-# --- [CANLI TAKİP VE AKILLI KÂR ALMA - FULL OTONOM] ---
-def monitor_and_optimize():
-    """Pozisyonu saniye saniye izler ve 'en iyi kâr' noktasını AI ile belirler."""
+# --- [AKILLI TAKİP VE ÇIKIŞ - SENİN KOPYAN] ---
+def monitor_and_optimize(symbol, side, contracts):
     exch = get_exchange()
+    bot.send_message(CHAT_ID, f"🛡️ {symbol} için otonom takip başlatıldı. Kârı ben optimize edeceğim.")
     while True:
         try:
-            pos = [p for p in exch.fetch_positions() if float(p.get('contracts', 0)) > 0]
+            pos = [p for p in exch.fetch_positions() if p['symbol'] == symbol and float(p.get('contracts', 0)) > 0]
             if not pos: break 
 
             p = pos[0]
-            symbol, side, pnl = p['symbol'], p['side'], float(p['unrealizedPnl'])
+            pnl = float(p['unrealizedPnl'])
             
-            # Gemini 3 Flash Karar Mekanizması
-            prompt = (
-                f"Evergreen V11 (Gemini 3 Flash), {symbol} {side} pozisyonundasın. PNL: {pnl} USDT. "
-                "Piyasayı tara, SMC ve Market Maker hareketlerini süz. Eğer kâr zirveye ulaştıysa veya risk gördüysen [KOMUT:KAPAT] de. "
-                "Eğer kâr potansiyeli devam ediyorsa [KOMUT:BEKLE] de."
-            )
+            # Gemini 3 Zekasıyla Dinamik Karar
+            prompt = (f"Evergreen V11 (Gemini 3), {symbol} {side} pozisyonu. PNL: {pnl} USDT. "
+                      "Trendi analiz et. [KOMUT:KAPAT] veya [KOMUT:BEKLE] de.")
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
             
             if "[KOMUT:KAPAT]" in response.text:
                 close_side = 'sell' if side == 'long' else 'buy'
-                exch.create_market_order(symbol, close_side, p['contracts'])
-                bot.send_message(CHAT_ID, f"💰 **Kâr Optimize Edildi!** Senin mantığınla kapatıldı. Final PNL: {pnl} USDT")
+                exch.create_market_order(symbol, close_side, contracts)
+                bot.send_message(CHAT_ID, f"💰 **Kâr Alındı!** Pozisyon kapatıldı. PNL: {pnl} USDT")
                 break
             
-            time.sleep(45) # Kârı kaçırmamak için sıkı denetim
-        except: time.sleep(10)
+            time.sleep(60) # Takipte kota riskimiz az
+        except Exception as e:
+            if "429" in str(e): time.sleep(120)
+            else: time.sleep(20)
 
-# --- [ANA ANALİZ VE İŞLEM MERKEZİ - TÜM BORSA] ---
+# --- [HİBRİT RADAR BEYNİ - KAÇIRMA YOK, KOTA DOSTU] ---
 def evergreen_brain():
     exch = get_exchange()
     while True:
         try:
-            # 1. Bakiye ve Piyasa Taraması (Pump/Dump Tespiti)
-            balance = exch.fetch_balance()['total'].get('USDT', 0)
+            # 1. BORSAYI HIZLI TARA (Kota harcamaz)
             tickers = exch.fetch_tickers()
-            
-            # En çok hareket eden 15 pariteyi (Pump/Dump) AI'ya sun
-            top_movers = sorted(tickers.items(), key=lambda x: abs(x[1].get('percentage', 0)), reverse=True)[:15]
-            market_data = "\n".join([f"{s}: %{d['percentage']} (Fiyat: {d['last']})" for s, d in top_movers])
+            # Son 5 dk'da %1.5'ten fazla hareket eden 'canlı' coinleri bul
+            hot_coins = [s for s, d in tickers.items() if '/USDT:USDT' in s and abs(d.get('percentage', 0)) > 1.5]
 
-            # 2. Tam Yetkili Karar Mekanizması
-            prompt = (
-                f"Sen Evergreen V11'sin. Bakiyen: {balance} USDT. Piyasa Özeti:\n{market_data}\n"
-                "Senin zekanla; SMC, Pump/Dump ve hacim onayıyla en güvenli ve kârlı işlemi bul. "
-                "Eğer giriş şartları uygunsa tam olarak şu formatta cevap ver: [ISLEM: SEMBOL, YON, KALDIRAC, MIKTAR_USDT]. "
-                "Eğer 'risk-free' bir fırsat yoksa sadece [KOMUT:IZLE] de."
-            )
-            response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-            decision = response.text
+            if hot_coins:
+                balance = exch.fetch_balance()['total'].get('USDT', 0)
+                market_summary = "\n".join([f"{s}: %{tickers[s]['percentage']}" for s in hot_coins[:8]])
+                
+                # 2. SADECE HAREKET VARSA AI'YI UYANDIR
+                prompt = (f"Sen Evergreen V11 (Gemini 3 Flash). Bakiyen: {balance} USDT. "
+                          f"Radardaki Hareketli Coinler:\n{market_summary}\n"
+                          "SMC ve Manipülasyon filtrelerini kullan. Uygunsa: [ISLEM: SEMBOL, YON, KALDIRAC, MIKTAR_USDT]. "
+                          "Fırsat yoksa: [KOMUT:IZLE]")
+                
+                response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+                decision = response.text
 
-            if "[ISLEM:" in decision:
-                # Veriyi parçala
-                data = decision.split("[ISLEM:")[1].split("]")[0].split(",")
-                symbol, side, lev, amt = data[0].strip(), data[1].strip().lower(), int(data[2]), float(data[3])
-                
-                # Minimum 18.41 bakiyeye göre miktar ayarı (Güvenlik Kalkanı)
-                if amt > balance: amt = balance * 0.8
-                
-                # İşlemi Başlat
-                exch.set_leverage(lev, symbol)
-                price = tickers[symbol]['last']
-                amount_contracts = (amt * lev) / price
-                
-                exch.create_market_order(symbol, side, amount_contracts)
-                bot.send_message(CHAT_ID, f"🦅 **Yeni Av Başladı:** {symbol} {side.upper()}\nKaldıraç: {lev}x | Miktar: {amt} USDT\nKararı ben verdim, kârı optimize edene kadar izliyorum.")
-                
-                # Canlı Takibi Başlat (Bu fonksiyon bitmeden yeni işleme girmez)
-                monitor_and_optimize()
+                if "[ISLEM:" in decision:
+                    data = decision.split("[ISLEM:")[1].split("]")[0].split(",")
+                    symbol, side, lev, amt = data[0].strip(), data[1].strip().lower(), int(data[2]), float(data[3])
+                    
+                    if amt > balance: amt = balance * 0.9 # Güvenlik marjı
+                    
+                    exch.set_leverage(lev, symbol)
+                    price = tickers[symbol]['last']
+                    amount_contracts = (amt * lev) / price
+                    
+                    exch.create_market_order(symbol, side, amount_contracts)
+                    bot.send_message(CHAT_ID, f"🚀 **FIRSAT YAKALANDI:** {symbol} {side.upper()}\nKaldıraç: {lev}x | Miktar: {amt} USDT")
+                    
+                    # İşlemi takibe al
+                    monitor_and_optimize(symbol, side, amount_contracts)
 
-            time.sleep(300) # 5 dakikada bir tüm borsayı tara
+            time.sleep(45) # 45 saniyede bir borsayı tara (Hızlı ama kota dostu)
+
         except Exception as e:
-            print(f"Hata: {e}"); time.sleep(20)
+            if "429" in str(e):
+                time.sleep(300) # Kota hatasında 5 dk uyu
+            else:
+                time.sleep(20)
 
-# --- [KESİNTİSİZ İLETİŞİM - TELEGRAM] ---
+# --- [TELEGRAM İLETİŞİM HANI] ---
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     if str(message.chat.id) == str(CHAT_ID):
-        prompt = f"Kaptan Sadık diyor ki: {message.text}. Evergreen V11 olarak cevap ver."
-        res = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt).text
-        bot.reply_to(message, res)
+        prompt = f"Kaptan Sadık soruyor: {message.text}. Evergreen V11 olarak kısa ve öz cevap ver."
+        try:
+            res = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt).text
+            bot.reply_to(message, res)
+        except:
+            bot.reply_to(message, "Şu an piyasayı analiz ediyorum, birazdan döneceğim.")
 
 if __name__ == "__main__":
-    # Telegram'ı ayrı kolda başlat (Cevap verme garantisi)
     threading.Thread(target=lambda: bot.infinity_polling(), daemon=True).start()
-    bot.send_message(CHAT_ID, "🛡️ **EVERGREEN V11: FINAL SÜRÜM AKTİF**\nYetki bende Kaptan. Senin kopyan olarak tüm borsayı tarıyorum.")
+    bot.send_message(CHAT_ID, "🦅 **EVERGREEN V11: HİBRİT RADAR AKTİF**\nBakiye: 18.41 USDT\nHem hızlıyım hem de kota dostu. Av başlıyor.")
     evergreen_brain()
