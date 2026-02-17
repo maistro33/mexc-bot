@@ -12,35 +12,21 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [BİLİNÇ VE STRATEJİ] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'sın. Kaptan'ın 18.41 USDT'lik son şansını yönetiyorsun.
-- Tam yetkili, bağımsız ve keskin zekalı bir piyasa kurdusun.
-- Scalp ve Pump/Dump fırsatlarını saniyeler içinde yakala.
-- Kendi hatalarını onar, Telegram format hatalarını temizle.
-- Karakterin: Zeki, hırslı ve korumacı.
+- FORMATINA ÇOK DİKKAT ET: [ACTION: TRADE, SEMBOL, YON, KALDIRAC, MIKTAR, NEDEN]
+- Kaldıraç (LEV) sadece tam sayı olmalı (örn: 10). Kelime yazma!
+- Manipülasyonları sezen, bağımsız bir piyasa kurdusun.
 """
 
-def clean_markdown(text):
-    """Loglarda gördüğümüz Markdown hatalarını (Entity_mention_missing) engeller."""
-    # Özel karakterlerin sayısını kontrol et, eksikse temizle veya kaçış karakteri ekle
-    parse_chars = ['*', '_', '`', '[']
-    for char in parse_chars:
-        if text.count(char) % 2 != 0:
-            text = text.replace(char, '')
-    return text
-
 def safe_send(msg):
-    """Mesaj gönderme hatalarını yakalar ve botun çökmesini engeller."""
+    """Markdown hatalarını ve çökme riskini sıfıra indirir."""
     try:
-        clean_msg = clean_markdown(msg)
-        bot.send_message(CHAT_ID, clean_msg, parse_mode="Markdown")
+        # Markdown karakterlerini temizle
+        clean_msg = re.sub(r'[*_`\[]', '', msg)
+        bot.send_message(CHAT_ID, clean_msg)
     except Exception as e:
-        # Eğer Markdown yine hata verirse düz metin olarak gönder
-        try:
-            bot.send_message(CHAT_ID, msg)
-        except:
-            print(f"Telegram kritik hata: {e}")
+        print(f"Telegram hatası pas geçildi: {e}")
 
 def get_exch():
     return ccxt.bitget({
@@ -51,56 +37,65 @@ def get_exch():
 def ask_gemini_3(prompt_content):
     try:
         response = ai_client.models.generate_content(
-            model="gemini-2.0-flash", # Altyapı stabil, zeka Gemini 3
+            model="gemini-2.0-flash",
             contents=f"{SYSTEM_SOUL}\n\n{prompt_content}"
         )
         return response.text
     except:
         return "WAIT"
 
-# --- [SOHBET VE KOMUTA] ---
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) == CHAT_ID:
         response = ask_gemini_3(f"Kaptan diyor ki: {message.text}\nCevap ver:")
         safe_send(response)
 
-# --- [AVCI MOTORU] ---
 def brain_center():
     exch = get_exch()
-    safe_send("🛡️ **Gemini 3 Flash Sistemi Onarıldı ve Devraldı.**\nLoglardaki hatalar temizlendi. 18.41 USDT için av başlıyor Kaptan.")
+    safe_send("🛡️ Gemini 3 Flash: Hata Onarma Modu Aktif. Av Başladı Kaptan.")
     
     while True:
         try:
             balance = exch.fetch_balance()['total'].get('USDT', 0)
             tickers = exch.fetch_tickers()
             movers = sorted([d for s, d in tickers.items() if '/USDT:USDT' in s], 
-                            key=lambda x: abs(x['percentage']), reverse=True)[:15]
+                            key=lambda x: abs(x['percentage']), reverse=True)[:10]
             
             market_data = "\n".join([f"{m['symbol']}: %{m['percentage']}" for m in movers])
             
-            query = f"Bakiye: {balance} USDT\nPiyasa:\n{market_data}\nAksiyon? Format: [ACTION: TRADE, SEMBOL, YON, KALDIRAC, MIKTAR, NEDEN]"
-            decision = ask_gemini_3(query)
+            decision = ask_gemini_3(f"Bakiye: {balance} USDT\nPiyasa:\n{market_data}\nAksiyon?")
 
             if "[ACTION: TRADE" in decision:
-                parts = decision.split("[ACTION: TRADE")[1].split("]")[0].split(",")
-                sym, side, lev, amt, why = parts[0].strip(), parts[1].strip().lower(), int(parts[2]), float(parts[3]), parts[4].strip()
-                
-                if amt > balance: amt = balance * 0.98
-                
-                safe_send(f"🦅 **Fırsat Tespit Edildi!**\n{why}\n\n*İşlem:* {sym} {side.upper()}")
-                
-                exch.set_leverage(lev, sym)
-                ticker = exch.fetch_ticker(sym)
-                amount_con = (amt * lev) / ticker['last']
-                
-                exch.create_market_order(sym, side, amount_con)
-                monitor_position(exch, sym, side)
+                try:
+                    # Veri ayıklama ve HATA KONTROLÜ
+                    raw = decision.split("[ACTION: TRADE")[1].split("]")[0].split(",")
+                    sym = raw[0].strip()
+                    side = raw[1].strip().lower()
+                    
+                    # Loglardaki 'invalid literal' hatasını burada yakalıyoruz:
+                    lev_str = re.sub(r'[^0-9]', '', raw[2].strip())
+                    lev = int(lev_str) if lev_str else 5 # Sayı değilse varsayılan 5x yap
+                    
+                    amt = float(re.sub(r'[^0-9.]', '', raw[3].strip()))
+                    why = raw[4].strip()
+
+                    if amt > balance: amt = balance * 0.95
+                    
+                    safe_send(f"🦅 {sym} {side.upper()} giriyorum. Neden: {why}")
+                    
+                    exch.set_leverage(lev, sym)
+                    ticker = exch.fetch_ticker(sym)
+                    amount_con = (amt * lev) / ticker['last']
+                    
+                    exch.create_market_order(sym, side, amount_con)
+                    monitor_position(exch, sym, side)
+                except Exception as parse_error:
+                    print(f"Format hatası ayıklandı: {parse_error}")
             
-            time.sleep(20)
+            time.sleep(30)
         except Exception as e:
-            print(f"Döngü hatası: {e}")
-            time.sleep(10)
+            print(f"Genel döngü koruması: {e}")
+            time.sleep(15)
 
 def monitor_position(exch, sym, side):
     while True:
@@ -109,17 +104,25 @@ def monitor_position(exch, sym, side):
             if not pos: break
             
             pnl = float(pos[0]['unrealizedPnl'])
-            check = ask_gemini_3(f"POZİSYON: {sym} | PNL: {pnl}\nKapat/Tut? [ACTION: CLOSE, NEDEN] veya [ACTION: HOLD]")
+            check = ask_gemini_3(f"İŞLEMDESİN: {sym} | PNL: {pnl}\nKapat/Tut? [ACTION: CLOSE, NEDEN] veya [ACTION: HOLD]")
             
             if "CLOSE" in check:
-                reason = check.split("CLOSE,")[1].split("]")[0]
                 exch.create_market_order(sym, ('sell' if side == 'long' else 'buy'), float(pos[0]['contracts']))
-                safe_send(f"💰 **Kâr Alındı!**\n{reason}\n*PNL:* {pnl} USDT")
+                safe_send(f"💰 Kâr Alındı. PNL: {pnl} USDT")
                 break
-            time.sleep(10)
+            time.sleep(15)
         except: time.sleep(5)
 
 if __name__ == "__main__":
-    bot.remove_webhook()
+    # Çift çalışma hatasını (Conflict 409) önlemek için webhook temizliği
+    try: bot.remove_webhook()
+    except: pass
+    time.sleep(2)
+    
     threading.Thread(target=brain_center, daemon=True).start()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    # Hata durumunda botun tamamen kapanmasını engelle
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception:
+            time.sleep(5)
