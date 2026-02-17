@@ -15,12 +15,9 @@ TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-
-# Hata riskini sıfırlamak için passphrase'i doğrudan tanımladım
 PASSPHRASE = "Berfin33" 
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
-# Bot ve AI Başlatma
 bot = telebot.TeleBot(TOKEN, threaded=False)
 client = genai.Client(api_key=GEMINI_KEY)
 
@@ -32,36 +29,45 @@ CONFIG = {
     'anti_manipulation': True
 }
 
-# Bitget Bağlantısı
+# Bitget Bağlantısı (Hedge Mode Destekli)
 def get_exchange():
     return ccxt.bitget({
         'apiKey': API_KEY,
         'secret': API_SEC,
         'password': PASSPHRASE,
-        'options': {'defaultType': 'swap', 'positionMode': True},
+        'options': {
+            'defaultType': 'swap', 
+            'positionMode': True  # Hedge Modu (Çift Yönlü) Aktif
+        },
         'enableRateLimit': True
     })
 
 def execute_trade(side, symbol="BTC/USDT:USDT"):
     try:
         exchange = get_exchange()
+        # Kaldıraç ayarı
         exchange.set_leverage(CONFIG['leverage'], symbol)
         
         ticker = exchange.fetch_ticker(symbol)
         price = ticker['last']
         amount = (CONFIG['entry_usdt'] * CONFIG['leverage']) / price
         
-        order = exchange.create_market_order(symbol, side, amount)
+        # Hedge Modunda işlem açarken 'posSide' belirtmek zorunludur
+        # buy -> Long açar, sell -> Short açar
+        pos_side = 'long' if side == 'buy' else 'short'
         
-        report = (f"🎯 **DENEME İŞLEMİ AÇILDI**\n\n"
+        params = {'posSide': pos_side}
+        order = exchange.create_market_order(symbol, side, amount, params)
+        
+        report = (f"🎯 **HEDGE MODU İŞLEMİ AÇILDI**\n\n"
                   f"📈 Parite: {symbol}\n"
-                  f"⚡ Yön: {side.upper()}\n"
+                  f"⚡ Pozisyon: {pos_side.upper()}\n"
                   f"💰 Miktar: 20 USDT (10x)\n"
-                  f"🛡️ Kalkan: SL ve TP1 (%75) Aktif!")
+                  f"🛡️ Kalkan: Aktif!")
         bot.send_message(CHAT_ID, report)
         return order
     except Exception as e:
-        bot.send_message(CHAT_ID, f"⚠️ İşlem Hatası: {e}")
+        bot.send_message(CHAT_ID, f"⚠️ İşlem Hatası (Hedge): {e}")
 
 @bot.message_handler(func=lambda message: True)
 def handle_ai_command(message):
@@ -71,10 +77,9 @@ def handle_ai_command(message):
             balance_data = exchange.fetch_balance()
             balance = balance_data['total'].get('USDT', 0)
             
-            prompt = (f"Sen Evergreen V11'sin. Kaptan Sadık'ın tam yetkili botusun. "
-                      f"Kaptan: '{message.text}' dedi. Bakiye: {balance} USDT. "
-                      f"Stratejin: Profitable, slow, risk-free trades. "
-                      f"Karar verirsen sonuna [KOMUT:AL] veya [KOMUT:SAT] ekle.")
+            prompt = (f"Sen Evergreen V11'sin. Kaptan Sadık'ın botusun. "
+                      f"Kullanıcı mesajı: '{message.text}'. Bakiye: {balance} USDT. "
+                      f"Hedge modu aktif. Karar verirsen [KOMUT:AL] veya [KOMUT:SAT] ekle.")
             
             response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
             bot.reply_to(message, response.text)
@@ -88,26 +93,14 @@ def handle_ai_command(message):
             print(f"Hata: {e}")
 
 if __name__ == "__main__":
-    print("🚀 Evergreen V11: Motorlar Isıtılıyor...")
-    
     try:
         bot.remove_webhook()
         time.sleep(2)
-        
-        # Başlangıç Kontrolü
         exchange = get_exchange()
-        balance_data = exchange.fetch_balance()
-        current_balance = balance_data['total'].get('USDT', 0)
-        
-        online_msg = (f"🦅 **SİSTEM ONLINE**\n\n"
-                      f"💰 Güncel Bakiye: {current_balance} USDT\n"
-                      f"📡 Bağlantı: Amsterdam/Bitget Aktif\n\n"
-                      f"Kaptan, şifre ve API düğümleri çözüldü. Ava hazırız!")
-        
-        bot.send_message(CHAT_ID, online_msg)
-        print("✅ Bot Başarıyla Yayına Girdi.")
+        balance = exchange.fetch_balance()['total'].get('USDT', 0)
+        bot.send_message(CHAT_ID, f"🦅 **HEDGE MODU AKTİF**\n\nBakiye: {balance} USDT\nSistem tüm yönlere açık!")
     except Exception as e:
-        print(f"❌ Başlatma Hatası: {e}")
+        print(f"Hata: {e}")
 
     while True:
         try:
