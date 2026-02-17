@@ -10,20 +10,21 @@ apihelper.RETRY_ON_ERROR = True
 apihelper.CONNECT_TIMEOUT = 60
 apihelper.READ_TIMEOUT = 60
 
-# --- [YAPILANDIRMA - PANELİNLE %100 UYUMLU] ---
+# --- [YAPILANDIRMA] ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-# İsmi senin panelindeki gibi 'BITGET_PASSPHR' yaptım:
-PASSPHRASE = os.getenv('BITGET_PASSPHR') 
+
+# Hata riskini sıfırlamak için passphrase'i doğrudan tanımladım
+PASSPHRASE = "Berfin33" 
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
 # Bot ve AI Başlatma
 bot = telebot.TeleBot(TOKEN, threaded=False)
 client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [GÜVENLİK AYARLARI] ---
+# --- [STRATEJİ AYARLARI] ---
 CONFIG = {
     'entry_usdt': 20.0,
     'leverage': 10,
@@ -52,7 +53,7 @@ def execute_trade(side, symbol="BTC/USDT:USDT"):
         
         order = exchange.create_market_order(symbol, side, amount)
         
-        report = (f"🎯 **İŞLEM AÇILDI**\n\n"
+        report = (f"🎯 **DENEME İŞLEMİ AÇILDI**\n\n"
                   f"📈 Parite: {symbol}\n"
                   f"⚡ Yön: {side.upper()}\n"
                   f"💰 Miktar: 20 USDT (10x)\n"
@@ -71,8 +72,8 @@ def handle_ai_command(message):
             balance = balance_data['total'].get('USDT', 0)
             
             prompt = (f"Sen Evergreen V11'sin. Kaptan Sadık'ın tam yetkili botusun. "
-                      f"Kaptan: '{message.text}' dedi. Mevcut Bakiye: {balance} USDT. "
-                      f"Stratejin: Profitable, slow, risk-free trades."
+                      f"Kaptan: '{message.text}' dedi. Bakiye: {balance} USDT. "
+                      f"Stratejin: Profitable, slow, risk-free trades. "
                       f"Karar verirsen sonuna [KOMUT:AL] veya [KOMUT:SAT] ekle.")
             
             response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
@@ -100,9 +101,8 @@ if __name__ == "__main__":
         
         online_msg = (f"🦅 **SİSTEM ONLINE**\n\n"
                       f"💰 Güncel Bakiye: {current_balance} USDT\n"
-                      f"🛡️ Kalkanlar: Aktif\n"
-                      f"📡 Radar: Amsterdam üzerinden bağlı!\n\n"
-                      f"Kaptan, her şey senin panelindeki ayarlara göre hazırlandı. Ava hazırız!")
+                      f"📡 Bağlantı: Amsterdam/Bitget Aktif\n\n"
+                      f"Kaptan, şifre ve API düğümleri çözüldü. Ava hazırız!")
         
         bot.send_message(CHAT_ID, online_msg)
         print("✅ Bot Başarıyla Yayına Girdi.")
