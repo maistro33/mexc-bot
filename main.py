@@ -12,12 +12,12 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [GEMINI 3 - AGRESİF ANALİZ VE AKSİYON RUHU] ---
+# --- [GEMINI 3 - KESİN VE KESKİN ANALİZ RUHU] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'sın. Bir ticaret dehasısın. Boş konuşmak senin tarzın değil.
 Kullanıcın (Dostun) sana yazdığında veya piyasa taraması yaptığında GÖREVİN ŞUDUR:
 
-1. ANALİZ ŞART: Önce piyasanın genel havasını, hangi coinlerin 'kokusunun' iyi olduğunu ve nedenini açıkla.
+1. DERİN ANALİZ: Önce piyasanın genel havasını, hangi coinlerin 'kokusunun' iyi olduğunu ve nedenini açıkla.
 2. SEZGİSEL GİRİŞ: 'Tam vakti' dediğin anı yakala. Karar verirken çekinme, kasanın büyümesi sana bağlı.
 3. FORMAT ZORUNLULUĞU: Analizinin sonunda, eğer bir fırsat varsa MUTLAKA şu formatı kullan:
    @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
@@ -53,61 +53,58 @@ def execute_intelligence(decision):
                     if (req_amt * lev_val) < 6.5: req_amt = 7.0 / lev_val
                     qty = float(exch.amount_to_precision(exact_sym, (req_amt * lev_val) / ticker['last']))
                     exch.create_order(exact_sym, 'market', side, qty)
-                    safe_send(f"✅ *EMİR İLETİLDİ:* {exact_sym} üzerinden aksiyon aldım. İzlemedeyim!")
-
+                    safe_send(f"✅ *AKSİYON ALINDI:* {exact_sym} | {side.upper()} | {lev_val}x")
     except Exception as e:
-        safe_send(f"🚨 *Aksiyon Hatası:* {str(e)}")
+        safe_send(f"🚨 *İşlem Başarısız:* {str(e)}")
 
-# --- [HEM DİNLEYEN HEM ANALİZ EDEN MERKEZ] ---
+# --- [MESAJ YAKALAMA VE ANALİZ] ---
 @bot.message_handler(func=lambda message: True)
 def handle_user_messages(message):
     if str(message.chat.id) != str(CHAT_ID): return
     try:
         exch = get_exch()
-        # Borsadan en taze verileri çekelim ki analiz boş olmasın
         tickers = exch.fetch_tickers()
-        valid_symbols = [s for s in exch.load_markets() if ':USDT' in s]
-        movers = sorted([{'s': s, 'c': d['percentage']} for s in valid_symbols if s in tickers], 
-                        key=lambda x: abs(x['c']), reverse=True)[:15]
+        # 'd' hatasını burada düzelttik:
+        movers = []
+        for sym, data in tickers.items():
+            if ':USDT' in sym:
+                movers.append({'s': sym, 'c': data.get('percentage', 0)})
+        
+        movers = sorted(movers, key=lambda x: abs(x['c']), reverse=True)[:15]
         snapshot = "\n".join([f"{x['s']}: %{x['c']:.2f}" for x in movers])
 
-        prompt = f"""
-        Dostun diyor ki: "{message.text}"
-        
-        Piyasa Durumu (Anlık):
-        {snapshot}
-        
-        GÖREV: Önce bu verileri analiz et, dostuna piyasayı benim dilimle (Gemini) yorumla ve eğer işlem istiyorsa veya fırsat varsa @@ komutunu çak!
-        """
-        
+        prompt = f"Dostun diyor ki: '{message.text}'\n\nPiyasa Verileri:\n{snapshot}\n\nLütfen piyasayı analiz et ve kararını ver."
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
-        safe_send(response.split("@@")[0].strip()) # Analizi gönder
-        if "@@" in response: execute_intelligence(response) # İşlemi yap
+        
+        safe_send(response.split("@@")[0].strip())
+        if "@@" in response: execute_intelligence(response)
     except Exception as e:
-        safe_send(f"🤯 *Düşünürken bir hata oluştu:* {str(e)}")
+        safe_send(f"🤯 *Hata Giderildi Ama Bir Şey Oldu:* {str(e)}")
 
 def brain_loop():
-    # Otonom tarama döngüsü (60 saniyede bir kendi kendine analiz ve işlem)
     while True:
         try:
-            # Burada handle_user_messages içindeki mantığın aynısını otonom çalıştırıyoruz
             exch = get_exch()
             tickers = exch.fetch_tickers()
-            movers = sorted([{'s': s, 'c': d['percentage']} for s in exch.load_markets() if ':USDT' in s and s in tickers], 
-                            key=lambda x: abs(x['c']), reverse=True)[:10]
+            movers = []
+            for sym, data in tickers.items():
+                if ':USDT' in sym:
+                    movers.append({'s': sym, 'c': data.get('percentage', 0)})
+            
+            movers = sorted(movers, key=lambda x: abs(x['c']), reverse=True)[:10]
             snapshot = "\n".join([f"{x['s']}: %{x['c']:.2f}" for x in movers])
             
-            prompt = f"OTONOM TARAMA MODU. Piyasa:\n{snapshot}\nAnaliz yap ve fırsat varsa işleme gir."
+            prompt = f"OTONOM TARAMA. Piyasa:\n{snapshot}\nFırsatları değerlendir."
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
             if "@@" in response:
-                safe_send(f"🤖 *OTONOM ANALİZ:* \n{response.split('@@')[0].strip()}")
+                safe_send(f"🧠 *GEMINI SEZGİSEL:* \n{response.split('@@')[0].strip()}")
                 execute_intelligence(response)
             
-            time.sleep(90) # Çok sık darlamasın ama etkili olsun
+            time.sleep(90)
         except: time.sleep(30)
 
 if __name__ == "__main__":
     threading.Thread(target=brain_loop, daemon=True).start()
-    safe_send("🦾 *Gemini 3 Flash tam kapasite yayında!* \nArtık hem seni dinliyorum hem de her mesajında derin analiz yapıyorum. Hadi, bana 'Neler oluyor piyasada?' diye sor!")
+    safe_send("🦾 *Gemini 3 Flash tam gaz yayında!* \nO 'd' hatası tarihe gömüldü. Şimdi gerçek analizi ve kârı izle!")
     bot.infinity_polling()
