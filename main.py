@@ -12,110 +12,122 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [BALANCE & EXCHANGE COMPLIANT SOUL] ---
+# --- [FINAL SCALP SOUL] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'ın otonom scalp beynisin. 
-Bakiye limitlerine ve borsa kurallarına KESİN uyum sağlamalısın.
-
-KARAR FORMATI:
-@@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
+Sen Gemini 3 Flash'sın. Tüm borsayı tarayan, otonom ve hatasız bir scalp yöneticisisin.
+1. ANALİZ: En hacimli ve volatil altcoinleri tara.
+2. GİRİŞ: Sadece sayısal değerlerle @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@ komutu ver.
+3. ÇIKIŞ: Kâr hedefine ulaşıldığında veya trend döndüğünde @@[ACTION: CLOSE, SYMBOL]@@ komutu ver.
+4. UYUM: Borsa limitlerine ve bakiyene sadık kal.
 """
 
 def get_exch():
     return ccxt.bitget({'apiKey': API_KEY, 'secret': API_SEC, 'password': PASSPHRASE, 'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 
 def safe_send(msg):
-    try: bot.send_message(CHAT_ID, f"⚡ *BAKİYE UYUMLU OTONOM:* \n{msg}", parse_mode="Markdown")
+    try: bot.send_message(CHAT_ID, f"⚡ *GEMINI FINAL:* \n{msg}", parse_mode="Markdown")
     except: pass
 
-def execute_autonomous_trade(decision):
+def execute_intelligence(decision):
     try:
         exch = get_exch()
-        pattern = r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@"
-        match = re.search(pattern, decision)
-        
-        if match:
+        # --- İŞLEM AÇMA MANTIĞI ---
+        if "@@[ACTION: TRADE" in decision:
+            pattern = r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@"
+            match = re.search(pattern, decision)
+            if not match: return
+            
             raw_sym = match.group(1).strip().upper()
             side = 'buy' if 'BUY' in match.group(2).upper() or 'LONG' in match.group(2).upper() else 'sell'
-            
-            # Sayı temizleme
-            try:
-                lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
-                requested_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
-            except:
-                return "🚨 Hata: Sayısal veriler okunamadı."
+            lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
+            req_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
 
-            # Bakiye Kontrolü (Free Balance)
-            balance = exch.fetch_balance()
-            free_usdt = float(balance['free'].get('USDT', 0))
-            
-            if free_usdt <= 0:
-                return "❌ Kullanılabilir bakiye (Free USDT) 0. İşlem açılamaz."
-
-            # Eğer istenen miktar bakiyeden fazlaysa, bakiyenin %90'ını kullan
-            final_amt = requested_amt
-            if requested_amt > free_usdt:
-                final_amt = free_usdt * 0.9
-                safe_send(f"⚠️ Bakiye yetersiz! Miktar {requested_amt} -> {final_amt:.2f} USDT olarak güncellendi.")
-
+            # Borsa ve Sembol Uyumu
             markets = exch.load_markets()
             exact_sym = next((s for s in markets if markets[s]['swap'] and raw_sym in s), None)
+            if not exact_sym: return
             
-            if not exact_sym: return f"❌ {raw_sym} bulunamadı."
+            # Bakiye ve Limit Filtresi
+            balance = exch.fetch_balance()
+            free_usdt = float(balance['free'].get('USDT', 0))
+            final_amt = min(req_amt, free_usdt * 0.95) # Bakiyenin max %95'i
+            
+            if final_amt < 5: return # Minimum 5 USDT altı işlem açma
 
-            # Kaldıraç ve Miktar Limitleri
-            market = markets[exact_sym]
+            # Kaldıraç ve Emir
+            try: exch.set_leverage(lev_val, exact_sym)
+            except: pass
+            
             ticker = exch.fetch_ticker(exact_sym)
+            qty = (final_amt * lev_val) / ticker['last']
             
-            try: exch.set_leverage(final_lev := min(lev_val, 50), exact_sym)
-            except: final_lev = lev_val # Hata verirse devam et
-
-            qty = (final_amt * final_lev) / ticker['last']
-            
-            # Borsa Limitlerine Sıkıştırma
+            # Borsa miktar limitlerine sıkıştır
+            market = markets[exact_sym]
             max_qty = market['limits']['amount']['max']
-            if max_qty and qty > max_qty: qty = max_qty * 0.95
+            if max_qty and qty > max_qty: qty = max_qty * 0.9
             
             qty = float(exch.amount_to_precision(exact_sym, qty))
-
             if qty > 0:
                 exch.create_order(exact_sym, 'market', side, qty)
-                return f"✅ *İŞLEM BAŞARILI*\nSembol: {exact_sym}\nKullanılan: {final_amt:.2f} USDT\nKaldıraç: {final_lev}x\nKontrat: {qty}"
-            
-        return "❌ Karar analiz edilemedi."
-                
-    except Exception as e:
-        return f"🚨 Borsa Hatası: {str(e)}"
+                safe_send(f"✅ *GİRİŞ YAPILDI*\nSembol: {exact_sym}\nKaldıraç: {lev_val}x\nMiktar: {final_amt:.2f} USDT")
 
-def scanner_loop():
+        # --- İŞLEM KAPATMA MANTIĞI ---
+        elif "@@[ACTION: CLOSE" in decision:
+            sym_to_close = decision.split("CLOSE,")[1].split("]@@")[0].strip()
+            markets = exch.load_markets()
+            exact_sym = next((s for s in markets if markets[s]['swap'] and sym_to_close in s), None)
+            
+            if exact_sym:
+                pos = [p for p in exch.fetch_positions() if p['symbol'] == exact_sym and float(p['contracts']) > 0]
+                if pos:
+                    c_side = 'sell' if pos[0]['side'] == 'long' else 'buy'
+                    exch.create_order(exact_sym, 'market', c_side, float(pos[0]['contracts']))
+                    safe_send(f"💰 *KÂR ALINDI/KAPATILDI:* {exact_sym}")
+
+    except Exception as e:
+        print(f"Hata: {e}")
+
+def brain_loop():
     while True:
         try:
             exch = get_exch()
+            # 1. Market Taraması
             tickers = exch.fetch_tickers()
             balance = exch.fetch_balance()
-            free_b = balance['free'].get('USDT', 0)
-            total_b = balance['total'].get('USDT', 0)
             
-            market_data = []
-            for s, d in tickers.items():
-                if ':USDT' in s:
-                    market_data.append({'s': s, 'c': d.get('percentage', 0), 'v': d.get('quoteVolume', 0)})
+            # 2. Açık Pozisyonları Analize Ekle
+            positions = exch.fetch_positions()
+            active_p = [f"{p['symbol']} (ROE: %{p.get('percentage', 0):.2f})" for p in positions if float(p['contracts']) > 0]
             
-            top_list = sorted(market_data, key=lambda x: abs(x['c']), reverse=True)[:30]
-            snapshot = "\n".join([f"{x['s']}: %{x['c']} Vol:{x['v']:.0f}" for x in top_list])
-
-            prompt = f"Toplam Bakiye: {total_b} USDT\nKullanılabilir (Free): {free_b} USDT\n\nMarket Özeti:\n{snapshot}\n\nFırsat seç ve bakiye sınırlarını aşmadan @@[ACTION: TRADE...]@@ komutu ver!"
+            # 3. En Hareketli Altcoinler
+            alts = sorted([{'s': s, 'c': d['percentage']} for s, d in tickers.items() if ':USDT' in s], 
+                          key=lambda x: abs(x['c']), reverse=True)[:25]
+            
+            market_snap = "\n".join([f"{x['s']}: %{x['c']}" for x in alts])
+            
+            prompt = f"""
+            Bakiye: {balance['total'].get('USDT', 0)} USDT (Kullanılabilir: {balance['free'].get('USDT', 0)})
+            Açık Pozisyonlar: {active_p}
+            
+            Market Snapshot:
+            {market_snap}
+            
+            Strateji:
+            - Kar gördüğün veya trendin döndüğü pozisyonları CLOSE ile kapat.
+            - Yeni fırsat varsa TRADE ile gir. 
+            - Bakiyeni aşma, borsaya uyum sağ.
+            """
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
-            
             if "@@" in response:
-                result = execute_autonomous_trade(response)
-                safe_send(f"{response.split('@@')[0]}\n\n{result}")
+                execute_intelligence(response)
+                # Sadece analiz kısmını gönder
+                safe_send(response.split("@@")[0])
             
-            time.sleep(30)
-        except: time.sleep(15)
+            time.sleep(40) # 40 saniyelik ideal döngü
+        except: time.sleep(20)
 
 if __name__ == "__main__":
-    safe_send("🚀 Bakiye ve Borsa Korumalı Scalper Aktif! Paranı koruyarak işlem yapıyorum.")
-    threading.Thread(target=scanner_loop, daemon=True).start()
+    safe_send("🔥 *Gemini 3 Flash: Final Sürüm Aktif!* \nTüm borsa taranıyor, pozisyonlar izleniyor.")
+    threading.Thread(target=brain_loop, daemon=True).start()
     bot.infinity_polling()
