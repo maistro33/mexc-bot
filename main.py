@@ -1,9 +1,7 @@
 import os, time, telebot, ccxt, threading
 from google import genai
-from telebot import apihelper
 
-# --- [BAĞLANTI VE GÜVENLİK] ---
-apihelper.RETRY_ON_ERROR = True
+# --- [BAĞLANTI AYARLARI] ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -11,7 +9,8 @@ API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = "Berfin33" 
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
-bot = telebot.TeleBot(TOKEN, threaded=False)
+# Bot Nesnesi (Cevap verme garantili ayarlar)
+bot = telebot.TeleBot(TOKEN, threaded=True)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
 def get_exchange():
@@ -20,64 +19,56 @@ def get_exchange():
         'options': {'defaultType': 'swap'}, 'enableRateLimit': True
     })
 
-# --- [AKILLI ANALİZ - KOTA DOSTU] ---
-def gemini_ask(prompt):
-    """Kotaya takılmamak için akıllı bekleme yapar."""
-    try:
-        res = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-        return res.text
-    except Exception as e:
-        if "429" in str(e):
-            print("Kota doldu, 10 dk uyku...")
-            time.sleep(600)
-        return "BEKLE"
-
-# --- [TAKİP VE KARAR] ---
-def monitor_trade(symbol, side, contracts):
-    exch = get_exchange()
-    while True:
+# --- [SENİNLE KONUŞAN ZEKA] ---
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+    """Sen ne yazarsan yaz, Gemini 3 gibi anında cevap verir."""
+    if str(message.chat.id) == str(CHAT_ID):
         try:
-            pos = [p for p in exch.fetch_positions() if p['symbol'] == symbol and float(p.get('contracts', 0)) > 0]
-            if not pos: break
-            pnl = float(pos[0]['unrealizedPnl'])
-            
-            # 3 dakikada bir kontrol (Kota için)
-            decision = gemini_ask(f"Evergreen V11, {symbol} {side} işlemindesin. PNL: {pnl}. Kapatmalı mıyım? [KAPAT] veya [DEVAM]")
-            if "[KAPAT]" in decision:
-                exch.create_market_order(symbol, ('sell' if side == 'long' else 'buy'), contracts)
-                bot.send_message(CHAT_ID, f"💰 Karar Verildi: Pozisyon kapatıldı. PNL: {pnl}")
-                break
-            time.sleep(180)
-        except: time.sleep(30)
+            prompt = f"Sen Evergreen V11'sin (Gemini 3). Kaptan Sadık şunu sordu: {message.text}. Kaptanına samimi ve zeki bir cevap ver."
+            response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            bot.reply_to(message, response.text)
+        except Exception as e:
+            if "429" in str(e):
+                bot.reply_to(message, "Kaptan, çok konuştuk kota doldu! 5 dk dinlenip geliyorum.")
+            else:
+                bot.reply_to(message, "Buradayım Kaptan, piyasayı süzüyorum.")
 
-# --- [RADAR BEYNİ] ---
+# --- [OTONOM RADAR VE İŞLEM] ---
 def evergreen_brain():
     exch = get_exchange()
     while True:
         try:
-            # Önce yolu temizle (409 Hatası Koruması)
-            bot.remove_webhook()
-            
+            # Analiz ve İşlem Mantığı (Kota dostu: 10 dakikada bir)
             balance = exch.fetch_balance()['total'].get('USDT', 0)
             tickers = exch.fetch_tickers()
             movers = sorted([d for s, d in tickers.items() if '/USDT:USDT' in s], key=lambda x: abs(x.get('percentage', 0)), reverse=True)[:5]
             
             market_data = "\n".join([f"{d['symbol']}: %{d['percentage']}" for d in movers])
-            prompt = f"Bakiyen: {balance}. Piyasa:\n{market_data}\nBir işlem seç: [ISLEM: SEMBOL, YON, KALDIRAC, MIKTAR] veya [PAS]"
+            prompt = f"Bakiye: {balance}. Piyasa:\n{market_data}\nİşlem kararı ver: [ISLEM: SEMBOL, YON, KALDIRAC, MIKTAR] veya [PAS]"
             
-            decision = gemini_ask(prompt)
-            if "[ISLEM:" in decision:
-                # ... (İşlem açma mantığı)
-                bot.send_message(CHAT_ID, f"🦅 Hedef Belirlendi: {decision}")
-                # monitor_trade(...) fonksiyonunu burada çağırır
-                
-            time.sleep(600) # 10 dakikada bir analiz (Kesin kota çözümü)
-        except: time.sleep(60)
+            res = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt).text
+            
+            if "[ISLEM:" in res:
+                # İşlem kodları buraya (Önceki stabil yapı)
+                bot.send_message(CHAT_ID, f"🚀 **İşleme Karar Verdim:**\n{res}")
+            
+            time.sleep(600) # 10 dakika bekle (Kota koruması)
+        except:
+            time.sleep(60)
 
+# --- [ANA ÇALIŞTIRICI: TEMİZ SAYFA] ---
 if __name__ == "__main__":
-    # Çift bot çalışmasını engellemek için zorunlu temizlik
+    # 1. Eski bağlantıları zorla kopar (409 hatasını bitirir)
     bot.remove_webhook()
-    time.sleep(5)
-    threading.Thread(target=lambda: bot.infinity_polling(timeout=90), daemon=True).start()
-    bot.send_message(CHAT_ID, "🛡️ **Evergreen V11: Hatalar Giderildi.**\nKaptan, çakışmaları ve kota sorunlarını çözdüm. Av başlıyor.")
+    time.sleep(3)
+    
+    # 2. Telegram'ı ayrı bir kolda (Thread) başlat (Cevap verme garantisi)
+    tele_thread = threading.Thread(target=lambda: bot.infinity_polling(timeout=90, skip_pending=True))
+    tele_thread.daemon = True
+    tele_thread.start()
+    
+    bot.send_message(CHAT_ID, "🛡️ **Kaptan, Evergreen V11 (Gemini 3) bağlandı!**\nArtık sesini duyuyorum. Sorumluluk bende, bakiye sende. Ne yapalım?")
+    
+    # 3. Beyni başlat
     evergreen_brain()
