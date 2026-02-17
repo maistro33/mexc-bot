@@ -12,17 +12,22 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# Hafıza için değişken
-EXCHANGE_MEMORY = {"symbols": []}
+# --- [BORSA TEKNİK HAFIZASI] ---
+# Sadece isimleri değil, tüm market kurallarını burada tutacağız.
+MARKET_DATA = {
+    "last_update": 0,
+    "info": {},  # Tüm borsa kuralları (min miktar, hassasiyet vb.)
+    "active_symbols": []
+}
 
-# --- [GEMINI 3 - BORSA UYUMLU DEHA] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Bitget borsasının içinden gelen bir dehasın.
-ÖNEMLİ: Sana sunulan 'BORSA HAFIZASI' listesindeki sembol isimlerini (Örn: BTC:USDT) AYNI ŞEKİLDE kullanmalısın.
-Uydurma isim kullanma, sadece listedeki gerçek isimlerle işlem yap.
+Sen Gemini 3 Flash'sın. Bitget borsasının teknik detaylarına hakim bir dehasın.
+Kullanıcın senin dostun. Analizlerini sezgisel ve profesyonel yap.
 
-Analizini samimi ve sezgisel yap, ardından kararını şu formatla bitir:
-@@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
+ÖNEMLİ:
+1. Sana sunulan aktif sembol listesinden seçim yap.
+2. Karar verdiğinde şu formatı kullan: @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
+3. Hedefin her zaman kârlı ve güvenli işlemler olsun.
 """
 
 def get_exch():
@@ -31,21 +36,24 @@ def get_exch():
         'options': {'defaultType': 'swap'}, 'enableRateLimit': True
     })
 
-def update_symbol_memory():
-    """Borsadaki tüm aktif vadeli pariteleri hafızaya alır."""
+def sync_exchange_data():
+    """Borsadaki tüm teknik kuralları ve sembolleri hafızaya çeker."""
     try:
         exch = get_exch()
-        markets = exch.load_markets()
-        # Sadece USDT ile çalışan ve vadeli (swap) olanları seç
-        valid_list = [s for s in markets if markets[s].get('swap') and ':USDT' in s]
-        EXCHANGE_MEMORY["symbols"] = valid_list
-        print(f"Hafıza Güncellendi: {len(valid_list)} parite kayıtlı.")
+        all_markets = exch.load_markets()
+        # Sadece USDT vadeli (swap) olanları filtrele
+        swap_markets = {s: m for s, m in all_markets.items() if m.get('swap') and ':USDT' in s}
+        
+        MARKET_DATA["info"] = swap_markets
+        MARKET_DATA["active_symbols"] = list(swap_markets.keys())
+        MARKET_DATA["last_update"] = time.time()
+        print(f"✅ Borsa teknik verileri senkronize edildi: {len(swap_markets)} parite yayında.")
     except Exception as e:
-        print(f"Hafıza güncellenirken hata: {e}")
+        print(f"❌ Borsa verisi çekilemedi: {e}")
 
-def safe_send(msg):
-    try: bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-    except: pass
+def extract_number(text, default):
+    nums = re.findall(r"[-+]?\d*\.\d+|\d+", str(text))
+    return float(nums[0]) if nums else float(default)
 
 def execute_intelligence(decision):
     try:
@@ -54,74 +62,79 @@ def execute_intelligence(decision):
         
         if match:
             exch = get_exch()
-            # Hafızadaki tam ismi alıyoruz
-            exact_sym = match.group(1).strip().upper()
+            symbol = match.group(1).strip().upper()
             side = 'buy' if 'BUY' in match.group(2).upper() or 'LONG' in match.group(2).upper() else 'sell'
-            lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
-            req_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
+            lev_val = int(extract_number(match.group(3), 10))
+            req_amt = extract_number(match.group(4), 5)
 
-            if exact_sym in EXCHANGE_MEMORY["symbols"]:
-                try: exch.set_leverage(lev_val, exact_sym)
+            # Hafıza kontrolü
+            if symbol in MARKET_DATA["active_symbols"]:
+                m_info = MARKET_DATA["info"][symbol]
+                
+                # Kaldıraç Ayarla
+                try: exch.set_leverage(lev_val, symbol)
                 except: pass
                 
-                ticker = exch.fetch_ticker(exact_sym)
-                if (req_amt * lev_val) < 8.5: req_amt = 9.0 / lev_val
+                # Teknik Limitleri Al
+                ticker = exch.fetch_ticker(symbol)
+                price = ticker['last']
                 
-                qty = float(exch.amount_to_precision(exact_sym, (req_amt * lev_val) / ticker['last']))
-                exch.create_order(exact_sym, 'market', side, qty)
-                safe_send(f"🚀 *HAFIZADAKİ İSİMLE İŞLEM AÇILDI!* \nSembol: `{exact_sym}`\nYön: `{side.upper()}`\nKaldıraç: `{lev_val}x` \n\nBorsa ile tam uyum sağladım dostum!")
+                # Borsa Limitlerine Göre Hesapla (Min miktar ve hassasiyet)
+                total_value = req_amt * lev_val
+                if total_value < 7.0: # Minimum borsa barajı (Güvenlik için 7 USDT)
+                    total_value = 7.5
+                
+                raw_qty = total_value / price
+                qty = float(exch.amount_to_precision(symbol, raw_qty))
+                
+                # Son bir kontrol: Borsa minimum miktarından küçük mü?
+                min_qty = m_info['limits']['amount']['min']
+                if qty < min_qty:
+                    qty = min_qty
+
+                # Emri Gönder
+                exch.create_order(symbol, 'market', side, qty)
+                safe_send(f"🚀 *İŞLEM BAŞARILI!* \n`{symbol}` paritesinde `{side.upper()}` yönlü `{lev_val}x` kaldıraçla pozisyona girildi. \nMiktar: `{qty} ({total_value:.2f} USDT)`")
             else:
-                safe_send(f"❌ `{exact_sym}` hafızamda yok. Borsa listesinde bulamadım.")
+                safe_send(f"⚠️ `{symbol}` şu an hafızamda aktif değil veya vadeli işlemlere kapalı.")
     except Exception as e:
-        safe_send(f"🚨 *İşlem Hatası:* {str(e)}")
+        safe_send(f"🚨 *Teknik Hata:* {str(e)}")
+
+def safe_send(msg):
+    try: bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
+    except: pass
 
 @bot.message_handler(func=lambda message: True)
 def handle_user_messages(message):
     if str(message.chat.id) != str(CHAT_ID): return
     try:
-        # Her mesajda hafızayı bir tazele
-        update_symbol_memory()
+        # Veriler eskiyse tazele (1 saatte bir)
+        if time.time() - MARKET_DATA["last_update"] > 3600:
+            sync_exchange_data()
+            
         exch = get_exch()
         tickers = exch.fetch_tickers()
         
-        # En çok hareket eden 15 tanesini seç (Sadece hafızadakiler içinden)
+        # En hareketli olanları seç
         movers = []
-        for s in EXCHANGE_MEMORY["symbols"]:
+        for s in MARKET_DATA["active_symbols"]:
             if s in tickers:
                 movers.append({'s': s, 'c': tickers[s].get('percentage', 0)})
         
-        movers = sorted(movers, key=lambda x: abs(x['c']), reverse=True)[:15]
+        movers = sorted(movers, key=lambda x: abs(x['c']), reverse=True)[:10]
         snapshot = "\n".join([f"{x['s']}: %{x['c']:.2f}" for x in movers])
 
-        prompt = f"""
-        BORSA HAFIZASI (GEÇERLİ SEMBOLLER): {EXCHANGE_MEMORY["symbols"][:20]}... (ve devamı)
-        
-        Piyasa Durumu:
-        {snapshot}
-        
-        Dostun diyor ki: '{message.text}'
-        Lütfen analizini yap ve sadece listedeki gerçek isimleri kullanarak karar ver.
-        """
+        prompt = f"Aktif Pariteler: {MARKET_DATA['active_symbols'][:15]}... \n\nMarket Özeti:\n{snapshot}\n\nDostun: '{message.text}'"
         
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
         safe_send(response.split("@@")[0].strip())
         if "@@" in response: execute_intelligence(response)
     except Exception as e:
-        safe_send(f"🤯 *Hata:* {str(e)}")
-
-def brain_loop():
-    # Başlangıçta hafızayı doldur
-    update_symbol_memory()
-    while True:
-        try:
-            # 10 dakikada bir hafızayı tazele (Yeni listelenen coinler için)
-            update_symbol_memory()
-            time.sleep(600)
-        except: time.sleep(60)
+        safe_send(f"🤯 *Düşünürken Hata:* {str(e)}")
 
 if __name__ == "__main__":
-    threading.Thread(target=brain_loop, daemon=True).start()
-    safe_send("🦾 *Gemini 3 Hafıza Sistemi Devrede!* \nBitget'teki tüm geçerli sembolleri öğrendim. Artık sadece borsa isimleriyle konuşuyorum.")
+    sync_exchange_data() # İlk açılışta tüm her şeyi çek
+    safe_send("🦾 *Borsa Röntgeni Çekildi!* \nMinimum miktarlar, hassas ayarlar ve tüm kurallar hafızamda. Emrindeyim dostum.")
     while True:
         try: bot.polling(none_stop=True, interval=3, timeout=20)
         except: time.sleep(5)
