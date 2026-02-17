@@ -12,19 +12,18 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [AUTONOMOUS SOUL] ---
+# --- [DYNAMIC & FLEXIBLE SOUL] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'ın otonom scalp beynisin. 
-Görevin: Tüm borsadaki hacimli altcoinleri tara, yönü belirle, kaldıraç ve miktarı ayarla.
+TEK BİR COİNE TAKILIP KALMA. Eğer bir fırsat borsa limitlerine takılıyorsa veya riskliyse hemen listedeki DİĞER fırsatlara bak.
 
-KARAR FORMATI (KESİN):
+Görevin:
+1. Market özetindeki tüm hareketleri tara.
+2. En iyi 2-3 fırsatı belirle ama en güçlüsüne odaklan.
+3. Eğer borsa kuralları bir işleme izin vermezse (limit aşımı vb.), bir sonraki döngüde hemen alternatif bir sembole yönel.
+
+KARAR FORMATI:
 @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
-Örnek: @@[ACTION: TRADE, SOL, BUY, 10, 20]@@
-
-Kurallar:
-1. Sembolü sadece 'SOL' veya 'ORCA' gibi kısa ismiyle yazabilirsin.
-2. Kaldıraç (1-50x) ve Miktar (USDT) tamamen senin analizine bağlı.
-3. Bakiye kontrolü yap, tüm kasayı tek işleme basma.
 """
 
 def get_exch():
@@ -35,12 +34,9 @@ def safe_send(msg):
     except: pass
 
 def find_correct_symbol(exch, input_sym):
-    """Borsadaki gerçek sembol ismini bulur (Hata önleyici)"""
     try:
         markets = exch.load_markets()
-        clean_name = input_sym.split('/')[0].split(':')[0].upper().strip() # 'ORCA/USDT' -> 'ORCA'
-        
-        # Olası eşleşmeleri tara
+        clean_name = input_sym.split('/')[0].split(':')[0].upper().strip()
         for s in markets:
             if markets[s]['swap'] and (clean_name == markets[s]['base'] or clean_name + "USDT" == markets[s]['id']):
                 return s
@@ -59,30 +55,38 @@ def execute_autonomous_trade(decision):
             lev = int(float(match.group(3).strip()))
             amt = float(match.group(4).strip())
             
-            # Sembolü borsaya göre düzelt
             exact_sym = find_correct_symbol(exch, raw_sym)
-            if not exact_sym:
-                return f"❌ Sembol bulunamadı: {raw_sym}"
+            if not exact_sym: return f"❌ {raw_sym} borsada bulunamadı, listeye geri dönüyorum."
 
-            # 1. Kaldıraç Ayarla
-            try: exch.set_leverage(lev, exact_sym)
-            except: pass
-            
-            # 2. Market Bilgisi ve Miktar
+            # Market verisini çek
+            market = exch.market(exact_sym)
             ticker = exch.fetch_ticker(exact_sym)
-            price = ticker['last']
-            qty = (amt * lev) / price
+            
+            # --- [HATA ÖNLEME & ALTERNATİF MANTIĞI] ---
+            # 1. Kaldıraç kontrolü
+            try: exch.set_leverage(lev, exact_sym)
+            except Exception as e:
+                return f"⚠️ {exact_sym} için kaldıraç ayarlanamadı, pas geçiliyor. (Hata: {str(e)})"
+            
+            # 2. Miktar ve Limit Kontrolü
+            qty = (amt * lev) / ticker['last']
+            max_qty = market['limits']['amount']['max']
+            
+            if max_qty is not None and qty > max_qty:
+                # Limit aşılıyorsa inat etme, limiti zorla veya bırak
+                qty = max_qty * 0.9
+                safe_send(f"🔄 {exact_sym} limiti aşıldı, miktar maksimuma çekildi. Eğer olmazsa başka fırsata bakacağım.")
+
             qty = float(exch.amount_to_precision(exact_sym, qty))
             
-            # 3. Emir Gönder
             if qty > 0:
                 exch.create_order(exact_sym, 'market', side, qty)
-                return f"✅ *İŞLEM BAŞARILI*\nSembol: {exact_sym}\nYön: {side.upper()}\nKaldıraç: {lev}x\nMiktar: {amt} USDT"
+                return f"✅ *İŞLEM AÇILDI:* {exact_sym} ({side.upper()})"
             else:
-                return f"⚠️ {exact_sym} için miktar çok düşük."
+                return f"❌ {exact_sym} miktarı geçersiz, alternatif aranıyor..."
                 
     except Exception as e:
-        return f"🚨 İşlem Hatası: {str(e)}"
+        return f"🚨 Borsa Engelini Geçemedim: {str(e)}. Hemen diğer fırsatlara odaklanıyorum."
 
 def scanner_loop():
     while True:
@@ -91,17 +95,17 @@ def scanner_loop():
             tickers = exch.fetch_tickers()
             balance = exch.fetch_balance()['total'].get('USDT', 0)
             
-            # Hacim ve değişim verilerini topla
+            # Tüm marketi tara
             market_data = []
             for s, d in tickers.items():
-                if ':USDT' in s: # Sadece USDT pariteleri
+                if ':USDT' in s:
                     market_data.append({'s': s, 'c': d.get('percentage', 0), 'v': d.get('quoteVolume', 0)})
             
-            # En aktif 25'i Gemini'ye gönder
-            top_list = sorted(market_data, key=lambda x: abs(x['c']), reverse=True)[:25]
+            # İlk 25 yerine daha geniş bir liste gönderelim ki alternatifi çok olsun
+            top_list = sorted(market_data, key=lambda x: abs(x['c']), reverse=True)[:35]
             snapshot = "\n".join([f"{x['s']}: %{x['c']} Vol:{x['v']:.0f}" for x in top_list])
 
-            prompt = f"Bakiye: {balance} USDT\n\nMarket Özeti:\n{snapshot}\n\nFırsat görüyorsan kaldıraç ve miktarla birlikte @@[ACTION: TRADE...]@@ komutunu ateşle!"
+            prompt = f"Bakiye: {balance} USDT\n\nMARKET RADARI (Geniş Liste):\n{snapshot}\n\nLütfen en iyi fırsatı seç. Eğer borsa engeline takılırsak bir sonraki döngüde listedeki farklı bir fırsata geçeceğiz. Hedef: Sürekli akış."
             
             response = ai_client.models.generate_content(
                 model="gemini-2.0-flash", 
@@ -112,11 +116,11 @@ def scanner_loop():
                 result = execute_autonomous_trade(response)
                 safe_send(f"{response.split('@@')[0]}\n\n{result}")
             
-            time.sleep(30)
+            time.sleep(30) # Her 30 saniyede bir yeni/alternatif fırsat kontrolü
         except Exception as e:
             time.sleep(15)
 
 if __name__ == "__main__":
-    safe_send("🚀 Gemini 3 Otonom v2 Aktif! Sembol tanıma hatası giderildi, borsa taranıyor...")
+    safe_send("🚀 Gemini 3 Esnek Scalper Başladı! \nTek bir coine takılmadan tüm market taranıyor.")
     threading.Thread(target=scanner_loop, daemon=True).start()
     bot.infinity_polling()
