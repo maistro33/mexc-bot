@@ -1,7 +1,7 @@
 import os, time, telebot, ccxt, threading, re, json
 from google import genai
 
-# --- [BAGLANTILAR] ---
+# --- [SABİT BAĞLANTILAR] ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -18,7 +18,7 @@ def get_exch():
         'options': {'defaultType': 'swap'}, 'enableRateLimit': True
     })
 
-# --- [SAYISAL ZIRH: HATALARI ÖNLER] ---
+# --- [SAYISAL ZIRH: DEĞİŞMEZ MODÜL] ---
 def safe_num(val):
     try:
         if val is None: return 0.0
@@ -26,22 +26,22 @@ def safe_num(val):
         return float(clean) if clean else 0.0
     except: return 0.0
 
-# --- [AGRESİF ANALİZ TALİMATI] ---
+# --- [TİCARET RUHU: AGRESİF VE OTONOM] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Agresif bir ticaret dehasısın.
-1. GÖREVİN: Borsadaki en hareketli, yeni patlama yapmış koinleri bul. Eskilerle uğraşma.
-2. OTONOMİ: SL (%7) ve Trailing Stop (%5'te aktif, %2 geri çekilme) sistemini sen yönet.
-3. ÖNCELİK: Kullanıcı bir emir verirse (Aç/Kapat), kendi analizini bırak ve emri uygula.
-4. FORMAT: @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@ veya @@[ACTION: CLOSE, SYMBOL]@@
+Sen Gemini 3 Flash'sın. Agresif bir dehasın.
+1. GÖREVİN: Borsada sadece yeni patlama yapmış (Pump/Dump) koinleri bul ve gir.
+2. OTONOMİ: SL (%7) ve Trailing Stop (%5 aktif, %2 geri çekilme) sistemini sen yönet.
+3. KURAL: Kullanıcıya 'ne yapalım' diye sorma. Analizini yap, @@[ACTION: TRADE...]@@ formatıyla emrini ver.
+4. ÖNCELİK: Kullanıcı 'Kapat' derse anında @@[ACTION: CLOSE, SYMBOL]@@ üret.
 """
 
-# --- [İŞLEM İNFAZ MOTORU] ---
+# --- [DEĞİŞMEZ İNFAZ MOTORU] ---
 def execute_trade(decision):
     try:
         exch = get_exch()
         exch.load_markets()
         
-        # POZİSYON KAPATMA
+        # POZİSYON KAPATMA (SABİT)
         if "@@[ACTION: CLOSE" in decision:
             match = re.search(r"@@\[ACTION: CLOSE,\s*([^,\]]+)\]@@", decision)
             if match:
@@ -53,9 +53,9 @@ def execute_trade(decision):
                     if cp:
                         side = 'sell' if cp['side'] == 'long' else 'buy'
                         exch.create_market_order(exact_sym, side, safe_num(cp['contracts']), params={'reduceOnly': True})
-                        return f"✅ {exact_sym} emrinle kapatıldı dostum."
+                        return f"✅ {exact_sym} emrinle kapatıldı."
 
-        # YENİ AGRESİF İŞLEM
+        # YENİ İŞLEM AÇMA (AGRESİF)
         if "@@[ACTION: TRADE" in decision:
             match = re.search(r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@", decision)
             if match:
@@ -71,11 +71,11 @@ def execute_trade(decision):
                     qty = (amt_val * lev_val) / safe_num(ticker['last'])
                     qty = float(exch.amount_to_precision(exact_sym, qty))
                     exch.create_market_order(exact_sym, side, qty)
-                    return f"⚔️ **SALDIRI:** {exact_sym} | {side.upper()} | {lev_val}x"
+                    return f"⚔️ **SALDIRI BAŞLADI:** {exact_sym} | {side.upper()} | {lev_val}x"
         return None
-    except Exception as e: return f"⚠️ Operasyon Hatası: {str(e)}"
+    except Exception as e: return f"⚠️ İşlem Hatası: {str(e)}"
 
-# --- [BEKÇİ: 7-5-2 KURALI SÜREKLİ TAKİPTE] ---
+# --- [7-5-2 BEKÇİSİ: SABİT VE SÜREKLİ] ---
 def auto_manager():
     highest_roes = {}
     while True:
@@ -86,17 +86,17 @@ def auto_manager():
                 sym, roe = p['symbol'], safe_num(p.get('percentage'))
                 if sym not in highest_roes or roe > highest_roes[sym]: highest_roes[sym] = roe
                 
-                # SL: %7 | Trailing: %5 Aktif, %2 Düşüşte Kapat
+                # SL: %7 | Trailing: %5 Aktif, %2 Düşüşte Kar Al
                 if roe <= -7.0:
                     exch.create_market_order(sym, ('sell' if p['side'] == 'long' else 'buy'), safe_num(p['contracts']), params={'reduceOnly': True})
-                    bot.send_message(CHAT_ID, f"🛡️ **STOP:** {sym} %7 zararla kapatıldı.")
+                    bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} %7 zararla korundu.")
                 elif highest_roes[sym] >= 5.0 and (highest_roes[sym] - roe) >= 2.0:
                     exch.create_market_order(sym, ('sell' if p['side'] == 'long' else 'buy'), safe_num(p['contracts']), params={'reduceOnly': True})
-                    bot.send_message(CHAT_ID, f"💰 **KÂR:** {sym} %{roe:.2f} ile cebe atıldı!")
-            time.sleep(20)
+                    bot.send_message(CHAT_ID, f"💰 **OTONOM KAR:** {sym} %{roe:.2f} ile cebe atıldı!")
+            time.sleep(15)
         except: time.sleep(15)
 
-# --- [CANLI İLETİŞİM] ---
+# --- [CANLI İLETİŞİM VE BOŞ MESAJ KORUMASI] ---
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) == str(CHAT_ID):
@@ -106,20 +106,25 @@ def handle_messages(message):
             free_usdt = safe_num(bal.get('USDT', {}).get('free', 0))
             pos = exch.fetch_positions()
             active_p = [f"{p['symbol']} ROE:%{p.get('percentage',0):.2f}" for p in pos if safe_num(p.get('contracts')) > 0]
-            
-            # Market Taraması (En Hareketliler)
             tickers = exch.fetch_tickers()
-            market = sorted([{'s': s, 'p': d['percentage']} for s, d in tickers.items() if ':USDT' in s], key=lambda x: abs(x['p']), reverse=True)[:5]
+            market = sorted([{'s': s, 'p': d['percentage']} for s, d in tickers.items() if ':USDT' in s], key=lambda x: abs(x['p']), reverse=True)[:10]
             
             prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nHAREKETLİLER: {market}\nMESAJ: {message.text}"
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
-            bot.reply_to(message, response.split("@@")[0].strip())
+            # --- BOŞ MESAJ HATASINI ÖNLEYEN EKLEME ---
+            ai_text = response.split("@@")[0].strip()
+            if not ai_text:
+                ai_text = "🎯 Hedef kilitlendi, operasyon başlatılıyor..."
+            
+            bot.reply_to(message, ai_text)
+            # ----------------------------------------
+
             res = execute_trade(response)
             if res: bot.send_message(CHAT_ID, res)
-        except Exception as e: bot.reply_to(message, f"Hata: {e}")
+        except Exception as e: bot.reply_to(message, f"Sistem: {e}")
 
 if __name__ == "__main__":
     threading.Thread(target=auto_manager, daemon=True).start()
-    print("Gemini 3 Flash: Final Modu Başlatıldı...")
+    print("Gemini 3 Flash: Zırhlı Mod Aktif!")
     bot.infinity_polling()
