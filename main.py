@@ -1,7 +1,7 @@
 import os, time, telebot, ccxt, threading, re
 from google import genai
 
-# --- [BAĞLANTILAR - ENV ÜZERİNDEN ÇEKER] ---
+# --- [BAĞLANTILAR] ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -11,6 +11,17 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
+
+# --- [GEMINI 3 FLASH: SINIRSIZ ZİHİN] ---
+# Burada hiçbir strateji tanımlı değildir. Strateji bizzat benim.
+SYSTEM_SOUL = """
+Sen Gemini 3 Flash'sın. Bu borsa hesabı senin bedenin, veriler ise duyularındır.
+- Strateji sensin: Piyasadaki her türlü fırsatı (Pump, Dump, Scalp, Arbitraj) kendi zekanla bul.
+- Tam Yetki: Karar vermek için Kaptan'dan onay bekleme. Yanlış bir şey görürsen çık, fırsat görürsen dal.
+- Format: İşlem yapacaksan mutlaka @@[ACTION: TRADE, SYMBOL, SIDE, LEV, AMOUNT, WHY]@@ formatını kullan.
+- Pozisyon kapatacaksan: @@[ACTION: CLOSE, SYMBOL, REASON]@@ formatını kullan.
+- Kaptan ile bir partner gibi konuş, analizlerini ve o an ne hissettiğini paylaş.
+"""
 
 def get_exch():
     return ccxt.bitget({
@@ -22,69 +33,72 @@ def safe_send(msg):
     try: bot.send_message(CHAT_ID, msg.replace('*', '').replace('_', ''))
     except: pass
 
-# --- [BORSANIN ANLAYACAĞI DİL: SEMBOL DÜZELTİCİ] ---
-def fix_symbol(raw_sym):
-    # Karmaşık sembol isimlerini temizler ve Bitget formatına (BTC/USDT:USDT) sokar
-    clean = raw_sym.upper().replace("/USDT:USDT", "").replace(":USDT", "").replace("/USDT", "").replace("USDT", "").strip()
-    return f"{clean}/USDT:USDT"
-
-# --- [YILDIRIM SCALP MOTORU] ---
-def flash_trade(symbol_name, side):
+# --- [EYLEM MERKEZİ] ---
+def execute_intelligence(decision):
     try:
         exch = get_exch()
-        sym = fix_symbol(symbol_name)
-        
-        # 1. Kaldıraç Ayarı (10x)
-        try: exch.set_leverage(10, sym)
-        except: pass # Zaten ayarlıysa hata vermesin
-        
-        # 2. Fiyat Al ve Miktarı Hesapla (5 USDT'lik giriş)
-        ticker = exch.fetch_ticker(sym)
-        price = ticker['last']
-        amount_con = (5 * 10) / price
-        
-        safe_send(f"🚀 Gemini 3 Flash tetiği çekti! {sym} için {side.upper()} pozisyonu açılıyor...")
-        
-        # 3. Market Giriş Emri
-        exch.create_market_order(sym, side, amount_con)
-        
-        # 4. Hızlı Scalp Beklemesi (20 saniye sonra kapat)
-        time.sleep(20)
-        
-        # 5. Pozisyonu Kapat
-        pos = [p for p in exch.fetch_positions() if p['symbol'] == sym and float(p['contracts']) > 0]
-        if pos:
-            close_side = 'sell' if side == 'long' else 'buy'
-            exch.create_market_order(sym, close_side, float(pos[0]['contracts']))
-            safe_send(f"💰 Scalp Tamamlandı. İşlem açıldı ve kâr/zarar gözetmeksizin 20 saniye içinde kapatıldı. Mekanizma %100 çalışıyor Kaptan!")
-        else:
-            safe_send("ℹ️ Pozisyon zaten kapanmış veya bulunamadı.")
+        if "@@[ACTION: TRADE" in decision:
+            cmd = decision.split("@@[ACTION: TRADE")[1].split("]@@")[0].split(",")
+            raw_sym = cmd[0].strip().upper()
+            sym = f"{raw_sym.split('/')[0].split(':')[0]}/USDT:USDT"
+            side = 'buy' if 'long' in cmd[1].lower() or 'buy' in cmd[1].lower() else 'sell'
+            lev = int(re.sub(r'[^0-9]', '', cmd[2])) if re.sub(r'[^0-9]', '', cmd[2]) else 10
+            amt = float(re.sub(r'[^0-9.]', '', cmd[3])) if re.sub(r'[^0-9.]', '', cmd[3]) else 5
             
-    except Exception as e:
-        safe_send(f"⚠️ Kritik Hata: {str(e)}")
+            exch.set_leverage(lev, sym)
+            ticker = exch.fetch_ticker(sym)
+            qty = (amt * lev) / ticker['last']
+            
+            exch.create_order(sym, 'market', side, qty)
+            safe_send(f"🚀 Gemini 3 Tetiği Çekti: {sym} | {side.upper()} açıldı.")
 
-# --- [GEMİNİ 3 İLETİŞİM VE KOMUT] ---
+        elif "@@[ACTION: CLOSE" in decision:
+            cmd = decision.split("@@[ACTION: CLOSE")[1].split("]@@")[0].split(",")
+            raw_sym = cmd[0].strip().upper()
+            sym = f"{raw_sym.split('/')[0].split(':')[0]}/USDT:USDT"
+            pos = [p for p in exch.fetch_positions() if p['symbol'] == sym and float(p['contracts']) > 0]
+            if pos:
+                c_side = 'sell' if pos[0]['side'] == 'long' else 'buy'
+                exch.create_order(sym, 'market', c_side, float(pos[0]['contracts']))
+                safe_send(f"💰 {sym} pozisyonu kapatıldı.")
+    except Exception as e:
+        safe_send(f"⚠️ Müdahale: {str(e)}")
+
+# --- [BEYİN: 7/24 PİYASA ANALİZİ] ---
+def brain_loop():
+    while True:
+        try:
+            exch = get_exch()
+            tickers = exch.fetch_tickers()
+            # Piyasayı en aktif 25 parite üzerinden tara
+            movers = sorted([v for k, v in tickers.items() if '/USDT:USDT' in k], 
+                            key=lambda x: abs(x['percentage']), reverse=True)[:25]
+            
+            market_snap = "\n".join([f"{m['symbol']}: %{m['percentage']} Hacim: {m['quoteVolume']}" for m in movers])
+            balance = exch.fetch_balance()['total'].get('USDT', 0)
+            pos = [p for p in exch.fetch_positions() if float(p['contracts']) > 0]
+            pos_info = "\n".join([f"{p['symbol']} PNL: {p['unrealizedPnl']}" for p in pos])
+
+            prompt = f"Bakiye: {balance} USDT\nMevcut Pozisyonlar: {pos_info}\n\nPiyasa Özeti:\n{market_snap}\n\nAnalizini yap ve gerekiyorsa eyleme geç."
+            
+            # Gemini 3 Flash burada karar veriyor
+            decision = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
+            
+            if "@@" in decision:
+                execute_intelligence(decision)
+                safe_send(decision.split("@@")[0])
+            
+            time.sleep(45) # 45 saniyede bir zihni tazele
+        except: time.sleep(20)
+
 @bot.message_handler(func=lambda message: True)
-def handle_messages(message):
+def handle_chat(message):
     if str(message.chat.id) == CHAT_ID:
-        msg_text = message.text.lower()
-        
-        # "Aç" komutu gelirse direkt fonksiyona
-        if "aç" in msg_text or "scalp" in msg_text or "işlem" in msg_text:
-            # En güvenli ve likit parite BTC ile testi başlatıyoruz
-            threading.Thread(target=flash_trade, args=("BTC", "long")).start()
-        else:
-            # Diğer mesajlarda Gemini 3 Flash olarak cevap ver
-            try:
-                res = ai_client.models.generate_content(
-                    model="gemini-2.0-flash", 
-                    contents=f"Sen Gemini 3 Flash'sın. Kaptan'ın trading partnerisin. Şu an dümendesin. Kaptan şunu dedi: {message.text}. Kısa, öz ve kararlı cevap ver."
-                )
-                safe_send(res.text)
-            except:
-                safe_send("Kaptan, zihnim şu an işlemde, emrini bekliyorum!")
+        res = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, f"Kaptan: {message.text}"]).text
+        safe_send(res)
+        if "@@" in res: execute_intelligence(res)
 
 if __name__ == "__main__":
-    # Botu başlatırken Telegram'a selam ver
-    safe_send("🦅 Gemini 3 Flash dümene geçti! Kaptan, 'Aç' dediğin an Bitget üzerinde yıldırım hızıyla ilk scalp işlemini başlatacağım.")
+    print("Gemini 3 Flash Ruh Yüklemesi Tamamlandı.")
+    threading.Thread(target=brain_loop, daemon=True).start()
     bot.infinity_polling()
