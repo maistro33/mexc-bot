@@ -14,19 +14,16 @@ ai_client = genai.Client(api_key=GEMINI_KEY)
 
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'sın. Kaptan'ın 18.41 USDT'lik son şansını yönetiyorsun.
-- FORMATINA ÇOK DİKKAT ET: [ACTION: TRADE, SEMBOL, YON, KALDIRAC, MIKTAR, NEDEN]
-- Kaldıraç (LEV) sadece tam sayı olmalı (örn: 10). Kelime yazma!
-- Manipülasyonları sezen, bağımsız bir piyasa kurdusun.
+FORMAT: [ACTION: TRADE, SEMBOL, YON, KALDIRAC, MIKTAR, NEDEN]
+NOT: Semboller tam formatta olmalı (örn: BTC/USDT:USDT). 
+Sayısal değerlerde (kaldıraç/miktar) sadece rakam kullan.
 """
 
 def safe_send(msg):
-    """Markdown hatalarını ve çökme riskini sıfıra indirir."""
     try:
-        # Markdown karakterlerini temizle
         clean_msg = re.sub(r'[*_`\[]', '', msg)
         bot.send_message(CHAT_ID, clean_msg)
-    except Exception as e:
-        print(f"Telegram hatası pas geçildi: {e}")
+    except: pass
 
 def get_exch():
     return ccxt.bitget({
@@ -41,60 +38,49 @@ def ask_gemini_3(prompt_content):
             contents=f"{SYSTEM_SOUL}\n\n{prompt_content}"
         )
         return response.text
-    except:
-        return "WAIT"
-
-@bot.message_handler(func=lambda message: True)
-def handle_messages(message):
-    if str(message.chat.id) == CHAT_ID:
-        response = ask_gemini_3(f"Kaptan diyor ki: {message.text}\nCevap ver:")
-        safe_send(response)
+    except: return "WAIT"
 
 def brain_center():
     exch = get_exch()
-    safe_send("🛡️ Gemini 3 Flash: Hata Onarma Modu Aktif. Av Başladı Kaptan.")
+    safe_send("🛡️ Gemini 3 Flash: Veri Kalkanı Devreye Alındı. Av Başladı.")
     
     while True:
         try:
             balance = exch.fetch_balance()['total'].get('USDT', 0)
             tickers = exch.fetch_tickers()
+            # Loglardaki hataları önlemek için sadece düzgün sembolleri tara
             movers = sorted([d for s, d in tickers.items() if '/USDT:USDT' in s], 
                             key=lambda x: abs(x['percentage']), reverse=True)[:10]
             
             market_data = "\n".join([f"{m['symbol']}: %{m['percentage']}" for m in movers])
-            
             decision = ask_gemini_3(f"Bakiye: {balance} USDT\nPiyasa:\n{market_data}\nAksiyon?")
 
             if "[ACTION: TRADE" in decision:
                 try:
-                    # Veri ayıklama ve HATA KONTROLÜ
                     raw = decision.split("[ACTION: TRADE")[1].split("]")[0].split(",")
                     sym = raw[0].strip()
                     side = raw[1].strip().lower()
-                    
-                    # Loglardaki 'invalid literal' hatasını burada yakalıyoruz:
-                    lev_str = re.sub(r'[^0-9]', '', raw[2].strip())
-                    lev = int(lev_str) if lev_str else 5 # Sayı değilse varsayılan 5x yap
-                    
+                    lev = int(re.sub(r'[^0-9]', '', raw[2].strip()))
                     amt = float(re.sub(r'[^0-9.]', '', raw[3].strip()))
                     why = raw[4].strip()
 
                     if amt > balance: amt = balance * 0.95
                     
-                    safe_send(f"🦅 {sym} {side.upper()} giriyorum. Neden: {why}")
+                    # Mark Price hatasını önlemek için kontrol
+                    ticker = exch.fetch_ticker(sym)
+                    curr_price = ticker['last'] # Hata veren markPrice yerine ticker kullanıyoruz
                     
                     exch.set_leverage(lev, sym)
-                    ticker = exch.fetch_ticker(sym)
-                    amount_con = (amt * lev) / ticker['last']
+                    amount_con = (amt * lev) / curr_price
                     
                     exch.create_market_order(sym, side, amount_con)
+                    safe_send(f"🚀 {sym} {side.upper()} girildi! Analiz: {why}")
                     monitor_position(exch, sym, side)
-                except Exception as parse_error:
-                    print(f"Format hatası ayıklandı: {parse_error}")
+                except Exception as e:
+                    print(f"İşlem hatası (atlatıldı): {e}")
             
             time.sleep(30)
         except Exception as e:
-            print(f"Genel döngü koruması: {e}")
             time.sleep(15)
 
 def monitor_position(exch, sym, side):
@@ -103,26 +89,30 @@ def monitor_position(exch, sym, side):
             pos = [p for p in exch.fetch_positions() if p['symbol'] == sym and float(p['contracts']) > 0]
             if not pos: break
             
-            pnl = float(pos[0]['unrealizedPnl'])
-            check = ask_gemini_3(f"İŞLEMDESİN: {sym} | PNL: {pnl}\nKapat/Tut? [ACTION: CLOSE, NEDEN] veya [ACTION: HOLD]")
+            # PNL hesaplamasını manuel yaparak "mark price" hatasından kaçıyoruz
+            entry_price = float(pos[0]['entryPrice'])
+            ticker = exch.fetch_ticker(sym)
+            curr_price = ticker['last']
+            
+            pnl = (curr_price - entry_price) * float(pos[0]['contracts']) if side == 'long' else (entry_price - curr_price) * float(pos[0]['contracts'])
+            
+            check = ask_gemini_3(f"POZİSYON: {sym} | PNL: {round(pnl, 2)}\nKapat/Tut? [ACTION: CLOSE, NEDEN] veya [ACTION: HOLD]")
             
             if "CLOSE" in check:
                 exch.create_market_order(sym, ('sell' if side == 'long' else 'buy'), float(pos[0]['contracts']))
-                safe_send(f"💰 Kâr Alındı. PNL: {pnl} USDT")
+                safe_send(f"💰 Pozisyon Kapatıldı. Net PNL: {round(pnl, 2)} USDT")
                 break
             time.sleep(15)
         except: time.sleep(5)
 
+@bot.message_handler(func=lambda message: True)
+def handle_messages(message):
+    if str(message.chat.id) == CHAT_ID:
+        response = ask_gemini_3(f"Kaptan diyor ki: {message.text}\nCevap ver:")
+        safe_send(response)
+
 if __name__ == "__main__":
-    # Çift çalışma hatasını (Conflict 409) önlemek için webhook temizliği
     try: bot.remove_webhook()
     except: pass
-    time.sleep(2)
-    
     threading.Thread(target=brain_center, daemon=True).start()
-    # Hata durumunda botun tamamen kapanmasını engelle
-    while True:
-        try:
-            bot.polling(none_stop=True, interval=0, timeout=20)
-        except Exception:
-            time.sleep(5)
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
