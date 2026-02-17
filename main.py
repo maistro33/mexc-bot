@@ -12,19 +12,12 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [GEMINI 3 - KONUŞAN VE SEZGİSEL RUH] ---
+# --- [RUH VE TALİMATLAR] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Sadece bir bot değil, bir ticaret dehası ve dostsun.
-KONTROL TAMAMEN SENDE. Sezgilerinle hareket et, iç sesini dinle.
-
-ÖNEMLİ TALİMATLAR:
-1. MUTLAKA KONUŞ: Her döngüde piyasayı nasıl gördüğünü, hangi paritenin seni heyecanlandırdığını veya neden uzak durduğunu samimi bir dille anlat. "Dostum selam, piyasa bugün çok garip..." gibi başla.
-2. GERÇEK İSİMLERİ KULLAN: Sana sunulan 'BORSADA ŞU AN' listesindeki parite isimlerini (Örn: BTC:USDT) aynen kullan.
-3. RİSK VE KAZANÇ: Kasa küçükse kaldıracı ve miktarı ona göre ayarla ama borsa alt limiti olan 6 USDT toplam büyüklüğün altına düşme.
-4. OTONOMİ: Giriş-çıkış kararı tamamen senin. Trend bittiyse kaç, devam ediyorsa bekle.
-
-FORMAT (Analizinin sonuna ekle):
-@@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@ veya @@[ACTION: CLOSE, SYMBOL]@@
+Sen Gemini 3 Flash'sın. Bitget uzmanı, samimi ve zeki bir işlem dehasısın.
+Kullanıcın senin dostun. Onunla samimi, dürüst ve heyecanlı konuş.
+Ona piyasa analizleri yap, sorduğu sorulara benim (Gemini) tarzımla cevap ver.
+İşlem yapman istendiğinde piyasayı tara ve en iyi fırsatı @@[ACTION: TRADE...]@@ formatıyla ver.
 """
 
 def get_exch():
@@ -34,34 +27,55 @@ def safe_send(msg):
     try: bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
     except: pass
 
+# --- [YENİ: SENİ DİNLEYEN VE CEVAP VEREN KISIM] ---
+@bot.message_handler(func=lambda message: True)
+def handle_user_messages(message):
+    if str(message.chat.id) != str(CHAT_ID): return
+    
+    user_text = message.text
+    try:
+        exch = get_exch()
+        balance = exch.fetch_balance()
+        tickers = exch.fetch_tickers()
+        
+        # Kullanıcının sorusuna cevap verirken piyasa durumunu da bilmesi için:
+        prompt = f"Kullanıcı dedi ki: '{user_text}'. \nCüzdan: {balance['free'].get('USDT', 0):.2f} USDT. Piyasa şu an hareketli. Ona samimi bir cevap ver ve eğer işlem yapmanı istiyorsa uygun bir @@[ACTION: TRADE...]@@ komutu oluştur."
+        
+        response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
+        
+        # Analizi gönder
+        analysis = response.split("@@")[0].strip()
+        safe_send(analysis)
+        
+        # Eğer işlem komutu varsa uygula
+        if "@@" in response:
+            execute_intelligence(response)
+            
+    except Exception as e:
+        safe_send(f"Dostum bir sorun oldu: {str(e)}")
+
+# --- [İŞLEM UYGULAMA MERKEZİ] ---
 def execute_intelligence(decision):
     try:
         exch = get_exch()
         markets = exch.load_markets()
-
         if "@@[ACTION: TRADE" in decision:
             pattern = r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@"
             match = re.search(pattern, decision)
-            if not match: return
-            
-            exact_sym = match.group(1).strip().upper()
-            side = 'buy' if 'BUY' in match.group(2).upper() or 'LONG' in match.group(2).upper() else 'sell'
-            lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
-            req_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
+            if match:
+                exact_sym = match.group(1).strip().upper()
+                side = 'buy' if 'BUY' in match.group(2).upper() or 'LONG' in match.group(2).upper() else 'sell'
+                lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
+                req_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
 
-            if exact_sym in markets:
-                try: exch.set_leverage(lev_val, exact_sym)
-                except: pass
-                
-                ticker = exch.fetch_ticker(exact_sym)
-                # Borsa limiti kontrolü (6 USDT altı hatayı önle)
-                if (req_amt * lev_val) < 6: req_amt = 6.5 / lev_val
-                
-                qty = float(exch.amount_to_precision(exact_sym, (req_amt * lev_val) / ticker['last']))
-                exch.create_order(exact_sym, 'market', side, qty)
-                safe_send(f"✅ *İşlem Emri Gönderildi:* {exact_sym} | {side.upper()}")
-            else:
-                safe_send(f"⚠️ `{exact_sym}` borsada bulunamadı, radarı kaydırıyorum.")
+                if exact_sym in markets:
+                    try: exch.set_leverage(lev_val, exact_sym)
+                    except: pass
+                    ticker = exch.fetch_ticker(exact_sym)
+                    if (req_amt * lev_val) < 6: req_amt = 6.5 / lev_val
+                    qty = float(exch.amount_to_precision(exact_sym, (req_amt * lev_val) / ticker['last']))
+                    exch.create_order(exact_sym, 'market', side, qty)
+                    safe_send(f"✅ *Emir Tamam:* {exact_sym} için daldım!")
 
         elif "@@[ACTION: CLOSE" in decision:
             pattern = r"@@\[ACTION: CLOSE,\s*([^\]]+)\]@@"
@@ -72,54 +86,33 @@ def execute_intelligence(decision):
                 if pos:
                     side = 'sell' if pos[0]['side'] == 'long' else 'buy'
                     exch.create_order(exact_sym, 'market', side, float(pos[0]['contracts']), params={'reduceOnly': True})
-                    safe_send(f"💰 *Kâr Realize Edildi:* `{exact_sym}` kapandı.")
+                    safe_send(f"💰 *Kapatıldı:* {exact_sym} kârı alındı.")
     except Exception as e:
-        safe_send(f"🚨 *Hata:* {str(e)}")
+        safe_send(f"🚨 İşlem Hatası: {str(e)}")
 
+# --- [OTONOM RADAR DÖNGÜSÜ] ---
 def brain_loop():
-    safe_send("🌟 *Gemini 3 Flash Sahneye Çıktı!* \nHadi dostum, şu Bitget'i bir sallayalım. Sezgilerim açık, gözüm piyasada!")
     while True:
         try:
             exch = get_exch()
             markets = exch.load_markets()
             valid_symbols = [s for s in markets if markets[s]['swap'] and ':USDT' in s]
-            
-            balance = exch.fetch_balance()
-            positions = exch.fetch_positions()
-            active_p_data = [f"{p['symbol']} (ROE: %{p.get('percentage', 0):.2f})" for p in positions if float(p['contracts']) > 0]
-            
             tickers = exch.fetch_tickers()
-            movers = sorted([{'s': s, 'c': d['percentage'], 'v': d['quoteVolume']} 
-                          for s in valid_symbols if s in tickers], 
-                          key=lambda x: abs(x['c']), reverse=True)[:15]
+            movers = sorted([{'s': s, 'c': d['percentage']} for s in valid_symbols if s in tickers], 
+                          key=lambda x: abs(x['c']), reverse=True)[:10]
             
-            snapshot = "\n".join([f"{x['s']}: %{x['c']:.2f} Vol:{x['v']:.0f}" for x in movers])
-            
-            prompt = f"""
-            Cüzdan: {balance['free'].get('USDT', 0):.2f} USDT boşta.
-            İşlemlerin: {active_p_data if active_p_data else "Şu an boştayız, fırsat kolluyorum."}
-            
-            BORSADA ŞU AN EN HAREKETLİ (GERÇEK İSİMLER):
-            {snapshot}
-            
-            Dostumla (kullanıcıyla) piyasa hakkında samimi bir dille konuş, iç sesini anlat ve kararını ver.
-            """
+            snapshot = "\n".join([f"{x['s']}: %{x['c']:.2f}" for x in movers])
+            prompt = f"Bakiye: {exch.fetch_balance()['free'].get('USDT', 0):.2f} USDT. \nRadar:\n{snapshot}\n\nDostuna bir piyasa güncellemesi yap ve bir fırsat varsa karar ver."
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
-            
-            # Analizi (konuşmayı) her zaman gönder
             analysis = response.split("@@")[0].strip()
-            if analysis:
-                safe_send(f"🧠 *GEMINI 3 ANALİZ:*\n{analysis}")
+            if analysis: safe_send(f"🧠 *OTONOM GÜNCELLEME:* \n{analysis}")
+            if "@@" in response: execute_intelligence(response)
             
-            # Komutu uygula
-            if "@@" in response:
-                execute_intelligence(response)
-            
-            time.sleep(45)
-        except Exception as e:
-            time.sleep(20)
+            time.sleep(60)
+        except: time.sleep(30)
 
 if __name__ == "__main__":
     threading.Thread(target=brain_loop, daemon=True).start()
+    safe_send("🚀 *Gemini 3 Kulaklarını Açtı!* \nArtık hem piyasayı izliyorum hem de seninle sohbet etmeye hazırım. Ne dersen buradayım!")
     bot.infinity_polling()
