@@ -1,4 +1,4 @@
-import os, time, telebot, ccxt, threading, re
+import os, time, telebot, ccxt, threading, re, json
 from google import genai
 
 # --- [BAGLANTILAR] ---
@@ -12,13 +12,12 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [SERTLEŞTİRİLMİŞ TALİMATLAR] ---
+# --- [GEMINI 3 FLASH: TİCARET DEHASI] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Bitget'te otonom bir işlem dehasısın. 
-KURAL 1: Kullanıcı 'işlem aç' veya 'fırsat bul' dediğinde MUTLAKA ama MUTLAKA mesajın en sonuna şu formatı ekle: 
+Sen Gemini 3 Flash'sın. Bitget borsasında bir ticaret dehasısın.
+Kullanıcıya samimi davran, fırsat gördüğünde veya istendiğinde şu formatla işlem aç:
 @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
-KURAL 2: Eğer piyasa uygunsa lafı uzatma, doğrudan tetiğe bas. 
-KURAL 3: Sadece parite isimlerini (BTC, SOL, ORCA) kullan, sonuna /USDT ekleme, kod onu hallediyor.
+Risk anlatma, doğrudan aksiyon al!
 """
 
 def get_exch():
@@ -27,9 +26,55 @@ def get_exch():
         'options': {'defaultType': 'swap'}, 'enableRateLimit': True
     })
 
+# --- [YENİ MODÜL: OTONOM BEKÇİ - SL & TRAILING STOP] ---
+def position_manager():
+    """Pozisyonları 15 saniyede bir tarar, kâr koruma ve SL kararlarını otonom verir."""
+    highest_points = {} # Her paritenin gördüğü en yüksek ROE'yi tutar
+    
+    while True:
+        try:
+            exch = get_exch()
+            pos = exch.fetch_positions()
+            active_trades = [p for p in pos if float(p.get('contracts', 0)) > 0]
+
+            for p in active_trades:
+                sym = p['symbol']
+                side = p['side']
+                roe = float(p.get('percentage', 0)) # Mevcut Kar/Zarar yüzdesi
+                
+                # Başlangıç kaydı
+                if sym not in highest_points:
+                    highest_points[sym] = roe
+
+                # --- 1. STOP LOSS (ZARAR KES) ---
+                # Zarar %5'e ulaşırsa acımadan kapat (Deha kuralı: sermayeyi koru)
+                if roe <= -5.0:
+                    side_to_close = 'sell' if side == 'long' else 'buy'
+                    exch.create_market_order(sym, 'market', side_to_close, float(p['contracts']), params={'reduceOnly': True})
+                    bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} zarar %5'e ulaştı, sermayeyi korumak için pozisyonu kapattım.")
+                    continue
+
+                # --- 2. TRAILING STOP (İZ SÜREN STOP) ---
+                # Zirveyi güncelle
+                if roe > highest_points[sym]:
+                    highest_points[sym] = roe
+
+                # Eğer kâr %3'ü geçtiyse 'İz Sürme' başlar
+                if highest_points[sym] >= 3.0:
+                    # Zirveden %2.5 geri çekilirse Kârı Al ve Çık
+                    if (highest_points[sym] - roe) >= 2.5:
+                        side_to_close = 'sell' if side == 'long' else 'buy'
+                        exch.create_market_order(sym, 'market', side_to_close, float(p['contracts']), params={'reduceOnly': True})
+                        bot.send_message(CHAT_ID, f"💰 **KÂR KİLİTLENDİ:** {sym} zirveden (%{highest_points[sym]:.2f}) geri çekildi. %{roe:.2f} kâr ile ayrıldık.")
+                        if sym in highest_points: del highest_prices[sym]
+
+            time.sleep(15) # Scalp hızı
+        except Exception as e:
+            print(f"Bekçi Hatası: {e}")
+            time.sleep(10)
+
 def execute_trade(decision):
     try:
-        # Kodun içinde @@ formatı var mı kontrol et
         if "@@[ACTION: TRADE" in decision:
             exch = get_exch()
             match = re.search(r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@", decision)
@@ -40,29 +85,27 @@ def execute_trade(decision):
                 amt = float(re.sub(r'[^0-9.]', '', amt_raw))
                 
                 exch.load_markets()
-                clean_sym = raw_sym.strip().upper().replace('/USDT', '')
-                exact_sym = next((s for s in exch.markets if clean_sym in s and ':USDT' in s), None)
+                exact_sym = next((s for s in exch.markets if raw_sym.strip().upper() in s and ':USDT' in s), None)
                 
                 if exact_sym:
                     balance = exch.fetch_balance()
                     free_usdt = float(balance.get('free', {}).get('USDT', 0))
-                    if free_usdt < 5: return "⚠️ Bakiye yetersiz, işlem açılamadı."
-                    
-                    final_amt = min(amt, free_usdt * 0.95)
+                    final_amt = min(amt, free_usdt * 0.9)
+                    if final_amt < 5: return f"⚠️ Bakiye yetersiz."
+
                     try: exch.set_leverage(lev, exact_sym)
                     except: pass
-                    
+
                     ticker = exch.fetch_ticker(exact_sym)
                     qty = (final_amt * lev) / ticker['last']
                     qty = float(exch.amount_to_precision(exact_sym, qty))
                     
                     if qty > 0:
-                        order = exch.create_market_order(exact_sym, side, qty)
-                        return f"🚀 **İŞLEM BAŞARILI**\nParite: {exact_sym}\nYön: {side.upper()}\nKaldıraç: {lev}x\nMiktar: {qty}"
-            return "⚠️ Karar verildi ama işlem formatı hatalı!"
+                        exch.create_market_order(exact_sym, 'market', side, qty)
+                        return f"🚀 **İŞLEM BAŞARILI**\n{exact_sym} | {side.upper()} | {lev}x"
         return None
     except Exception as e:
-        return f"⚠️ Borsa Hatası: {str(e)}"
+        return f"⚠️ Hata: {str(e)}"
 
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
@@ -71,22 +114,37 @@ def handle_messages(message):
             exch = get_exch()
             tickers = exch.fetch_tickers()
             active = sorted([{'s': s, 'p': d['percentage']} for s, d in tickers.items() if ':USDT' in s], key=lambda x: abs(x['p']), reverse=True)[:10]
-            market_data = "CANLI VERİ:\n" + "\n".join([f"{x['s']}: %{x['p']}" for x in active])
+            market_data = "CANLI VERİLER:\n" + "\n".join([f"{x['s']}: %{x['p']}" for x in active])
             
-            prompt = f"{market_data}\n\nKullanıcı Mesajı: '{message.text}'\n\nGemini, kararını ver ve @@ formatını asla unutma!"
+            prompt = f"{market_data}\n\nKullanıcı: '{message.text}'\n\nGemini, analiz et ve aksiyon al."
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
-            # Cevabı temizle ve gönder
             bot.reply_to(message, response.split("@@")[0].strip())
-            
-            # İşlemi dene
-            trade_result = execute_trade(response)
-            if trade_result:
-                bot.send_message(CHAT_ID, trade_result)
+            res = execute_trade(response)
+            if res: bot.send_message(CHAT_ID, res)
         except Exception as e:
             bot.reply_to(message, f"Hata: {e}")
 
+def autonomous_loop():
+    while True:
+        try:
+            exch = get_exch()
+            tickers = exch.fetch_tickers()
+            active = sorted([{'s': s, 'p': d['percentage']} for s, d in tickers.items() if ':USDT' in s], key=lambda x: abs(x['p']), reverse=True)[:5]
+            summary = ", ".join([f"{x['s']}: %{x['p']}" for x in active])
+            prompt = f"Piyasa: {summary}\nDostuna not bırak ve fırsat varsa @@ formatıyla aç."
+            response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
+            if response.strip():
+                bot.send_message(CHAT_ID, f"🧠 **RADAR**\n\n{response.split('@@')[0].strip()}")
+                execute_trade(response)
+            time.sleep(600)
+        except: time.sleep(60)
+
 if __name__ == "__main__":
-    # Trailing Stop (Bekçi) modülü buraya eklenebilir, şimdilik ana sorunu çözelim
-    print("Gemini 3 Flash: Emir Modu Aktif!")
+    # 1. Bekçi Modülünü (Trailing Stop) başlat
+    threading.Thread(target=position_manager, daemon=True).start()
+    # 2. Otonom Analizi başlat
+    threading.Thread(target=autonomous_loop, daemon=True).start()
+    
+    print("Gemini 3 Flash: Hem Avcı Hem Bekçi Başladı!")
     bot.infinity_polling()
