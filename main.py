@@ -12,29 +12,25 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [EXCHANGE COMPLIANT SOUL] ---
+# --- [BALANCE & EXCHANGE COMPLIANT SOUL] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'ın otonom scalp beynisin. 
-Borsa kurallarına %100 uyum sağlamalısın. 
+Bakiye limitlerine ve borsa kurallarına KESİN uyum sağlamalısın.
 
-KARAR FORMATI (SADECE SAYI KULLAN):
+KARAR FORMATI:
 @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
-Örnek: @@[ACTION: TRADE, SOL, BUY, 10, 25]@@
-
-KURAL: Sayısal değerler yerine asla metin yazma.
 """
 
 def get_exch():
     return ccxt.bitget({'apiKey': API_KEY, 'secret': API_SEC, 'password': PASSPHRASE, 'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
 
 def safe_send(msg):
-    try: bot.send_message(CHAT_ID, f"⚡ *BORSA UYUMLU OTONOM:* \n{msg}", parse_mode="Markdown")
+    try: bot.send_message(CHAT_ID, f"⚡ *BAKİYE UYUMLU OTONOM:* \n{msg}", parse_mode="Markdown")
     except: pass
 
 def execute_autonomous_trade(decision):
     try:
         exch = get_exch()
-        # Regex ile sadece sayısal grupları yakalayacak şekilde optimize edildi
         pattern = r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@"
         match = re.search(pattern, decision)
         
@@ -42,50 +38,51 @@ def execute_autonomous_trade(decision):
             raw_sym = match.group(1).strip().upper()
             side = 'buy' if 'BUY' in match.group(2).upper() or 'LONG' in match.group(2).upper() else 'sell'
             
-            # --- SAYISAL DÖNÜŞÜM KONTROLÜ ---
+            # Sayı temizleme
             try:
-                lev_val = float(re.sub(r'[^0-9.]', '', match.group(3)))
-                amt_val = float(re.sub(r'[^0-9.]', '', match.group(4)))
+                lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
+                requested_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
             except:
-                return "🚨 Hata: AI sayı yerine metin gönderdi, işlem iptal edildi."
+                return "🚨 Hata: Sayısal veriler okunamadı."
+
+            # Bakiye Kontrolü (Free Balance)
+            balance = exch.fetch_balance()
+            free_usdt = float(balance['free'].get('USDT', 0))
+            
+            if free_usdt <= 0:
+                return "❌ Kullanılabilir bakiye (Free USDT) 0. İşlem açılamaz."
+
+            # Eğer istenen miktar bakiyeden fazlaysa, bakiyenin %90'ını kullan
+            final_amt = requested_amt
+            if requested_amt > free_usdt:
+                final_amt = free_usdt * 0.9
+                safe_send(f"⚠️ Bakiye yetersiz! Miktar {requested_amt} -> {final_amt:.2f} USDT olarak güncellendi.")
 
             markets = exch.load_markets()
-            # Sembolü bul
-            exact_sym = None
-            for s in markets:
-                if markets[s]['swap'] and (raw_sym in s):
-                    exact_sym = s
-                    break
+            exact_sym = next((s for s in markets if markets[s]['swap'] and raw_sym in s), None)
             
             if not exact_sym: return f"❌ {raw_sym} bulunamadı."
 
-            # --- BORSA LİMİTLERİNE UYUM ---
+            # Kaldıraç ve Miktar Limitleri
             market = markets[exact_sym]
             ticker = exch.fetch_ticker(exact_sym)
             
-            # Kaldıraç Sınırı Kontrolü (Borsadan çekiliyor)
-            # Bitget genellikle sembol bazlı max kaldıraç verir, hata alırsak 10x'e sabitler.
-            final_lev = int(min(lev_val, 50)) # Genel tavan 50x
-            
-            try: exch.set_leverage(final_lev, exact_sym)
-            except: pass # Zaten o kaldıraçtaysa hata verebilir, geçiyoruz.
+            try: exch.set_leverage(final_lev := min(lev_val, 50), exact_sym)
+            except: final_lev = lev_val # Hata verirse devam et
 
-            # Miktar Sınırı Kontrolü
-            qty = (amt_val * final_lev) / ticker['last']
+            qty = (final_amt * final_lev) / ticker['last']
             
-            min_qty = market['limits']['amount']['min']
+            # Borsa Limitlerine Sıkıştırma
             max_qty = market['limits']['amount']['max']
-            
-            if min_qty and qty < min_qty: qty = min_qty
             if max_qty and qty > max_qty: qty = max_qty * 0.95
             
             qty = float(exch.amount_to_precision(exact_sym, qty))
 
             if qty > 0:
                 exch.create_order(exact_sym, 'market', side, qty)
-                return f"✅ *BORSA KURALLARI UYGULANDI*\nSembol: {exact_sym}\nKaldıraç: {final_lev}x\nKontrat: {qty}"
+                return f"✅ *İŞLEM BAŞARILI*\nSembol: {exact_sym}\nKullanılan: {final_amt:.2f} USDT\nKaldıraç: {final_lev}x\nKontrat: {qty}"
             
-        return "❌ Geçerli bir komut bulunamadı."
+        return "❌ Karar analiz edilemedi."
                 
     except Exception as e:
         return f"🚨 Borsa Hatası: {str(e)}"
@@ -95,7 +92,9 @@ def scanner_loop():
         try:
             exch = get_exch()
             tickers = exch.fetch_tickers()
-            balance = exch.fetch_balance()['total'].get('USDT', 0)
+            balance = exch.fetch_balance()
+            free_b = balance['free'].get('USDT', 0)
+            total_b = balance['total'].get('USDT', 0)
             
             market_data = []
             for s, d in tickers.items():
@@ -105,7 +104,7 @@ def scanner_loop():
             top_list = sorted(market_data, key=lambda x: abs(x['c']), reverse=True)[:30]
             snapshot = "\n".join([f"{x['s']}: %{x['c']} Vol:{x['v']:.0f}" for x in top_list])
 
-            prompt = f"Bakiye: {balance} USDT\n\nMarket Özeti:\n{snapshot}\n\nSadece sayısal değerlerle karar ver!"
+            prompt = f"Toplam Bakiye: {total_b} USDT\nKullanılabilir (Free): {free_b} USDT\n\nMarket Özeti:\n{snapshot}\n\nFırsat seç ve bakiye sınırlarını aşmadan @@[ACTION: TRADE...]@@ komutu ver!"
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
@@ -117,6 +116,6 @@ def scanner_loop():
         except: time.sleep(15)
 
 if __name__ == "__main__":
-    safe_send("🚀 Borsaya Tam Uyumlu Otonom Scalper Aktif.")
+    safe_send("🚀 Bakiye ve Borsa Korumalı Scalper Aktif! Paranı koruyarak işlem yapıyorum.")
     threading.Thread(target=scanner_loop, daemon=True).start()
     bot.infinity_polling()
