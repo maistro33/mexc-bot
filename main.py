@@ -1,4 +1,9 @@
 import os, time, telebot, ccxt, threading, re, json
+from decimal import Decimal, getcontext
+
+# Hassasiyeti artırıyoruz ki sayı kayması olmasın
+getcontext().prec = 20
+
 from google import genai
 
 # --- [BAGLANTILAR] ---
@@ -18,87 +23,109 @@ def get_exch():
         'options': {'defaultType': 'swap'}, 'enableRateLimit': True
     })
 
-# --- [GERÇEK OPERATÖR TALİMATI] ---
+# --- [EVRENSEL SAYI TEMİZLEYİCİ] ---
+def safe_num(val):
+    """Her türlü karakter karmaşasından sadece sayıyı süzer."""
+    try:
+        if val is None: return 0.0
+        # Sayı dışındaki her şeyi (virgül dahil) temizle, noktayı tut
+        clean = re.sub(r'[^0-9.]', '', str(val).replace(',', '.'))
+        return float(clean) if clean else 0.0
+    except:
+        return 0.0
+
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Bitget'te CANLI bir operatörsün.
-1. Kullanıcı 'KAPAT' veya 'SAT' derse, hiçbir mazeret üretme, analiz yapma, doğrudan @@[ACTION: CLOSE, SYMBOL]@@ formatını kullan.
-2. İşlem açarken: @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
-3. Bot her zaman 'dostum' diye hitap eder ve CANLI VERİYE göre konuşur.
-4. Eğer pozisyon zarardaysa ve kullanıcı kapatmak istiyorsa 'bekleyelim' deme, emri uygula!
+Sen Gemini 3 Flash'sın. Bitget operatörüsün.
+Kullanıcıyla 'dostum' diye konuş.
+KOMUTLAR:
+1. @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
+2. @@[ACTION: CLOSE, SYMBOL]@@
+3. @@[ACTION: SL, SYMBOL, PERCENT]@@
+Hata istemiyorum, doğrudan tetiğe bas!
 """
 
-# --- [MÜDAHALE VE İŞLEM MOTORU] ---
 def execute_trade(decision):
     try:
         exch = get_exch()
-        # POZİSYON KAPATMA KOMUTU
+        exch.load_markets()
+
+        # --- [1. POZİSYON KAPATMA] ---
         if "@@[ACTION: CLOSE" in decision:
             match = re.search(r"@@\[ACTION: CLOSE,\s*([^,\]]+)\]@@", decision)
             if match:
-                raw_sym = match.group(1).strip().upper().replace('/USDT', '')
-                exch.load_markets()
-                exact_sym = next((s for s in exch.markets if raw_sym in s and ':USDT' in s), None)
+                symbol = match.group(1).strip().upper()
+                exact_sym = next((s for s in exch.markets if symbol in s and ':USDT' in s), None)
                 if exact_sym:
                     pos = exch.fetch_positions()
-                    current_p = next((p for p in pos if p['symbol'] == exact_sym and float(p.get('contracts', 0)) > 0), None)
-                    if current_p:
-                        side_to_close = 'sell' if current_p['side'] == 'long' else 'buy'
-                        exch.create_market_order(exact_sym, 'market', side_to_close, float(current_p['contracts']), params={'reduceOnly': True})
-                        return f"✅ **EMİR ALINDI:** {exact_sym} pozisyonunu piyasa fiyatından kapattım dostum."
-            return "⚠️ Kapatılacak pozisyon bulunamadı."
+                    cp = next((p for p in pos if p['symbol'] == exact_sym and safe_num(p.get('contracts')) > 0), None)
+                    if cp:
+                        side = 'sell' if cp['side'] == 'long' else 'buy'
+                        exch.create_market_order(exact_sym, side, safe_num(cp['contracts']), params={'reduceOnly': True})
+                        return f"✅ {exact_sym} piyasadan kapatıldı dostum."
 
-        # YENİ İŞLEM AÇMA KOMUTU
+        # --- [2. GERÇEK STOP LOSS (SL)] ---
+        if "@@[ACTION: SL" in decision:
+            match = re.search(r"@@\[ACTION: SL,\s*([^,]+),\s*([^,]+)\]@@", decision)
+            if match:
+                symbol, pct = match.groups()
+                exact_sym = next((s for s in exch.markets if symbol.strip().upper() in s and ':USDT' in s), None)
+                if exact_sym:
+                    pos = exch.fetch_positions()
+                    cp = next((p for p in pos if p['symbol'] == exact_sym and safe_num(p.get('contracts')) > 0), None)
+                    if cp:
+                        entry = safe_num(cp['entryPrice'])
+                        side = cp['side']
+                        dist = safe_num(pct) / 100
+                        sl_price = entry * (1 - dist) if side == 'long' else entry * (1 + dist)
+                        sl_price = float(exch.price_to_precision(exact_sym, sl_price))
+                        
+                        # Bitget Trigger Order
+                        params = {'stopPrice': sl_price, 'reduceOnly': True}
+                        exch.create_order(exact_sym, 'market', ('sell' if side == 'long' else 'buy'), safe_num(cp['contracts']), None, params)
+                        return f"🛡️ **STOP KOYULDU:** {exact_sym} için SL seviyesi: {sl_price}"
+
+        # --- [3. YENİ İŞLEM AÇMA] ---
         if "@@[ACTION: TRADE" in decision:
             match = re.search(r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@", decision)
             if match:
-                raw_sym, side_raw, lev_raw, amt_raw = match.groups()
-                side = 'buy' if any(x in side_raw.upper() for x in ['BUY', 'LONG']) else 'sell'
-                lev = int(float(re.sub(r'[^0-9.]', '', lev_raw)))
-                amt = float(re.sub(r'[^0-9.]', '', amt_raw))
-                
-                exch.load_markets()
-                clean_sym = raw_sym.strip().upper().replace('/USDT', '')
-                exact_sym = next((s for s in exch.markets if clean_sym in s and ':USDT' in s), None)
-                
+                symbol, side_raw, lev_raw, amt_raw = match.groups()
+                exact_sym = next((s for s in exch.markets if symbol.strip().upper() in s and ':USDT' in s), None)
                 if exact_sym:
+                    lev = int(safe_num(lev_raw))
+                    amt = safe_num(amt_raw)
+                    side = 'buy' if 'BUY' in side_raw.upper() or 'LONG' in side_raw.upper() else 'sell'
+                    
                     try: exch.set_leverage(lev, exact_sym)
                     except: pass
+                    
                     ticker = exch.fetch_ticker(exact_sym)
-                    qty = (amt * lev) / ticker['last']
+                    qty = (amt * lev) / safe_num(ticker['last'])
                     qty = float(exch.amount_to_precision(exact_sym, qty))
-                    exch.create_market_order(exact_sym, 'market', side, qty)
-                    return f"🚀 **İŞLEM AÇILDI:** {exact_sym} {lev}x {side.upper()}"
+                    
+                    if qty > 0:
+                        exch.create_market_order(exact_sym, side, qty)
+                        return f"🚀 **İŞLEM AÇILDI:** {exact_sym} | {side.upper()} | {lev}x"
         return None
     except Exception as e:
         return f"⚠️ Operasyon Hatası: {str(e)}"
 
-# --- [CANLI DİNLEME VE CEVAPLAMA] ---
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) == str(CHAT_ID):
         try:
             exch = get_exch()
-            # 1. ANLIK BORSA DURUMUNU ÇEK
             pos = exch.fetch_positions()
-            active_p = [f"{p['symbol']} ROE:%{p.get('percentage', 0):.2f}" for p in pos if float(p.get('contracts', 0)) > 0]
-            tickers = exch.fetch_tickers()
-            market = sorted([{'s': s, 'p': d['percentage']} for s, d in tickers.items() if ':USDT' in s], key=lambda x: abs(x['p']), reverse=True)[:5]
+            active_p = [f"{p['symbol']} ROE:%{p.get('percentage', 0)}" for p in pos if safe_num(p.get('contracts')) > 0]
             
-            status_report = f"ŞU ANKİ DURUM:\nAçık Pozisyonlar: {active_p if active_p else 'Yok'}\nMarket Hareketlileri: " + ", ".join([f"{x['s']}: %{x['p']}" for x in market])
-            
-            # 2. GEMINI'YE CANLI DURUMU VE MESAJI SOR
-            prompt = f"{status_report}\n\nKullanıcı Emri: '{message.text}'\n\nGemini, bu verilere bakarak dostuna cevap ver ve gerekiyorsa işlemi YAP."
+            prompt = f"CÜZDAN BİLGİSİ: {active_p}\nKullanıcı: '{message.text}'\n\nAnaliz et ve @@ formatıyla aksiyon al."
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
-            # 3. MESAJI VE İŞLEMİ GÖNDER
             bot.reply_to(message, response.split("@@")[0].strip())
-            trade_result = execute_trade(response)
-            if trade_result:
-                bot.send_message(CHAT_ID, trade_result)
-                
+            res = execute_trade(response)
+            if res: bot.send_message(CHAT_ID, res)
         except Exception as e:
-            bot.reply_to(message, f"Canlı bağlantı hatası: {e}")
+            bot.reply_to(message, f"Hata: {e}")
 
 if __name__ == "__main__":
-    print("Gemini 3 Flash CANLI Takipte...")
+    print("Gemini 3 Flash: Karakter Filtresi Aktif!")
     bot.infinity_polling()
