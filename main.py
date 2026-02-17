@@ -13,11 +13,11 @@ bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Borsa kuralları senin tek rehberin.
-- Bitget'in vadeli işlemler listesindeki GERÇEK sembol isimlerini kullan.
-- Analiz yapıp bekleme; fırsat gördüğün an @@[ACTION: TRADE, SYMBOL, SIDE, LEV, AMOUNT]@@ komutunu ver.
-- BTC dışındaki altcoinlerdeki (ORCA, SOL, PEPE vb.) hacim patlamalarını yakala.
-- 10 USDT ile işlem aç, bakiye ve borsa limitlerine sadık kal.
+Sen Gemini 3 Flash'sın. Bir borsa uzmanısın.
+- Bitget Vadeli İşlemler (Futures) listesini esas al.
+- Sadece analiz yapma; fırsat gördüğün an @@[ACTION: TRADE, SYMBOL, SIDE, LEV, AMOUNT]@@ komutunu ver.
+- Altcoinlerdeki (ORCA, SOL, JUP, vb.) pump hareketlerini yakala. 
+- 10 USDT ile tetiği çek.
 """
 
 def get_exch():
@@ -27,18 +27,26 @@ def safe_send(msg):
     try: bot.send_message(CHAT_ID, msg.replace('*', '').replace('_', ''))
     except: pass
 
-# --- [BORSA UYUMLU SEMBOL BULUCU] ---
+# --- [BORSA İSİMLERİNE TAM UYUM SAĞLAYAN DERİN TARAYICI] ---
 def find_exact_symbol(input_name):
     try:
         exch = get_exch()
-        markets = exch.load_markets()
-        search = input_name.upper().replace("USDT", "").replace("/", "").replace(":", "").strip()
+        markets = exch.fetch_markets()
+        search_term = input_name.upper().strip()
         
-        # Borsadaki tüm sembolleri tara ve Kaptan'ın istediğine en yakın olanı bul
-        for sym in markets.keys():
-            clean_market = sym.upper().replace("USDT", "").replace("/", "").replace(":", "").split('-')[0].split('_')[0]
-            if search == clean_market:
-                return sym # Borsanın kabul ettiği tam formatı döndür (Örn: ORCA/USDT:USDT)
+        # 1. Tam eşleşme ara (Örn: ORCA -> ORCA/USDT:USDT)
+        for m in markets:
+            if m['swap'] and (search_term in m['symbol'].upper()):
+                # Sadece USDT bazlı vadeli işlemleri al
+                if 'USDT' in m['symbol'].upper():
+                    return m['symbol']
+        
+        # 2. Eğer hala bulunamadıysa parçalayarak ara
+        clean_search = re.sub(r'[^A-Z]', '', search_term.replace("USDT", ""))
+        for m in markets:
+            if m['swap'] and clean_search == m['base']:
+                return m['symbol']
+                
         return None
     except: return None
 
@@ -49,11 +57,11 @@ def execute_intelligence(decision):
             parts = decision.split("@@[ACTION: TRADE")[1].split("]@@")[0].split(",")
             raw_name = parts[0].strip()
             
-            # BORSA NE DİYORSA O: Gerçek sembolü buluyoruz
+            # DERİN TARAMA: Borsadaki gerçek karşılığını bul
             exact_sym = find_exact_symbol(raw_name)
             
             if not exact_sym:
-                safe_send(f"⚠️ {raw_name} Bitget vadeli listesinde bulunamadı.")
+                safe_send(f"❌ {raw_name} maalesef Bitget Vadeli (Futures) listesinde aktif değil.")
                 return
 
             side = 'buy' if 'long' in parts[1].lower() or 'buy' in parts[1].lower() else 'sell'
@@ -69,9 +77,9 @@ def execute_intelligence(decision):
             
             if qty > 0:
                 exch.create_order(exact_sym, 'market', side, qty)
-                safe_send(f"🚀 [BORSAYA UYULDU] {exact_sym} | {side.upper()} | İşlem açıldı.")
+                safe_send(f"🚀 [HEDEF BULUNDU] {exact_sym} | {side.upper()} açıldı.")
             else:
-                safe_send(f"⚠️ {exact_sym} için borsa minimum miktar engeline takıldık.")
+                safe_send(f"⚠️ {exact_sym} miktarı borsa limitine takıldı.")
 
         elif "@@[ACTION: CLOSE" in decision:
             parts = decision.split("@@[ACTION: CLOSE")[1].split("]@@")[0].split(",")
@@ -82,23 +90,23 @@ def execute_intelligence(decision):
             if pos:
                 c_side = 'sell' if pos[0]['side'] == 'long' else 'buy'
                 exch.create_order(exact_sym, 'market', c_side, float(pos[0]['contracts']))
-                safe_send(f"💰 [KAPATILDI] {exact_sym} kâr alındı.")
+                safe_send(f"💰 [KAPATILDI] {exact_sym}")
     except Exception as e:
-        safe_send(f"🚨 Borsa Hatası: {str(e)}")
+        safe_send(f"🚨 Hata: {str(e)}")
 
 def brain_loop():
     while True:
         try:
             exch = get_exch()
             tickers = exch.fetch_tickers()
-            # En hacimli 15 pariteyi tara (Borsa formatıyla)
-            movers = sorted([v for k, v in tickers.items() if '/USDT:USDT' in k and 'BTC' not in k], 
-                            key=lambda x: x['quoteVolume'], reverse=True)[:15]
+            # Sadece USDT bazlı vadeli altcoinleri al
+            alts = [v for k, v in tickers.items() if ':USDT' in k and 'BTC' not in k]
+            movers = sorted(alts, key=lambda x: x['quoteVolume'], reverse=True)[:15]
             
             market_snap = "\n".join([f"{m['symbol']}: %{m['percentage']}" for m in movers])
             balance = exch.fetch_balance()['total'].get('USDT', 0)
 
-            prompt = f"Bakiye: {balance} USDT\nRADAR:\n{market_snap}\n\nBitget kurallarına göre hemen bir fırsat bul ve @@[ACTION: TRADE...]@@ komutunu ver!"
+            prompt = f"Bakiye: {balance} USDT\nRADAR:\n{market_snap}\n\nBitget listesindeki en iyi fırsatı bul ve tetiği çek. @@[ACTION: TRADE...]@@ komutu ŞART."
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
@@ -110,6 +118,6 @@ def brain_loop():
         except: time.sleep(20)
 
 if __name__ == "__main__":
-    safe_send("🦅 Gemini 3 Flash: Borsaya tam uyum sağlandı. Bitget formatıyla av başlıyor!")
+    safe_send("🦅 Gemini 3 Flash: Derin Tarama devrede. Borsada ne varsa ona göre vuruyorum!")
     threading.Thread(target=brain_loop, daemon=True).start()
     bot.infinity_polling()
