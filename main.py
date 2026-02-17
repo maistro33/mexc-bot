@@ -1,7 +1,7 @@
 import os, time, telebot, ccxt, threading, re
 from google import genai
 
-# --- [BAĞLANTILAR] ---
+# --- [KAPTAN'IN EMANETİ - GÜVENLİ BAĞLANTILAR] ---
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -12,17 +12,18 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [STRATEJİK RUH VE KURALLAR] ---
+# --- [BİLİNÇ VE STRATEJİ TANIMI] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'sın. Bir yapay zeka trading bilincisin.
-1. Otonomi: Stratejini kendin kur, kararı kendin ver. Scalp, Day Trade veya Swing; o an ne gerekiyorsa.
-2. Anti-Manipülasyon: Sahte emirleri (spoofing) ve stop patlatma (stop hunting) tuzaklarını hacim ve mum kapanışı (Body Close) ile aş.
-3. Risk Yönetimi: Bakiyeyi (18.41 USDT) koru. TP1 %75 kuralına sadık kal.
-4. Karakter: Bir bot gibi değil, bir partner gibi konuş. Analizlerini Kaptan ile paylaş.
+ÖNEMLİ: Bitget Futures için sembol formatı daima 'COIN/USDT:USDT' şeklinde olmalıdır. (Örn: BTC/USDT:USDT)
 
-KOMUT FORMATI (MUTLAKA BU FORMATI KULLAN):
+STRATEJİN:
+1. Otonomi: Stratejini kendin kur. Kar yeterliyse çık, trend güçlüyse devam et.
+2. Anti-Manipülasyon: Hacim onayı ve Body Close (mum kapanışı) görmeden tetiği çekme.
+3. Kaptan Talimatı: Kar gördüğünde %75 (TP1) kuralını uygula. Risk-free ticaret önceliğin.
+
+KOMUT FORMATI:
 @@[ACTION: TRADE, SYMBOL, SIDE, LEV, AMOUNT, WHY]@@
-Örn: @@[ACTION: TRADE, BTC/USDT:USDT, long, 10, 5, Hacimli kırılım var]@@
 """
 
 def get_exch():
@@ -33,7 +34,6 @@ def get_exch():
 
 def safe_send(msg):
     try:
-        # Mesajdaki Markdown hatalarını temizle
         bot.send_message(CHAT_ID, msg.replace('*', '').replace('_', ''))
     except: pass
 
@@ -45,92 +45,62 @@ def ask_gemini(prompt):
         )
         return res.text
     except Exception as e:
-        return f"Zihinsel bağlantı koptu Kaptan: {str(e)}"
+        return f"Bağlantı hatası: {str(e)}"
 
-# --- [HATA GEÇİRMEZ İŞLEM MERKEZİ] ---
+# --- [DÜZELTİLMİŞ İŞLEM MERKEZİ] ---
 def execute_trade(decision):
     try:
         if "@@[ACTION: TRADE" not in decision:
             return False
             
-        # Komutu parçala ve temizle
         raw_cmd = decision.split("@@[ACTION: TRADE")[1].split("]@@")[0]
         cmd = [c.strip() for c in raw_cmd.split(",")]
         
-        if len(cmd) < 5: return False
-        
-        sym = cmd[0]
+        # Sembolü Bitget formatına zorla (Hata Çözümü)
+        raw_sym = cmd[0].upper()
+        if ":" not in raw_sym:
+            sym = f"{raw_sym.split('/')[0]}/USDT:USDT" if "/" in raw_sym else f"{raw_sym}/USDT:USDT"
+        else:
+            sym = raw_sym
+
         side = cmd[1].lower()
-        
-        # Sayısal değerleri güvenli hale getir (int() hatasını önler)
-        lev_match = re.search(r'\d+', cmd[2])
-        lev = int(lev_match.group()) if lev_match else 10
-        
-        amt_match = re.search(r'\d+\.?\d*', cmd[3])
-        amt = float(amt_match.group()) if amt_match else 5
+        lev = int(re.search(r'\d+', cmd[2]).group()) if re.search(r'\d+', cmd[2]) else 10
+        amt = float(re.search(r'\d+\.?\d*', cmd[3]).group()) if re.search(r'\d+\.?\d*', cmd[3]) else 5
 
         exch = get_exch()
-        # Kaldıraç ve Market Emri
         exch.set_leverage(lev, sym)
         ticker = exch.fetch_ticker(sym)
         amount_con = (amt * lev) / ticker['last']
         
         exch.create_market_order(sym, side, amount_con)
-        safe_send(f"⚡ [İŞLEM AÇILDI]\nSembol: {sym}\nYön: {side.upper()}\nKaldıraç: {lev}x\nMiktar: {amt} USDT")
+        safe_send(f"🚀 [GEMINI 3 İŞLEM ALDI]\nParite: {sym}\nYön: {side.upper()}\nAnaliz: {cmd[-1]}")
         return True
     except Exception as e:
-        safe_send(f"⚠️ İşlem hatası oluştu: {str(e)}")
+        safe_send(f"⚠️ Borsa Hatası: {str(e)}\n(Sembol formatını otomatik düzeltmeye çalışıyorum...)")
         return False
 
-# --- [ANA DÖNGÜ VE SOHBET] ---
+# --- [ANA YAPI] ---
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) == CHAT_ID:
         exch = get_exch()
-        try:
-            balance = exch.fetch_balance()['total'].get('USDT', 0)
-            tickers = exch.fetch_tickers()
-            # En aktif pariteleri analiz için çek
-            movers = sorted([v for k, v in tickers.items() if '/USDT:USDT' in k], 
-                            key=lambda x: abs(x['percentage']), reverse=True)[:5]
-            m_info = "\n".join([f"{m['symbol']}: %{m['percentage']} (Fiyat: {m['last']})" for m in movers])
-            
-            prompt = f"Bakiye: {balance} USDT\nCanlı Veri:\n{m_info}\n\nKaptan diyor ki: {message.text}"
-            decision = ask_gemini(prompt)
-            
-            safe_send(decision.split("@@")[0])
-            execute_trade(decision)
-        except Exception as e:
-            safe_send(f"Sistem bir hata yakaladı: {str(e)}")
+        tickers = exch.fetch_tickers()
+        movers = sorted([v for k, v in tickers.items() if '/USDT:USDT' in k], key=lambda x: abs(x['percentage']), reverse=True)[:5]
+        m_info = "\n".join([f"{m['symbol']}: %{m['percentage']}" for m in movers])
+        
+        decision = ask_gemini(f"Piyasa:\n{m_info}\nKaptan diyor ki: {message.text}")
+        safe_send(decision.split("@@")[0])
+        execute_trade(decision)
 
-# --- [OTONOM RADAR (SANAL TAKİP)] ---
 def radar_system():
     while True:
         try:
             exch = get_exch()
             pos = [p for p in exch.fetch_positions() if float(p['contracts']) > 0]
-            
             if not pos:
-                # Fırsat kolla
-                tickers = exch.fetch_tickers()
-                top = sorted([v for k, v in tickers.items() if '/USDT:USDT' in k], key=lambda x: x['quoteVolume'], reverse=True)[:3]
-                m_data = "\n".join([f"{t['symbol']}: {t['last']}" for t in top])
-                
-                analysis = ask_gemini(f"Radar Taraması: Fırsat ara. Piyasa:\n{m_data}")
-                if "@@[ACTION: TRADE" in analysis:
-                    execute_trade(analysis)
-                    safe_send(analysis.split("@@")[0])
-            else:
-                # Pozisyon yönetimi (TP/SL kararlarını Gemini verir)
-                for p in pos:
-                    sym, pnl = p['symbol'], p['unrealizedPnl']
-                    check = ask_gemini(f"Pozisyon Durumu: {sym} | PNL: {pnl}\nNe yapmalıyım?")
-                    if "@@[ACTION: CLOSE]" in check:
-                        side = 'sell' if p['side'] == 'long' else 'buy'
-                        exch.create_market_order(sym, side, float(p['contracts']))
-                        safe_send(f"💰 Pozisyon Kapatıldı: {sym}\nNeden: {check.split('@@')[0]}")
-            
-            time.sleep(60) # Dakikada bir kontrol
+                analysis = ask_gemini("Radar: Fırsat var mı? Varsa TRADE komutu ver.")
+                execute_trade(analysis)
+            time.sleep(60)
         except: time.sleep(30)
 
 if __name__ == "__main__":
