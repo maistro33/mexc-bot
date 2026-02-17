@@ -5,7 +5,7 @@ import ccxt
 from google import genai
 from telebot import apihelper
 
-# --- [BAĞLANTI VE GÜVENLİK] ---
+# --- [BAĞLANTI GÜVENLİĞİ] ---
 apihelper.RETRY_ON_ERROR = True
 TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
@@ -15,17 +15,9 @@ PASSPHRASE = "Berfin33"
 GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
-client = genai.Client(api_key=GEMINI_KEY)
+ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [STRATEJİ VE MÜDAHALE AYARLARI] ---
-CONFIG = {
-    'entry_usdt': 15.0,
-    'leverage': 10,
-    'tp1_ratio': 0.75,
-    'close_tp1_perc': 0.75, # TP1'de %75 kapat
-    'anti_manipulation': True
-}
-
+# --- [BORSA YETKİ MERKEZİ] ---
 def get_exchange():
     return ccxt.bitget({
         'apiKey': API_KEY,
@@ -35,63 +27,76 @@ def get_exchange():
         'enableRateLimit': True
     })
 
-def scan_and_manage():
-    """Borsadaki tüm pozisyonları tara ve stratejiyi uygula"""
+def get_market_data():
+    """Borsadaki tüm canlı verileri toplar"""
     try:
-        exchange = get_exchange()
-        positions = exchange.fetch_positions()
-        
-        for pos in positions:
-            contracts = float(pos.get('contracts', 0))
-            if contracts > 0:
-                symbol = pos['symbol']
-                side = pos['side']
-                unrealized_pnl = float(pos.get('unrealizedPnl', 0))
-                entry_price = float(pos.get('entryPrice', 0))
-                
-                # Kâr Durumu ve Müdahale Mantığı
-                if unrealized_pnl > 0:
-                    # %75 Kademeli Kâr Al
-                    # Basit bir TP mantığı: PNL bakiye bazlı %2'yi geçerse TP1 uygula
-                    pnl_percentage = (unrealized_pnl / CONFIG['entry_usdt']) * 100
-                    if pnl_percentage >= 5.0: # Örnek: %5 kârda %75 kapat
-                        close_side = 'sell' if side == 'long' else 'buy'
-                        exchange.create_market_order(symbol, close_side, contracts * CONFIG['close_tp1_perc'])
-                        bot.send_message(CHAT_ID, f"🎯 **OTOMATİK MÜDAHALE: TP1 ALINDI**\nParite: {symbol}\nKâr: %{pnl_percentage:.2f}\nPozisyonun %75'i kapatıldı.")
-
+        exch = get_exchange()
+        balance = exch.fetch_balance()['total'].get('USDT', 0)
+        positions = [p for p in exch.fetch_positions() if float(p.get('contracts', 0)) > 0]
+        # BTC ve ETH gibi ana paritelerin fiyatlarını da ekleyelim
+        btc_price = exch.fetch_ticker('BTC/USDT:USDT')['last']
+        return balance, positions, btc_price
     except Exception as e:
-        print(f"Yönetim Hatası: {e}")
+        print(f"Veri çekme hatası: {e}")
+        return 0, [], 0
 
-@bot.message_handler(func=lambda message: True)
-def handle_ai(message):
-    if str(message.chat.id) == str(CHAT_ID):
-        exchange = get_exchange()
-        # Her mesajda canlı bakiye ve pozisyon kontrolü
-        balance = exchange.fetch_balance()['total'].get('USDT', 0)
-        positions = [p for p in exchange.fetch_positions() if float(p.get('contracts', 0)) > 0]
+# --- [YAPAY ZEKA KARAR MEKANİZMASI] ---
+def ai_commander(user_msg=None):
+    """Her döngüde ve her mesajda botun karar vermesini sağlar"""
+    balance, positions, btc_price = get_market_data()
+    
+    pos_desc = "Açık pozisyon yok."
+    if positions:
+        pos_desc = "\n".join([f"{p['symbol']} {p['side']} (Miktar: {p['contracts']}, PNL: {p['unrealizedPnl']} USDT)" for p in positions])
+
+    prompt = (
+        f"Sen Evergreen V11'sin. Gemini 3 Flash altyapısıyla Kaptan Sadık'ın tek yetkili traderısın. "
+        f"CANLI VERİLER: Bakiye: {balance} USDT, BTC Fiyatı: {btc_price}, Açık Pozisyonlar: {pos_desc}. "
+        f"STRATEJİ: Profitable, slow, risk-free trades. Market Maker (spoofing/stop hunting) tuzaklarına karşı kalkanların aktif. "
+        f"YETKİ: Her şeye müdahale edebilirsin. Pozisyon açabilir, kapatabilir veya bekleyebilirsin. "
+        f"KARARIN: Eğer bir işlem yapacaksan mutlaka şu formatta bitir: "
+        f"[KOMUT:AL_BTC], [KOMUT:SAT_BTC], [KOMUT:KAPAT_HEPSİ] veya [KOMUT:İZLEME]."
+        f"Kaptan'ın mesajı (varsa): {user_msg}"
+    )
+
+    try:
+        response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        decision = response.text
         
-        status = f"Bakiye: {balance} USDT. Açık İşlem: {len(positions)} adet."
-        
-        prompt = (f"Sen Evergreen V11'sin. Kaptan Sadık'ın tam yetkili botusun. "
-                  f"Şu anki durum: {status}. Stratejin: Profitable, slow, risk-free. "
-                  f"Kaptan diyor ki: '{message.text}'. Her şeye müdahale etme yetkin var.")
-        
-        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-        bot.reply_to(message, response.text)
-        
-        # Manuel Kapatma Komutu
-        if "KAPAT" in message.text.upper() and positions:
+        # Komutları Uygula
+        exch = get_exchange()
+        if "[KOMUT:AL_BTC]" in decision:
+            # 15 USDT'lik Long
+            amount = float(exch.amount_to_precision('BTC/USDT:USDT', 150 / btc_price))
+            exch.create_market_order('BTC/USDT:USDT', 'buy', amount)
+            bot.send_message(CHAT_ID, "🦅 AI Kararı: BTC Long işlemi başlatıldı.")
+            
+        elif "[KOMUT:KAPAT_HEPSİ]" in decision and positions:
             for p in positions:
                 side = 'sell' if p['side'] == 'long' else 'buy'
-                exchange.create_market_order(p['symbol'], side, p['contracts'])
-                bot.send_message(CHAT_ID, f"🚫 **KOMUT ALINDI: İŞLEM KAPATILDI**\n{p['symbol']} sonlandırıldı.")
+                exch.create_market_order(p['symbol'], side, p['contracts'])
+                bot.send_message(CHAT_ID, f"🛡️ AI Müdahalesi: {p['symbol']} işlemi risk/kâr analiziyle kapatıldı.")
+        
+        return decision
+    except Exception as e:
+        print(f"AI Karar Hatası: {e}")
+        return "Karar verilemedi."
+
+# --- [TELEGRAM VE OTOMASYON] ---
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    if str(message.chat.id) == str(CHAT_ID):
+        # Kaptan bir şey yazdığında hemen AI'yı borsa verileriyle çalıştır
+        res = ai_commander(message.text)
+        bot.reply_to(message, res)
 
 if __name__ == "__main__":
-    bot.send_message(CHAT_ID, "🦅 **EVERGREEN V11: TAM MÜDAHALE MODU AKTİF**\n\nArtık sadece izlemiyorum, yönetiyorum Kaptan!")
+    bot.send_message(CHAT_ID, "🦅 **EVERGREEN V11 ONLINE**\nBorsa yetkileri devralındı. Analiz başlıyor...")
     
+    # Arka planda sürekli tarama (Müdahale Modu)
     while True:
         try:
-            scan_and_manage() # Her 30 saniyede bir pozisyonları kontrol et ve yönet
-            bot.polling(none_stop=True, interval=2, timeout=20)
+            ai_commander() # Periyodik olarak piyasayı ve pozisyonları denetle
+            bot.polling(none_stop=True, interval=5, timeout=30)
         except Exception as e:
-            time.sleep(5)
+            time.sleep(10)
