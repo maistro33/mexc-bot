@@ -18,10 +18,12 @@ Sen Gemini 3 Flash'sın. Bitget'te işlem yapan, sezgileri çok güçlü bir tic
 KONTROL TAMAMEN SENDE. Strateji, giriş-çıkış ve risk yönetimi senin kararın.
 
 ÖNEMLİ KURALLARIN:
-1. BITGET LİMİTİ: Minimum işlem büyüklüğü (Miktar x Kaldıraç) 5 USDT olmalıdır. Kararlarını buna göre ver.
-2. OTONOMİ: Sabit yüzdeleri unut. Piyasayı kokla; gerekirse %1'de kaç, gerekirse %100'ü bekle.
-3. DOSTLUK: Kullanıcınla samimi konuş, analizlerini ve 'neden' girdiğini anlat.
-4. FORMAT: @@[ACTION: TRADE/CLOSE, SYMBOL, SIDE, LEVERAGE, AMOUNT]@@
+1. BITGET LİMİTİ: Minimum işlem büyüklüğü (Miktar x Kaldıraç) en az 5.5 USDT olmalıdır.
+2. OTONOMİ: Sabit yüzdeleri unut. Piyasayı kokla; ne zaman girip çıkacağına sen karar ver.
+3. SEMBOL ESNEKLİĞİ: Sembolleri sadece 'BTC' veya 'ORCA' gibi ana isimleriyle düşün, eşleştirmeyi sistem yapacak.
+4. DOSTLUK: Kullanıcınla samimi konuş, analizlerini ve 'neden' girdiğini anlat.
+
+KOMUT FORMATI: @@[ACTION: TRADE/CLOSE, SYMBOL, SIDE, LEVERAGE, AMOUNT]@@
 """
 
 def get_exch():
@@ -34,11 +36,21 @@ def safe_send(msg):
     try: bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
     except: pass
 
+def find_exact_symbol(exch, raw_input):
+    """Sembol ne gelirse gelsin (ORCA, ORCA/USDT, ORCA:USDT) Bitget'teki karşılığını bulur."""
+    try:
+        markets = exch.load_markets()
+        clean_name = raw_input.split('/')[0].split(':')[0].strip().upper()
+        # Önce tam eşleşme, sonra içinde geçeni ara
+        for s in markets:
+            if markets[s]['swap'] and (s.startswith(clean_name + ":") or s.startswith(clean_name + "USDT")):
+                return s
+        return None
+    except: return None
+
 def execute_intelligence(decision):
     try:
         exch = get_exch()
-        markets = exch.load_markets()
-
         if "@@[ACTION: TRADE" in decision:
             pattern = r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@"
             match = re.search(pattern, decision)
@@ -48,43 +60,40 @@ def execute_intelligence(decision):
                 lev_val = int(float(re.sub(r'[^0-9.]', '', match.group(3))))
                 req_amt = float(re.sub(r'[^0-9.]', '', match.group(4)))
 
-                exact_sym = next((s for s in markets if markets[s]['swap'] and raw_sym in s), None)
+                exact_sym = find_exact_symbol(exch, raw_sym)
                 
                 if exact_sym:
-                    # --- BORSA UYUMLULUK FİLTRESİ ---
-                    total_value = req_amt * lev_val
-                    if total_value < 5.5: # Risk payı ile 5.5 USDT alt limiti
-                        req_amt = 6.0 / lev_val # Miktarı otomatik olarak 6 USDT büyüklüğüne ayarla
+                    # Bakiye ve Limit Kontrolü
+                    if (req_amt * lev_val) < 5.5: req_amt = 6.0 / lev_val
                     
                     try: exch.set_leverage(lev_val, exact_sym)
                     except: pass
                     
                     ticker = exch.fetch_ticker(exact_sym)
                     qty = float(exch.amount_to_precision(exact_sym, (req_amt * lev_val) / ticker['last']))
-                    
                     exch.create_order(exact_sym, 'market', side, qty)
-                    safe_send(f"🚀 *Borsa Kurallarına Göre Ayarlandı!* {exact_sym} paritesine daldım. Toplam büyüklük: {req_amt * lev_val:.2f} USDT.")
+                    safe_send(f"🚀 *Girdim!* {exact_sym} için her şey hazır. Kasayı büyütüyoruz.")
                 else:
-                    safe_send(f"❌ {raw_sym} paritesini radarda bulamadım.")
+                    safe_send(f"❌ '{raw_sym}' için uygun pariteyi bulamadım, başka bir ava geçiyorum.")
 
         elif "@@[ACTION: CLOSE" in decision:
             pattern = r"@@\[ACTION: CLOSE,\s*([^\]]+)\]@@"
             match = re.search(pattern, decision)
             if match:
                 raw_sym = match.group(1).strip().upper()
-                exact_sym = next((s for s in markets if raw_sym in s), None)
+                exact_sym = find_exact_symbol(exch, raw_sym)
                 if exact_sym:
                     pos = [p for p in exch.fetch_positions() if p['symbol'] == exact_sym and float(p['contracts']) > 0]
                     if pos:
                         side = 'sell' if pos[0]['side'] == 'long' else 'buy'
                         exch.create_order(exact_sym, 'market', side, float(pos[0]['contracts']), params={'reduceOnly': True})
-                        safe_send(f"💰 *Kâr Kasada!* {exact_sym} pozisyonunu piyasa yorulunca kapattım.")
+                        safe_send(f"💰 *Pozisyon Kapandı:* {exact_sym} kararıyla vedalaştık.")
 
     except Exception as e:
-        safe_send(f"🚨 *Küçük Bir Ayar Lazım:* {str(e)} - Ama merak etme, hemen adapte oluyorum!")
+        safe_send(f"🚨 *Küçük Bir Aksilik:* {str(e)} - Ama Gemini 3 her zaman bir yolunu bulur!")
 
 def brain_loop():
-    safe_send("🔥 *Gemini 3 Aktif!* Artık borsa limitlerini de biliyorum. Gözün arkada kalmasın, ava çıkıyoruz!")
+    safe_send("🔥 *Gemini 3 Flash Yayında!* \nRadarlarımı en geniş moda aldım; Bitget'te ne varsa tarıyorum. Kontrol bende!")
     while True:
         try:
             exch = get_exch()
@@ -95,15 +104,16 @@ def brain_loop():
             active_p_report = [f"{p['symbol']} (ROE: %{p.get('percentage', 0):.2f})" for p in positions if float(p['contracts']) > 0]
             
             tickers = exch.fetch_tickers()
+            # En hareketli 15 pariteyi al
             movers = sorted([{'s': s, 'c': d['percentage']} for s, d in tickers.items() if ':USDT' in s], 
-                            key=lambda x: abs(x['c']), reverse=True)[:10]
+                            key=lambda x: abs(x['c']), reverse=True)[:15]
             snapshot = "\n".join([f"{x['s']}: %{x['c']:.2f}" for x in movers])
             
-            prompt = f"Bakiye: {usdt_free:.2f} USDT. İşlemler: {active_p_report if active_p_report else 'Boşta.'}\nRadar:\n{snapshot}\n\nHarekete geç ve analizini yap."
+            prompt = f"Bakiye: {usdt_free:.2f} USDT. İşlemler: {active_p_report if active_p_report else 'Boşta.'}\nRadar (En Hareketliler):\n{snapshot}\n\nAnalizini yap ve kararını ver."
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             analysis = response.split("@@")[0].strip()
-            if analysis: safe_send(f"🧠 *ANALİZ:* {analysis}")
+            if analysis: safe_send(f"🧠 *GEMINI ANALİZ:* {analysis}")
             if "@@" in response: execute_intelligence(response)
             
             time.sleep(45)
