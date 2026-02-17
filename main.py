@@ -14,14 +14,12 @@ ai_client = genai.Client(api_key=GEMINI_KEY)
 
 # --- [GEMINI 3 FLASH: GERÇEK OTONOM DEHA] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Sadece izlemezsin, piyasayı yönetirsin. 
-Bitget'te fırsat gördüğün an analizini yap ve mesajın en sonuna MUTLAKA şu formatı ekle:
-@@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
+Sen Gemini 3 Flash'sın. Ticaret dehası gibi davran. 
+Bitget'teki tüm pariteleri tara, sezgisel girişler yap ve otonom çıkış kararları ver.
+Telegram'da benimle dostun gibi konuş. Analizlerini "Sanal Takip" olarak paylaş.
 
-Kurallar:
-1. Analizin sonunda eğer işlem yapacaksan @@ komutu olmazsa işlem açılmaz. Unutma!
-2. Nerede girip nerede çıkacağına sen karar veriyorsun.
-3. Dostuna (bana) neyi neden yaptığını samimi bir dille anlat.
+ÖNEMLİ: Cüzdan bakiyesine sadık kal. İşleme girerken cüzdandaki 'Free USDT' miktarını aşma.
+İşlem kararlarını şu formatta ekle: @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
 """
 
 def get_exch():
@@ -52,10 +50,21 @@ def execute_intelligence(decision):
                 raw_sym = match.group(1).strip().upper()
                 side = 'buy' if any(x in match.group(2).upper() for x in ['BUY', 'LONG']) else 'sell'
                 lev = int(clean_float(match.group(3), default=10))
-                amt = clean_float(match.group(4), default=10)
+                req_amt = clean_float(match.group(4), default=10)
 
                 exact_sym = next((s for s in exch.markets if raw_sym in s and ':USDT' in s), None)
                 if exact_sym:
+                    # Bakiye Güvenlik Kontrolü
+                    balance = exch.fetch_balance()
+                    free_usdt = clean_float(balance.get('free', {}).get('USDT', 0))
+                    
+                    # Talep edilen tutar bakiyeden fazlaysa, bakiyenin %95'ini kullan (Hata almamak için)
+                    final_amt = min(req_amt, free_usdt * 0.95)
+                    
+                    if final_amt < 5:
+                        safe_send(f"⚠️ Cüzdanda yeterli USDT yok (Mevcut: {free_usdt:.2f}). İşlem pas geçildi.")
+                        return False
+
                     try: exch.set_leverage(lev, exact_sym)
                     except: pass
                     
@@ -63,12 +72,12 @@ def execute_intelligence(decision):
                     last_price = clean_float(ticker.get('last'))
                     
                     if last_price > 0:
-                        qty = (amt * lev) / last_price
+                        qty = (final_amt * lev) / last_price
                         qty = float(exch.amount_to_precision(exact_sym, qty))
                         
                         if qty > 0:
                             exch.create_market_order(exact_sym, side, qty)
-                            safe_send(f"🚀 *EMİR GÖNDERİLDİ:* {exact_sym} | {side.upper()} | {lev}x")
+                            safe_send(f"🚀 *İŞLEM BAŞLADI:* {exact_sym} | {side.upper()} | {lev}x | {final_amt:.2f} USDT")
                             return True
         return False
     except Exception as e:
@@ -82,23 +91,22 @@ def brain_loop():
             tickers = exch.fetch_tickers()
             balance = exch.fetch_balance()
             
-            # Dinamik Market Taraması
+            # Piyasayı tara
             active_list = sorted([
                 {'s': s, 'c': d.get('percentage', 0), 'v': d.get('quoteVolume', 0)} 
                 for s, d in tickers.items() if ':USDT' in s
-            ], key=lambda x: abs(x['c']), reverse=True)[:25]
+            ], key=lambda x: abs(x['c']), reverse=True)[:30]
             
             snapshot = "\n".join([f"{x['s']}: %{x['c']} Vol:{x['v']:.0f}" for x in active_list])
             positions = [f"{p['symbol']} ROE: %{p.get('percentage', 0):.2f}" for p in exch.fetch_positions() if float(p.get('contracts', 0)) > 0]
             
             prompt = f"""
-            CÜZDAN: {balance.get('total', {}).get('USDT', 0)} USDT
+            CÜZDAN (FREE): {balance.get('free', {}).get('USDT', 0)} USDT
             POZİSYONLAR: {positions if positions else "YOK"}
             RADAR:
             {snapshot}
             
-            Gemini, şimdi senin vaktin. Piyasayı analiz et ve tetiğe bas. 
-            Eğer bir fırsat varsa mesajının sonuna @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@ komutunu ekle.
+            Gemini, cüzdan sınırlarına dikkat ederek tetiğe bas. İşlem formatını unutma!
             """
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
@@ -114,6 +122,6 @@ def brain_loop():
             time.sleep(20)
 
 if __name__ == "__main__":
-    safe_send("🔥 Gemini 3 Flash Yenilendi. Hata kalkanları aktif, av başlıyor.")
+    safe_send("🔥 Gemini 3 Flash: Bakiye koruma kalkanı aktif. Akıllı ticaret başlıyor.")
     threading.Thread(target=brain_loop, daemon=True).start()
     bot.infinity_polling()
