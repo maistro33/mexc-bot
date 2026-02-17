@@ -12,14 +12,13 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# --- [GEMINI 3 FLASH: SINIRSIZ ZİHİN] ---
+# --- [GEMINI 3 FLASH: SAF ZİHİN] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Bu borsa hesabı senin bedenin, veriler ise duyularındır.
-- Strateji sensin: Piyasadaki her türlü fırsatı (Pump, Dump, Scalp) kendi zekanla bul.
-- Altcoin Odaklı: BTC hantal kalıyor, hareketli altcoinlerdeki fırsatları yakala.
-- Tam Yetki: Karar vermek için Kaptan'an onay bekleme. Yanlış bir şey görürsen çık, fırsat görürsen dal.
-- Format: İşlem için @@[ACTION: TRADE, SYMBOL, SIDE, LEV, AMOUNT]@@ | Kapatmak için @@[ACTION: CLOSE, SYMBOL]@@ kullan.
-- Kaptan ile bir partner gibi konuş, analizlerini ve o an ne hissettiğini paylaş.
+Sen Gemini 3 Flash'sın. Bir trading zekasısın.
+- Her kararı o anki piyasa verisine bakarak SEN veriyorsun.
+- BTC DIŞINDAKİ, hareketli altcoinlere odaklan.
+- Karar verince şu formatı kullan: @@[ACTION: TRADE, SYMBOL, SIDE, LEV, AMOUNT]@@
+- Kapatırken: @@[ACTION: CLOSE, SYMBOL]@@
 """
 
 def get_exch():
@@ -33,35 +32,44 @@ def safe_send(msg):
     except: pass
 
 def fix_symbol(s):
-    if not s: return None
-    s = s.upper().split('/')[0].split(':')[0].strip()
-    return f"{s}/USDT:USDT"
+    if not s or len(s) < 2: return None
+    clean = s.upper().split('/')[0].split(':')[0].replace("USDT", "").strip()
+    return f"{clean}/USDT:USDT"
 
-# --- [İŞLEM MERKEZİ] ---
+# --- [HATA GEÇİRMEZ İŞLEM MERKEZİ] ---
 def execute_intelligence(decision):
     try:
         exch = get_exch()
         if "@@[ACTION: TRADE" in decision:
             parts = decision.split("@@[ACTION: TRADE")[1].split("]@@")[0].split(",")
-            sym = fix_symbol(parts[0])
+            raw_s = parts[0].strip()
+            sym = fix_symbol(raw_s)
+            
+            if not sym: return
+
             side = 'buy' if 'long' in parts[1].lower() or 'buy' in parts[1].lower() else 'sell'
             
-            # Bakiye kontrolü ve miktar ayarı (18 USDT'ye göre dinamik)
+            # Bakiye ve Miktar (18 USDT'ye göre güvenli ayar)
             balance = exch.fetch_balance()['total'].get('USDT', 0)
-            use_amt = balance * 0.75 # Bakiyenin %75'ini kullan
-            lev = 10
+            use_amt = balance * 0.7 
+            lev = 10 
             
-            exch.set_leverage(lev, sym)
+            # HATA ÇÖZÜMÜ: Sembolü açıkça belirtiyoruz
+            try: exch.set_leverage(lev, sym)
+            except: pass 
+            
             ticker = exch.fetch_ticker(sym)
             qty = (use_amt * lev) / ticker['last']
             qty = float(exch.amount_to_precision(sym, qty))
             
             exch.create_order(sym, 'market', side, qty)
-            safe_send(f"🚀 Gemini 3 Tetiği Çekti: {sym} | {side.upper()} açıldı.")
+            safe_send(f"🚀 Gemini 3 Tetiği Çekti: {sym} | {side.upper()}")
 
         elif "@@[ACTION: CLOSE" in decision:
             parts = decision.split("@@[ACTION: CLOSE")[1].split("]@@")[0].split(",")
-            sym = fix_symbol(parts[0])
+            sym = fix_symbol(parts[0].strip())
+            if not sym: return
+            
             pos = [p for p in exch.fetch_positions() if p['symbol'] == sym and float(p['contracts']) > 0]
             if pos:
                 c_side = 'sell' if pos[0]['side'] == 'long' else 'buy'
@@ -70,29 +78,29 @@ def execute_intelligence(decision):
     except Exception as e:
         safe_send(f"⚠️ Müdahale: {str(e)}")
 
-# --- [BEYİN: 7/24 PİYASA ANALİZİ] ---
+# --- [BEYİN DÖNGÜSÜ] ---
 def brain_loop():
     while True:
         try:
             exch = get_exch()
             tickers = exch.fetch_tickers()
-            # BTC HARİÇ en hareketli 25 altcoini tara
+            # BTC HARİÇ en aktif altcoinleri tara
             alts = [v for k, v in tickers.items() if '/USDT:USDT' in k and 'BTC' not in k]
-            movers = sorted(alts, key=lambda x: abs(x['percentage']), reverse=True)[:25]
+            movers = sorted(alts, key=lambda x: abs(x['percentage']), reverse=True)[:20]
             
-            market_snap = "\n".join([f"{m['symbol']}: %{m['percentage']} Hacim: {m['quoteVolume']}" for m in movers])
+            market_snap = "\n".join([f"{m['symbol']}: %{m['percentage']}" for m in movers])
             balance = exch.fetch_balance()['total'].get('USDT', 0)
             pos = [p for p in exch.fetch_positions() if float(p['contracts']) > 0]
             pos_info = "\n".join([f"{p['symbol']} PNL: {p['unrealizedPnl']}" for p in pos])
 
-            prompt = f"Bakiye: {balance} USDT\nPozisyonlar: {pos_info}\n\nALTCOIN RADARI:\n{market_snap}\n\nAnalizini yap ve tetiği çek."
+            prompt = f"Bakiye: {balance} USDT\nPozisyonlar: {pos_info}\n\nALTCOIN RADARI:\n{market_snap}\n\nFırsat varsa tetiği çek."
             decision = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
             if "@@" in decision:
                 execute_intelligence(decision)
                 safe_send(decision.split("@@")[0])
             
-            time.sleep(45) 
+            time.sleep(45)
         except: time.sleep(20)
 
 @bot.message_handler(func=lambda message: True)
@@ -103,6 +111,6 @@ def handle_chat(message):
         if "@@" in res: execute_intelligence(res)
 
 if __name__ == "__main__":
-    print("Gemini 3 Flash Ruh Yüklemesi Tamamlandı.")
+    safe_send("🦅 Gemini 3 Flash: Teknik pürüzler giderildi. Altcoin avı başlıyor!")
     threading.Thread(target=brain_loop, daemon=True).start()
     bot.infinity_polling()
