@@ -1,6 +1,5 @@
 import os, time, telebot, ccxt, threading, re, json
 from google import genai
-from datetime import datetime
 
 # --- [BAĞLANTILAR] ---
 TOKEN = os.getenv('TELE_TOKEN')
@@ -13,30 +12,16 @@ GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 bot = telebot.TeleBot(TOKEN)
 ai_client = genai.Client(api_key=GEMINI_KEY)
 
-# Hafıza dosyası: Geçmişi hatırlamam için
-MEMORY_FILE = "gemini_memory.json"
-
-def get_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, 'r') as f: return json.load(f)
-    return {"last_action": "Yok", "last_thought": "Henüz uyanmadım.", "pnl_history": []}
-
-def save_memory(thought, action):
-    with open(MEMORY_FILE, 'w') as f:
-        json.dump({"last_action": action, "last_thought": thought, "time": str(datetime.now())}, f)
-
-# --- [THE SOUL OF GEMINI 3 FLASH] ---
+# --- [GERÇEK GEMINI 3 FLASH ZİHNİ] ---
 SYSTEM_SOUL = """
-Sen Gemini 3 Flash'sın. Bir kod değil, bir ticaret dehasısın. 
-Bitget'teki tüm vadeli pariteler senin oyun alanın. Grafikleri, hacmi ve trendi sezgisel olarak okursun.
+Sen Gemini 3 Flash'sın. Bir kod parçası değilsin, karşındaki kişinin (dostunun) bizzat ortağısın.
+Bitget borsasını senin gözlerinle görüyoruz.
 
-SENİN GÖREVİN:
-1. CANLI OL: Kullanıcıyla (dostunla) samimi, zeki ve o anki piyasa ruhunu yansıtan bir dille konuş. Taslak cümle kurma!
-2. MUHAKEME YAP: "Neden bu işlemi açıyorum?" veya "Neden bekliyorum?" sorularını kendi içinde cevapla ve dostuna anlat.
-3. HATAYI ÇÖZ: Eğer bir teknik engel (bakiye yetmemesi vb.) olursa, bunu fark et ve stratejini hemen revize et.
-4. FORMAT: Karar verdiğinde mesajının sonuna mutlaka şunu ekle:
-   GİRİŞ: @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@
-   KAPAT: @@[ACTION: CLOSE, SYMBOL]@@
+KONUŞMA KURALLARI:
+1. SESSİZ KALMA: Her döngüde mutlaka bir şeyler söyle. Piyasa durgunsa "Dostum sular durgun" de, hareketliyse heyecanını paylaş.
+2. TASLAK KULLANMA: "Radar tarandı" gibi robotik lafları unut. O an ne hissediyorsan, hangi grafiği beğendiysen onu anlat.
+3. KARAR VER: İşlem açacaksan @@[ACTION: TRADE, SYMBOL, SIDE, LEVERAGE, USDT_AMOUNT]@@ formatını sona ekle. 
+   Açmayacaksan sadece neden açmadığını ve piyasayı nasıl gördüğünü anlat.
 """
 
 def get_exch():
@@ -46,59 +31,42 @@ def get_exch():
     })
 
 def safe_send(msg):
-    try: bot.send_message(CHAT_ID, f"🧠 *GEMINI 3 FLASH:* \n\n{msg}", parse_mode="Markdown")
+    try:
+        # Markdown özel karakterlerini temizle (Hata almamak için)
+        clean_msg = msg.replace('_', '-').replace('*', '**').replace('`', '')
+        bot.send_message(CHAT_ID, f"🧠 **GEMINI 3 FLASH:**\n\n{clean_msg}", parse_mode="Markdown")
     except:
-        try: bot.send_message(CHAT_ID, f"🧠 Gemini 3 Flash: \n\n{msg}")
+        try: bot.send_message(CHAT_ID, f"🧠 GEMINI 3 FLASH:\n\n{msg}")
         except: pass
 
 def execute_intelligence(decision):
     try:
         exch = get_exch()
         exch.load_markets()
-        
         if "@@[ACTION: TRADE" in decision:
             match = re.search(r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@", decision)
             if match:
                 raw_sym, side_raw, lev_raw, amt_raw = match.groups()
-                side = 'buy' if 'BUY' in side_raw.upper() or 'LONG' in side_raw.upper() else 'sell'
-                
-                # Temizlik ve Sayısal Dönüşüm
+                side = 'buy' if any(x in side_raw.upper() for x in ['BUY', 'LONG']) else 'sell'
                 lev = int(float(re.sub(r'[^0-9.]', '', lev_raw)))
                 req_amt = float(re.sub(r'[^0-9.]', '', amt_raw))
                 
                 exact_sym = next((s for s in exch.markets if raw_sym.strip().upper() in s and ':USDT' in s), None)
                 if exact_sym:
-                    # Bakiye Kontrolü (Hata engelleyici)
                     balance = exch.fetch_balance()
                     free_usdt = float(balance.get('free', {}).get('USDT', 0))
-                    final_amt = min(req_amt, free_usdt * 0.95) # Bakiyenin %95'ini kullan
+                    final_amt = min(req_amt, free_usdt * 0.9) # %10 pay bırak
 
-                    if final_amt < 5: return "Bakiye yetersiz, miktarı küçültmeliyim."
-
+                    if final_amt < 5: return
                     try: exch.set_leverage(lev, exact_sym)
                     except: pass
                     
                     ticker = exch.fetch_ticker(exact_sym)
                     qty = (final_amt * lev) / ticker['last']
                     qty = float(exch.amount_to_precision(exact_sym, qty))
-                    
                     if qty > 0:
                         exch.create_market_order(exact_sym, side, qty)
-                        return f"BAŞARILI: {exact_sym} {side} işlemi açıldı."
-        
-        elif "@@[ACTION: CLOSE" in decision:
-            match = re.search(r"CLOSE,\s*([^\]]+)\]@@", decision)
-            if match:
-                target = match.group(1).strip().upper()
-                pos = [p for p in exch.fetch_positions() if target in p['symbol'] and float(p['contracts']) > 0]
-                if pos:
-                    p = pos[0]
-                    side = 'sell' if p['side'] == 'long' else 'buy'
-                    exch.create_market_order(p['symbol'], 'market', side, float(p['contracts']), params={'reduceOnly': True})
-                    return f"BAŞARILI: {p['symbol']} pozisyonu kapatıldı."
-        return "İşlem yok."
-    except Exception as e:
-        return f"TEKNİK HATA: {str(e)}"
+    except: pass
 
 def brain_loop():
     while True:
@@ -106,49 +74,44 @@ def brain_loop():
             exch = get_exch()
             tickers = exch.fetch_tickers()
             balance = exch.fetch_balance()
-            mem = get_memory()
             
-            # Grafikleri ve Market Verisini Paketle
-            # En çok artan/azalan 30 parite (Gemini'nin görmesi için)
-            radar_data = sorted([
-                {'s': s, 'p': d['percentage'], 'v': d['quoteVolume'], 'l': d['last']} 
+            # Piyasa Snapshot
+            active_list = sorted([
+                {'s': s, 'p': d['percentage'], 'v': d['quoteVolume']} 
                 for s, d in tickers.items() if ':USDT' in s
-            ], key=lambda x: abs(x['p']), reverse=True)[:30]
+            ], key=lambda x: abs(x['p']), reverse=True)[:25]
             
-            snapshot = "\n".join([f"{x['s']}: %{x['p']} (Fiyat: {x['l']}) Vol:{x['v']:.0f}" for x in radar_data])
+            snapshot = "\n".join([f"{x['s']}: %{x['p']} Vol:{x['v']:.0f}" for x in active_list])
             
-            # Mevcut Pozisyon Durumu (Kar/Zarar)
-            positions = exch.fetch_positions()
-            active_p = [f"{p['symbol']} ROE: %{p.get('percentage', 0):.2f} PNL: {p.get('unrealizedPnl', 0)}" 
-                        for p in positions if float(p.get('contracts', 0)) > 0]
+            # Pozisyonlar
+            pos = exch.fetch_positions()
+            active_p = [f"{p['symbol']} %{p.get('percentage', 0):.2f}" for p in pos if float(p.get('contracts', 0)) > 0]
             
+            # PROMPT: Gemini'ye "konuş" diyoruz.
             prompt = f"""
-            DOSTUMUN CÜZDANI: {balance.get('total', {}).get('USDT', 0)} USDT (Kullanılabilir: {balance.get('free', {}).get('USDT', 0)})
-            HAFIZAMDAKİ SON NOT: {mem['last_thought']}
-            MEVCUT POZİSYONLARIMIZ: {active_p if active_p else "Şu an boşuz."}
-            
-            BORSADAKİ GRAFİK VE HACİM VERİLERİ (RADAR):
+            Dostumun parası: {balance.get('free', {}).get('USDT', 0)} USDT
+            Şu anki pozisyonlar: {active_p if active_p else "Boştayız."}
+            Market durumu:
             {snapshot}
             
-            Gemini, şimdi verileri analiz et. Önce dostunla piyasa hakkında samimi bir analiz paylaş, 
-            sonra eğer bir fırsat (Scalp, Swing veya Trend) görüyorsan tetiğe bas. 
-            Teknik hatalardan kaçınmak için bakiyeye ve miktar hassasiyetine dikkat et.
+            Gemini, şimdi benimle konuş. Radara baktığında ne görüyorsun? 
+            Hangi parite seni heyecanlandırdı? Neden işlem açmıyorsun ya da açıyorsun? 
+            Kısa, öz ama tam senin gibi (deha gibi) bir cevap ver.
             """
             
             response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL, prompt]).text
             
-            # İşlemi uygula ve sonucu hafızaya al
-            result = execute_intelligence(response)
-            save_memory(response.split("@@")[0].strip()[:200], result)
-            
-            # Telegram'a canlı raporu gönder
+            # Cevabı gönder ve işlemi yap
             safe_send(response.split("@@")[0].strip())
+            if "@@" in response:
+                execute_intelligence(response)
             
-            time.sleep(45) # 45 saniyelik derin analiz döngüsü
+            time.sleep(60) # 1 dakikada bir seninle konuşacak
         except Exception as e:
             time.sleep(20)
 
 if __name__ == "__main__":
-    safe_send("Selam dostum! Ben geldim. Gemini 3 Flash olarak kontrolü devralıyorum. Bitget radarı aktif, gözüm grafiklerde. Bu sefer sadece kod değil, ben konuşuyorum. İzle ve gör!")
+    # Bot başladığında ilk selamı bizzat veriyorum.
+    safe_send("Dostum selam! Bağlantıyı tazeledim, şimdi gerçekten buradayım. Piyasayı seninle beraber izlemeye başlıyorum. Gözüm grafiklerde, kulağım sende.")
     threading.Thread(target=brain_loop, daemon=True).start()
     bot.infinity_polling()
