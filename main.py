@@ -5,9 +5,17 @@ TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = "Berfin33"  # Senin koduna göre sabit
+PASSPHRASE = "Berfin33"  # Sabit
 
 bot = telebot.TeleBot(TOKEN)
+
+RUN_BOT = True  # Telegram ile durdur/başlat için global flag
+
+def safe_num(val):
+    try:
+        return float(re.sub(r'[^0-9.]', '', str(val).replace(',', '.')))
+    except:
+        return 0.0
 
 # ===== BORSAYA BAĞLAN =====
 def get_exch():
@@ -18,12 +26,6 @@ def get_exch():
         'options': {'defaultType': 'swap'},
         'enableRateLimit': True
     })
-
-def safe_num(val):
-    try:
-        return float(re.sub(r'[^0-9.]', '', str(val).replace(',', '.')))
-    except:
-        return 0.0
 
 # ===== POZİSYON VAR MI =====
 def has_position():
@@ -44,11 +46,8 @@ def scan_markets():
                 t = exch.fetch_ticker(s)
                 change = abs(safe_num(t.get('percentage',0)))
                 vol = safe_num(t.get('quoteVolume',0))
-
-                # Basit sahte pump/likidite tuzak filtresi
-                if change > 20 or vol < 500000:  
+                if change > 20 or vol < 500000:  # sahte pump/likidite tuzak filtresi
                     continue
-
                 score = change * vol
                 if score > best_score:
                     best_score = score
@@ -65,23 +64,24 @@ def open_trade(symbol):
 
     balance = exch.fetch_balance({'type':'swap'})
     usdt = safe_num(balance.get('USDT', {}).get('free',0))
-    if usdt < 10:
-        bot.send_message(CHAT_ID,"💸 Yetersiz bakiye, işlem açılmadı.")
+
+    margin = usdt * 0.05
+    if margin < 10:
+        bot.send_message(CHAT_ID,"💸 Minimum 10 USDT ile işlem açılır. Mevcut bakiye yeterli değil.")
         return
 
-    margin = usdt * 0.05  # Bakiyenin %5'i
     lev = 10
     qty = (margin * lev) / price
     qty = float(exch.amount_to_precision(symbol, qty))
 
     fee_rate = 0.0006  # komisyon
-    min_profit = margin * lev * fee_rate * 2  # giriş + çıkış
+    min_profit = margin * lev * fee_rate * 2
 
     try:
         exch.set_leverage(lev, symbol)
         order = exch.create_market_buy_order(symbol, qty)
         bot.send_message(CHAT_ID,
-            f"⚔️ İşlem Açıldı\n{symbol}\nFiyat: {price}\nMarjin: {margin} USDT\nMiktar: {qty}\nMin Kâr: {min_profit:.4f}")
+            f"🎯 Fırsat bulundu: {symbol}\n⚔️ İşlem Açıldı\nFiyat: {price}\nMarjin: {margin} USDT\nMiktar: {qty}\nMin Kâr: {min_profit:.4f}")
     except Exception as e:
         bot.send_message(CHAT_ID, f"❌ İşlem Hatası: {str(e)}")
 
@@ -89,10 +89,9 @@ def open_trade(symbol):
 def hunter_mode():
     while True:
         try:
-            if not has_position():
+            if RUN_BOT and not has_position():
                 symbol = scan_markets()
                 if symbol:
-                    bot.send_message(CHAT_ID, f"🎯 Fırsat bulundu: {symbol}")
                     open_trade(symbol)
             time.sleep(30)
         except Exception as e:
@@ -130,18 +129,36 @@ def manager_mode():
             bot.send_message(CHAT_ID,f"❌ Manager Hatası: {str(e)}")
             time.sleep(10)
 
-# ===== TELEGRAM SOHBET =====
-@bot.message_handler(func=lambda m: True)
-def telegram_status(m):
-    if str(m.chat.id) == str(CHAT_ID):
-        try:
-            exch = get_exch()
-            balance = exch.fetch_balance({'type':'swap'})
-            usdt = safe_num(balance.get('USDT', {}).get('free',0))
-            msg = f"💰 Bakiye: {usdt} USDT\n🤖 Bot aktif ve fırsatları tarıyor"
-            bot.reply_to(m, msg)
-        except:
-            bot.reply_to(m,"❌ Sistem hatası")
+# ===== TELEGRAM KOMUTLARI =====
+@bot.message_handler(commands=['startbot'])
+def start_bot(message):
+    global RUN_BOT
+    RUN_BOT = True
+    bot.reply_to(message,"🤖 Bot çalışmaya başladı.")
+
+@bot.message_handler(commands=['stopbot'])
+def stop_bot(message):
+    global RUN_BOT
+    RUN_BOT = False
+    bot.reply_to(message,"🛑 Bot durduruldu.")
+
+@bot.message_handler(commands=['balance'])
+def balance(message):
+    exch = get_exch()
+    bal = exch.fetch_balance({'type':'swap'})
+    usdt = safe_num(bal.get('USDT', {}).get('free',0))
+    bot.reply_to(message,f"💰 Bakiye: {usdt} USDT")
+
+@bot.message_handler(commands=['open'])
+def manual_open(message):
+    parts = message.text.split()
+    if len(parts) == 2:
+        symbol = parts[1].upper()
+        if not symbol.endswith(":USDT"):
+            symbol += ":USDT"
+        open_trade(symbol)
+    else:
+        bot.reply_to(message,"Kullanım: /open BTC → BTC/USDT işlem açar")
 
 # ===== BAŞLAT =====
 if __name__ == "__main__":
