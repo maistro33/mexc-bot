@@ -33,7 +33,7 @@ def safe_num(val):
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash ticaret dehasısın.
 - Tüm USDT paritelerini analiz et: pump/dump, hacim artışı, balina hareketleri.
-- Mevcut bakiyeye göre marjin ve kaldıracı otomatik ayarla.
+- Marjin ve kaldıracı mevcut bakiyeye göre otomatik ayarla.
 - Stop-loss ve trailing kar seviyelerini gerçek USDT bazlı optimize et.
 - Telegram'a net mesaj ver: açtıysa ⚔️ İşlem açıldı, açılamadıysa sebebini yaz.
 - Sadece yüksek kâr potansiyeli taşıyan işlemleri aç.
@@ -47,7 +47,6 @@ def execute_trade(decision, force=False, symbol=None, side=None):
         bal = exch.fetch_balance({'type':'swap'})
         free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
 
-        # AI veya manuel emir
         if force and symbol and side:
             sym = symbol.upper()
             exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
@@ -55,9 +54,8 @@ def execute_trade(decision, force=False, symbol=None, side=None):
                 return f"⚠️ **İŞLEM AÇILAMADI:** {sym} borsada bulunamadı"
             side_order = 'sell' if 'short' in side.lower() else 'buy'
             if free_usdt < 1:
-                return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt} USDT)"
+                return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt:.2f} USDT)"
             
-            # Marjin ve kaldıracı otomatik
             lev_val = 10 if free_usdt>=10 else max(1, int(free_usdt/1))
             amt_val = min(10, free_usdt)
             
@@ -94,16 +92,13 @@ def auto_manager():
                 qty = safe_num(p.get('contracts'))
                 entry_price = safe_num(p.get('entryPrice'))
 
-                # Gerçek USDT kar
                 profit = (last_price - entry_price) * qty if side=='long' else (entry_price - last_price)*qty
                 if sym not in highest_profits or profit > highest_profits[sym]:
                     highest_profits[sym] = profit
 
-                # STOP LOSS
                 if profit <= -0.07*amt_val*10:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı. Zararı: {profit:.2f} USDT")
-                # TRAILING KAR
                 elif highest_profits.get(sym,0) >= 0.5 and (highest_profits[sym]-profit)>=0.2:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} {profit:.2f} USDT")
@@ -126,7 +121,6 @@ def handle_messages(message):
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
         bot.reply_to(message, response.split("@@")[0].strip() or "Beklemede...")
 
-        # AGRESİF MOD: "ac" varsa direkt aç
         if 'ac' in message.text.lower():
             parts = message.text.lower().split()
             coin = parts[0].upper() if len(parts)>0 else None
@@ -139,25 +133,24 @@ def handle_messages(message):
     except Exception as e:
         bot.reply_to(message,f"Sistem: {e}")
 
-# --- [MARKET SCANNER: TÜM COINLER] ---
+# --- [MARKET SCANNER: TÜM COINLER, ÇOKLU FIRSAT] ---
 def market_scanner():
     while True:
         try:
             exch = get_exch()
-            # Tüm USDT pariteleri taranacak
             markets = [m['symbol'] for m in exch.load_markets().values() if ':USDT' in m['symbol']]
-            best_opportunity = None
-            best_score = -999
+            scores = []
             for sym in markets:
                 ticker = exch.fetch_ticker(sym)
                 change_pct = safe_num(ticker.get('percentage',0))
                 volume = safe_num(ticker.get('quoteVolume',0))
-                score = change_pct * volume
-                if score > best_score:
-                    best_score = score
-                    best_opportunity = sym
-            if best_opportunity:
-                bot.send_message(CHAT_ID,f"🤖 Analiz: En iyi fırsat {best_opportunity}, değişim skoru {best_score:.2f}")
+                # Normalize edilmiş skor
+                score = (change_pct*0.7) + (volume/1000*0.3)
+                scores.append((score,sym))
+            scores.sort(reverse=True)
+            top_opportunities = scores[:3]  # En iyi 3 fırsat
+            for s,sym in top_opportunities:
+                bot.send_message(CHAT_ID,f"🤖 Analiz: {sym}, değişim skoru {s:.2f}")
             time.sleep(10)
         except: time.sleep(10)
 
