@@ -149,3 +149,4 @@ if __name__ == "__main__":
     threading.Thread(target=hunter, daemon=True).start()
     threading.Thread(target=manager, daemon=True).start()
     bot.infinity_polling()
+threading.Thread(target=hunter_mode, daemon=True).start()
