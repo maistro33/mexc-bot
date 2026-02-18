@@ -37,32 +37,36 @@ Sen Gemini 3 Flash ticaret dehasısın.
 3. ÖRNEK: @@[ACTION: TRADE, ORCA, SHORT, 10, 10]@@ -> 10 USDT marjinli 10x short
 """
 
-# --- [EMİR İNFAZI: GERÇEK KAR BAZLI TRAILING STOP] ---
+# --- [EMİR İNFAZI: GERÇEK KAR BAZLI TRAILING STOP + NEDEN AÇILAMADI MESAJI] ---
 def execute_trade(decision, force=False, symbol=None, side=None):
     try:
         exch = get_exch()
         exch.load_markets()
+        bal = exch.fetch_balance({'type':'swap'})
+        free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
+        amt_val = 10  # default marjin
+        lev_val = 10  # default kaldıraç
 
         # Telegram’dan direkt açmak için agresif mod
         if force and symbol and side:
             sym = symbol.upper()
             exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
-            if exact_sym:
-                side_order = 'sell' if 'short' in side.lower() else 'buy'
-                lev_val = 10
-                amt_val = 10  # 10 USDT marjin
-                bal = exch.fetch_balance({'type':'swap'})
-                free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
-                if free_usdt < amt_val:
-                    return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
-                try: exch.set_leverage(lev_val, exact_sym)
-                except: pass
-                ticker = exch.fetch_ticker(exact_sym)
-                last_price = safe_num(ticker['last'])
-                qty = (amt_val * lev_val) / last_price
-                qty_precision = float(exch.amount_to_precision(exact_sym, qty))
+            if not exact_sym:
+                return f"⚠️ **İŞLEM AÇILAMADI:** {sym} borsada bulunamadı"
+            side_order = 'sell' if 'short' in side.lower() else 'buy'
+            if free_usdt < amt_val:
+                return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
+            try: exch.set_leverage(lev_val, exact_sym)
+            except: pass
+            ticker = exch.fetch_ticker(exact_sym)
+            last_price = safe_num(ticker['last'])
+            qty = (amt_val * lev_val) / last_price
+            qty_precision = float(exch.amount_to_precision(exact_sym, qty))
+            try:
                 order = exch.create_market_order(exact_sym, side_order, qty_precision)
                 return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
+            except Exception as e:
+                return f"⚠️ **İŞLEM AÇILAMADI:** {str(e)}"
 
         # Normal AI tarafından gelen emirleri işleme
         if "@@[ACTION: TRADE" in decision:
@@ -71,29 +75,31 @@ def execute_trade(decision, force=False, symbol=None, side=None):
                 sym_raw, side_raw, lev, amt_usdt = match.groups()
                 sym = sym_raw.strip().upper()
                 exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
-                if exact_sym:
-                    side_order = 'sell' if 'SHORT' in side_raw.upper() else 'buy'
-                    lev_val = int(safe_num(lev))
-                    amt_val = safe_num(amt_usdt)
-                    bal = exch.fetch_balance({'type':'swap'})
-                    free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
-                    if free_usdt < amt_val:
-                        return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
-                    try: exch.set_leverage(lev_val, exact_sym)
-                    except: pass
-                    ticker = exch.fetch_ticker(exact_sym)
-                    last_price = safe_num(ticker['last'])
-                    qty = (amt_val * lev_val) / last_price
-                    qty_precision = float(exch.amount_to_precision(exact_sym, qty))
+                if not exact_sym:
+                    return f"⚠️ **İŞLEM AÇILAMADI:** {sym} borsada bulunamadı"
+                side_order = 'sell' if 'SHORT' in side_raw.upper() else 'buy'
+                lev_val = int(safe_num(lev))
+                amt_val = safe_num(amt_usdt)
+                if free_usdt < amt_val:
+                    return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
+                try: exch.set_leverage(lev_val, exact_sym)
+                except: pass
+                ticker = exch.fetch_ticker(exact_sym)
+                last_price = safe_num(ticker['last'])
+                qty = (amt_val * lev_val) / last_price
+                qty_precision = float(exch.amount_to_precision(exact_sym, qty))
+                try:
                     order = exch.create_market_order(exact_sym, side_order, qty_precision)
                     return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
-        return None
+                except Exception as e:
+                    return f"⚠️ **İŞLEM AÇILAMADI:** {str(e)}"
+        return f"⚠️ **İŞLEM AÇILAMADI:** Sinyal güvenilir değil veya volatilite yüksek"
     except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
 # --- [OTOMATİK YÖNETİCİ: KAR BAZLI TRAILING STOP] ---
 def auto_manager():
-    highest_profits = {}  # USDT cinsinden en yüksek kar
+    highest_profits = {}
     while True:
         try:
             exch = get_exch()
@@ -121,7 +127,7 @@ def auto_manager():
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı. Zararı: {profit:.2f} USDT")
                 # TRAILING KAR AL
-                elif highest_profits.get(sym,0) >= 0.5 and (highest_profits[sym]-profit)>=0.2:  # 0.5 USDT üstünde ve 0.2 USDT geri düşüş
+                elif highest_profits.get(sym,0) >= 0.5 and (highest_profits[sym]-profit)>=0.2:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} {profit:.2f} USDT")
             time.sleep(5)
