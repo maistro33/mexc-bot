@@ -32,11 +32,11 @@ def safe_num(val):
 # --- [AI BOT KURALI] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash ticaret dehasısın.
-- Tüm coinleri analiz et, pump/dump ve hacme göre fırsat seç.
-- Mevcut bakiyeye göre marjin ve kaldıraç ayarla.
-- Stop-loss ve trailing kar en iyi seviyede olsun.
+- Tüm USDT paritelerini analiz et: pump/dump, hacim artışı, balina hareketleri.
+- Mevcut bakiyeye göre marjin ve kaldıracı otomatik ayarla.
+- Stop-loss ve trailing kar seviyelerini gerçek USDT bazlı optimize et.
 - Telegram'a net mesaj ver: açtıysa ⚔️ İşlem açıldı, açılamadıysa sebebini yaz.
-- Sadece kâr potansiyeli yüksek işlemleri aç.
+- Sadece yüksek kâr potansiyeli taşıyan işlemleri aç.
 """
 
 # --- [EMİR İNFAZI: OTOMATİK BAKİYE VE KALDIRAÇ] ---
@@ -47,7 +47,7 @@ def execute_trade(decision, force=False, symbol=None, side=None):
         bal = exch.fetch_balance({'type':'swap'})
         free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
 
-        # AI tarafından önerilen pozisyon
+        # AI veya manuel emir
         if force and symbol and side:
             sym = symbol.upper()
             exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
@@ -57,7 +57,7 @@ def execute_trade(decision, force=False, symbol=None, side=None):
             if free_usdt < 1:
                 return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt} USDT)"
             
-            # Marjin ve kaldıraç otomatik
+            # Marjin ve kaldıracı otomatik
             lev_val = 10 if free_usdt>=10 else max(1, int(free_usdt/1))
             amt_val = min(10, free_usdt)
             
@@ -144,7 +144,8 @@ def market_scanner():
     while True:
         try:
             exch = get_exch()
-            markets = [m['symbol'] for m in exch.load_markets().values() if ':USDT' in m['symbol'] and 'swap' in m['type']]
+            # Tüm USDT pariteleri taranacak
+            markets = [m['symbol'] for m in exch.load_markets().values() if ':USDT' in m['symbol']]
             best_opportunity = None
             best_score = -999
             for sym in markets:
