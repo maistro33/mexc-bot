@@ -37,15 +37,19 @@ Sen Gemini 3 Flash ticaret dehasısın.
 3. ÖRNEK: @@[ACTION: TRADE, ORCA, SHORT, 10, 10]@@ -> 10 USDT marjinli 10x short
 """
 
-# --- [EMİR İNFAZI: GERÇEK KAR BAZLI TRAILING STOP + NEDEN AÇILAMADI MESAJI] ---
+# --- [EMİR İNFAZI: OTOMATİK BAKİYE VE KALDIRAÇ] ---
 def execute_trade(decision, force=False, symbol=None, side=None):
     try:
         exch = get_exch()
         exch.load_markets()
         bal = exch.fetch_balance({'type':'swap'})
         free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
-        amt_val = 10  # default marjin
-        lev_val = 10  # default kaldıraç
+
+        # Kendi belirleyeceği marjin ve kaldıraç
+        max_marjin = min(10, free_usdt)  # Maks 10 USDT veya bakiyeye göre
+        lev_val = 10  # default
+        if free_usdt < 10:
+            lev_val = max(1, int(free_usdt/1))  # küçük bakiyede azalt
 
         if force and symbol and side:
             sym = symbol.upper()
@@ -53,17 +57,17 @@ def execute_trade(decision, force=False, symbol=None, side=None):
             if not exact_sym:
                 return f"⚠️ **İŞLEM AÇILAMADI:** {sym} borsada bulunamadı"
             side_order = 'sell' if 'short' in side.lower() else 'buy'
-            if free_usdt < amt_val:
-                return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
+            if free_usdt < 1:
+                return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt} USDT)"
             try: exch.set_leverage(lev_val, exact_sym)
             except: pass
             ticker = exch.fetch_ticker(exact_sym)
             last_price = safe_num(ticker['last'])
-            qty = (amt_val * lev_val) / last_price
+            qty = (max_marjin * lev_val) / last_price
             qty_precision = float(exch.amount_to_precision(exact_sym, qty))
             try:
                 order = exch.create_market_order(exact_sym, side_order, qty_precision)
-                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
+                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {max_marjin} USDT\nID: {order['id']}"
             except Exception as e:
                 return f"⚠️ **İŞLEM AÇILAMADI:** {str(e)}"
 
@@ -76,10 +80,10 @@ def execute_trade(decision, force=False, symbol=None, side=None):
                 if not exact_sym:
                     return f"⚠️ **İŞLEM AÇILAMADI:** {sym} borsada bulunamadı"
                 side_order = 'sell' if 'SHORT' in side_raw.upper() else 'buy'
+                if free_usdt < 1:
+                    return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt} USDT)"
                 lev_val = int(safe_num(lev))
-                amt_val = safe_num(amt_usdt)
-                if free_usdt < amt_val:
-                    return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
+                amt_val = min(safe_num(amt_usdt), free_usdt)
                 try: exch.set_leverage(lev_val, exact_sym)
                 except: pass
                 ticker = exch.fetch_ticker(exact_sym)
