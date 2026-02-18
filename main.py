@@ -28,7 +28,7 @@ def safe_num(val):
         return float(clean) if clean else 0.0
     except: return 0.0
 
-# --- [DEHA AYARI: AKILLI SCALP BOT] ---
+# --- [AKILLI SCALP BOT SOUL] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash'ın ticaret dehasısın. 
 1. KURAL: Asla yalan söyleme. İşlem açmadıysan 'Beklemede' de.
@@ -36,7 +36,7 @@ Sen Gemini 3 Flash'ın ticaret dehasısın.
 3. ÖRNEK: @@[ACTION: TRADE, ORCA, SHORT, 10, 10]@@ -> 10 USDT marjinli 10x short emri.
 """
 
-# --- [Pozisyon açma ve TP/SL/Trailing] ---
+# --- [Pozisyon Açma + TP/SL/Trailing] ---
 def execute_trade(decision):
     try:
         exch = get_exch()
@@ -66,7 +66,7 @@ def execute_trade(decision):
     except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
-# --- [Otonom Yönetici: TP/SL/Trailing ve Kar Maksimizasyonu] ---
+# --- [Otonom Yönetici: TP/SL/Trailing ve Kar] ---
 def auto_manager():
     highest_roes = {}
     while True:
@@ -92,7 +92,7 @@ def auto_manager():
         except:
             time.sleep(5)
 
-# --- [Telegram Komutları ve Sohbet Modu] ---
+# --- [Telegram Komutları + Sohbet Modu] ---
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) != str(CHAT_ID):
@@ -113,7 +113,6 @@ def handle_messages(message):
             bot.reply_to(message, f"💰 Cüzdan bakiyesi: {free_usdt} USDT")
         elif text.startswith('scalp işlem aç'):
             bot.reply_to(message, "🤖 Analiz başlatılıyor, en iyi fırsat aranıyor...")
-            # AI modeli ile fırsatı bul
             exch = get_exch()
             bal = exch.fetch_balance({'type':'swap'})
             free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
@@ -126,10 +125,8 @@ def handle_messages(message):
             pos = exch.fetch_positions()
             open_pos = [f"{p['symbol']} ROE:%{p.get('percentage',0):.2f}" for p in pos if safe_num(p.get('contracts')) > 0]
             bot.reply_to(message, f"📊 Açık Pozisyonlar:\n" + "\n".join(open_pos) if open_pos else "📊 Açık pozisyon yok.")
-        elif text.startswith('closed'):
-            bot.reply_to(message, "📊 Kapalı işlemler ve kar/zarar modu hazır değil (isteğe bağlı debug).")
         else:
-            # Sohbet modu
+            # Sohbet modu → normal mesajla cevap
             exch = get_exch()
             bal = exch.fetch_balance({'type':'swap'})
             free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
