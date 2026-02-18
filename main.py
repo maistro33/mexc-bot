@@ -1,4 +1,4 @@
-import os, time, telebot, ccxt, threading, re, math, random
+import os, time, telebot, ccxt, threading, re, random
 
 # ===== AYARLAR =====
 TOKEN = os.getenv('TELE_TOKEN')
@@ -10,6 +10,7 @@ PASSPHRASE = "Berfin33"  # Sabit
 bot = telebot.TeleBot(TOKEN)
 RUN_BOT = True  # Telegram ile durdur/başlat
 
+# ===== YARDIMCI FONKSİYON =====
 def safe_num(val):
     try:
         return float(re.sub(r'[^0-9.]', '', str(val).replace(',', '.')))
@@ -27,12 +28,17 @@ def get_exch():
     })
 
 # ===== POZİSYON KONTROL =====
-def has_position():
+def has_position(symbol=None):
     exch = get_exch()
     pos = exch.fetch_positions()
-    return any(safe_num(p.get('contracts',0)) > 0 for p in pos)
+    for p in pos:
+        if safe_num(p.get('contracts',0))>0:
+            if symbol and symbol.upper() not in p['symbol']:
+                continue
+            return True, p
+    return False, None
 
-# ===== PİYASA TARAMA VE AKILLI ÖNERİ =====
+# ===== PİYASA TARAMA =====
 def scan_markets():
     exch = get_exch()
     exch.load_markets()
@@ -46,19 +52,17 @@ def scan_markets():
                 t = exch.fetch_ticker(s)
                 change = abs(safe_num(t.get('percentage',0)))
                 vol = safe_num(t.get('quoteVolume',0))
-                if change > 20 or vol < 500000:  # pump / düşük hacim filtre
+                if change>20 or vol<500000:  # pump / düşük hacim filtre
                     continue
-                score = change * vol
-                if score > best_score:
-                    best_score = score
-                    best = s
-                    best_change = change
+                score = change*vol
+                if score>best_score:
+                    best_score=score
+                    best=s
+                    best_change=change
             except:
                 continue
-    # Akıllı yorum
     if best:
-        msg = f"🤖 Analiz: En iyi fırsat {best}, değişim %{best_change:.2f}."
-        bot.send_message(CHAT_ID, msg)
+        bot.send_message(CHAT_ID,f"🤖 Analiz: En iyi fırsat {best}, değişim %{best_change:.2f}.")
     return best
 
 # ===== İŞLEM AÇMA =====
@@ -66,44 +70,32 @@ def open_trade(symbol):
     exch = get_exch()
     ticker = exch.fetch_ticker(symbol)
     price = safe_num(ticker['last'])
-
     balance = exch.fetch_balance({'type':'swap'})
-    usdt = safe_num(balance.get('USDT', {}).get('free',0))
-
-    margin = usdt * 0.05
-    if margin < 10:
-        bot.send_message(CHAT_ID,"💸 Minimum 10 USDT ile işlem açılır. Mevcut bakiye yeterli değil.")
-        return
-
+    usdt = safe_num(balance.get('USDT',{}).get('free',0))
+    margin = max(10, usdt*0.05)  # minimum 10 USDT
     lev = 10
-    qty = (margin * lev) / price
+    qty = (margin*lev)/price
     qty = float(exch.amount_to_precision(symbol, qty))
+    min_profit = margin*lev*0.0006*2
 
-    fee_rate = 0.0006
-    min_profit = margin * lev * fee_rate * 2
-
-    # Akıllı mesaj
-    messages = [
-        "📈 Piyasa fırsatı tespit edildi.",
-        "🤖 Ultra Scalp AI: Analiz tamam, işlem açılıyor.",
-        "🚀 Şimdi pozisyon alıyoruz."
-    ]
-    bot.send_message(CHAT_ID, f"{random.choice(messages)}\n🎯 {symbol}\nFiyat: {price}\nMarjin: {margin:.2f} USDT\nMiktar: {qty}\nMin Kâr: {min_profit:.4f}")
+    bot.send_message(CHAT_ID,f"📈 Fırsat tespit edildi.\n🎯 {symbol}\nFiyat: {price}\nMarjin: {margin:.2f} USDT\nMiktar: {qty}\nMin Kâr: {min_profit:.4f}")
 
     try:
         exch.set_leverage(lev, symbol)
         order = exch.create_market_buy_order(symbol, qty)
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ İşlem Hatası: {str(e)}")
+        bot.send_message(CHAT_ID,f"❌ İşlem Hatası: {str(e)}")
 
 # ===== HUNTER MOD =====
 def hunter_mode():
     while True:
         try:
-            if RUN_BOT and not has_position():
-                symbol = scan_markets()
-                if symbol:
-                    open_trade(symbol)
+            if RUN_BOT:
+                has_pos, _ = has_position()
+                if not has_pos:
+                    symbol = scan_markets()
+                    if symbol:
+                        open_trade(symbol)
             time.sleep(30)
         except Exception as e:
             bot.send_message(CHAT_ID,f"❌ Tarama Hatası: {str(e)}")
@@ -118,29 +110,23 @@ def manager_mode():
             pos = exch.fetch_positions()
             for p in pos:
                 contracts = safe_num(p.get('contracts',0))
-                if contracts > 0:
+                if contracts>0:
                     sym = p['symbol']
                     roe = safe_num(p.get('percentage',0))
-
-                    if sym not in highest or roe > highest[sym]:
-                        highest[sym] = roe
-
-                    # STOP LOSS
-                    if roe <= -5:
+                    if sym not in highest or roe>highest[sym]:
+                        highest[sym]=roe
+                    if roe<=-5:
                         exch.create_market_sell_order(sym, contracts, params={'reduceOnly':True})
-                        bot.send_message(CHAT_ID, f"🛑 STOP LOSS {sym}")
-
-                    # TRAILING KAR
-                    elif highest[sym] >= 5 and (highest[sym]-roe)>=2:
+                        bot.send_message(CHAT_ID,f"🛑 STOP LOSS {sym}")
+                    elif highest[sym]>=5 and (highest[sym]-roe)>=2:
                         exch.create_market_sell_order(sym, contracts, params={'reduceOnly':True})
-                        bot.send_message(CHAT_ID, f"💰 KAR ALINDI {sym}")
-
+                        bot.send_message(CHAT_ID,f"💰 KAR ALINDI {sym}")
             time.sleep(10)
         except Exception as e:
             bot.send_message(CHAT_ID,f"❌ Manager Hatası: {str(e)}")
             time.sleep(10)
 
-# ===== TELEGRAM KOMUTLARI VE AKILLI SOHBET =====
+# ===== TELEGRAM KOMUTLARI =====
 @bot.message_handler(commands=['startbot'])
 def start_bot(message):
     global RUN_BOT
@@ -157,35 +143,51 @@ def stop_bot(message):
 def balance(message):
     exch = get_exch()
     bal = exch.fetch_balance({'type':'swap'})
-    usdt = safe_num(bal.get('USDT', {}).get('free',0))
+    usdt = safe_num(bal.get('USDT',{}).get('free',0))
     bot.reply_to(message,f"💰 Bakiye: {usdt} USDT")
 
 @bot.message_handler(commands=['open'])
 def manual_open(message):
     parts = message.text.split()
-    if len(parts) == 2:
+    if len(parts)==2:
         symbol = parts[1].upper()
         if not symbol.endswith(":USDT"):
-            symbol += ":USDT"
+            symbol+=":USDT"
         open_trade(symbol)
     else:
         bot.reply_to(message,"Kullanım: /open BTC → BTC/USDT işlem açar")
 
-# Mesajlara akıllı yanıt
+@bot.message_handler(commands=['check'])
+def check_position(message):
+    parts = message.text.split()
+    if len(parts)==2:
+        symbol = parts[1].upper()
+        if not symbol.endswith(":USDT"):
+            symbol+=":USDT"
+        has_pos, p = has_position(symbol)
+        if has_pos:
+            bot.reply_to(message,f"🤖 {symbol}: Açık pozisyon var ✅\nYön: {p['side']}\nMiktar: {p['contracts']}\nROE: %{safe_num(p.get('percentage',0)):.2f}\nTP/SL: Aktif\nTrailing: Aktif")
+        else:
+            bot.reply_to(message,f"🤖 {symbol}: Açık pozisyon yok ❌")
+    else:
+        bot.reply_to(message,"Kullanım: /check BTC → BTC/USDT pozisyon kontrolü")
+
+# ===== AKILLI SOHBET =====
 @bot.message_handler(func=lambda m: True)
 def chat_ai(message):
     msg = message.text.lower()
-    if "merhaba" in msg or "selam" in msg:
+    if "selam" in msg or "merhaba" in msg:
         bot.reply_to(message,"🤖 Selam Sadık! Piyasayı tarıyorum, fırsat olursa haber veririm.")
-    elif "nasıl" in msg or "ne yapıyorsun" in msg:
+    elif "ne yapıyorsun" in msg or "nasıl" in msg:
         bot.reply_to(message,"🤖 Şu anda piyasayı tarıyorum ve en iyi fırsatları buluyorum.")
+    elif "fiyat" in msg or "borsa" in msg:
+        bot.reply_to(message,"🤖 En iyi scalp fırsatını bulup sana bildireceğim.")
     else:
         bot.reply_to(message,"🤖 Anladım, piyasayı gözlemliyorum ve fırsat olursa bildireceğim.")
 
-# Selam mesajı
 bot.send_message(CHAT_ID,"🤖 Ultra Scalp AI Bot aktif ve hazır! Telegram üzerinden konuşabilirsiniz.")
 
 # ===== BAŞLAT =====
-threading.Thread(target=hunter_mode, daemon=True).start()
-threading.Thread(target=manager_mode, daemon=True).start()
+threading.Thread(target=hunter_mode,daemon=True).start()
+threading.Thread(target=manager_mode,daemon=True).start()
 bot.infinity_polling()
