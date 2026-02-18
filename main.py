@@ -41,7 +41,7 @@ Sen Gemini 3 Flash ticaret dehasısın.
 - Emir geldiğinde pozisyon açıp hemen kapatma, en uygun kar/zarar seviyesini bekle.
 """
 
-# --- [EMİR İNFAZI: OTOMATİK BAKİYE VE KALDIRAÇ] ---
+# --- [EMİR İNFAZI: BAKİYE & KALDIRAÇ OPTİMİZE] ---
 def execute_trade(decision, force=False, symbol=None, side=None):
     try:
         exch = get_exch()
@@ -49,37 +49,42 @@ def execute_trade(decision, force=False, symbol=None, side=None):
         bal = exch.fetch_balance({'type':'swap'})
         free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
 
+        if free_usdt < 1:
+            return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt:.2f} USDT)"
+
         if force and symbol and side:
             sym = symbol.upper()
             exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
             if not exact_sym:
                 return f"⚠️ **İŞLEM AÇILAMADI:** {sym} borsada bulunamadı"
-            side_order = 'sell' if 'short' in side.lower() else 'buy'
-            if free_usdt < 1:
-                return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt:.2f} USDT)"
-            
-            # maksimum marjin ve kaldıraç
-            lev_val = min(50, max(1, int(free_usdt/0.5)))
-            amt_val = free_usdt
 
+            side_order = 'sell' if 'short' in side.lower() else 'buy'
+
+            # bakiye bazlı pozisyon
+            amt_val = min(free_usdt*0.5, 6)  # 12 USDT bakiyeye göre ~6 USDT
+            lev_val = 5  # güvenli scalp kaldıraç
             try: exch.set_leverage(lev_val, exact_sym)
             except: pass
+
             ticker = exch.fetch_ticker(exact_sym)
             last_price = safe_num(ticker['last'])
             qty = (amt_val * lev_val) / last_price
+
+            # minimum lot kontrolü
             min_qty = exch.markets[exact_sym]['limits']['amount']['min']
             qty = max(qty, min_qty)
             qty_precision = float(exch.amount_to_precision(exact_sym, qty))
+
             try:
                 order = exch.create_market_order(exact_sym, side_order, qty_precision)
-                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val:.2f} USDT\nID: {order['id']}"
+                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val:.2f} USDT\nKaldıraç: {lev_val}x\nID: {order['id']}"
             except Exception as e:
                 return f"⚠️ **İŞLEM AÇILAMADI:** {str(e)}"
         return None
     except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
-# --- [OTOMATİK YÖNETİCİ: USDT BAZLI TRAILING STOP] ---
+# --- [OTOMATİK YÖNETİCİ: SCALP + TRAILING STOP] ---
 def auto_manager():
     highest_profits = {}
     while True:
@@ -95,16 +100,15 @@ def auto_manager():
                 qty = safe_num(p.get('contracts'))
                 entry_price = safe_num(p.get('entryPrice'))
 
-                # USDT bazlı kar ve zarar
+                # USDT bazlı kar/zarar
                 profit = (last_price - entry_price) * qty if side=='long' else (entry_price - last_price)*qty
 
                 if sym not in highest_profits or profit > highest_profits[sym]:
                     highest_profits[sym] = profit
 
-                # Dinamik stop-loss: minimum 0.5 USDT, toplam pozisyonun %5’i
-                stop_loss_usdt = max(0.5, 0.05*amt_val*10)
-                # Trailing kar: minimum 0.5 USDT, toplam pozisyonun %8’i
-                trailing_usdt = max(0.5, 0.08*amt_val*10)
+                # Trailing stop & stop-loss
+                stop_loss_usdt = max(0.5, 0.03*amt_val*10)  # pozisyonun %3'ü
+                trailing_usdt = max(0.5, 0.05*amt_val*10)  # pozisyonun %5'i
 
                 if profit <= -stop_loss_usdt:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
@@ -112,10 +116,40 @@ def auto_manager():
                 elif highest_profits.get(sym,0) >= trailing_usdt and (highest_profits[sym]-profit) >= 0.2:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} {profit:.2f} USDT")
+            time.sleep(3)
+        except: time.sleep(3)
+
+# --- [MARKET SCANNER: ALTCOIN / MEME COIN / YENİ COIN] ---
+def market_scanner():
+    while True:
+        try:
+            exch = get_exch()
+            markets = [m['symbol'] for m in exch.load_markets().values() 
+                       if ':USDT' in m['symbol'] 
+                       and all(x not in m['symbol'] for x in ['BTC','ETH','SOL'])
+                       and safe_num(m.get('quoteVolume',0)) < 100_000]
+
+            scores = []
+            for sym in markets:
+                ticker = exch.fetch_ticker(sym)
+                change_pct = safe_num(ticker.get('percentage',0))
+                volume = safe_num(ticker.get('quoteVolume',0))
+                normalized_volume = min(volume, 50_000)
+                score = (change_pct*0.7) + (normalized_volume/1000*0.3)
+                if volume < 1000: score *= 1.2
+                scores.append((score,sym))
+
+            scores.sort(reverse=True)
+            top_opportunities = scores[:5]
+            for s,sym in top_opportunities:
+                bot.send_message(CHAT_ID,f"🤖 Analiz: {sym}, değişim skoru {s:.2f}")
+                if s > 1.5:
+                    execute_trade("", force=True, symbol=sym, side='long' if change_pct>0 else 'short')
+
             time.sleep(5)
         except: time.sleep(5)
 
-# --- [TELEGRAM KOMUTLARI & AI MESAJLARI] ---
+# --- [TELEGRAM KOMUTLARI] ---
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) != str(CHAT_ID): return
@@ -126,7 +160,7 @@ def handle_messages(message):
         pos = exch.fetch_positions()
         active_p = [f"{p['symbol']} KAR:{safe_num(p.get('contracts')):.2f}" for p in pos if safe_num(p.get('contracts'))>0]
 
-        time.sleep(1.5)
+        time.sleep(1)
         prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nMESAJ: {message.text}"
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
         for i in range(0, len(response), 4000):
@@ -143,33 +177,6 @@ def handle_messages(message):
             if res: bot.send_message(CHAT_ID,res)
     except Exception as e:
         bot.reply_to(message,f"Sistem: {e}")
-
-# --- [MARKET SCANNER: ALTCOIN / MEME COIN / YENİ COIN] ---
-def market_scanner():
-    while True:
-        try:
-            exch = get_exch()
-            markets = [m['symbol'] for m in exch.load_markets().values() 
-                       if ':USDT' in m['symbol'] 
-                       and safe_num(m.get('quoteVolume',0)) < 100_000]  # yüksek hacimli atla
-
-            scores = []
-            for sym in markets:
-                ticker = exch.fetch_ticker(sym)
-                change_pct = safe_num(ticker.get('percentage',0))
-                volume = safe_num(ticker.get('quoteVolume',0))
-                normalized_volume = min(volume, 50_000)
-                score = (change_pct*0.7) + (normalized_volume/1000*0.3)
-                if volume < 1000: score *= 1.2
-                scores.append((score,sym))
-
-            scores.sort(reverse=True)
-            top_opportunities = scores[:5]
-            for s,sym in top_opportunities:
-                bot.send_message(CHAT_ID,f"🤖 Analiz: {sym}, değişim skoru {s:.2f}")
-
-            time.sleep(10)
-        except: time.sleep(10)
 
 # --- [BOT BAŞLAT] ---
 if __name__ == "__main__":
