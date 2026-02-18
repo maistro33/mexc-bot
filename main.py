@@ -32,17 +32,35 @@ def safe_num(val):
 # --- [AI BOT KURALI] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash ticaret dehasısın.
-1. KURAL: Asla yalan söyleme. İşlem açmadıysan 'Beklemede' de.
+1. KURAL: Asla yalan söyleme.
 2. EMİR: Fırsat gördüğünde @@[ACTION: TRADE, SEMBOL, YON, KALDIRAC, MARJIN]@@ formatını kullan.
 3. ÖRNEK: @@[ACTION: TRADE, ORCA, SHORT, 10, 10]@@ -> 10 USDT marjinli 10x short
 """
 
-# --- [EMİR İNFAZI] ---
-def execute_trade(decision, force=False):
+# --- [EMİR İNFAZI: AGRESİF MOD EKLENDİ] ---
+def execute_trade(decision, force=False, symbol=None, side=None):
     try:
         exch = get_exch()
         exch.load_markets()
-        
+
+        # Telegram’dan direkt açmak için agresif mod
+        if force and symbol and side:
+            sym = symbol.upper()
+            exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
+            if exact_sym:
+                side_order = 'sell' if 'short' in side.lower() else 'buy'
+                lev_val = 10
+                amt_val = 10  # 10 USDT marjin
+                try: exch.set_leverage(lev_val, exact_sym)
+                except: pass
+                ticker = exch.fetch_ticker(exact_sym)
+                last_price = safe_num(ticker['last'])
+                qty = (amt_val * lev_val) / last_price
+                qty_precision = float(exch.amount_to_precision(exact_sym, qty))
+                order = exch.create_market_order(exact_sym, side_order, qty_precision)
+                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
+
+        # Normal AI tarafından gelen emirleri işleme
         if "@@[ACTION: TRADE" in decision:
             match = re.search(r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@", decision)
             if match:
@@ -50,24 +68,19 @@ def execute_trade(decision, force=False):
                 sym = sym_raw.strip().upper()
                 exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
                 if exact_sym:
-                    side = 'sell' if 'SHORT' in side_raw.upper() else 'buy'
+                    side_order = 'sell' if 'SHORT' in side_raw.upper() else 'buy'
                     lev_val = int(safe_num(lev))
                     amt_val = safe_num(amt_usdt)
-
                     try: exch.set_leverage(lev_val, exact_sym)
                     except: pass
-
                     ticker = exch.fetch_ticker(exact_sym)
                     last_price = safe_num(ticker['last'])
                     qty = (amt_val * lev_val) / last_price
                     qty_precision = float(exch.amount_to_precision(exact_sym, qty))
-
-                    # AGRESİF MOD: force=True ise AI onayı beklemeden aç
-                    if force or last_price > 0:
-                        order = exch.create_market_order(exact_sym, side, qty_precision)
-                        return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
+                    order = exch.create_market_order(exact_sym, side_order, qty_precision)
+                    return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
         return None
-    except Exception as e: 
+    except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
 # --- [OTOMATİK YÖNETİCİ: TP/SL/TRAILING] ---
@@ -77,15 +90,17 @@ def auto_manager():
         try:
             exch = get_exch()
             pos = exch.fetch_positions()
-            for p in [p for p in pos if safe_num(p.get('contracts')) > 0]:
+            for p in [p for p in pos if safe_num(p.get('contracts'))>0]:
                 sym = p['symbol']
                 roe = safe_num(p.get('percentage'))
                 if sym not in highest_roes or roe > highest_roes[sym]:
                     highest_roes[sym] = roe
+                # STOP LOSS
                 if roe <= -7.0:
                     exch.create_market_order(sym, ('sell' if p['side']=='long' else 'buy'), safe_num(p['contracts']), params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı.")
-                elif highest_roes.get(sym,0) >= 5.0 and (highest_roes[sym]-roe) >=2.0:
+                # TRAILING KAR AL
+                elif highest_roes.get(sym,0) >=5.0 and (highest_roes[sym]-roe)>=2.0:
                     exch.create_market_order(sym, ('sell' if p['side']=='long' else 'buy'), safe_num(p['contracts']), params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} %{roe:.2f}")
             time.sleep(5)
@@ -102,18 +117,26 @@ def handle_messages(message):
         pos = exch.fetch_positions()
         active_p = [f"{p['symbol']} ROE:%{p.get('percentage',0):.2f}" for p in pos if safe_num(p.get('contracts'))>0]
 
-        time.sleep(1.5)  # 429 hatasını önlemek için
+        time.sleep(1.5)
 
         prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nMESAJ: {message.text}"
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
-
         bot.reply_to(message, response.split("@@")[0].strip() or "Beklemede...")
-        
-        # AGRESİF MOD: Eğer kullanıcı mesajında 'ac' geçiyorsa force=True
-        force_open = 'ac' in message.text.lower()
-        res = execute_trade(response, force=force_open)
-        if res: bot.send_message(CHAT_ID,res)
-    except Exception as e: bot.reply_to(message,f"Sistem: {e}")
+
+        # AGRESİF MOD: Eğer mesajda 'ac' geçiyorsa direkt aç
+        if 'ac' in message.text.lower():
+            parts = message.text.lower().split()
+            # Kullanıcının yazdığı coin ve yön
+            coin = parts[0].upper() if len(parts)>0 else None
+            side = 'long' if 'long' in message.text.lower() else ('short' if 'short' in message.text.lower() else 'long')
+            res = execute_trade(response, force=True, symbol=coin, side=side)
+            if res: bot.send_message(CHAT_ID,res)
+        else:
+            res = execute_trade(response)
+            if res: bot.send_message(CHAT_ID,res)
+
+    except Exception as e:
+        bot.reply_to(message,f"Sistem: {e}")
 
 # --- [PİYASA TARAMA DÖNGÜSÜ: Tüm altcoinleri tarar] ---
 def market_scanner():
