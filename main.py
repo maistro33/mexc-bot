@@ -32,7 +32,8 @@ def safe_num(val):
 # --- [AI BOT KURALI] ---
 SYSTEM_SOUL = """
 Sen Gemini 3 Flash ticaret dehasısın.
-- Tüm USDT paritelerini analiz et: pump/dump, hacim artışı, balina hareketleri.
+- Yalnızca altcoin, meme coin ve yeni çıkan coinleri analiz et.
+- BTC, ETH, SOL gibi yüksek hacimli coinleri atla.
 - Marjin ve kaldıracı mevcut bakiyeye göre otomatik ayarla.
 - Stop-loss ve trailing kar seviyelerini gerçek USDT bazlı optimize et.
 - Telegram'a net mesaj ver: açtıysa ⚔️ İşlem açıldı, açılamadıysa sebebini yaz.
@@ -119,7 +120,9 @@ def handle_messages(message):
         time.sleep(1.5)
         prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nMESAJ: {message.text}"
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
-        bot.reply_to(message, response.split("@@")[0].strip() or "Beklemede...")
+        # uzun mesaj sorunu çözümü
+        for i in range(0, len(response), 4000):
+            bot.reply_to(message, response[i:i+4000])
 
         if 'ac' in message.text.lower():
             parts = message.text.lower().split()
@@ -133,24 +136,32 @@ def handle_messages(message):
     except Exception as e:
         bot.reply_to(message,f"Sistem: {e}")
 
-# --- [MARKET SCANNER: TÜM COINLER, ÇOKLU FIRSAT] ---
+# --- [MARKET SCANNER: ALTCOIN / MEME COIN / YENİ COIN] ---
 def market_scanner():
     while True:
         try:
             exch = get_exch()
-            markets = [m['symbol'] for m in exch.load_markets().values() if ':USDT' in m['symbol']]
+            markets = [m['symbol'] for m in exch.load_markets().values() 
+                       if ':USDT' in m['symbol'] 
+                       and safe_num(m.get('quoteVolume',0)) < 100_000]  # yüksek hacimli atla
+
             scores = []
             for sym in markets:
                 ticker = exch.fetch_ticker(sym)
                 change_pct = safe_num(ticker.get('percentage',0))
                 volume = safe_num(ticker.get('quoteVolume',0))
-                # Normalize edilmiş skor
-                score = (change_pct*0.7) + (volume/1000*0.3)
+                # normalize edilmiş skor
+                normalized_volume = min(volume, 50_000)
+                score = (change_pct*0.7) + (normalized_volume/1000*0.3)
+                # küçük coin bonusu
+                if volume < 1000: score *= 1.2
                 scores.append((score,sym))
+
             scores.sort(reverse=True)
-            top_opportunities = scores[:3]  # En iyi 3 fırsat
+            top_opportunities = scores[:5]  # en iyi 5 fırsat
             for s,sym in top_opportunities:
                 bot.send_message(CHAT_ID,f"🤖 Analiz: {sym}, değişim skoru {s:.2f}")
+
             time.sleep(10)
         except: time.sleep(10)
 
