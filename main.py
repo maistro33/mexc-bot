@@ -97,6 +97,9 @@ def handle_messages(message):
         pos = exch.fetch_positions()
         active_p = [f"{p['symbol']} ROE:%{p.get('percentage',0):.2f}" for p in pos if safe_num(p.get('contracts'))>0]
 
+        # AI çağrısını yavaşlatıyoruz, 429 hatasını önlemek için
+        time.sleep(1.5)
+
         prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nMESAJ: {message.text}"
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
 
@@ -117,13 +120,13 @@ def market_scanner():
                 ticker = exch.fetch_ticker(sym)
                 change_pct = safe_num(ticker.get('percentage',0))
                 volume = safe_num(ticker.get('quoteVolume',0))
-                score = change_pct * volume  # basit pump/dump skoru
+                score = change_pct * volume
                 if score > best_score:
                     best_score = score
                     best_opportunity = sym
             if best_opportunity:
                 bot.send_message(CHAT_ID,f"🤖 Analiz: En iyi fırsat {best_opportunity}, değişim skoru {best_score:.2f}")
-            time.sleep(10)
+            time.sleep(10)  # Döngüyü yavaşlatıyoruz, AI limiti için
         except: time.sleep(10)
 
 if __name__ == "__main__":
