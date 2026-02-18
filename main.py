@@ -1,4 +1,4 @@
-import os, time, telebot, ccxt, threading, re, math
+import os, time, telebot, ccxt, threading, re, math, random
 
 # ===== AYARLAR =====
 TOKEN = os.getenv('TELE_TOKEN')
@@ -8,8 +8,7 @@ API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = "Berfin33"  # Sabit
 
 bot = telebot.TeleBot(TOKEN)
-
-RUN_BOT = True  # Telegram ile durdur/başlat için global flag
+RUN_BOT = True  # Telegram ile durdur/başlat
 
 def safe_num(val):
     try:
@@ -17,7 +16,7 @@ def safe_num(val):
     except:
         return 0.0
 
-# ===== BORSAYA BAĞLAN =====
+# ===== BORSA BAĞLANTI =====
 def get_exch():
     return ccxt.bitget({
         'apiKey': API_KEY,
@@ -27,18 +26,19 @@ def get_exch():
         'enableRateLimit': True
     })
 
-# ===== POZİSYON VAR MI =====
+# ===== POZİSYON KONTROL =====
 def has_position():
     exch = get_exch()
     pos = exch.fetch_positions()
     return any(safe_num(p.get('contracts',0)) > 0 for p in pos)
 
-# ===== TÜM COİNLERİ TARA =====
+# ===== PİYASA TARAMA VE AKILLI ÖNERİ =====
 def scan_markets():
     exch = get_exch()
     exch.load_markets()
     best = None
     best_score = 0
+    best_change = 0
 
     for s in exch.symbols:
         if s.endswith(":USDT"):
@@ -46,17 +46,22 @@ def scan_markets():
                 t = exch.fetch_ticker(s)
                 change = abs(safe_num(t.get('percentage',0)))
                 vol = safe_num(t.get('quoteVolume',0))
-                if change > 20 or vol < 500000:  # sahte pump/likidite tuzak filtresi
+                if change > 20 or vol < 500000:  # pump / düşük hacim filtre
                     continue
                 score = change * vol
                 if score > best_score:
                     best_score = score
                     best = s
+                    best_change = change
             except:
                 continue
+    # Akıllı yorum
+    if best:
+        msg = f"🤖 Analiz: En iyi fırsat {best}, değişim %{best_change:.2f}."
+        bot.send_message(CHAT_ID, msg)
     return best
 
-# ===== İŞLEM AÇ =====
+# ===== İŞLEM AÇMA =====
 def open_trade(symbol):
     exch = get_exch()
     ticker = exch.fetch_ticker(symbol)
@@ -74,18 +79,24 @@ def open_trade(symbol):
     qty = (margin * lev) / price
     qty = float(exch.amount_to_precision(symbol, qty))
 
-    fee_rate = 0.0006  # komisyon
+    fee_rate = 0.0006
     min_profit = margin * lev * fee_rate * 2
+
+    # Akıllı mesaj
+    messages = [
+        "📈 Piyasa fırsatı tespit edildi.",
+        "🤖 Ultra Scalp AI: Analiz tamam, işlem açılıyor.",
+        "🚀 Şimdi pozisyon alıyoruz."
+    ]
+    bot.send_message(CHAT_ID, f"{random.choice(messages)}\n🎯 {symbol}\nFiyat: {price}\nMarjin: {margin:.2f} USDT\nMiktar: {qty}\nMin Kâr: {min_profit:.4f}")
 
     try:
         exch.set_leverage(lev, symbol)
         order = exch.create_market_buy_order(symbol, qty)
-        bot.send_message(CHAT_ID,
-            f"🎯 Fırsat bulundu: {symbol}\n⚔️ İşlem Açıldı\nFiyat: {price}\nMarjin: {margin} USDT\nMiktar: {qty}\nMin Kâr: {min_profit:.4f}")
     except Exception as e:
         bot.send_message(CHAT_ID, f"❌ İşlem Hatası: {str(e)}")
 
-# ===== AV MODU =====
+# ===== HUNTER MOD =====
 def hunter_mode():
     while True:
         try:
@@ -98,7 +109,7 @@ def hunter_mode():
             bot.send_message(CHAT_ID,f"❌ Tarama Hatası: {str(e)}")
             time.sleep(30)
 
-# ===== POZİSYON YÖNETİMİ =====
+# ===== MANAGER MOD =====
 def manager_mode():
     highest = {}
     while True:
@@ -119,7 +130,7 @@ def manager_mode():
                         exch.create_market_sell_order(sym, contracts, params={'reduceOnly':True})
                         bot.send_message(CHAT_ID, f"🛑 STOP LOSS {sym}")
 
-                    # TRAILING KAR AL
+                    # TRAILING KAR
                     elif highest[sym] >= 5 and (highest[sym]-roe)>=2:
                         exch.create_market_sell_order(sym, contracts, params={'reduceOnly':True})
                         bot.send_message(CHAT_ID, f"💰 KAR ALINDI {sym}")
@@ -129,7 +140,7 @@ def manager_mode():
             bot.send_message(CHAT_ID,f"❌ Manager Hatası: {str(e)}")
             time.sleep(10)
 
-# ===== TELEGRAM KOMUTLARI =====
+# ===== TELEGRAM KOMUTLARI VE AKILLI SOHBET =====
 @bot.message_handler(commands=['startbot'])
 def start_bot(message):
     global RUN_BOT
@@ -160,8 +171,21 @@ def manual_open(message):
     else:
         bot.reply_to(message,"Kullanım: /open BTC → BTC/USDT işlem açar")
 
+# Mesajlara akıllı yanıt
+@bot.message_handler(func=lambda m: True)
+def chat_ai(message):
+    msg = message.text.lower()
+    if "merhaba" in msg or "selam" in msg:
+        bot.reply_to(message,"🤖 Selam Sadık! Piyasayı tarıyorum, fırsat olursa haber veririm.")
+    elif "nasıl" in msg or "ne yapıyorsun" in msg:
+        bot.reply_to(message,"🤖 Şu anda piyasayı tarıyorum ve en iyi fırsatları buluyorum.")
+    else:
+        bot.reply_to(message,"🤖 Anladım, piyasayı gözlemliyorum ve fırsat olursa bildireceğim.")
+
+# Selam mesajı
+bot.send_message(CHAT_ID,"🤖 Ultra Scalp AI Bot aktif ve hazır! Telegram üzerinden konuşabilirsiniz.")
+
 # ===== BAŞLAT =====
-if __name__ == "__main__":
-    threading.Thread(target=hunter_mode, daemon=True).start()
-    threading.Thread(target=manager_mode, daemon=True).start()
-    bot.infinity_polling()
+threading.Thread(target=hunter_mode, daemon=True).start()
+threading.Thread(target=manager_mode, daemon=True).start()
+bot.infinity_polling()
