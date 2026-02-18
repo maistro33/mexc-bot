@@ -5,7 +5,7 @@ TOKEN = os.getenv('TELE_TOKEN')
 CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASS')
+PASSPHRASE = "Berfin33"  # Senin koduna göre sabit
 
 bot = telebot.TeleBot(TOKEN)
 
