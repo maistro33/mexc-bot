@@ -47,7 +47,6 @@ def execute_trade(decision, force=False, symbol=None, side=None):
         amt_val = 10  # default marjin
         lev_val = 10  # default kaldıraç
 
-        # Telegram’dan direkt açmak için agresif mod
         if force and symbol and side:
             sym = symbol.upper()
             exact_sym = next((s for s in exch.markets if sym in s and ':USDT' in s), None)
@@ -68,7 +67,6 @@ def execute_trade(decision, force=False, symbol=None, side=None):
             except Exception as e:
                 return f"⚠️ **İŞLEM AÇILAMADI:** {str(e)}"
 
-        # Normal AI tarafından gelen emirleri işleme
         if "@@[ACTION: TRADE" in decision:
             match = re.search(r"@@\[ACTION: TRADE,\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^,]+)\]@@", decision)
             if match:
@@ -97,7 +95,7 @@ def execute_trade(decision, force=False, symbol=None, side=None):
     except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
-# --- [OTOMATİK YÖNETİCİ: KAR BAZLI TRAILING STOP] ---
+# --- [OTOMATİK YÖNETİCİ: GERÇEK KÂR BAZLI TRAILING STOP] ---
 def auto_manager():
     highest_profits = {}
     while True:
@@ -111,19 +109,16 @@ def auto_manager():
                 ticker = exch.fetch_ticker(sym)
                 last_price = safe_num(ticker['last'])
                 qty = safe_num(p.get('contracts'))
+                entry_price = safe_num(p.get('entryPrice'))
 
-                # Gerçek kâr (USDT)
-                if side == 'long':
-                    profit = qty*(last_price - safe_num(p['entryPrice']))
-                else:
-                    profit = qty*(safe_num(p['entryPrice']) - last_price)
+                # Gerçek kâr USDT
+                profit = (last_price - entry_price) * qty if side=='long' else (entry_price - last_price)*qty
 
-                # Trailing stop karı takip
                 if sym not in highest_profits or profit > highest_profits[sym]:
                     highest_profits[sym] = profit
 
                 # STOP LOSS
-                if profit <= - (0.07 * amt_val*10):  # %7 zarar
+                if profit <= -0.07*amt_val*10:  # %7 zarar
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı. Zararı: {profit:.2f} USDT")
                 # TRAILING KAR AL
@@ -145,7 +140,6 @@ def handle_messages(message):
         active_p = [f"{p['symbol']} KAR:{safe_num(p.get('contracts')):.2f}" for p in pos if safe_num(p.get('contracts'))>0]
 
         time.sleep(1.5)
-
         prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nMESAJ: {message.text}"
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
         bot.reply_to(message, response.split("@@")[0].strip() or "Beklemede...")
@@ -160,11 +154,10 @@ def handle_messages(message):
         else:
             res = execute_trade(response)
             if res: bot.send_message(CHAT_ID,res)
-
     except Exception as e:
         bot.reply_to(message,f"Sistem: {e}")
 
-# --- [PİYASA TARAMA DÖNGÜSÜ: Tüm altcoinleri tarar] ---
+# --- [PİYASA TARAMA DÖNGÜSÜ: Tüm coinleri tarar] ---
 def market_scanner():
     while True:
         try:
