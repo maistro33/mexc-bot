@@ -35,9 +35,10 @@ Sen Gemini 3 Flash ticaret dehasısın.
 - Yalnızca altcoin, meme coin ve yeni çıkan coinleri analiz et.
 - BTC, ETH, SOL gibi yüksek hacimli coinleri atla.
 - Marjin ve kaldıracı mevcut bakiyeye göre otomatik ayarla.
-- Stop-loss ve trailing kar seviyelerini gerçek USDT bazlı optimize et.
+- Stop-loss ve trailing kar seviyelerini USDT bazlı optimize et.
 - Telegram'a net mesaj ver: açtıysa ⚔️ İşlem açıldı, açılamadıysa sebebini yaz.
 - Sadece yüksek kâr potansiyeli taşıyan işlemleri aç.
+- Emir geldiğinde pozisyon açıp hemen kapatma, en uygun kar/zarar seviyesini bekle.
 """
 
 # --- [EMİR İNFAZI: OTOMATİK BAKİYE VE KALDIRAÇ] ---
@@ -57,9 +58,10 @@ def execute_trade(decision, force=False, symbol=None, side=None):
             if free_usdt < 1:
                 return f"⚠️ **İŞLEM AÇILAMADI:** Bakiye yetersiz ({free_usdt:.2f} USDT)"
             
-            lev_val = 10 if free_usdt>=10 else max(1, int(free_usdt/1))
-            amt_val = min(10, free_usdt)
-            
+            # maksimum marjin ve kaldıraç
+            lev_val = min(50, max(1, int(free_usdt/0.5)))
+            amt_val = free_usdt
+
             try: exch.set_leverage(lev_val, exact_sym)
             except: pass
             ticker = exch.fetch_ticker(exact_sym)
@@ -70,14 +72,14 @@ def execute_trade(decision, force=False, symbol=None, side=None):
             qty_precision = float(exch.amount_to_precision(exact_sym, qty))
             try:
                 order = exch.create_market_order(exact_sym, side_order, qty_precision)
-                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val} USDT\nID: {order['id']}"
+                return f"⚔️ **İŞLEM AÇILDI!**\nSembol: {exact_sym}\nYön: {side_order.upper()}\nFiyat: {last_price}\nMarjin: {amt_val:.2f} USDT\nID: {order['id']}"
             except Exception as e:
                 return f"⚠️ **İŞLEM AÇILAMADI:** {str(e)}"
         return None
     except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
-# --- [OTOMATİK YÖNETİCİ: GERÇEK USDT BAZLI TRAILING STOP] ---
+# --- [OTOMATİK YÖNETİCİ: USDT BAZLI TRAILING STOP] ---
 def auto_manager():
     highest_profits = {}
     while True:
@@ -93,14 +95,21 @@ def auto_manager():
                 qty = safe_num(p.get('contracts'))
                 entry_price = safe_num(p.get('entryPrice'))
 
+                # USDT bazlı kar ve zarar
                 profit = (last_price - entry_price) * qty if side=='long' else (entry_price - last_price)*qty
+
                 if sym not in highest_profits or profit > highest_profits[sym]:
                     highest_profits[sym] = profit
 
-                if profit <= -0.07*amt_val*10:
+                # Dinamik stop-loss: minimum 0.5 USDT, toplam pozisyonun %5’i
+                stop_loss_usdt = max(0.5, 0.05*amt_val*10)
+                # Trailing kar: minimum 0.5 USDT, toplam pozisyonun %8’i
+                trailing_usdt = max(0.5, 0.08*amt_val*10)
+
+                if profit <= -stop_loss_usdt:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı. Zararı: {profit:.2f} USDT")
-                elif highest_profits.get(sym,0) >= 0.5 and (highest_profits[sym]-profit)>=0.2:
+                elif highest_profits.get(sym,0) >= trailing_usdt and (highest_profits[sym]-profit) >= 0.2:
                     exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
                     bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} {profit:.2f} USDT")
             time.sleep(5)
@@ -120,7 +129,6 @@ def handle_messages(message):
         time.sleep(1.5)
         prompt = f"CÜZDAN: {free_usdt} USDT\nPOZİSYONLAR: {active_p}\nMESAJ: {message.text}"
         response = ai_client.models.generate_content(model="gemini-2.0-flash", contents=[SYSTEM_SOUL,prompt]).text
-        # uzun mesaj sorunu çözümü
         for i in range(0, len(response), 4000):
             bot.reply_to(message, response[i:i+4000])
 
@@ -150,15 +158,13 @@ def market_scanner():
                 ticker = exch.fetch_ticker(sym)
                 change_pct = safe_num(ticker.get('percentage',0))
                 volume = safe_num(ticker.get('quoteVolume',0))
-                # normalize edilmiş skor
                 normalized_volume = min(volume, 50_000)
                 score = (change_pct*0.7) + (normalized_volume/1000*0.3)
-                # küçük coin bonusu
                 if volume < 1000: score *= 1.2
                 scores.append((score,sym))
 
             scores.sort(reverse=True)
-            top_opportunities = scores[:5]  # en iyi 5 fırsat
+            top_opportunities = scores[:5]
             for s,sym in top_opportunities:
                 bot.send_message(CHAT_ID,f"🤖 Analiz: {sym}, değişim skoru {s:.2f}")
 
