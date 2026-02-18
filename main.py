@@ -37,7 +37,7 @@ Sen Gemini 3 Flash ticaret dehasısın.
 3. ÖRNEK: @@[ACTION: TRADE, ORCA, SHORT, 10, 10]@@ -> 10 USDT marjinli 10x short
 """
 
-# --- [EMİR İNFAZI: AGRESİF MOD EKLENDİ] ---
+# --- [EMİR İNFAZI: GERÇEK KAR BAZLI TRAILING STOP] ---
 def execute_trade(decision, force=False, symbol=None, side=None):
     try:
         exch = get_exch()
@@ -51,6 +51,10 @@ def execute_trade(decision, force=False, symbol=None, side=None):
                 side_order = 'sell' if 'short' in side.lower() else 'buy'
                 lev_val = 10
                 amt_val = 10  # 10 USDT marjin
+                bal = exch.fetch_balance({'type':'swap'})
+                free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
+                if free_usdt < amt_val:
+                    return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
                 try: exch.set_leverage(lev_val, exact_sym)
                 except: pass
                 ticker = exch.fetch_ticker(exact_sym)
@@ -71,6 +75,10 @@ def execute_trade(decision, force=False, symbol=None, side=None):
                     side_order = 'sell' if 'SHORT' in side_raw.upper() else 'buy'
                     lev_val = int(safe_num(lev))
                     amt_val = safe_num(amt_usdt)
+                    bal = exch.fetch_balance({'type':'swap'})
+                    free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
+                    if free_usdt < amt_val:
+                        return f"⚠️ **İŞLEM AÇILAMADI:** Yetersiz bakiye ({free_usdt} USDT)"
                     try: exch.set_leverage(lev_val, exact_sym)
                     except: pass
                     ticker = exch.fetch_ticker(exact_sym)
@@ -83,26 +91,39 @@ def execute_trade(decision, force=False, symbol=None, side=None):
     except Exception as e:
         return f"⚠️ **BİTGET HATASI:** {str(e)}"
 
-# --- [OTOMATİK YÖNETİCİ: TP/SL/TRAILING] ---
+# --- [OTOMATİK YÖNETİCİ: KAR BAZLI TRAILING STOP] ---
 def auto_manager():
-    highest_roes = {}
+    highest_profits = {}  # USDT cinsinden en yüksek kar
     while True:
         try:
             exch = get_exch()
             pos = exch.fetch_positions()
             for p in [p for p in pos if safe_num(p.get('contracts'))>0]:
                 sym = p['symbol']
-                roe = safe_num(p.get('percentage'))
-                if sym not in highest_roes or roe > highest_roes[sym]:
-                    highest_roes[sym] = roe
+                amt_val = safe_num(p.get('margin'))
+                side = p['side']
+                ticker = exch.fetch_ticker(sym)
+                last_price = safe_num(ticker['last'])
+                qty = safe_num(p.get('contracts'))
+
+                # Gerçek kâr (USDT)
+                if side == 'long':
+                    profit = qty*(last_price - safe_num(p['entryPrice']))
+                else:
+                    profit = qty*(safe_num(p['entryPrice']) - last_price)
+
+                # Trailing stop karı takip
+                if sym not in highest_profits or profit > highest_profits[sym]:
+                    highest_profits[sym] = profit
+
                 # STOP LOSS
-                if roe <= -7.0:
-                    exch.create_market_order(sym, ('sell' if p['side']=='long' else 'buy'), safe_num(p['contracts']), params={'reduceOnly': True})
-                    bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı.")
+                if profit <= - (0.07 * amt_val*10):  # %7 zarar
+                    exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
+                    bot.send_message(CHAT_ID, f"🛡️ **STOP LOSS:** {sym} kapatıldı. Zararı: {profit:.2f} USDT")
                 # TRAILING KAR AL
-                elif highest_roes.get(sym,0) >=5.0 and (highest_roes[sym]-roe)>=2.0:
-                    exch.create_market_order(sym, ('sell' if p['side']=='long' else 'buy'), safe_num(p['contracts']), params={'reduceOnly': True})
-                    bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} %{roe:.2f}")
+                elif highest_profits.get(sym,0) >= 0.5 and (highest_profits[sym]-profit)>=0.2:  # 0.5 USDT üstünde ve 0.2 USDT geri düşüş
+                    exch.create_market_order(sym, ('sell' if side=='long' else 'buy'), qty, params={'reduceOnly': True})
+                    bot.send_message(CHAT_ID, f"💰 **KAR ALINDI:** {sym} {profit:.2f} USDT")
             time.sleep(5)
         except: time.sleep(5)
 
@@ -115,7 +136,7 @@ def handle_messages(message):
         bal = exch.fetch_balance({'type':'swap'})
         free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
         pos = exch.fetch_positions()
-        active_p = [f"{p['symbol']} ROE:%{p.get('percentage',0):.2f}" for p in pos if safe_num(p.get('contracts'))>0]
+        active_p = [f"{p['symbol']} KAR:{safe_num(p.get('contracts')):.2f}" for p in pos if safe_num(p.get('contracts'))>0]
 
         time.sleep(1.5)
 
@@ -126,7 +147,6 @@ def handle_messages(message):
         # AGRESİF MOD: Eğer mesajda 'ac' geçiyorsa direkt aç
         if 'ac' in message.text.lower():
             parts = message.text.lower().split()
-            # Kullanıcının yazdığı coin ve yön
             coin = parts[0].upper() if len(parts)>0 else None
             side = 'long' if 'long' in message.text.lower() else ('short' if 'short' in message.text.lower() else 'long')
             res = execute_trade(response, force=True, symbol=coin, side=side)
