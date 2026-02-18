@@ -7,6 +7,7 @@ API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TOKEN)
+
 MANUAL_LOCK = False
 
 # ===== EXCHANGE =====
@@ -27,6 +28,7 @@ def open_trade(symbol, side):
 
         exact = next((s for s in exch.markets if symbol.upper() in s and ':USDT' in s), None)
         if not exact:
+            bot.send_message(CHAT_ID, "Coin bulunamadı")
             return
 
         leverage = 10
@@ -44,13 +46,13 @@ def open_trade(symbol, side):
         exch.create_market_order(exact, order_side, qty)
 
         bot.send_message(CHAT_ID,
-            f"⚔️ SCALP İŞLEM\n{exact}\n{side.upper()}")
+            f"⚔️ İŞLEM AÇILDI\n{exact}\n{side.upper()}")
 
     except Exception as e:
-        bot.send_message(CHAT_ID, str(e))
+        bot.send_message(CHAT_ID, f"Hata: {e}")
 
-# ===== SCALP FIRSAT BUL =====
-def find_scalp():
+# ===== AKILLI FIRSAT BULUCU =====
+def find_safe_trade():
     exch = get_exch()
     markets = [m['symbol'] for m in exch.load_markets().values()
                if ':USDT' in m['symbol'] and 'swap' in m['type']]
@@ -62,7 +64,7 @@ def find_scalp():
     for sym in markets:
         t = exch.fetch_ticker(sym)
 
-        change = t.get('percentage', 0)
+        change = abs(t.get('percentage', 0))
         volume = t.get('quoteVolume', 0)
         high = t.get('high', 0)
         low = t.get('low', 0)
@@ -73,41 +75,44 @@ def find_scalp():
 
         volatility = (high - low) / last
 
-        # ⚡ SCALP ŞARTLARI
-        if volatility < 0.015 or volume < 200000:
+        # 🎯 SADECE KALİTELİ FIRSATLAR
+        if volatility < 0.01 or volume < 100000:
             continue
 
-        score = abs(change) * volatility * volume
+        score = change * volatility * volume
 
         if score > best_score:
             best_score = score
             best = sym
-            best_side = "long" if change > 0 else "short"
+            best_side = "long" if t.get('percentage',0) > 0 else "short"
 
     return best, best_side
 
-# ===== OTOMATİK SCALP =====
-def auto_scalp():
+# ===== OTOMATİK =====
+def auto_trader():
     global MANUAL_LOCK
 
     while True:
         if MANUAL_LOCK:
-            time.sleep(5)
+            time.sleep(10)
             continue
 
         try:
-            sym, side = find_scalp()
+            sym, side = find_safe_trade()
 
             if sym:
                 bot.send_message(CHAT_ID,
-                    f"🤖 SCALP fırsat: {sym}")
+                    f"🤖 Güçlü fırsat: {sym} → {side.upper()}")
 
                 open_trade(sym.split('/')[0], side)
 
-            time.sleep(20)
+            else:
+                bot.send_message(CHAT_ID, "Beklemede. Kaliteli fırsat yok.")
+
+            time.sleep(60)
 
         except:
-            time.sleep(10)
+            time.sleep(20)
 
 # ===== TP / SL =====
 def risk_manager():
@@ -128,26 +133,26 @@ def risk_manager():
                 if sym not in highest or roe > highest[sym]:
                     highest[sym] = roe
 
-                # SCALP STOP
-                if roe <= -5:
+                # STOP LOSS
+                if roe <= -6:
                     exch.create_market_order(sym,
                         'sell' if p['side']=='long' else 'buy',
                         float(p['contracts']),
                         params={'reduceOnly': True})
-                    bot.send_message(CHAT_ID, f"🛡️ STOP {sym}")
+                    bot.send_message(CHAT_ID, f"🛡️ STOP LOSS {sym}")
 
-                # SCALP KAR
-                if highest[sym] >= 3 and highest[sym] - roe >= 1:
+                # KAR AL
+                if highest[sym] >= 5 and highest[sym] - roe >= 2:
                     exch.create_market_order(sym,
                         'sell' if p['side']=='long' else 'buy',
                         float(p['contracts']),
                         params={'reduceOnly': True})
-                    bot.send_message(CHAT_ID, f"💰 KAR {sym}")
+                    bot.send_message(CHAT_ID, f"💰 KAR ALINDI {sym}")
 
-            time.sleep(4)
+            time.sleep(5)
 
         except:
-            time.sleep(4)
+            time.sleep(5)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
@@ -172,10 +177,10 @@ def handle(m):
 
     if "auto" in txt:
         MANUAL_LOCK = False
-        bot.send_message(CHAT_ID, "Otomatik scalp aktif")
+        bot.send_message(CHAT_ID, "Otomatik moda dönüldü")
 
 # ===== START =====
 if __name__ == "__main__":
-    threading.Thread(target=auto_scalp, daemon=True).start()
+    threading.Thread(target=auto_trader, daemon=True).start()
     threading.Thread(target=risk_manager, daemon=True).start()
     bot.infinity_polling()
