@@ -1,121 +1,98 @@
 import ccxt
 import telebot
 import time
-import pandas as pd
 
-# ====== AYARLAR ======
+# ===== AYARLAR =====
 API_KEY = "BITGET_API_KEY"
 API_SECRET = "BITGET_SECRET"
-PASSPHRASE = "BITGET_PASSPHRASE"
-
+PASSWORD = "BITGET_PASSWORD"
 TELEGRAM_TOKEN = "TELEGRAM_BOT_TOKEN"
-CHAT_ID = "TELEGRAM_CHAT_ID"
+
+SYMBOL = "BTC/USDT:USDT"
+GRID_LEVELS = 5
+GRID_SPREAD = 0.003   # %0.3 aralık
+ORDER_SIZE = 5        # USDT
+
+# ===== BORSAYA BAGLAN =====
+exchange = ccxt.bitget({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'password': PASSWORD,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'swap'}
+})
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-exchange = ccxt.bitget({
-    "apiKey": API_KEY,
-    "secret": API_SECRET,
-    "password": PASSPHRASE,
-    "enableRateLimit": True,
-    "options": {"defaultType": "swap"}
-})
-
 running = False
-symbol = None
-
-
-# ===== GRID COIN ANALİZİ =====
-def find_best_coin():
-    markets = exchange.load_markets()
-    usdt_pairs = [s for s in markets if "USDT" in s and ":USDT" in s]
-
-    best = None
-    best_vol = 0
-
-    for s in usdt_pairs[:30]:
-        try:
-            ticker = exchange.fetch_ticker(s)
-            if ticker["quoteVolume"] > best_vol:
-                best_vol = ticker["quoteVolume"]
-                best = s
-        except:
-            pass
-
-    return best
-
 
 # ===== GRID KUR =====
-def create_grid(symbol):
-    ticker = exchange.fetch_ticker(symbol)
-    price = ticker["last"]
+def create_grid():
+    ticker = exchange.fetch_ticker(SYMBOL)
+    price = ticker['last']
 
-    grid = {
-        "symbol": symbol,
-        "upper": price * 1.05,
-        "lower": price * 0.95,
-        "grid_count": 10,
-        "size": 5
-    }
+    print("Grid kuruluyor:", price)
 
-    return grid
+    for i in range(1, GRID_LEVELS + 1):
 
+        buy_price = price * (1 - GRID_SPREAD * i)
+        sell_price = price * (1 + GRID_SPREAD * i)
 
-# ===== GRID STRATEJİ =====
-def run_grid(grid):
-    global running
+        exchange.create_limit_buy_order(SYMBOL, ORDER_SIZE/price, buy_price)
+        exchange.create_limit_sell_order(SYMBOL, ORDER_SIZE/price, sell_price)
 
-    symbol = grid["symbol"]
-    lower = grid["lower"]
-    upper = grid["upper"]
-    size = grid["size"]
+    print("Grid kuruldu")
 
-    while running:
-        price = exchange.fetch_ticker(symbol)["last"]
+# ===== SNIPER (Dip Long — Tepe Short) =====
+def sniper_trade():
+    ticker = exchange.fetch_ticker(SYMBOL)
+    price = ticker['last']
+    change = ticker['percentage']
 
-        # DIP LONG
-        if price <= lower:
-            exchange.create_market_buy_order(symbol, size)
-            bot.send_message(CHAT_ID, f"🟢 LONG açıldı: {symbol}")
+    # Dip LONG
+    if change < -3:
+        print("Dip LONG açılıyor")
+        exchange.create_market_buy_order(SYMBOL, ORDER_SIZE/price)
 
-        # TEPE SHORT
-        elif price >= upper:
-            exchange.create_market_sell_order(symbol, size)
-            bot.send_message(CHAT_ID, f"🔴 SHORT açıldı: {symbol}")
-
-        time.sleep(10)
-
+    # Tepe SHORT
+    elif change > 3:
+        print("Tepe SHORT açılıyor")
+        exchange.create_market_sell_order(SYMBOL, ORDER_SIZE/price)
 
 # ===== TELEGRAM KOMUTLARI =====
 
-@bot.message_handler(commands=["startbot"])
+@bot.message_handler(commands=['startbot'])
 def start_bot(message):
-    global running, symbol
+    global running
+    running = True
+    bot.reply_to(message, "Bot başladı 🚀")
 
-    if not running:
-        running = True
-        symbol = find_best_coin()
-
-        bot.send_message(CHAT_ID, f"🚀 Ultra Grid Başladı\nCoin: {symbol}")
-
-        grid = create_grid(symbol)
-        run_grid(grid)
-
-
-@bot.message_handler(commands=["stopbot"])
+@bot.message_handler(commands=['stopbot'])
 def stop_bot(message):
     global running
     running = False
-    bot.send_message(CHAT_ID, "⛔ Bot durduruldu")
+    bot.reply_to(message, "Bot durdu 🛑")
 
+@bot.message_handler(commands=['grid'])
+def grid_cmd(message):
+    create_grid()
+    bot.reply_to(message, "Grid kuruldu ⚡")
 
-@bot.message_handler(commands=["durum"])
-def status(message):
-    if running:
-        bot.send_message(CHAT_ID, "🟢 Bot çalışıyor")
-    else:
-        bot.send_message(CHAT_ID, "🔴 Bot kapalı")
+@bot.message_handler(commands=['ara'])
+def search_trade(message):
+    sniper_trade()
+    bot.reply_to(message, "Fırsat arandı 🔎")
 
+# ===== ANA LOOP =====
+def main_loop():
+    global running
+    while True:
+        if running:
+            sniper_trade()
+        time.sleep(20)
 
-print("Bot aktif...")
+# ===== BASLAT =====
+import threading
+threading.Thread(target=main_loop).start()
+
 bot.polling()
