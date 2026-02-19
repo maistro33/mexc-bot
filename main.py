@@ -1,5 +1,4 @@
 import os, time, telebot, ccxt, threading, re
-from google import genai
 
 # --- BAĞLANTILAR ---
 TELE_TOKEN = os.getenv('TELE_TOKEN')
@@ -7,20 +6,8 @@ MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
 PASSPHRASE = "Berfin33"
-GEMINI_KEY = os.getenv('GEMINI_API_KEY')
 
 bot = telebot.TeleBot(TELE_TOKEN)
-ai_client = genai.Client(api_key=GEMINI_KEY)
-
-# --- SABİT AYARLAR ---
-MARGIN_PER_TRADE = 6  # her işlem için sabit USDT
-LEVERAGE = 5
-MAX_POSITIONS = 2
-MIN_HOLD_SEC = 30  # pozisyonun açıldıktan sonra minimum bekleme süresi
-STOP_LOSS_RATIO = 0.10  # %10 kayıp toleransı
-TRAILING_RATIO = 0.20   # %20 kar gelirse takip et
-
-highest_profits = {}
 
 # --- EXCHANGE ---
 def get_exch():
@@ -37,10 +24,19 @@ def safe_num(val):
         if val is None: return 0.0
         clean = re.sub(r'[^0-9.]', '', str(val).replace(',', '.'))
         return float(clean) if clean else 0.0
-    except:
-        return 0.0
+    except: return 0.0
 
-# --- POZİSYON AÇMA ---
+# --- SABİT AYARLAR ---
+MAX_POSITIONS = 2
+MARGIN_PER_TRADE = 2
+LEVERAGE = 5
+STOP_LOSS_PERCENT = 0.05
+TAKE_PROFIT_PERCENT = 0.03
+TRAILING_PERCENT = 0.015
+highest_profits = {}
+MIN_HOLD_SEC = 60
+
+# --- EMİR AÇMA ---
 def open_trade(symbol, side):
     try:
         exch = get_exch()
@@ -50,35 +46,36 @@ def open_trade(symbol, side):
         if len(active) >= MAX_POSITIONS:
             return "⚠️ Maksimum açık pozisyon"
 
+        bal = exch.fetch_balance({'type':'swap'})
+        free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
+        if free_usdt < MARGIN_PER_TRADE:
+            return f"⚠️ Bakiye yetersiz ({free_usdt:.2f} USDT)"
+
         exact_sym = next((s for s in exch.markets if symbol.upper() in s and ':USDT' in s), None)
-        if not exact_sym:
-            return f"⚠️ Coin bulunamadı: {symbol}"
+        if not exact_sym: return f"⚠️ Coin bulunamadı: {symbol}"
+
+        try: exch.set_leverage(LEVERAGE, exact_sym)
+        except: pass
 
         ticker = exch.fetch_ticker(exact_sym)
         last_price = safe_num(ticker['last'])
-        low_price = safe_num(ticker['low'])
-
-        # Dipten giriş kontrolü
-        if last_price > low_price*1.01:  # %1 farkla dipten giriş
-            return f"⚠️ {symbol} fiyatı uygun değil, dipten giriş bekleniyor"
-
         qty = (MARGIN_PER_TRADE * LEVERAGE) / last_price
         min_qty = exch.markets[exact_sym]['limits']['amount']['min']
         qty = max(qty,min_qty)
         qty_precision = float(exch.amount_to_precision(exact_sym, qty))
 
-        try: exch.set_leverage(LEVERAGE, exact_sym)
-        except: pass
-
-        order = exch.create_market_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision)
+        # MARKET ORDER yerine LIMIT ORDER (komisyon azaltmak için)
+        order_price = last_price * 0.999 if side=='long' else last_price*1.001
+        order = exch.create_limit_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision, order_price)
         highest_profits[exact_sym] = 0
         order['openTime'] = time.time()
         bot.send_message(MY_CHAT_ID, f"⚔️ İşlem açıldı: {exact_sym}\nYön: {side.upper()}\nMiktar: {MARGIN_PER_TRADE} USDT\nKaldıraç: {LEVERAGE}x\nID: {order['id']}")
         return f"⚔️ İşlem açıldı: {exact_sym}"
+
     except Exception as e:
         return f"⚠️ HATA: {str(e)}"
 
-# --- TRAILING + STOP-LOSS YÖNETİMİ ---
+# --- TRAILING + KAR YÖNETİMİ ---
 def auto_manager():
     while True:
         try:
@@ -93,24 +90,21 @@ def auto_manager():
                 last = safe_num(ticker['last'])
                 profit = (last-entry)*qty if side=='long' else (entry-last)*qty
 
-                # Minimum pozisyon bekleme süresi
                 if time.time() - p.get('timestamp',0)/1000 < MIN_HOLD_SEC:
                     continue
 
                 if sym not in highest_profits or profit>highest_profits[sym]:
                     highest_profits[sym]=profit
 
-                stop_loss_usdt = max(0.5, STOP_LOSS_RATIO*MARGIN_PER_TRADE)
-                trailing_usdt = max(0.5, TRAILING_RATIO*MARGIN_PER_TRADE)
+                stop_loss_usdt = max(0.5, STOP_LOSS_PERCENT*safe_num(p.get('margin'))*10)
+                trailing_usdt = max(0.5, TRAILING_PERCENT*safe_num(p.get('margin'))*10)
 
-                # STOP-LOSS
                 if profit <= -stop_loss_usdt:
                     exch.create_market_order(sym, 'sell' if side=='long' else 'buy', qty, params={'reduceOnly':True})
                     bot.send_message(MY_CHAT_ID, f"🛡️ STOP LOSS: {sym} kapatıldı. Zararı: {profit:.2f} USDT")
                     highest_profits.pop(sym,None)
 
-                # TRAILING KAR
-                elif highest_profits.get(sym,0) >= trailing_usdt and (highest_profits[sym]-profit) >= 0.2:
+                elif highest_profits.get(sym,0) >= trailing_usdt and (highest_profits[sym]-profit)>=0.2:
                     exch.create_market_order(sym, 'sell' if side=='long' else 'buy', qty, params={'reduceOnly':True})
                     bot.send_message(MY_CHAT_ID, f"💰 KAR ALINDI: {sym} {profit:.2f} USDT")
                     highest_profits.pop(sym,None)
@@ -139,9 +133,8 @@ def market_scanner():
                 scores.append((score,sym))
 
             scores.sort(reverse=True)
-            top = scores[:5]
+            top = scores[:2]  # max 2 işlem
             for s,sym in top:
-                bot.send_message(MY_CHAT_ID,f"🤖 Analiz: {sym}, değişim skoru {s:.2f}")
                 if s>1.5:
                     open_trade(sym,'long' if change_pct>0 else 'short')
 
@@ -155,7 +148,6 @@ def handle_messages(message):
     if str(message.chat.id) != str(MY_CHAT_ID): return
     try:
         text = message.text.lower()
-
         if 'işlemi kapat' in text:
             exch = get_exch()
             pos = exch.fetch_positions()
