@@ -32,6 +32,7 @@ bot_active = False
 current_trade = None
 last_trade_time = 0
 grid_trades = []
+grid_coin = None
 
 # ================== FIRSAT BULUCU (PRO SNIPER) ==================
 def find_pro_trade():
@@ -64,20 +65,51 @@ GRID_RANGE = 0.03 # %3 aralık
 GRID_SIZE = 0.5   # Bakiyenin %50'si her grid için
 
 def setup_grid(sym):
+    global grid_trades, grid_coin
     exch = get_exch()
     ticker = exch.fetch_ticker(sym)
     price = safe(ticker['last'])
     grid_trades.clear()
+    grid_coin = sym
     for i in range(-GRID_LEVELS//2, GRID_LEVELS//2+1):
         level_price = price*(1 + i*GRID_RANGE)
         grid_trades.append({'symbol':sym, 'side':'long', 'price':level_price, 'filled':False})
     bot.send_message(CHAT_ID,f"🔹 Grid kuruldu: {sym} fiyat {price:.2f}")
 
+# ================== GRID OTOMATİK SEÇİM ==================
+def auto_grid_selection():
+    global bot_active, grid_coin
+    while True:
+        if not bot_active or grid_coin: time.sleep(10); continue
+        exch = get_exch()
+        markets = exch.load_markets()
+        best = None
+        best_score = 0
+        for m in markets.values():
+            sym = m['symbol']
+            if ':USDT' not in sym: continue
+            if any(x in sym for x in ['BTC','ETH','SOL']): continue
+            try:
+                ticker = exch.fetch_ticker(sym)
+                change = safe(ticker.get('percentage',0))
+                vol = safe(ticker.get('quoteVolume',0))
+                if vol < 5000: continue
+                score = abs(change)*(vol/10000)
+                if score > best_score:
+                    best_score = score
+                    best = sym
+            except: continue
+        if best:
+            setup_grid(best)
+        time.sleep(60)
+
 # ================== İŞLEM AÇ ==================
 def open_trade(sym, side, amount_usdt):
     exch = get_exch()
     lev = 5
-    exch.set_leverage(lev, sym)
+    try:
+        exch.set_leverage(lev, sym)
+    except: pass
     ticker = exch.fetch_ticker(sym)
     price = safe(ticker['last'])
     qty = (amount_usdt*lev)/price
@@ -96,7 +128,6 @@ def grid_manager():
             if g['filled']: continue
             ticker = exch.fetch_ticker(g['symbol'])
             price = safe(ticker['last'])
-            # Grid fiyatına geldiğinde al
             if (g['side']=='long' and price <= g['price']) or (g['side']=='short' and price >= g['price']):
                 bal = exch.fetch_balance({'type':'swap'})
                 free_usdt = safe(bal['USDT']['free'])
@@ -105,7 +136,7 @@ def grid_manager():
                 g['filled'] = True
         time.sleep(5)
 
-# ================== KAR YÖNETİMİ (PRO) ==================
+# ================== KAR YÖNETİMİ ==================
 def manage_trade():
     global current_trade
     while True:
@@ -152,7 +183,7 @@ def hunter():
 # ================== TELEGRAM KOMUTLARI ==================
 @bot.message_handler(func=lambda m: True)
 def commands(message):
-    global bot_active, current_trade
+    global bot_active, current_trade, grid_coin
     if str(message.chat.id) != str(CHAT_ID): return
     txt = message.text.lower()
     if txt=="startbot":
@@ -163,6 +194,7 @@ def commands(message):
         bot.reply_to(message,"🛑 Bot durdu")
     elif txt=="durum":
         if current_trade: bot.reply_to(message,f"Açık işlem: {current_trade['symbol']}")
+        elif grid_coin: bot.reply_to(message,f"Grid aktif: {grid_coin}")
         else: bot.reply_to(message,"İşlem yok")
     elif txt=="kapat" and current_trade:
         exch=get_exch()
@@ -181,5 +213,6 @@ def commands(message):
 threading.Thread(target=hunter,daemon=True).start()
 threading.Thread(target=manage_trade,daemon=True).start()
 threading.Thread(target=grid_manager,daemon=True).start()
+threading.Thread(target=auto_grid_selection,daemon=True).start()
 
 bot.infinity_polling()
