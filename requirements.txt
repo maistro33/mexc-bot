@@ -1,3 +1,2 @@
-ccxt
-pyTelegramBotAPI
-pandas
+pip install ccxt==2.10.71
+pip install pyTelegramBotAPI==4.10.0
