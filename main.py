@@ -43,15 +43,15 @@ def open_trade(symbol, side):
         pos = exch.fetch_positions()
         active = [p for p in pos if safe_num(p.get('contracts'))>0]
         if len(active) >= MAX_POSITIONS:
-            return "⚠️ Maksimum açık pozisyon"
+            return
 
         bal = exch.fetch_balance({'type':'swap'})
         free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
         if free_usdt < MARGIN_PER_TRADE:
-            return f"⚠️ Bakiye yetersiz ({free_usdt:.2f} USDT)"
+            return
 
         exact_sym = next((s for s in exch.markets if symbol.upper() in s and ':USDT' in s), None)
-        if not exact_sym: return f"⚠️ Coin bulunamadı: {symbol}"
+        if not exact_sym: return
 
         try: exch.set_leverage(LEVERAGE, exact_sym)
         except: pass
@@ -63,17 +63,14 @@ def open_trade(symbol, side):
         qty = max(qty,min_qty)
         qty_precision = float(exch.amount_to_precision(exact_sym, qty))
 
-        # Dipten long, tepeden short için limit price optimize
+        # Dipten long, tepeden short
         order_price = last_price * 0.997 if side=='long' else last_price*1.003
         order = exch.create_limit_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision, order_price)
         highest_profits[exact_sym] = 0
         order['openTime'] = time.time()
-        bot.send_message(MY_CHAT_ID, f"⚔️ İşlem açıldı: {exact_sym}\nYön: {side.upper()}\nMiktar: {MARGIN_PER_TRADE} USDT\nKaldıraç: {LEVERAGE}x\nID: {order['id']}")
-        return f"⚔️ İşlem açıldı: {exact_sym}"
-
+        bot.send_message(MY_CHAT_ID, f"⚔️ İşlem açıldı: {exact_sym}\nYön: {side.upper()}\nMiktar: {MARGIN_PER_TRADE} USDT\nKaldıraç: {LEVERAGE}x")
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"⚠️ HATA (open_trade): {str(e)}")
-        return None
 
 # --- TRAILING + KAR YÖNETİMİ ---
 def auto_manager():
@@ -108,7 +105,6 @@ def auto_manager():
                     exch.create_market_order(sym, 'sell' if side=='long' else 'buy', qty, params={'reduceOnly':True})
                     bot.send_message(MY_CHAT_ID, f"💰 KAR ALINDI: {sym} {profit:.2f} USDT")
                     highest_profits.pop(sym,None)
-
             time.sleep(3)
         except Exception as e:
             bot.send_message(MY_CHAT_ID, f"⚠️ HATA (auto_manager): {str(e)}")
@@ -125,20 +121,18 @@ def market_scanner():
             for m in all_markets:
                 sym = m['symbol']
                 quote_vol = safe_num(m.get('quoteVolume',0))
-                if ':USDT' not in sym:
+                if ':USDT' not in sym: 
                     continue
                 if any(x in sym for x in ['BTC','ETH','XRP','SOL']):
                     continue
-                if quote_vol < 1000:
+                # Hacim sınırını düşürdük, yeni/meme coinleri yakalamak için
+                if quote_vol < 200:
                     continue
                 markets.append(m)
 
-            # Telegram’a analiz edilen coinler
             analyzed_coins = [m['symbol'] for m in markets]
             if analyzed_coins:
                 bot.send_message(MY_CHAT_ID, f"🔍 Analiz edilen coinler: {', '.join(analyzed_coins[:15])}...")
-            else:
-                bot.send_message(MY_CHAT_ID, "🔍 Analiz edilen coin yok.")
 
             # Scoring: pump/dump potansiyeli
             scores = []
@@ -149,13 +143,13 @@ def market_scanner():
                 volume = safe_num(ticker.get('quoteVolume',0))
                 normalized_volume = min(volume,50000)
                 score = (change_pct*0.7)+(normalized_volume/1000*0.3)
-                if volume < 1000: score *= 1.2
+                if volume < 500: score *= 1.2
                 scores.append((score,sym,change_pct))
 
             scores.sort(reverse=True)
             top = scores[:2]
             for s,sym,change_pct in top:
-                if s>1.5:
+                if s>1.0:  # pump/dump potansiyeli yüksek coin
                     open_trade(sym,'long' if change_pct>0 else 'short')
 
             time.sleep(5)
