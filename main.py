@@ -5,7 +5,7 @@ TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
@@ -65,21 +65,12 @@ def open_trade(symbol, side):
 
             ticker = exch.fetch_ticker(exact_sym)
             last_price = safe_num(ticker['last'])
-
-            qty = MARGIN_PER_TRADE * LEVERAGE / last_price
+            qty = (MARGIN_PER_TRADE * LEVERAGE) / last_price
             min_qty = exch.markets[exact_sym]['limits']['amount']['min']
             qty = max(qty,min_qty)
             qty_precision = float(exch.amount_to_precision(exact_sym, qty))
 
             order_price = last_price * 0.999 if side=='long' else last_price*1.001
-            recent_low = safe_num(ticker.get('low', last_price))
-            recent_high = safe_num(ticker.get('high', last_price))
-
-            if side=='long' and last_price > recent_low * 1.02:
-                return f"⚠️ {symbol} long için dipten değil"
-            if side=='short' and last_price < recent_high * 0.98:
-                return f"⚠️ {symbol} short için tepeden değil"
-
             order = exch.create_limit_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision, order_price)
             highest_profits[exact_sym] = 0
             open_coins.add(symbol)
@@ -127,8 +118,7 @@ def auto_manager():
                     open_coins.discard(sym,None)
 
             time.sleep(3)
-        except Exception as e:
-            print("Auto Manager Hata:", e)
+        except:
             time.sleep(3)
 
 # --- MARKET SCANNER ---
@@ -136,17 +126,30 @@ def market_scanner():
     while True:
         try:
             exch = get_exch()
-            markets = [m['symbol'] for m in exch.load_markets().values()
-                       if ':USDT' in m['symbol'] and all(x not in m['symbol'] for x in ['BTC','ETH','SOL'])
-                       and safe_num(m.get('quoteVolume',0)) < 100_000]
+            all_markets = exch.load_markets().values()
 
-            # Analiz edilen coinleri Telegram'a gönder
-            analyzed_coins = [m for m in markets if m not in open_coins]
+            # Sadece yeni/meme coinler ve yüksek volatilite, büyük coinleri atla
+            markets = []
+            for m in all_markets:
+                sym = m['symbol']
+                quote_vol = safe_num(m.get('quoteVolume',0))
+                if ':USDT' not in sym: 
+                    continue
+                if any(x in sym for x in ['BTC','ETH','XRP','SOL']):  # büyük coinleri atla
+                    continue
+                if quote_vol < 1000:  # çok düşük hacimli coinleri atla
+                    continue
+                markets.append(m)
+
+            # Telegram'a analiz edilen coinleri gönder
+            analyzed_coins = [m['symbol'] for m in markets if m['symbol'] not in open_coins]
             if analyzed_coins:
                 bot.send_message(MY_CHAT_ID, f"🔍 Analiz edilen coinler: {', '.join(analyzed_coins[:10])}...")
 
+            # Scoring ve işlem açma
             scores = []
-            for sym in markets:
+            for m in markets:
+                sym = m['symbol']
                 if sym in open_coins:
                     continue
                 ticker = exch.fetch_ticker(sym)
@@ -164,8 +167,7 @@ def market_scanner():
                     open_trade(sym,'long' if change_pct>0 else 'short')
 
             time.sleep(5)
-        except Exception as e:
-            print("Market Scanner Hata:", e)
+        except:
             time.sleep(5)
 
 # --- TELEGRAM KOMUTLARI ---
@@ -174,10 +176,9 @@ def handle_messages(message):
     if str(message.chat.id) != str(MY_CHAT_ID): return
     try:
         text = message.text.lower()
-
         if text.startswith('/open '):
             coin = text.split('/open ')[1].upper()
-            bot.send_message(MY_CHAT_ID, open_trade(coin,'long'))  # default long, sen manuel short istersen değiştirebilirsin
+            bot.send_message(MY_CHAT_ID, open_trade(coin,'long'))
 
         if 'işlemi kapat' in text:
             exch = get_exch()
