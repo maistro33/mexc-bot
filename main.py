@@ -24,17 +24,19 @@ def safe_num(val):
         if val is None: return 0.0
         clean = re.sub(r'[^0-9.]', '', str(val).replace(',', '.'))
         return float(clean) if clean else 0.0
-    except:
-        return 0.0
+    except: return 0.0
 
-# --- AYARLAR ---
-FIXED_MARGIN = 2      # SABİT 2 USDT
-LEVERAGE = 5
+# 🧿 SABİT AYARLAR
 MAX_POSITIONS = 2
-MIN_HOLD_SEC = 60
+MARGIN = 2
+LEVERAGE = 5
 highest_profits = {}
+MIN_HOLD_SEC = 90
 
-# --- İŞLEM AÇMA (EKLEME YOK) ---
+# ❌ GİRİLMESİN İSTENEN COINLER
+BANNED = ['BTC','ETH','SOL','BCH','LTC','XRP','ADA','DOGE','BNB']
+
+# --- EMİR AÇMA ---
 def open_trade(symbol, side):
     try:
         exch = get_exch()
@@ -42,44 +44,42 @@ def open_trade(symbol, side):
 
         pos = exch.fetch_positions()
 
-        # ❌ AYNI COINDE VARSA GİRME
+        # ❌ AYNI COIN VARSA GİRME
         for p in pos:
-            if safe_num(p.get('contracts')) > 0 and symbol in p['symbol']:
+            if safe_num(p.get('contracts'))>0 and symbol in p['symbol']:
                 return
 
-        # ❌ MAKS POZİSYON
-        active = [p for p in pos if safe_num(p.get('contracts')) > 0]
+        active = [p for p in pos if safe_num(p.get('contracts'))>0]
         if len(active) >= MAX_POSITIONS:
             return
 
-        exact_sym = next((s for s in exch.markets if symbol.upper() in s and ':USDT' in s), None)
-        if not exact_sym:
-            return
+        exact = next((s for s in exch.markets if symbol in s and ':USDT' in s), None)
+        if not exact: return
 
-        try:
-            exch.set_leverage(LEVERAGE, exact_sym)
-        except:
-            pass
+        try: exch.set_leverage(LEVERAGE, exact)
+        except: pass
 
-        ticker = exch.fetch_ticker(exact_sym)
-        last_price = safe_num(ticker['last'])
+        ticker = exch.fetch_ticker(exact)
+        price = safe_num(ticker['last'])
 
-        qty = (FIXED_MARGIN * LEVERAGE) / last_price
-        min_qty = exch.markets[exact_sym]['limits']['amount']['min']
-        qty = max(qty, min_qty)
-        qty = float(exch.amount_to_precision(exact_sym, qty))
+        qty = (MARGIN * LEVERAGE) / price
+        qty = float(exch.amount_to_precision(exact, qty))
 
-        exch.create_market_order(exact_sym, 'buy' if side=='long' else 'sell', qty)
+        order = exch.create_market_order(
+            exact,
+            'buy' if side=='long' else 'sell',
+            qty
+        )
 
-        highest_profits[exact_sym] = 0
+        highest_profits[exact] = 0
 
         bot.send_message(MY_CHAT_ID,
-            f"🛡️ MASTER GİRİŞ\n{exact_sym}\nYön: {side.upper()}\nMargin: {FIXED_MARGIN} USDT")
+            f"⚔️ AKILLI GİRİŞ\n{exact}\n{side.upper()}\nMargin:{MARGIN} USDT")
 
-    except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"HATA: {e}")
+    except:
+        pass
 
-# --- STOP + TP + TRAILING ---
+# --- KAR & STOP YÖNETİMİ ---
 def auto_manager():
     while True:
         try:
@@ -87,7 +87,6 @@ def auto_manager():
             pos = exch.fetch_positions()
 
             for p in [p for p in pos if safe_num(p.get('contracts'))>0]:
-
                 sym = p['symbol']
                 side = p['side']
                 qty = safe_num(p.get('contracts'))
@@ -98,54 +97,83 @@ def auto_manager():
 
                 profit = (last-entry)*qty if side=='long' else (entry-last)*qty
 
-                if sym not in highest_profits or profit > highest_profits[sym]:
-                    highest_profits[sym] = profit
+                if sym not in highest_profits or profit>highest_profits[sym]:
+                    highest_profits[sym]=profit
 
-                stop_loss = -1.5      # uzak SL
-                take_profit = 2.0     # TP
-                trailing = 1.0        # trailing
+                margin = safe_num(p.get('margin'))
 
-                # 🛑 STOP LOSS
-                if profit <= stop_loss:
-                    exch.create_market_order(sym,'sell' if side=='long' else 'buy',qty,params={'reduceOnly':True})
-                    bot.send_message(MY_CHAT_ID,f"🛑 STOP LOSS: {sym}")
-                    highest_profits.pop(sym,None)
+                # 🛡️ STOP LOSS (uzak)
+                if profit <= -(margin*0.08):
+                    exch.create_market_order(sym,
+                        'sell' if side=='long' else 'buy',
+                        qty,
+                        params={'reduceOnly':True})
 
                 # 💰 TAKE PROFIT
-                elif profit >= take_profit:
-                    exch.create_market_order(sym,'sell' if side=='long' else 'buy',qty,params={'reduceOnly':True})
-                    bot.send_message(MY_CHAT_ID,f"💰 TP ALINDI: {sym}")
-                    highest_profits.pop(sym,None)
+                elif profit >= margin*0.05:
+                    exch.create_market_order(sym,
+                        'sell' if side=='long' else 'buy',
+                        qty,
+                        params={'reduceOnly':True})
 
                 # 🔄 TRAILING
-                elif highest_profits[sym] >= trailing and (highest_profits[sym] - profit) >= 0.5:
-                    exch.create_market_order(sym,'sell' if side=='long' else 'buy',qty,params={'reduceOnly':True})
-                    bot.send_message(MY_CHAT_ID,f"🔄 TRAILING: {sym}")
-                    highest_profits.pop(sym,None)
+                elif highest_profits.get(sym,0) >= margin*0.07 and \
+                     highest_profits[sym]-profit >= margin*0.02:
+                    exch.create_market_order(sym,
+                        'sell' if side=='long' else 'buy',
+                        qty,
+                        params={'reduceOnly':True})
 
-            time.sleep(3)
+            time.sleep(4)
         except:
-            time.sleep(3)
+            time.sleep(4)
 
-# --- BASİT SCANNER ---
+# --- AKILLI MARKET SCANNER ---
 def market_scanner():
     while True:
         try:
             exch = get_exch()
-            markets = [m['symbol'] for m in exch.load_markets().values() if ':USDT' in m['symbol']]
+            markets = exch.load_markets()
 
-            for sym in markets[:10]:
+            for m in markets.values():
+                sym = m['symbol']
+
+                if ':USDT' not in sym:
+                    continue
+
+                if any(b in sym for b in BANNED):
+                    continue
+
                 ticker = exch.fetch_ticker(sym)
-                change = safe_num(ticker.get('percentage',0))
 
-                if change > 2:
-                    open_trade(sym,'long')
-                elif change < -2:
+                change = safe_num(ticker.get('percentage',0))
+                volume = safe_num(ticker.get('quoteVolume',0))
+
+                # ❌ hacim çoksa girme
+                if volume > 50000:
+                    continue
+
+                # 🔴 TEPEDEN SHORT
+                if change > 5:
                     open_trade(sym,'short')
 
-            time.sleep(15)
+                # 🟢 DİPTEN LONG
+                elif change < -5:
+                    open_trade(sym,'long')
+
+            time.sleep(20)
         except:
-            time.sleep(15)
+            time.sleep(20)
+
+# --- TELEGRAM ---
+@bot.message_handler(func=lambda m: True)
+def handle(m):
+    if str(m.chat.id) != str(MY_CHAT_ID):
+        return
+
+    if 'dur' in m.text.lower():
+        bot.send_message(MY_CHAT_ID,"Bot durduruldu")
+        os._exit(0)
 
 # --- BAŞLAT ---
 if __name__ == "__main__":
