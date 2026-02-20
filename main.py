@@ -72,7 +72,8 @@ def open_trade(symbol, side):
         return f"⚔️ İşlem açıldı: {exact_sym}"
 
     except Exception as e:
-        return f"⚠️ HATA: {str(e)}"
+        bot.send_message(MY_CHAT_ID, f"⚠️ HATA (open_trade): {str(e)}")
+        return None
 
 # --- TRAILING + KAR YÖNETİMİ ---
 def auto_manager():
@@ -109,7 +110,8 @@ def auto_manager():
                     highest_profits.pop(sym,None)
 
             time.sleep(3)
-        except:
+        except Exception as e:
+            bot.send_message(MY_CHAT_ID, f"⚠️ HATA (auto_manager): {str(e)}")
             time.sleep(3)
 
 # --- MARKET SCANNER ---
@@ -119,12 +121,11 @@ def market_scanner():
             exch = get_exch()
             all_markets = exch.load_markets().values()
 
-            # Sadece meme/yeni coinleri ve yüksek volatilite, büyük coinleri atla
             markets = []
             for m in all_markets:
                 sym = m['symbol']
                 quote_vol = safe_num(m.get('quoteVolume',0))
-                if ':USDT' not in sym: 
+                if ':USDT' not in sym:
                     continue
                 if any(x in sym for x in ['BTC','ETH','XRP','SOL']):
                     continue
@@ -132,11 +133,14 @@ def market_scanner():
                     continue
                 markets.append(m)
 
-            # Telegram'a analiz edilen coinleri gönder
+            # Telegram’a analiz edilen coinler
             analyzed_coins = [m['symbol'] for m in markets]
             if analyzed_coins:
-                bot.send_message(MY_CHAT_ID, f"🔍 Analiz edilen coinler: {', '.join(analyzed_coins[:10])}...")
+                bot.send_message(MY_CHAT_ID, f"🔍 Analiz edilen coinler: {', '.join(analyzed_coins[:15])}...")
+            else:
+                bot.send_message(MY_CHAT_ID, "🔍 Analiz edilen coin yok.")
 
+            # Scoring: pump/dump potansiyeli
             scores = []
             for m in markets:
                 sym = m['symbol']
@@ -145,7 +149,7 @@ def market_scanner():
                 volume = safe_num(ticker.get('quoteVolume',0))
                 normalized_volume = min(volume,50000)
                 score = (change_pct*0.7)+(normalized_volume/1000*0.3)
-                if volume<1000: score*=1.2
+                if volume < 1000: score *= 1.2
                 scores.append((score,sym,change_pct))
 
             scores.sort(reverse=True)
@@ -156,7 +160,7 @@ def market_scanner():
 
             time.sleep(5)
         except Exception as e:
-            print("Scanner Hata:", e)
+            bot.send_message(MY_CHAT_ID, f"⚠️ HATA (scanner): {str(e)}")
             time.sleep(5)
 
 # --- TELEGRAM KOMUTLARI ---
