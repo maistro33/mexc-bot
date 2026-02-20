@@ -5,7 +5,7 @@ TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = "Berfin33"
+PASSPHRASE = os.getenv('BITGET_PASSPHRASE')  # artık env üzerinden
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
@@ -26,156 +26,171 @@ def safe_num(val):
         return float(clean) if clean else 0.0
     except: return 0.0
 
-# 🧿 SABİT AYARLAR
+# --- SABİT AYARLAR ---
 MAX_POSITIONS = 2
-MARGIN = 2
+MARGIN_PER_TRADE = 2  # artık sabit 2 USDT
 LEVERAGE = 5
+STOP_LOSS_PERCENT = 0.05
+TAKE_PROFIT_PERCENT = 0.03
+TRAILING_PERCENT = 0.015
 highest_profits = {}
-MIN_HOLD_SEC = 90
+MIN_HOLD_SEC = 60
+open_coins = set()  # açık veya tamamlanmış coinler
 
-# ❌ GİRİLMESİN İSTENEN COINLER
-BANNED = ['BTC','ETH','SOL','BCH','LTC','XRP','ADA','DOGE','BNB']
+lock = threading.Lock()
 
 # --- EMİR AÇMA ---
 def open_trade(symbol, side):
-    try:
-        exch = get_exch()
-        exch.load_markets()
+    with lock:
+        if symbol in open_coins:
+            return f"⚠️ {symbol} zaten işlemde veya tamamlandı"
 
-        pos = exch.fetch_positions()
+        try:
+            exch = get_exch()
+            exch.load_markets()
+            pos = exch.fetch_positions()
+            active = [p for p in pos if safe_num(p.get('contracts'))>0]
+            if len(active) >= MAX_POSITIONS:
+                return "⚠️ Maksimum açık pozisyon"
 
-        # ❌ AYNI COIN VARSA GİRME
-        for p in pos:
-            if safe_num(p.get('contracts'))>0 and symbol in p['symbol']:
-                return
+            bal = exch.fetch_balance({'type':'swap'})
+            free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
+            if free_usdt < MARGIN_PER_TRADE:
+                return f"⚠️ Bakiye yetersiz ({free_usdt:.2f} USDT)"
 
-        active = [p for p in pos if safe_num(p.get('contracts'))>0]
-        if len(active) >= MAX_POSITIONS:
-            return
+            exact_sym = next((s for s in exch.markets if symbol.upper() in s and ':USDT' in s), None)
+            if not exact_sym: return f"⚠️ Coin bulunamadı: {symbol}"
 
-        exact = next((s for s in exch.markets if symbol in s and ':USDT' in s), None)
-        if not exact: return
+            try: exch.set_leverage(LEVERAGE, exact_sym)
+            except: pass
 
-        try: exch.set_leverage(LEVERAGE, exact)
-        except: pass
+            ticker = exch.fetch_ticker(exact_sym)
+            last_price = safe_num(ticker['last'])
 
-        ticker = exch.fetch_ticker(exact)
-        price = safe_num(ticker['last'])
+            # tam 2 USDT ile işlem
+            qty = MARGIN_PER_TRADE * LEVERAGE / last_price
+            min_qty = exch.markets[exact_sym]['limits']['amount']['min']
+            qty = max(qty,min_qty)
+            qty_precision = float(exch.amount_to_precision(exact_sym, qty))
 
-        qty = (MARGIN * LEVERAGE) / price
-        qty = float(exch.amount_to_precision(exact, qty))
+            # mantıklı giriş: dipten long, tepeden short
+            order_price = last_price * 0.999 if side=='long' else last_price*1.001
+            recent_low = safe_num(ticker.get('low', last_price))
+            recent_high = safe_num(ticker.get('high', last_price))
 
-        order = exch.create_market_order(
-            exact,
-            'buy' if side=='long' else 'sell',
-            qty
-        )
+            if side=='long' and last_price > recent_low * 1.02:  # dipten değilse girmesin
+                return f"⚠️ {symbol} long için dipten değil"
+            if side=='short' and last_price < recent_high * 0.98:  # tepeden değilse girmesin
+                return f"⚠️ {symbol} short için tepeden değil"
 
-        highest_profits[exact] = 0
+            order = exch.create_limit_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision, order_price)
+            highest_profits[exact_sym] = 0
+            open_coins.add(symbol)
+            order['openTime'] = time.time()
+            bot.send_message(MY_CHAT_ID, f"⚔️ İşlem açıldı: {exact_sym}\nYön: {side.upper()}\nMiktar: {MARGIN_PER_TRADE} USDT\nKaldıraç: {LEVERAGE}x\nID: {order['id']}")
+            return f"⚔️ İşlem açıldı: {exact_sym}"
 
-        bot.send_message(MY_CHAT_ID,
-            f"⚔️ AKILLI GİRİŞ\n{exact}\n{side.upper()}\nMargin:{MARGIN} USDT")
+        except Exception as e:
+            return f"⚠️ HATA: {str(e)}"
 
-    except:
-        pass
-
-# --- KAR & STOP YÖNETİMİ ---
+# --- TRAILING + KAR YÖNETİMİ ---
 def auto_manager():
     while True:
         try:
             exch = get_exch()
             pos = exch.fetch_positions()
-
             for p in [p for p in pos if safe_num(p.get('contracts'))>0]:
                 sym = p['symbol']
                 side = p['side']
                 qty = safe_num(p.get('contracts'))
                 entry = safe_num(p.get('entryPrice'))
-
                 ticker = exch.fetch_ticker(sym)
                 last = safe_num(ticker['last'])
-
                 profit = (last-entry)*qty if side=='long' else (entry-last)*qty
+
+                if time.time() - p.get('timestamp',0)/1000 < MIN_HOLD_SEC:
+                    continue
 
                 if sym not in highest_profits or profit>highest_profits[sym]:
                     highest_profits[sym]=profit
 
-                margin = safe_num(p.get('margin'))
+                stop_loss_usdt = max(0.5, STOP_LOSS_PERCENT*safe_num(p.get('margin'))*10)
+                trailing_usdt = max(0.5, TRAILING_PERCENT*safe_num(p.get('margin'))*10)
 
-                # 🛡️ STOP LOSS (uzak)
-                if profit <= -(margin*0.08):
-                    exch.create_market_order(sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True})
+                if profit <= -stop_loss_usdt:
+                    exch.create_market_order(sym, 'sell' if side=='long' else 'buy', qty, params={'reduceOnly':True})
+                    bot.send_message(MY_CHAT_ID, f"🛡️ STOP LOSS: {sym} kapatıldı. Zararı: {profit:.2f} USDT")
+                    highest_profits.pop(sym,None)
+                    open_coins.discard(sym)
 
-                # 💰 TAKE PROFIT
-                elif profit >= margin*0.05:
-                    exch.create_market_order(sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True})
+                elif highest_profits.get(sym,0) >= trailing_usdt and (highest_profits[sym]-profit)>=0.2:
+                    exch.create_market_order(sym, 'sell' if side=='long' else 'buy', qty, params={'reduceOnly':True})
+                    bot.send_message(MY_CHAT_ID, f"💰 KAR ALINDI: {sym} {profit:.2f} USDT")
+                    highest_profits.pop(sym,None)
+                    open_coins.discard(sym,None)
 
-                # 🔄 TRAILING
-                elif highest_profits.get(sym,0) >= margin*0.07 and \
-                     highest_profits[sym]-profit >= margin*0.02:
-                    exch.create_market_order(sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True})
-
-            time.sleep(4)
+            time.sleep(3)
         except:
-            time.sleep(4)
+            time.sleep(3)
 
-# --- AKILLI MARKET SCANNER ---
+# --- MARKET SCANNER ---
 def market_scanner():
     while True:
         try:
             exch = get_exch()
-            markets = exch.load_markets()
+            markets = [m['symbol'] for m in exch.load_markets().values()
+                       if ':USDT' in m['symbol'] and all(x not in m['symbol'] for x in ['BTC','ETH','SOL'])
+                       and safe_num(m.get('quoteVolume',0)) < 100_000]
 
-            for m in markets.values():
-                sym = m['symbol']
-
-                if ':USDT' not in sym:
+            scores = []
+            for sym in markets:
+                if sym in open_coins:  # zaten işlem varsa atla
                     continue
-
-                if any(b in sym for b in BANNED):
-                    continue
-
                 ticker = exch.fetch_ticker(sym)
-
-                change = safe_num(ticker.get('percentage',0))
+                change_pct = safe_num(ticker.get('percentage',0))
                 volume = safe_num(ticker.get('quoteVolume',0))
+                normalized_volume = min(volume,50000)
+                score = (change_pct*0.7)+(normalized_volume/1000*0.3)
+                if volume<1000: score*=1.2
+                scores.append((score,sym,change_pct))
 
-                # ❌ hacim çoksa girme
-                if volume > 50000:
-                    continue
+            scores.sort(reverse=True)
+            top = scores[:2]  # max 2 işlem
+            for s,sym,change_pct in top:
+                if s>1.5:
+                    open_trade(sym,'long' if change_pct>0 else 'short')
 
-                # 🔴 TEPEDEN SHORT
-                if change > 5:
-                    open_trade(sym,'short')
-
-                # 🟢 DİPTEN LONG
-                elif change < -5:
-                    open_trade(sym,'long')
-
-            time.sleep(20)
+            time.sleep(5)
         except:
-            time.sleep(20)
+            time.sleep(5)
 
-# --- TELEGRAM ---
-@bot.message_handler(func=lambda m: True)
-def handle(m):
-    if str(m.chat.id) != str(MY_CHAT_ID):
-        return
+# --- TELEGRAM KOMUTLARI ---
+@bot.message_handler(func=lambda message: True)
+def handle_messages(message):
+    if str(message.chat.id) != str(MY_CHAT_ID): return
+    try:
+        text = message.text.lower()
+        if 'işlemi kapat' in text:
+            exch = get_exch()
+            pos = exch.fetch_positions()
+            for p in pos:
+                if safe_num(p.get('contracts'))>0:
+                    exch.create_market_order(p['symbol'],'sell' if p['side']=='long' else 'buy',safe_num(p['contracts']),params={'reduceOnly':True})
+                    bot.send_message(MY_CHAT_ID,f"⚠️ Manuel kapatma: {p['symbol']} kapatıldı")
+                    open_coins.discard(p['symbol'])
+            return
 
-    if 'dur' in m.text.lower():
-        bot.send_message(MY_CHAT_ID,"Bot durduruldu")
-        os._exit(0)
+        if 'dur' in text:
+            bot.send_message(MY_CHAT_ID,"⏸️ Bot durduruldu")
+            os._exit(0)
 
-# --- BAŞLAT ---
+        if 'başlat' in text:
+            bot.send_message(MY_CHAT_ID,"▶️ Bot zaten çalışıyor...")
+
+    except Exception as e:
+        bot.reply_to(message,f"Sistem: {e}")
+
+# --- BOT BAŞLAT ---
 if __name__ == "__main__":
     threading.Thread(target=auto_manager,daemon=True).start()
     threading.Thread(target=market_scanner,daemon=True).start()
