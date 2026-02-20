@@ -19,67 +19,54 @@ def get_exch():
         'enableRateLimit': True
     })
 
-def safe_num(val):
-    try:
-        if val is None: return 0.0
-        clean = re.sub(r'[^0-9.]', '', str(val).replace(',', '.'))
-        return float(clean) if clean else 0.0
+def safe_num(x):
+    try: return float(x)
     except: return 0.0
 
-# --- SABİT AYARLAR ---
-MAX_POSITIONS = 2
-MARGIN_PER_TRADE = 2      # ✅ TAM 2 USDT
+# --- AYARLAR ---
+MARGIN_PER_TRADE = 2
 LEVERAGE = 5
-STOP_LOSS_PERCENT = 0.05
-TRAILING_PERCENT = 0.015
+MAX_POSITIONS = 2
+STOP_USDT = 0.5
+TRAIL_USDT = 0.5
 highest_profits = {}
-MIN_HOLD_SEC = 60
 
-# --- EMİR AÇMA ---
+# --- EMİR ---
 def open_trade(symbol, side):
     try:
         exch = get_exch()
         exch.load_markets()
 
-        # açık pozisyon sayısı
+        # açık pozisyon kontrol
         pos = exch.fetch_positions()
-        active = [p for p in pos if safe_num(p.get('contracts')) > 0]
+        active = [p for p in pos if safe_num(p.get('contracts'))>0]
         if len(active) >= MAX_POSITIONS:
             return
 
-        # bakiye kontrol
-        bal = exch.fetch_balance({'type':'swap'})
-        free_usdt = safe_num(bal.get('USDT', {}).get('free',0))
-        if free_usdt < MARGIN_PER_TRADE:
+        # aynı coin açık mı
+        if any(p['symbol']==symbol for p in active):
             return
 
-        exact_sym = symbol
+        ticker = exch.fetch_ticker(symbol)
+        price = safe_num(ticker['last'])
 
-        try: exch.set_leverage(LEVERAGE, exact_sym)
-        except: pass
+        qty = (MARGIN_PER_TRADE * LEVERAGE) / price
+        qty = float(exch.amount_to_precision(symbol, qty))
 
-        ticker = exch.fetch_ticker(exact_sym)
-        last_price = safe_num(ticker['last'])
-
-        # ✅ TAM 2 USDT işlem hesaplama
-        qty = (MARGIN_PER_TRADE * LEVERAGE) / last_price
-        qty_precision = float(exch.amount_to_precision(exact_sym, qty))
-
-        # dipten long / tepeden short
-        order_price = last_price * 0.998 if side=='long' else last_price * 1.002
+        order_price = price*0.998 if side=="long" else price*1.002
 
         exch.create_limit_order(
-            exact_sym,
-            'buy' if side=='long' else 'sell',
-            qty_precision,
+            symbol,
+            "buy" if side=="long" else "sell",
+            qty,
             order_price
         )
 
-        highest_profits[exact_sym] = 0
+        highest_profits[symbol] = 0
 
         bot.send_message(
             MY_CHAT_ID,
-            f"⚔️ İşlem açıldı: {exact_sym}\nYön: {side.upper()}\nMiktar: 2 USDT"
+            f"⚔️ {symbol} {side.upper()} açıldı — 2 USDT"
         )
 
     except Exception as e:
@@ -102,15 +89,13 @@ def auto_manager():
                 ticker = exch.fetch_ticker(sym)
                 last = safe_num(ticker['last'])
 
-                profit = (last-entry)*qty if side=='long' else (entry-last)*qty
+                profit = (last-entry)*qty if side=="long" else (entry-last)*qty
 
-                if sym not in highest_profits or profit > highest_profits[sym]:
+                if profit > highest_profits.get(sym,0):
                     highest_profits[sym] = profit
 
-                stop_loss_usdt = 0.5
-                trailing_usdt = 0.5
-
-                if profit <= -stop_loss_usdt:
+                # STOP
+                if profit <= -STOP_USDT:
                     exch.create_market_order(
                         sym,
                         'sell' if side=='long' else 'buy',
@@ -119,8 +104,9 @@ def auto_manager():
                     )
                     highest_profits.pop(sym,None)
 
-                elif highest_profits[sym] >= trailing_usdt and \
-                     (highest_profits[sym] - profit) >= 0.2:
+                # TRAILING
+                elif highest_profits[sym] >= TRAIL_USDT and \
+                     (highest_profits[sym]-profit)>=0.2:
 
                     exch.create_market_order(
                         sym,
@@ -131,10 +117,11 @@ def auto_manager():
                     highest_profits.pop(sym,None)
 
             time.sleep(3)
+
         except:
             time.sleep(3)
 
-# --- MARKET SCANNER ---
+# --- SCANNER ---
 def market_scanner():
     while True:
         try:
@@ -145,30 +132,24 @@ def market_scanner():
 
                 sym = m['symbol']
 
-                # sadece USDT vadeli
                 if ':USDT' not in sym:
                     continue
 
-                # büyük coinleri atla
                 if any(x in sym for x in ['BTC','ETH','XRP','SOL']):
                     continue
 
-                ticker = exch.fetch_ticker(sym)
+                candles = exch.fetch_ohlcv(sym,'15m',limit=5)
+                closes = [c[4] for c in candles]
 
-                change_pct = safe_num(ticker.get('percentage',0))
-                volume = safe_num(ticker.get('quoteVolume',0))
+                # DIPTEN LONG
+                if closes[-5]>closes[-4]>closes[-3]>closes[-2] \
+                   and closes[-1]>closes[-2]:
+                    open_trade(sym,"long")
 
-                # pump/dump adayı
-                if volume < 200:
-                    continue
-
-                # 🔥 yükseliyorsa short fırsatı
-                if change_pct >= 5:
-                    open_trade(sym, 'short')
-
-                # 🔥 sert düşmüşse dipten long
-                elif change_pct <= -5:
-                    open_trade(sym, 'long')
+                # TEPEDEN SHORT
+                if closes[-5]<closes[-4]<closes[-3]<closes[-2] \
+                   and closes[-1]<closes[-2]:
+                    open_trade(sym,"short")
 
             time.sleep(5)
 
@@ -176,17 +157,17 @@ def market_scanner():
             time.sleep(5)
 
 # --- TELEGRAM ---
-@bot.message_handler(func=lambda message: True)
-def handle(message):
-    if str(message.chat.id) != str(MY_CHAT_ID): return
+@bot.message_handler(func=lambda m: True)
+def handle(msg):
+    if str(msg.chat.id)!=str(MY_CHAT_ID): return
 
-    if message.text.lower() == "dur":
+    if msg.text.lower()=="dur":
         bot.send_message(MY_CHAT_ID,"Bot durduruldu")
         os._exit(0)
 
 # --- BAŞLAT ---
-if __name__ == "__main__":
+if __name__=="__main__":
     threading.Thread(target=auto_manager,daemon=True).start()
     threading.Thread(target=market_scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🚀 Bot başlatıldı")
+    bot.send_message(MY_CHAT_ID,"🚀 Bot aktif")
     bot.infinity_polling()
