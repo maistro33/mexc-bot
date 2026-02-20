@@ -31,7 +31,6 @@ MAX_POSITIONS = 2
 MARGIN_PER_TRADE = 2
 LEVERAGE = 5
 STOP_LOSS_PERCENT = 0.05
-TAKE_PROFIT_PERCENT = 0.03
 TRAILING_PERCENT = 0.015
 highest_profits = {}
 MIN_HOLD_SEC = 60
@@ -64,8 +63,8 @@ def open_trade(symbol, side):
         qty = max(qty,min_qty)
         qty_precision = float(exch.amount_to_precision(exact_sym, qty))
 
-        # MARKET ORDER yerine LIMIT ORDER (komisyon azaltmak için)
-        order_price = last_price * 0.999 if side=='long' else last_price*1.001
+        # Dipten long, tepeden short için limit price optimize
+        order_price = last_price * 0.997 if side=='long' else last_price*1.003
         order = exch.create_limit_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision, order_price)
         highest_profits[exact_sym] = 0
         order['openTime'] = time.time()
@@ -120,18 +119,23 @@ def market_scanner():
             exch = get_exch()
             all_markets = exch.load_markets().values()
 
-            # Sadece yeni/meme coinler ve yüksek volatilite, büyük coinleri atla
+            # Sadece meme/yeni coinleri ve yüksek volatilite, büyük coinleri atla
             markets = []
             for m in all_markets:
                 sym = m['symbol']
                 quote_vol = safe_num(m.get('quoteVolume',0))
                 if ':USDT' not in sym: 
                     continue
-                if any(x in sym for x in ['BTC','ETH','XRP','SOL']):  # büyük coinleri atla
+                if any(x in sym for x in ['BTC','ETH','XRP','SOL']):
                     continue
-                if quote_vol < 1000:  # çok düşük hacimli coinleri atla
+                if quote_vol < 1000:
                     continue
                 markets.append(m)
+
+            # Telegram'a analiz edilen coinleri gönder
+            analyzed_coins = [m['symbol'] for m in markets]
+            if analyzed_coins:
+                bot.send_message(MY_CHAT_ID, f"🔍 Analiz edilen coinler: {', '.join(analyzed_coins[:10])}...")
 
             scores = []
             for m in markets:
@@ -145,13 +149,14 @@ def market_scanner():
                 scores.append((score,sym,change_pct))
 
             scores.sort(reverse=True)
-            top = scores[:2]  # max 2 işlem
+            top = scores[:2]
             for s,sym,change_pct in top:
                 if s>1.5:
                     open_trade(sym,'long' if change_pct>0 else 'short')
 
             time.sleep(5)
-        except:
+        except Exception as e:
+            print("Scanner Hata:", e)
             time.sleep(5)
 
 # --- TELEGRAM KOMUTLARI ---
@@ -181,6 +186,7 @@ def handle_messages(message):
 
 # --- BOT BAŞLAT ---
 if __name__ == "__main__":
+    bot.send_message(MY_CHAT_ID,"🤖 Bot başlatıldı ve çalışıyor ✅")
     threading.Thread(target=auto_manager,daemon=True).start()
     threading.Thread(target=market_scanner,daemon=True).start()
     bot.infinity_polling()
