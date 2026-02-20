@@ -24,8 +24,8 @@ def safe_num(x):
     except: return 0.0
 
 # --- AYARLAR ---
-MARGIN_PER_TRADE = 2
-LEVERAGE = 5
+MARGIN_PER_TRADE = 2   # 2 USDT sabit
+LEVERAGE = 10           # 10x kaldıraç
 MAX_POSITIONS = 2
 STOP_USDT = 0.5
 TRAIL_USDT = 0.5
