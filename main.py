@@ -5,7 +5,7 @@ TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASSPHRASE')  # artık env üzerinden
+PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
@@ -28,15 +28,14 @@ def safe_num(val):
 
 # --- SABİT AYARLAR ---
 MAX_POSITIONS = 2
-MARGIN_PER_TRADE = 2  # artık sabit 2 USDT
+MARGIN_PER_TRADE = 2
 LEVERAGE = 5
 STOP_LOSS_PERCENT = 0.05
 TAKE_PROFIT_PERCENT = 0.03
 TRAILING_PERCENT = 0.015
 highest_profits = {}
 MIN_HOLD_SEC = 60
-open_coins = set()  # açık veya tamamlanmış coinler
-
+open_coins = set()
 lock = threading.Lock()
 
 # --- EMİR AÇMA ---
@@ -67,20 +66,18 @@ def open_trade(symbol, side):
             ticker = exch.fetch_ticker(exact_sym)
             last_price = safe_num(ticker['last'])
 
-            # tam 2 USDT ile işlem
             qty = MARGIN_PER_TRADE * LEVERAGE / last_price
             min_qty = exch.markets[exact_sym]['limits']['amount']['min']
             qty = max(qty,min_qty)
             qty_precision = float(exch.amount_to_precision(exact_sym, qty))
 
-            # mantıklı giriş: dipten long, tepeden short
             order_price = last_price * 0.999 if side=='long' else last_price*1.001
             recent_low = safe_num(ticker.get('low', last_price))
             recent_high = safe_num(ticker.get('high', last_price))
 
-            if side=='long' and last_price > recent_low * 1.02:  # dipten değilse girmesin
+            if side=='long' and last_price > recent_low * 1.02:
                 return f"⚠️ {symbol} long için dipten değil"
-            if side=='short' and last_price < recent_high * 0.98:  # tepeden değilse girmesin
+            if side=='short' and last_price < recent_high * 0.98:
                 return f"⚠️ {symbol} short için tepeden değil"
 
             order = exch.create_limit_order(exact_sym, 'buy' if side=='long' else 'sell', qty_precision, order_price)
@@ -130,7 +127,8 @@ def auto_manager():
                     open_coins.discard(sym,None)
 
             time.sleep(3)
-        except:
+        except Exception as e:
+            print("Auto Manager Hata:", e)
             time.sleep(3)
 
 # --- MARKET SCANNER ---
@@ -142,9 +140,14 @@ def market_scanner():
                        if ':USDT' in m['symbol'] and all(x not in m['symbol'] for x in ['BTC','ETH','SOL'])
                        and safe_num(m.get('quoteVolume',0)) < 100_000]
 
+            # Analiz edilen coinleri Telegram'a gönder
+            analyzed_coins = [m for m in markets if m not in open_coins]
+            if analyzed_coins:
+                bot.send_message(MY_CHAT_ID, f"🔍 Analiz edilen coinler: {', '.join(analyzed_coins[:10])}...")
+
             scores = []
             for sym in markets:
-                if sym in open_coins:  # zaten işlem varsa atla
+                if sym in open_coins:
                     continue
                 ticker = exch.fetch_ticker(sym)
                 change_pct = safe_num(ticker.get('percentage',0))
@@ -155,13 +158,14 @@ def market_scanner():
                 scores.append((score,sym,change_pct))
 
             scores.sort(reverse=True)
-            top = scores[:2]  # max 2 işlem
+            top = scores[:2]
             for s,sym,change_pct in top:
                 if s>1.5:
                     open_trade(sym,'long' if change_pct>0 else 'short')
 
             time.sleep(5)
-        except:
+        except Exception as e:
+            print("Market Scanner Hata:", e)
             time.sleep(5)
 
 # --- TELEGRAM KOMUTLARI ---
@@ -170,6 +174,11 @@ def handle_messages(message):
     if str(message.chat.id) != str(MY_CHAT_ID): return
     try:
         text = message.text.lower()
+
+        if text.startswith('/open '):
+            coin = text.split('/open ')[1].upper()
+            bot.send_message(MY_CHAT_ID, open_trade(coin,'long'))  # default long, sen manuel short istersen değiştirebilirsin
+
         if 'işlemi kapat' in text:
             exch = get_exch()
             pos = exch.fetch_positions()
@@ -192,6 +201,7 @@ def handle_messages(message):
 
 # --- BOT BAŞLAT ---
 if __name__ == "__main__":
+    bot.send_message(MY_CHAT_ID,"🤖 Bot başlatıldı ve çalışıyor ✅")
     threading.Thread(target=auto_manager,daemon=True).start()
     threading.Thread(target=market_scanner,daemon=True).start()
     bot.infinity_polling()
