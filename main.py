@@ -1,4 +1,4 @@
-import os, time, telebot, ccxt, threading, re
+import os, time, telebot, ccxt, threading
 
 # --- BAĞLANTILAR ---
 TELE_TOKEN = os.getenv('TELE_TOKEN')
@@ -24,12 +24,15 @@ def safe_num(x):
     except: return 0.0
 
 # --- AYARLAR ---
-MARGIN_PER_TRADE = 2   # 2 USDT sabit
-LEVERAGE = 10           # 10x kaldıraç
-MAX_POSITIONS = 2
-STOP_USDT = 0.5
-TRAIL_USDT = 0.5
+MARGIN_PER_TRADE = 2
+LEVERAGE = 10
+MAX_POSITIONS = 3
+STOP_USDT = 0.4
+PROFIT_LOCK = 0.4
+TRAIL_USDT = 0.2
 highest_profits = {}
+
+BANNED = ['BTC','ETH','XRP','SOL']  # Büyük coinler hariç
 
 # --- EMİR ---
 def open_trade(symbol, side):
@@ -37,13 +40,14 @@ def open_trade(symbol, side):
         exch = get_exch()
         exch.load_markets()
 
-        # açık pozisyon kontrol
+        # Açık pozisyon kontrol
         pos = exch.fetch_positions()
         active = [p for p in pos if safe_num(p.get('contracts'))>0]
+
         if len(active) >= MAX_POSITIONS:
             return
 
-        # aynı coin açık mı
+        # Aynı coin açık mı
         if any(p['symbol']==symbol for p in active):
             return
 
@@ -53,6 +57,7 @@ def open_trade(symbol, side):
         qty = (MARGIN_PER_TRADE * LEVERAGE) / price
         qty = float(exch.amount_to_precision(symbol, qty))
 
+        # Limit emir kullanıyoruz → maker fee düşük
         order_price = price*0.998 if side=="long" else price*1.002
 
         exch.create_limit_order(
@@ -66,7 +71,7 @@ def open_trade(symbol, side):
 
         bot.send_message(
             MY_CHAT_ID,
-            f"⚔️ {symbol} {side.upper()} açıldı — 2 USDT"
+            f"⚔️ {symbol} {side.upper()} açıldı — {MARGIN_PER_TRADE} USDT"
         )
 
     except Exception as e:
@@ -128,6 +133,10 @@ def market_scanner():
             exch = get_exch()
             markets = exch.load_markets()
 
+            # Açık pozisyon sayısı kontrol
+            pos = exch.fetch_positions()
+            active = [p for p in pos if safe_num(p.get('contracts'))>0]
+
             for m in markets.values():
 
                 sym = m['symbol']
@@ -135,21 +144,26 @@ def market_scanner():
                 if ':USDT' not in sym:
                     continue
 
-                if any(x in sym for x in ['BTC','ETH','XRP','SOL']):
+                if any(x in sym for x in BANNED):
                     continue
 
-                candles = exch.fetch_ohlcv(sym,'15m',limit=5)
+                # Eğer max pozisyona ulaştıysak devam etme
+                if len(active) >= MAX_POSITIONS:
+                    break
+
+                candles = exch.fetch_ohlcv(sym,'5m',limit=6)
+                volumes = [c[5] for c in candles]
                 closes = [c[4] for c in candles]
 
-                # DIPTEN LONG
-                if closes[-5]>closes[-4]>closes[-3]>closes[-2] \
-                   and closes[-1]>closes[-2]:
-                    open_trade(sym,"long")
+                # HACİM PATLAMASI
+                if volumes[-1] > sum(volumes[:-1]):
 
-                # TEPEDEN SHORT
-                if closes[-5]<closes[-4]<closes[-3]<closes[-2] \
-                   and closes[-1]<closes[-2]:
-                    open_trade(sym,"short")
+                    # MOMENTUM
+                    if closes[-1] > closes[-2] > closes[-3]:
+                        open_trade(sym,"long")
+
+                    elif closes[-1] < closes[-2] < closes[-3]:
+                        open_trade(sym,"short")
 
             time.sleep(5)
 
