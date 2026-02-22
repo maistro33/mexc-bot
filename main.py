@@ -44,13 +44,17 @@ def open_trade(symbol, side, entry_price):
         if len(active) >= MAX_POSITIONS: return
         if any(p['symbol']==symbol for p in active): return
 
+        # Açık limit emir kontrolü
+        open_orders = exch.fetch_open_orders(symbol)
+        if open_orders: return
+
         ticker = exch.fetch_ticker(symbol)
         price = entry_price or safe_num(ticker['last'])
 
         qty = (MARGIN_PER_TRADE * LEVERAGE) / price
         qty = float(exch.amount_to_precision(symbol, qty))
 
-        # Limit emir → masraf düşük
+        # Limit emir → düşük masraf
         order_price = price*0.998 if side=="long" else price*1.002
 
         exch.create_limit_order(
@@ -146,7 +150,7 @@ def market_scanner():
 
                     # Momentum + mini pullback + trend uyumu
                     if trend_up and closes[-2] > closes[-3] and closes[-1] > closes[-2]:
-                        entry_price = closes[-1]  # Limit giriş
+                        entry_price = closes[-1]
                         open_trade(sym,"long",entry_price)
 
                     elif trend_down and closes[-2] < closes[-3] and closes[-1] < closes[-2]:
