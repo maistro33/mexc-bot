@@ -124,12 +124,14 @@ def scanner():
 
                 # LONG
                 if ema9 > ema20 and vol_spike \
-                   and closes[-1] > closes[-2] > closes[-3]:
+                   and closes[-2] > closes[-3] \
+                   and closes[-1] > ema9:
                     open_trade(sym,"long")
 
                 # SHORT
                 if ema9 < ema20 and vol_spike \
-                   and closes[-1] < closes[-2] < closes[-3]:
+                   and closes[-2] < closes[-3] \
+                   and closes[-1] < ema9:
                     open_trade(sym,"short")
 
             time.sleep(3)
