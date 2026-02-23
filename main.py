@@ -26,19 +26,19 @@ MARGIN = 2
 LEV = 10
 MAX_POS = 4
 SL = 0.45
+TRAIL_START = 0.6
 
-TRAIL_START = 0.6   # erken kapatmaz
 profits = {}
-
 BANNED = ['BTC','ETH','XRP','SOL']
 
 # ===== BTC TREND =====
 def btc_trend():
     try:
         ex = get_exch()
-        candles = ex.fetch_ohlcv('BTC/USDT:USDT','5m',limit=4)
-        return candles[-1][4] - candles[0][4]  # pozitif: yükseliyor
-    except:
+        candles = ex.fetch_ohlcv('BTC/USDT','5m',limit=4)
+        return candles[-1][4] - candles[0][4]
+    except Exception as e:
+        print("BTC TREND ERROR:", e)
         return 0
 
 # ===== EMİR =====
@@ -58,6 +58,7 @@ def open_trade(sym, side):
 
         if len(active) >= MAX_POS:
             return
+
         if any(p['symbol']==sym for p in active):
             return
 
@@ -67,7 +68,10 @@ def open_trade(sym, side):
         qty = (MARGIN * LEV) / price
         qty = float(ex.amount_to_precision(sym, qty))
 
-        ex.set_leverage(LEV, sym)
+        try:
+            ex.set_leverage(LEV, sym)
+        except:
+            pass
 
         ex.create_market_order(
             sym,
@@ -76,10 +80,10 @@ def open_trade(sym, side):
         )
 
         profits[sym] = 0
-        bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()}")
+        bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()} açıldı")
 
-    except as e:
-        print(e)
+    except Exception as e:
+        print("OPEN TRADE ERROR:", e)
 
 # ===== KAR YÖNETİMİ =====
 def manager():
@@ -107,10 +111,9 @@ def manager():
                         qty, params={'reduceOnly':True})
                     profits.pop(sym,None)
 
-                # AKILLI TRAILING
+                # AKILLI TRAILING (erken kapatmaz)
                 elif profits[sym] >= TRAIL_START:
 
-                    # kâr büyüdükçe takip genişler
                     gap = profits[sym] * 0.35
 
                     if profits[sym] - profit >= gap:
@@ -120,7 +123,8 @@ def manager():
                         profits.pop(sym,None)
 
             time.sleep(2)
-        except:
+        except Exception as e:
+            print("MANAGER ERROR:", e)
             time.sleep(2)
 
 # ===== SCANNER =====
@@ -136,9 +140,15 @@ def scanner():
             for m in markets.values():
 
                 sym = m['symbol']
-                if ':USDT' not in sym: continue
-                if any(x in sym for x in BANNED): continue
-                if len(active) >= MAX_POS: break
+
+                if ':USDT' not in sym:
+                    continue
+
+                if any(x in sym for x in BANNED):
+                    continue
+
+                if len(active) >= MAX_POS:
+                    break
 
                 candles = ex.fetch_ohlcv(sym,'5m',limit=20)
                 closes = [c[4] for c in candles]
@@ -149,29 +159,31 @@ def scanner():
                 vol_spike = vols[-1] > sum(vols[:-1])/len(vols[:-1])
 
                 # LONG
-                if ema9 > ema20 and vol_spike \
-                   and closes[-1] > ema9:
+                if ema9 > ema20 and vol_spike and closes[-1] > ema9:
                     open_trade(sym,"long")
 
                 # SHORT
-                if ema9 < ema20 and vol_spike \
-                   and closes[-1] < ema9:
+                if ema9 < ema20 and vol_spike and closes[-1] < ema9:
                     open_trade(sym,"short")
 
             time.sleep(3)
-        except:
+        except Exception as e:
+            print("SCANNER ERROR:", e)
             time.sleep(3)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
-    if str(msg.chat.id)!=str(MY_CHAT_ID): return
+    if str(msg.chat.id)!=str(MY_CHAT_ID):
+        return
+
     if msg.text.lower()=="dur":
+        bot.send_message(MY_CHAT_ID,"⏸️ Bot durduruldu")
         os._exit(0)
 
 # ===== BAŞLAT =====
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"💀 ULTIMATE BOT AKTİF")
+    bot.send_message(MY_CHAT_ID,"💀 BOT AKTİF — AV BAŞLADI")
     bot.infinity_polling()
