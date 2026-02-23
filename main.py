@@ -26,16 +26,33 @@ MARGIN = 2
 LEV = 10
 MAX_POS = 4
 SL = 0.45
-TRAIL_START = 0.35
-TRAIL_GAP = 0.18
+
+TRAIL_START = 0.6   # erken kapatmaz
 profits = {}
 
 BANNED = ['BTC','ETH','XRP','SOL']
+
+# ===== BTC TREND =====
+def btc_trend():
+    try:
+        ex = get_exch()
+        candles = ex.fetch_ohlcv('BTC/USDT:USDT','5m',limit=4)
+        return candles[-1][4] - candles[0][4]  # pozitif: yükseliyor
+    except:
+        return 0
 
 # ===== EMİR =====
 def open_trade(sym, side):
     try:
         ex = get_exch()
+
+        # BTC yön filtresi
+        trend = btc_trend()
+        if side == "long" and trend < 0:
+            return
+        if side == "short" and trend > 0:
+            return
+
         pos = ex.fetch_positions()
         active = [p for p in pos if safe(p.get('contracts'))>0]
 
@@ -45,8 +62,12 @@ def open_trade(sym, side):
             return
 
         price = safe(ex.fetch_ticker(sym)['last'])
+
+        # TAM 2 USDT MARGIN
         qty = (MARGIN * LEV) / price
         qty = float(ex.amount_to_precision(sym, qty))
+
+        ex.set_leverage(LEV, sym)
 
         ex.create_market_order(
             sym,
@@ -57,13 +78,15 @@ def open_trade(sym, side):
         profits[sym] = 0
         bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()}")
 
-    except: pass
+    except as e:
+        print(e)
 
 # ===== KAR YÖNETİMİ =====
 def manager():
     while True:
         try:
             ex = get_exch()
+
             for p in [p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]:
 
                 sym = p['symbol']
@@ -77,26 +100,30 @@ def manager():
                 if profit > profits.get(sym,0):
                     profits[sym] = profit
 
-                # STOP
+                # STOP LOSS
                 if profit <= -SL:
                     ex.create_market_order(sym,
                         'sell' if side=='long' else 'buy',
                         qty, params={'reduceOnly':True})
                     profits.pop(sym,None)
 
-                # TRAILING
-                elif profits[sym] >= TRAIL_START and \
-                     profits[sym]-profit >= TRAIL_GAP:
-                    ex.create_market_order(sym,
-                        'sell' if side=='long' else 'buy',
-                        qty, params={'reduceOnly':True})
-                    profits.pop(sym,None)
+                # AKILLI TRAILING
+                elif profits[sym] >= TRAIL_START:
+
+                    # kâr büyüdükçe takip genişler
+                    gap = profits[sym] * 0.35
+
+                    if profits[sym] - profit >= gap:
+                        ex.create_market_order(sym,
+                            'sell' if side=='long' else 'buy',
+                            qty, params={'reduceOnly':True})
+                        profits.pop(sym,None)
 
             time.sleep(2)
         except:
             time.sleep(2)
 
-# ===== AKILLI SCANNER =====
+# ===== SCANNER =====
 def scanner():
     while True:
         try:
@@ -117,20 +144,17 @@ def scanner():
                 closes = [c[4] for c in candles]
                 vols = [c[5] for c in candles]
 
-                # TREND + HACİM + MOMENTUM
                 ema9 = sum(closes[-9:])/9
                 ema20 = sum(closes)/20
                 vol_spike = vols[-1] > sum(vols[:-1])/len(vols[:-1])
 
                 # LONG
                 if ema9 > ema20 and vol_spike \
-                   and closes[-2] > closes[-3] \
                    and closes[-1] > ema9:
                     open_trade(sym,"long")
 
                 # SHORT
                 if ema9 < ema20 and vol_spike \
-                   and closes[-2] < closes[-3] \
                    and closes[-1] < ema9:
                     open_trade(sym,"short")
 
