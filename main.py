@@ -1,5 +1,4 @@
 import os, time, telebot, ccxt, threading
-import pandas as pd  # EMA hesaplaması için eklendi
 
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
@@ -25,13 +24,12 @@ def safe(x):
 # ===== AYAR =====
 MARGIN = 2
 LEV = 10
-MAX_POS = 10  # altcoinlerde daha fazla pozisyon açabilmek için artırıldı
+MAX_POS = 4
 SL = 0.45
 TRAIL_START = 0.35
 TRAIL_GAP = 0.18
 profits = {}
 
-# Büyük coinler hariç → sadece volatil altcoinler
 BANNED = ['BTC','ETH','XRP','SOL']
 
 # ===== EMİR =====
@@ -108,13 +106,6 @@ def scanner():
             pos = ex.fetch_positions()
             active = [p for p in pos if safe(p.get('contracts'))>0]
 
-            # BTC trendini ana filtre olarak al
-            btc_candles = ex.fetch_ohlcv('BTC/USDT','5m',limit=20)
-            btc_closes = [c[4] for c in btc_candles]
-            btc_ema9 = pd.Series(btc_closes).ewm(span=9, adjust=False).iloc[-1]
-            btc_ema20 = pd.Series(btc_closes).ewm(span=20, adjust=False).iloc[-1]
-            btc_trend_up = btc_ema9 > btc_ema20  # True = yükseliş trendi
-
             for m in markets.values():
 
                 sym = m['symbol']
@@ -127,21 +118,21 @@ def scanner():
                 vols = [c[5] for c in candles]
 
                 # TREND + HACİM + MOMENTUM
-                ema9 = pd.Series(closes[-9:]).ewm(span=9, adjust=False).iloc[-1]
-                ema20 = pd.Series(closes).ewm(span=20, adjust=False).iloc[-1]
+                ema9 = sum(closes[-9:])/9
+                ema20 = sum(closes)/20
                 vol_spike = vols[-1] > sum(vols[:-1])/len(vols[:-1])
 
-                # BTC trendine göre pozisyon aç
-                if btc_trend_up:  # BTC yükseliyorsa yalnızca long aç
-                    if ema9 > ema20 and vol_spike \
-                       and closes[-2] > closes[-3] \
-                       and closes[-1] > ema9:
-                        open_trade(sym,"long")
-                else:  # BTC düşüyorsa yalnızca short aç
-                    if ema9 < ema20 and vol_spike \
-                       and closes[-2] < closes[-3] \
-                       and closes[-1] < ema9:
-                        open_trade(sym,"short")
+                # LONG
+                if ema9 > ema20 and vol_spike \
+                   and closes[-2] > closes[-3] \
+                   and closes[-1] > ema9:
+                    open_trade(sym,"long")
+
+                # SHORT
+                if ema9 < ema20 and vol_spike \
+                   and closes[-2] < closes[-3] \
+                   and closes[-1] < ema9:
+                    open_trade(sym,"short")
 
             time.sleep(3)
         except:
