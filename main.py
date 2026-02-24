@@ -4,7 +4,6 @@ import telebot
 import ccxt
 import threading
 
-# ===== TELEGRAM & API =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
@@ -14,21 +13,20 @@ PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== SETTINGS =====
-MARGIN = 5          # SABİT 5 USDT
+# ===== KORUMA MODU =====
+MARGIN = 3
 LEV = 10
 MAX_POS = 1
 
-ATR_MULT = 1.8      # Stop biraz daha dar
-TRAIL_START = 2.5   # Kar 2.5 ATR olunca takip başlar
-TRAIL_GAP = 1.2
+ATR_MULT = 1.6
+TRAIL_START = 2.0
+TRAIL_GAP = 1.0
 
 BANNED = ['BTC','ETH','XRP','SOL','BNB']
 
 profits = {}
 lock = threading.Lock()
 
-# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -43,7 +41,6 @@ def safe(x):
     except:
         return 0.0
 
-# ===== INDICATORS =====
 def ema(data, period):
     k = 2/(period+1)
     val = data[0]
@@ -74,18 +71,15 @@ def adx(candles, period=14):
     dx=100*abs(plus-minus)/(plus+minus) if (plus+minus)!=0 else 0
     return dx
 
-# ===== POSITION SIZE (SABİT) =====
 def calculate_size(sym):
     price = safe(exchange.fetch_ticker(sym)['last'])
     notional = MARGIN * LEV
     qty = notional / price
     return float(exchange.amount_to_precision(sym, qty))
 
-# ===== OPEN TRADE =====
 def open_trade(sym, side):
     try:
         exchange.set_leverage(LEV, sym)
-
         qty = calculate_size(sym)
         if qty <= 0:
             return False
@@ -99,14 +93,13 @@ def open_trade(sym, side):
         with lock:
             profits[sym] = 0
 
-        bot.send_message(MY_CHAT_ID,f"🎯 {sym} {side.upper()} (5 USDT)")
+        bot.send_message(MY_CHAT_ID,f"🎯 {sym} {side.upper()} (3 USDT)")
         return True
 
     except Exception as e:
         print("OPEN:",e)
         return False
 
-# ===== MANAGER =====
 def manager():
     while True:
         try:
@@ -151,7 +144,6 @@ def manager():
             print("MANAGER:",e)
             time.sleep(2)
 
-# ===== SCANNER =====
 def scanner():
     markets = exchange.load_markets()
 
@@ -208,7 +200,6 @@ def scanner():
             print("SCAN:",e)
             time.sleep(6)
 
-# ===== TELEGRAM STOP =====
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
     if str(msg.chat.id)!=str(MY_CHAT_ID):
@@ -216,9 +207,8 @@ def stop(msg):
     if msg.text.lower()=="dur":
         os._exit(0)
 
-# ===== START =====
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🧠 FIXED 5 USDT SCALP AKTİF")
+    bot.send_message(MY_CHAT_ID,"🛡️ SAFE MODE 3 USDT AKTİF")
     bot.infinity_polling()
