@@ -4,7 +4,7 @@ import telebot
 import ccxt
 import threading
 
-# ===== TELEGRAM & API =====
+# ===== TELEGRAM =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
@@ -14,21 +14,20 @@ PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== SETTINGS =====
-MARGIN = 3
+# ===== SABİT AYAR =====
+MARGIN = 3            # SABİT 3 USDT
 LEV = 10
-MAX_POS = 1
+MAX_POS = 1           # TEK POZİSYON
 
-FIXED_STOP = 0.40        # Maksimum zarar
-TRAIL_START = 0.60       # 0.60 USDT kara gelince takip başlar
-TRAIL_GAP = 0.30         # 0.30 geri çekilirse kapatır
+FIXED_STOP = 0.45     # Max zarar ~0.45 USDT
 
-BANNED = ['BTC','ETH','XRP','SOL','BNB']
+# SCALP TRAILING
+BE_TRIGGER = 0.40     # +0.40'da break-even
+LOCK_TRIGGER = 0.70   # +0.70'de min kâr kilitle
+TIGHT_TRIGGER = 1.00  # +1.00'de sıkı takip
 
-profits = {}
-lock = threading.Lock()
+BANNED = ['BTC','ETH','XRP','SOL']
 
-# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     'apiKey': API_KEY,
     'secret': API_SEC,
@@ -37,65 +36,44 @@ exchange = ccxt.bitget({
     'enableRateLimit': True
 })
 
+profits = {}
+lock = threading.Lock()
+
 def safe(x):
     try:
         return float(x)
     except:
         return 0.0
 
-# ===== INDICATORS =====
-def ema(data, period):
-    k = 2/(period+1)
-    val = data[0]
-    for p in data[1:]:
-        val = p*k + val*(1-k)
-    return val
-
-def adx(candles, period=14):
-    ups,downs,tr=[],[],[]
-    for i in range(1,len(candles)):
-        high,low,prev_high,prev_low = candles[i][2],candles[i][3],candles[i-1][2],candles[i-1][3]
-        up=high-prev_high
-        down=prev_low-low
-        ups.append(max(up,0) if up>down else 0)
-        downs.append(max(down,0) if down>up else 0)
-        tr.append(max(high-low,abs(high-candles[i-1][4]),abs(low-candles[i-1][4])))
-    atr_val=sum(tr[-period:])
-    if atr_val==0:return 0
-    plus=100*(sum(ups[-period:])/atr_val)
-    minus=100*(sum(downs[-period:])/atr_val)
-    dx=100*abs(plus-minus)/(plus+minus) if (plus+minus)!=0 else 0
-    return dx
-
-# ===== POSITION SIZE =====
-def calculate_size(sym):
-    price = safe(exchange.fetch_ticker(sym)['last'])
-    notional = MARGIN * LEV
-    qty = notional / price
-    return float(exchange.amount_to_precision(sym, qty))
-
-# ===== OPEN TRADE =====
+# ===== POZİSYON AÇ =====
 def open_trade(sym, side):
     try:
-        exchange.set_leverage(LEV, sym)
-        qty = calculate_size(sym)
-        if qty <= 0:
+        positions = [p for p in exchange.fetch_positions()
+                     if safe(p.get('contracts')) > 0]
+
+        if len(positions) >= MAX_POS:
             return False
+
+        exchange.set_leverage(LEV, sym)
+
+        price = safe(exchange.fetch_ticker(sym)['last'])
+        qty = (MARGIN * LEV) / price
+        qty = float(exchange.amount_to_precision(sym, qty))
 
         exchange.create_market_order(
             sym,
-            "buy" if side=="long" else "sell",
+            "buy" if side == "long" else "sell",
             qty
         )
 
         with lock:
             profits[sym] = 0
 
-        bot.send_message(MY_CHAT_ID,f"🎯 {sym} {side.upper()} (3 USDT)")
+        bot.send_message(MY_CHAT_ID, f"🎯 {sym} {side.upper()}")
         return True
 
     except Exception as e:
-        print("OPEN:",e)
+        print("OPEN ERROR:", e)
         return False
 
 # ===== MANAGER =====
@@ -103,23 +81,23 @@ def manager():
     while True:
         try:
             positions = [p for p in exchange.fetch_positions()
-                         if safe(p.get('contracts'))>0]
+                         if safe(p.get('contracts')) > 0]
 
             for p in positions:
-                sym=p['symbol']
-                side=p['side']
-                qty=safe(p.get('contracts'))
-                entry=safe(p.get('entryPrice'))
-                last=safe(exchange.fetch_ticker(sym)['last'])
+                sym = p['symbol']
+                side = p['side']
+                qty = safe(p.get('contracts'))
+                entry = safe(p.get('entryPrice'))
+                last = safe(exchange.fetch_ticker(sym)['last'])
 
-                profit=(last-entry)*qty if side=="long" else (entry-last)*qty
+                profit = (last-entry)*qty if side=="long" else (entry-last)*qty
 
                 with lock:
-                    if profit>profits.get(sym,0):
-                        profits[sym]=profit
-                    peak=profits.get(sym,0)
+                    if profit > profits.get(sym, 0):
+                        profits[sym] = profit
+                    peak = profits.get(sym, 0)
 
-                # SABİT STOP
+                # ----- HARD STOP -----
                 if profit <= -FIXED_STOP:
                     exchange.create_market_order(
                         sym,
@@ -130,8 +108,30 @@ def manager():
                     profits.pop(sym,None)
                     continue
 
-                # TRAILING
-                if peak >= TRAIL_START and peak - profit >= TRAIL_GAP:
+                # ----- BREAK EVEN -----
+                if peak >= BE_TRIGGER and profit <= 0:
+                    exchange.create_market_order(
+                        sym,
+                        'sell' if side=='long' else 'buy',
+                        qty,
+                        params={'reduceOnly':True}
+                    )
+                    profits.pop(sym,None)
+                    continue
+
+                # ----- LOCK PROFIT -----
+                if peak >= LOCK_TRIGGER and profit <= 0.30:
+                    exchange.create_market_order(
+                        sym,
+                        'sell' if side=='long' else 'buy',
+                        qty,
+                        params={'reduceOnly':True}
+                    )
+                    profits.pop(sym,None)
+                    continue
+
+                # ----- TIGHT TRAILING -----
+                if peak >= TIGHT_TRIGGER and peak - profit >= 0.30:
                     exchange.create_market_order(
                         sym,
                         'sell' if side=='long' else 'buy',
@@ -143,7 +143,7 @@ def manager():
             time.sleep(2)
 
         except Exception as e:
-            print("MANAGER:",e)
+            print("MANAGER:", e)
             time.sleep(2)
 
 # ===== SCANNER =====
@@ -152,68 +152,54 @@ def scanner():
 
     while True:
         try:
-            positions=[p for p in exchange.fetch_positions()
-                       if safe(p.get('contracts'))>0]
+            positions = [p for p in exchange.fetch_positions()
+                         if safe(p.get('contracts')) > 0]
 
-            if len(positions)>=MAX_POS:
+            if len(positions) >= MAX_POS:
                 time.sleep(5)
                 continue
 
-            best_setup=None
-            best_score=0
-
             for m in markets.values():
-                sym=m['symbol']
+                sym = m['symbol']
 
                 if ':USDT' not in sym:
                     continue
                 if any(x in sym for x in BANNED):
                     continue
 
-                candles=exchange.fetch_ohlcv(sym,'5m',limit=40)
-                closes=[c[4] for c in candles]
+                candles = exchange.fetch_ohlcv(sym, '5m', limit=30)
+                closes = [c[4] for c in candles]
 
-                ema9=ema(closes[-30:],9)
-                ema21=ema(closes[-30:],21)
-                strength=adx(candles)
+                ema9 = sum(closes[-9:])/9
+                ema21 = sum(closes[-21:])/21
 
-                momentum_up=closes[-1]>closes[-2]>closes[-3]
-                momentum_down=closes[-1]<closes[-2]<closes[-3]
+                # LONG
+                if ema9 > ema21 and closes[-1] > closes[-2]:
+                    if open_trade(sym, "long"):
+                        break
 
-                score=strength
-
-                if ema9>ema21 and momentum_up and strength>18:
-                    if score>best_score:
-                        best_score=score
-                        best_setup=(sym,"long")
-
-                if ema9<ema21 and momentum_down and strength>18:
-                    if score>best_score:
-                        best_score=score
-                        best_setup=(sym,"short")
-
-            if best_setup:
-                sym,side=best_setup
-                if open_trade(sym,side):
-                    time.sleep(10)
+                # SHORT
+                if ema9 < ema21 and closes[-1] < closes[-2]:
+                    if open_trade(sym, "short"):
+                        break
 
             time.sleep(6)
 
         except Exception as e:
-            print("SCAN:",e)
+            print("SCAN:", e)
             time.sleep(6)
 
 # ===== TELEGRAM STOP =====
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
-    if str(msg.chat.id)!=str(MY_CHAT_ID):
+    if str(msg.chat.id) != str(MY_CHAT_ID):
         return
-    if msg.text.lower()=="dur":
+    if msg.text.lower() == "dur":
         os._exit(0)
 
 # ===== START =====
-if __name__=="__main__":
-    threading.Thread(target=manager,daemon=True).start()
-    threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🛡️ FIXED STOP 0.40 MODE AKTİF")
+if __name__ == "__main__":
+    threading.Thread(target=manager, daemon=True).start()
+    threading.Thread(target=scanner, daemon=True).start()
+    bot.send_message(MY_CHAT_ID, "⚡ STABLE SCALP MODE AKTİF")
     bot.infinity_polling()
