@@ -5,19 +5,19 @@ import ccxt
 import threading
 import datetime
 
-# ====== TELEGRAM & API ======
+# ===== TELEGRAM & API =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
 
-# HARDCODED PASS (İSTEDİĞİN GİBİ)
+# HARDCODED PASS
 PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== CORE SETTINGS (DOKUNMA) =====
+# ===== CORE SETTINGS =====
 RISK_PCT = 0.008
 LEV = 10
 MAX_POS = 1
@@ -126,12 +126,11 @@ def calculate_size(sym):
 def open_trade(sym, side):
     try:
         check_risk()
-
         exchange.set_leverage(LEV, sym)
 
-        qty, a = calculate_size(sym)
+        qty, _ = calculate_size(sym)
         if qty <= 0:
-            return
+            return False
 
         exchange.create_market_order(
             sym,
@@ -143,9 +142,11 @@ def open_trade(sym, side):
             profits[sym]=0
 
         bot.send_message(MY_CHAT_ID,f"🎯 {sym} {side.upper()}")
+        return True
 
     except Exception as e:
         print("OPEN:",e)
+        return False
 
 # ===== MANAGER =====
 def manager():
@@ -172,45 +173,27 @@ def manager():
                         profits[sym]=profit
                     peak=profits.get(sym,0)
 
-                # HARD STOP
                 if profit<=-(a*ATR_MULT):
-                    exchange.create_market_order(
-                        sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
+                    exchange.create_market_order(sym,'sell' if side=='long' else 'buy',
+                                                 qty,params={'reduceOnly':True})
                     profits.pop(sym,None)
                     continue
 
-                # TRAILING STAGES
                 if peak>a*4 and peak-profit>=a*TRAIL_STAGE1:
-                    exchange.create_market_order(
-                        sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
+                    exchange.create_market_order(sym,'sell' if side=='long' else 'buy',
+                                                 qty,params={'reduceOnly':True})
                     profits.pop(sym,None)
                     continue
 
                 if peak>a*7 and peak-profit>=a*TRAIL_STAGE2:
-                    exchange.create_market_order(
-                        sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
+                    exchange.create_market_order(sym,'sell' if side=='long' else 'buy',
+                                                 qty,params={'reduceOnly':True})
                     profits.pop(sym,None)
                     continue
 
                 if peak>a*10 and peak-profit>=a*TRAIL_STAGE3:
-                    exchange.create_market_order(
-                        sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
+                    exchange.create_market_order(sym,'sell' if side=='long' else 'buy',
+                                                 qty,params={'reduceOnly':True})
                     profits.pop(sym,None)
 
             time.sleep(2)
@@ -219,22 +202,28 @@ def manager():
             print("MANAGER:",e)
             time.sleep(2)
 
-# ===== SCANNER =====
+# ===== SCANNER (KİLİTLİ) =====
 def scanner():
     markets = exchange.load_markets()
 
     while True:
         try:
             positions=[p for p in exchange.fetch_positions() if safe(p.get('contracts'))>0]
+
             if len(positions)>=MAX_POS:
                 time.sleep(5)
                 continue
 
             for m in markets.values():
                 sym=m['symbol']
+
                 if ':USDT' not in sym:
                     continue
                 if any(x in sym for x in BANNED):
+                    continue
+
+                # tekrar aynı coine girme
+                if any(p['symbol']==sym for p in positions):
                     continue
 
                 # 1H
@@ -262,7 +251,9 @@ def scanner():
                     ema9>ema21 and
                     trend_strength>18 and
                     funding<0.015):
-                    open_trade(sym,"long")
+
+                    if open_trade(sym,"long"):
+                        break
 
                 # SHORT
                 if (close1h[-1]<ema200_1h and
@@ -270,7 +261,9 @@ def scanner():
                     ema9<ema21 and
                     trend_strength>18 and
                     funding>-0.015):
-                    open_trade(sym,"short")
+
+                    if open_trade(sym,"short"):
+                        break
 
             time.sleep(7)
 
