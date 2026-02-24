@@ -1,10 +1,19 @@
-import os, time, telebot, ccxt, threading, datetime, math
+import os
+import time
+import telebot
+import ccxt
+import threading
+import datetime
 
+# ====== TELEGRAM & API ======
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
+
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASS')
+
+# HARDCODED PASS (İSTEDİĞİN GİBİ)
+PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
@@ -29,19 +38,21 @@ today = datetime.date.today()
 
 BANNED = ['BTC','ETH','XRP','SOL']
 
-# ===== EXCHANGE =====
-def get_exch():
-    return ccxt.bitget({
-        'apiKey': API_KEY,
-        'secret': API_SEC,
-        'password': PASSPHRASE,
-        'options': {'defaultType': 'swap'},
-        'enableRateLimit': True
-    })
+# ===== EXCHANGE (TEK INSTANCE) =====
+exchange = ccxt.bitget({
+    'apiKey': API_KEY,
+    'secret': API_SEC,
+    'password': PASSPHRASE,
+    'options': {'defaultType': 'swap'},
+    'enableRateLimit': True
+})
 
+# ===== UTILS =====
 def safe(x):
-    try: return float(x)
-    except: return 0.0
+    try:
+        return float(x)
+    except:
+        return 0.0
 
 # ===== INDICATORS =====
 def ema(data, period):
@@ -75,10 +86,10 @@ def adx(candles, period=14):
     return dx
 
 # ===== RISK CONTROL =====
-def check_risk(ex):
+def check_risk():
     global start_balance, peak_balance, today
 
-    balance = ex.fetch_balance()['USDT']['total']
+    balance = exchange.fetch_balance()['USDT']['total']
 
     if start_balance is None:
         start_balance = balance
@@ -91,42 +102,42 @@ def check_risk(ex):
     if balance > peak_balance:
         peak_balance = balance
 
-    # daily stop
     if balance < start_balance*(1-DAILY_LOSS_LIMIT):
         bot.send_message(MY_CHAT_ID,"🛑 Daily loss limit hit.")
         os._exit(0)
 
-    # global DD stop
     if balance < peak_balance*(1-GLOBAL_DD_LIMIT):
         bot.send_message(MY_CHAT_ID,"💀 Max drawdown reached.")
         os._exit(0)
 
 # ===== POSITION SIZE =====
-def calculate_size(ex, sym):
-    balance = ex.fetch_balance()['USDT']['free']
+def calculate_size(sym):
+    balance = exchange.fetch_balance()['USDT']['free']
     risk_amount = balance * RISK_PCT
 
-    candles = ex.fetch_ohlcv(sym,'5m',limit=50)
+    candles = exchange.fetch_ohlcv(sym,'5m',limit=50)
     a = atr(candles)
     stop_dist = a * ATR_MULT
 
     qty = risk_amount / stop_dist
-    return float(ex.amount_to_precision(sym, qty)), a
+    return float(exchange.amount_to_precision(sym, qty)), a
 
 # ===== OPEN TRADE =====
 def open_trade(sym, side):
     try:
-        ex = get_exch()
-        check_risk(ex)
+        check_risk()
 
-        ex.set_leverage(LEV, sym)
+        exchange.set_leverage(LEV, sym)
 
-        qty, a = calculate_size(ex, sym)
-        if qty <= 0: return
+        qty, a = calculate_size(sym)
+        if qty <= 0:
+            return
 
-        ex.create_market_order(sym,
+        exchange.create_market_order(
+            sym,
             "buy" if side=="long" else "sell",
-            qty)
+            qty
+        )
 
         with lock:
             profits[sym]=0
@@ -140,18 +151,18 @@ def open_trade(sym, side):
 def manager():
     while True:
         try:
-            ex=get_exch()
-            check_risk(ex)
+            check_risk()
 
-            for p in [p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]:
+            positions = [p for p in exchange.fetch_positions() if safe(p.get('contracts'))>0]
 
+            for p in positions:
                 sym=p['symbol']
                 side=p['side']
                 qty=safe(p.get('contracts'))
                 entry=safe(p.get('entryPrice'))
-                last=safe(ex.fetch_ticker(sym)['last'])
+                last=safe(exchange.fetch_ticker(sym)['last'])
 
-                candles=ex.fetch_ohlcv(sym,'5m',limit=50)
+                candles=exchange.fetch_ohlcv(sym,'5m',limit=50)
                 a=atr(candles)
 
                 profit=(last-entry)*qty if side=="long" else (entry-last)*qty
@@ -163,73 +174,87 @@ def manager():
 
                 # HARD STOP
                 if profit<=-(a*ATR_MULT):
-                    ex.create_market_order(sym,
+                    exchange.create_market_order(
+                        sym,
                         'sell' if side=='long' else 'buy',
-                        qty,params={'reduceOnly':True})
+                        qty,
+                        params={'reduceOnly':True}
+                    )
                     profits.pop(sym,None)
                     continue
 
-                # TRAILING ENGINE
+                # TRAILING STAGES
                 if peak>a*4 and peak-profit>=a*TRAIL_STAGE1:
-                    ex.create_market_order(sym,
+                    exchange.create_market_order(
+                        sym,
                         'sell' if side=='long' else 'buy',
-                        qty,params={'reduceOnly':True})
+                        qty,
+                        params={'reduceOnly':True}
+                    )
                     profits.pop(sym,None)
                     continue
 
                 if peak>a*7 and peak-profit>=a*TRAIL_STAGE2:
-                    ex.create_market_order(sym,
+                    exchange.create_market_order(
+                        sym,
                         'sell' if side=='long' else 'buy',
-                        qty,params={'reduceOnly':True})
+                        qty,
+                        params={'reduceOnly':True}
+                    )
                     profits.pop(sym,None)
                     continue
 
                 if peak>a*10 and peak-profit>=a*TRAIL_STAGE3:
-                    ex.create_market_order(sym,
+                    exchange.create_market_order(
+                        sym,
                         'sell' if side=='long' else 'buy',
-                        qty,params={'reduceOnly':True})
+                        qty,
+                        params={'reduceOnly':True}
+                    )
                     profits.pop(sym,None)
 
             time.sleep(2)
+
         except Exception as e:
             print("MANAGER:",e)
             time.sleep(2)
 
 # ===== SCANNER =====
 def scanner():
-    ex=get_exch()
-    markets=ex.load_markets()
+    markets = exchange.load_markets()
 
     while True:
         try:
-            positions=[p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]
+            positions=[p for p in exchange.fetch_positions() if safe(p.get('contracts'))>0]
             if len(positions)>=MAX_POS:
                 time.sleep(5)
                 continue
 
             for m in markets.values():
                 sym=m['symbol']
-                if ':USDT' not in sym: continue
-                if any(x in sym for x in BANNED): continue
+                if ':USDT' not in sym:
+                    continue
+                if any(x in sym for x in BANNED):
+                    continue
 
-                # 1H trend
-                c1h=ex.fetch_ohlcv(sym,'1h',limit=100)
+                # 1H
+                c1h=exchange.fetch_ohlcv(sym,'1h',limit=200)
                 close1h=[c[4] for c in c1h]
                 ema200_1h=ema(close1h[-200:],200)
 
-                # 15m structure
-                c15=ex.fetch_ohlcv(sym,'15m',limit=50)
+                # 15m
+                c15=exchange.fetch_ohlcv(sym,'15m',limit=50)
                 close15=[c[4] for c in c15]
                 ema50_15=ema(close15[-50:],50)
 
-                # 5m entry
-                c5=ex.fetch_ohlcv(sym,'5m',limit=50)
+                # 5m
+                c5=exchange.fetch_ohlcv(sym,'5m',limit=50)
                 close5=[c[4] for c in c5]
                 ema9=ema(close5[-30:],9)
                 ema21=ema(close5[-30:],21)
                 trend_strength=adx(c5)
 
-                funding=safe(ex.fetch_funding_rate(sym)['fundingRate'])
+                funding=safe(exchange.fetch_funding_rate(sym)['fundingRate'])
 
                 # LONG
                 if (close1h[-1]>ema200_1h and
@@ -248,14 +273,16 @@ def scanner():
                     open_trade(sym,"short")
 
             time.sleep(7)
+
         except Exception as e:
             print("SCAN:",e)
             time.sleep(7)
 
-# ===== TELEGRAM =====
+# ===== TELEGRAM STOP =====
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
-    if str(msg.chat.id)!=str(MY_CHAT_ID): return
+    if str(msg.chat.id)!=str(MY_CHAT_ID):
+        return
     if msg.text.lower()=="dur":
         os._exit(0)
 
