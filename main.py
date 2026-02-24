@@ -1,5 +1,8 @@
 import os, time, telebot, ccxt, threading
+import numpy as np
+from datetime import datetime, timedelta
 
+# ===== API =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -21,40 +24,56 @@ def safe(x):
     try: return float(x)
     except: return 0.0
 
-# ===== AYAR =====
+# ===== AYAR (25 USDT OPTİMİZE) =====
 MARGIN = 2
 LEV = 10
-MAX_POS = 4
-SL = 0.45
-TRAIL_START = 0.6
+MAX_POS = 2
+SL = 0.32
+TRAIL_START = 0.65
+FEE_BUFFER = 0.05
 
+BANNED = ['BTC','ETH','SOL','XRP']
 profits = {}
-BANNED = ['BTC','ETH','XRP','SOL']
+consecutive_sl = 0
+cooldown_until = None
 
-# ===== BTC TREND =====
+# ===== EMA =====
+def ema(data, period):
+    return float(np.mean(data[-period:]))
+
+# ===== BTC TREND (15m EMA FILTER) =====
 def btc_trend():
     try:
         ex = get_exch()
-        candles = ex.fetch_ohlcv('BTC/USDT','5m',limit=4)
-        return candles[-1][4] - candles[0][4]
-    except Exception as e:
-        print("BTC TREND ERROR:", e)
-        return 0
+        candles = ex.fetch_ohlcv('BTC/USDT','15m',limit=50)
+        closes = [c[4] for c in candles]
+        ema9 = ema(closes,9)
+        ema21 = ema(closes,21)
+        if ema9 > ema21:
+            return "long"
+        elif ema9 < ema21:
+            return "short"
+        else:
+            return "none"
+    except:
+        return "none"
 
-# ===== EMİR =====
+# ===== OPEN TRADE =====
 def open_trade(sym, side):
+    global cooldown_until
+
+    if cooldown_until and datetime.now() < cooldown_until:
+        return
+
     try:
         ex = get_exch()
 
-        # BTC yön filtresi
         trend = btc_trend()
-        if side == "long" and trend < 0:
-            return
-        if side == "short" and trend > 0:
+        if trend != side:
             return
 
-        pos = ex.fetch_positions()
-        active = [p for p in pos if safe(p.get('contracts'))>0]
+        positions = ex.fetch_positions()
+        active = [p for p in positions if safe(p.get('contracts')) > 0]
 
         if len(active) >= MAX_POS:
             return
@@ -62,9 +81,9 @@ def open_trade(sym, side):
         if any(p['symbol']==sym for p in active):
             return
 
-        price = safe(ex.fetch_ticker(sym)['last'])
+        ticker = ex.fetch_ticker(sym)
+        price = safe(ticker['last'])
 
-        # TAM 2 USDT MARGIN
         qty = (MARGIN * LEV) / price
         qty = float(ex.amount_to_precision(sym, qty))
 
@@ -80,19 +99,21 @@ def open_trade(sym, side):
         )
 
         profits[sym] = 0
-        bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()} açıldı")
+        bot.send_message(MY_CHAT_ID,f"🚀 {sym} {side.upper()} açıldı")
 
     except Exception as e:
-        print("OPEN TRADE ERROR:", e)
+        print("OPEN ERROR:", e)
 
-# ===== KAR YÖNETİMİ =====
+# ===== MANAGER =====
 def manager():
+    global consecutive_sl, cooldown_until
+
     while True:
         try:
             ex = get_exch()
+            positions = [p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]
 
-            for p in [p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]:
-
+            for p in positions:
                 sym = p['symbol']
                 side = p['side']
                 qty = safe(p.get('contracts'))
@@ -100,29 +121,49 @@ def manager():
                 last = safe(ex.fetch_ticker(sym)['last'])
 
                 profit = (last-entry)*qty if side=="long" else (entry-last)*qty
+                profit -= FEE_BUFFER
 
                 if profit > profits.get(sym,0):
                     profits[sym] = profit
 
                 # STOP LOSS
                 if profit <= -SL:
-                    ex.create_market_order(sym,
+                    ex.create_market_order(
+                        sym,
                         'sell' if side=='long' else 'buy',
-                        qty, params={'reduceOnly':True})
+                        qty,
+                        params={'reduceOnly':True}
+                    )
                     profits.pop(sym,None)
+                    consecutive_sl += 1
 
-                # AKILLI TRAILING (erken kapatmaz)
+                    if consecutive_sl >= 3:
+                        cooldown_until = datetime.now() + timedelta(minutes=30)
+                        bot.send_message(MY_CHAT_ID,"⛔ 3 SL üst üste — 30 dk cooldown")
+
+                # TRAILING
                 elif profits[sym] >= TRAIL_START:
+                    peak = profits[sym]
 
-                    gap = profits[sym] * 0.35
+                    if peak < 1:
+                        gap = peak * 0.30
+                    elif peak < 2:
+                        gap = peak * 0.20
+                    else:
+                        gap = peak * 0.15
 
-                    if profits[sym] - profit >= gap:
-                        ex.create_market_order(sym,
+                    if peak - profit >= gap:
+                        ex.create_market_order(
+                            sym,
                             'sell' if side=='long' else 'buy',
-                            qty, params={'reduceOnly':True})
+                            qty,
+                            params={'reduceOnly':True}
+                        )
                         profits.pop(sym,None)
+                        consecutive_sl = 0
 
             time.sleep(2)
+
         except Exception as e:
             print("MANAGER ERROR:", e)
             time.sleep(2)
@@ -133,12 +174,9 @@ def scanner():
         try:
             ex = get_exch()
             markets = ex.load_markets()
-
-            pos = ex.fetch_positions()
-            active = [p for p in pos if safe(p.get('contracts'))>0]
+            trend = btc_trend()
 
             for m in markets.values():
-
                 sym = m['symbol']
 
                 if ':USDT' not in sym:
@@ -147,29 +185,36 @@ def scanner():
                 if any(x in sym for x in BANNED):
                     continue
 
-                if len(active) >= MAX_POS:
-                    break
-
-                candles = ex.fetch_ohlcv(sym,'5m',limit=20)
+                candles = ex.fetch_ohlcv(sym,'5m',limit=30)
                 closes = [c[4] for c in candles]
+                highs = [c[2] for c in candles]
+                lows = [c[3] for c in candles]
                 vols = [c[5] for c in candles]
 
-                ema9 = sum(closes[-9:])/9
-                ema20 = sum(closes)/20
-                vol_spike = vols[-1] > sum(vols[:-1])/len(vols[:-1])
+                avg_range = np.mean([highs[i]-lows[i] for i in range(-15,-1)])
+                last_range = highs[-1] - lows[-1]
+                avg_vol = np.mean(vols[:-1])
 
-                # LONG
-                if ema9 > ema20 and vol_spike and closes[-1] > ema9:
-                    open_trade(sym,"long")
+                breakout_up = closes[-1] > max(highs[-20:-1])
+                breakout_down = closes[-1] < min(lows[-20:-1])
+                vol_spike = vols[-1] > avg_vol * 2
+                overextended = last_range > avg_range * 2.5
 
-                # SHORT
-                if ema9 < ema20 and vol_spike and closes[-1] < ema9:
-                    open_trade(sym,"short")
+                if vol_spike and not overextended:
 
-            time.sleep(3)
+                    # LONG
+                    if breakout_up and trend=="long":
+                        open_trade(sym,"long")
+
+                    # SHORT
+                    if breakout_down and trend=="short":
+                        open_trade(sym,"short")
+
+            time.sleep(4)
+
         except Exception as e:
             print("SCANNER ERROR:", e)
-            time.sleep(3)
+            time.sleep(4)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
@@ -181,9 +226,9 @@ def stop(msg):
         bot.send_message(MY_CHAT_ID,"⏸️ Bot durduruldu")
         os._exit(0)
 
-# ===== BAŞLAT =====
+# ===== START =====
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"💀 BOT AKTİF — AV BAŞLADI")
+    bot.send_message(MY_CHAT_ID,"🔥 FINAL SCALP BOT AKTİF")
     bot.infinity_polling()
