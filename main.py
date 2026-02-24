@@ -1,5 +1,4 @@
 import os, time, telebot, ccxt, threading
-import numpy as np
 from datetime import datetime, timedelta
 
 # ===== API =====
@@ -24,7 +23,7 @@ def safe(x):
     try: return float(x)
     except: return 0.0
 
-# ===== AYAR (25 USDT OPTİMİZE) =====
+# ===== AYAR (25 USDT) =====
 MARGIN = 2
 LEV = 10
 MAX_POS = 2
@@ -37,15 +36,17 @@ profits = {}
 consecutive_sl = 0
 cooldown_until = None
 
-# ===== EMA =====
+# ===== BASİT EMA =====
 def ema(data, period):
-    return float(np.mean(data[-period:]))
+    if len(data) < period:
+        return sum(data)/len(data)
+    return sum(data[-period:]) / period
 
-# ===== BTC TREND (15m EMA FILTER) =====
+# ===== BTC TREND 15m =====
 def btc_trend():
     try:
         ex = get_exch()
-        candles = ex.fetch_ohlcv('BTC/USDT','15m',limit=50)
+        candles = ex.fetch_ohlcv('BTC/USDT','15m',limit=30)
         closes = [c[4] for c in candles]
         ema9 = ema(closes,9)
         ema21 = ema(closes,21)
@@ -81,9 +82,7 @@ def open_trade(sym, side):
         if any(p['symbol']==sym for p in active):
             return
 
-        ticker = ex.fetch_ticker(sym)
-        price = safe(ticker['last'])
-
+        price = safe(ex.fetch_ticker(sym)['last'])
         qty = (MARGIN * LEV) / price
         qty = float(ex.amount_to_precision(sym, qty))
 
@@ -139,7 +138,7 @@ def manager():
 
                     if consecutive_sl >= 3:
                         cooldown_until = datetime.now() + timedelta(minutes=30)
-                        bot.send_message(MY_CHAT_ID,"⛔ 3 SL üst üste — 30 dk cooldown")
+                        bot.send_message(MY_CHAT_ID,"⛔ 3 SL — 30 dk duruyor")
 
                 # TRAILING
                 elif profits[sym] >= TRAIL_START:
@@ -191,9 +190,9 @@ def scanner():
                 lows = [c[3] for c in candles]
                 vols = [c[5] for c in candles]
 
-                avg_range = np.mean([highs[i]-lows[i] for i in range(-15,-1)])
+                avg_range = sum([highs[i]-lows[i] for i in range(-15,-1)]) / 14
                 last_range = highs[-1] - lows[-1]
-                avg_vol = np.mean(vols[:-1])
+                avg_vol = sum(vols[:-1]) / len(vols[:-1])
 
                 breakout_up = closes[-1] > max(highs[-20:-1])
                 breakout_down = closes[-1] < min(lows[-20:-1])
@@ -202,11 +201,9 @@ def scanner():
 
                 if vol_spike and not overextended:
 
-                    # LONG
                     if breakout_up and trend=="long":
                         open_trade(sym,"long")
 
-                    # SHORT
                     if breakout_down and trend=="short":
                         open_trade(sym,"short")
 
@@ -230,5 +227,5 @@ def stop(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🔥 FINAL SCALP BOT AKTİF")
+    bot.send_message(MY_CHAT_ID,"🔥 FINAL BOT AKTİF")
     bot.infinity_polling()
