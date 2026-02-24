@@ -3,7 +3,6 @@ import time
 import telebot
 import ccxt
 import threading
-import datetime
 
 # ===== TELEGRAM & API =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
@@ -11,32 +10,23 @@ MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-
 PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== CORE SETTINGS =====
-RISK_PCT = 0.008
+# ===== SETTINGS =====
+MARGIN = 5          # SABİT 5 USDT
 LEV = 10
 MAX_POS = 1
 
-DAILY_LOSS_LIMIT = 0.05
-GLOBAL_DD_LIMIT = 0.15
-
-ATR_MULT = 2.0
-TRAIL_STAGE1 = 1.5
-TRAIL_STAGE2 = 1.0
-TRAIL_STAGE3 = 0.6
+ATR_MULT = 1.8      # Stop biraz daha dar
+TRAIL_START = 2.5   # Kar 2.5 ATR olunca takip başlar
+TRAIL_GAP = 1.2
 
 BANNED = ['BTC','ETH','XRP','SOL','BNB']
 
 profits = {}
 lock = threading.Lock()
-
-start_balance = None
-peak_balance = None
-today = datetime.date.today()
 
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
@@ -47,7 +37,6 @@ exchange = ccxt.bitget({
     'enableRateLimit': True
 })
 
-# ===== UTILS =====
 def safe(x):
     try:
         return float(x)
@@ -85,54 +74,19 @@ def adx(candles, period=14):
     dx=100*abs(plus-minus)/(plus+minus) if (plus+minus)!=0 else 0
     return dx
 
-# ===== RISK CONTROL =====
-def check_risk():
-    global start_balance, peak_balance, today
-
-    balance = exchange.fetch_balance()['USDT']['total']
-
-    if start_balance is None:
-        start_balance = balance
-        peak_balance = balance
-
-    if datetime.date.today() != today:
-        today = datetime.date.today()
-        start_balance = balance
-
-    if balance > peak_balance:
-        peak_balance = balance
-
-    if balance < start_balance*(1-DAILY_LOSS_LIMIT):
-        bot.send_message(MY_CHAT_ID,"🛑 Daily loss limit hit.")
-        os._exit(0)
-
-    if balance < peak_balance*(1-GLOBAL_DD_LIMIT):
-        bot.send_message(MY_CHAT_ID,"💀 Max drawdown reached.")
-        os._exit(0)
-
-# ===== POSITION SIZE =====
+# ===== POSITION SIZE (SABİT) =====
 def calculate_size(sym):
-    balance = exchange.fetch_balance()['USDT']['free']
-    risk_amount = balance * RISK_PCT
-
-    candles = exchange.fetch_ohlcv(sym,'5m',limit=50)
-    a = atr(candles)
-    stop_dist = a * ATR_MULT
-
-    if stop_dist == 0:
-        return 0, a
-
-    qty = risk_amount / stop_dist
-    return float(exchange.amount_to_precision(sym, qty)), a
+    price = safe(exchange.fetch_ticker(sym)['last'])
+    notional = MARGIN * LEV
+    qty = notional / price
+    return float(exchange.amount_to_precision(sym, qty))
 
 # ===== OPEN TRADE =====
 def open_trade(sym, side):
     try:
-        check_risk()
-
         exchange.set_leverage(LEV, sym)
 
-        qty, _ = calculate_size(sym)
+        qty = calculate_size(sym)
         if qty <= 0:
             return False
 
@@ -143,9 +97,9 @@ def open_trade(sym, side):
         )
 
         with lock:
-            profits[sym]=0
+            profits[sym] = 0
 
-        bot.send_message(MY_CHAT_ID,f"🎯 {sym} {side.upper()}")
+        bot.send_message(MY_CHAT_ID,f"🎯 {sym} {side.upper()} (5 USDT)")
         return True
 
     except Exception as e:
@@ -156,8 +110,6 @@ def open_trade(sym, side):
 def manager():
     while True:
         try:
-            check_risk()
-
             positions = [p for p in exchange.fetch_positions()
                          if safe(p.get('contracts'))>0]
 
@@ -178,7 +130,7 @@ def manager():
                         profits[sym]=profit
                     peak=profits.get(sym,0)
 
-                # ATR Stop
+                # STOP
                 if profit<=-(a*ATR_MULT):
                     exchange.create_market_order(sym,
                         'sell' if side=='long' else 'buy',
@@ -186,22 +138,8 @@ def manager():
                     profits.pop(sym,None)
                     continue
 
-                # Trailing Stages
-                if peak>a*4 and peak-profit>=a*TRAIL_STAGE1:
-                    exchange.create_market_order(sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,params={'reduceOnly':True})
-                    profits.pop(sym,None)
-                    continue
-
-                if peak>a*7 and peak-profit>=a*TRAIL_STAGE2:
-                    exchange.create_market_order(sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,params={'reduceOnly':True})
-                    profits.pop(sym,None)
-                    continue
-
-                if peak>a*10 and peak-profit>=a*TRAIL_STAGE3:
+                # TRAILING
+                if peak>a*TRAIL_START and peak-profit>=a*TRAIL_GAP:
                     exchange.create_market_order(sym,
                         'sell' if side=='long' else 'buy',
                         qty,params={'reduceOnly':True})
@@ -222,7 +160,6 @@ def scanner():
             positions=[p for p in exchange.fetch_positions()
                        if safe(p.get('contracts'))>0]
 
-            # açık pozisyon varsa yeni açma
             if len(positions)>=MAX_POS:
                 time.sleep(5)
                 continue
@@ -238,24 +175,24 @@ def scanner():
                 if any(x in sym for x in BANNED):
                     continue
 
-                candles=exchange.fetch_ohlcv(sym,'5m',limit=50)
+                candles=exchange.fetch_ohlcv(sym,'5m',limit=40)
                 closes=[c[4] for c in candles]
 
                 ema9=ema(closes[-30:],9)
                 ema21=ema(closes[-30:],21)
-                trend_strength=adx(candles)
+                strength=adx(candles)
 
                 momentum_up=closes[-1]>closes[-2]>closes[-3]
                 momentum_down=closes[-1]<closes[-2]<closes[-3]
 
-                score=trend_strength
+                score=strength
 
-                if ema9>ema21 and momentum_up and trend_strength>18:
+                if ema9>ema21 and momentum_up and strength>18:
                     if score>best_score:
                         best_score=score
                         best_setup=(sym,"long")
 
-                if ema9<ema21 and momentum_down and trend_strength>18:
+                if ema9<ema21 and momentum_down and strength>18:
                     if score>best_score:
                         best_score=score
                         best_setup=(sym,"short")
@@ -283,5 +220,5 @@ def stop(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🧠 STABLE SCALP ENGINE AKTİF")
+    bot.send_message(MY_CHAT_ID,"🧠 FIXED 5 USDT SCALP AKTİF")
     bot.infinity_polling()
