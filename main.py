@@ -5,12 +5,16 @@ import telebot
 import threading
 from datetime import datetime, timezone
 
+# =====================
+# ENV
+# =====================
+
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 MY_CHAT_ID = os.getenv("MY_CHAT_ID")
 API_KEY = os.getenv("BITGET_API")
 API_SEC = os.getenv("BITGET_SEC")
 
-# SABİT ŞİFRE (Senin eski çalışan sistem gibi)
+# SABİT PASS (eski çalışan sistem gibi)
 PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
@@ -23,25 +27,31 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-# ===== AYARLAR =====
+# =====================
+# AYARLAR
+# =====================
 
 MARGIN = 2.5
 LEVERAGE = 10
 MAX_POS = 2
 
-STOP_PERCENT = 0.8
-TRAIL_START = 1.0
-TRAIL_GAP = 0.4
+STOP_PERCENT = 1.6
+TRAIL_START = 0.9
+TRAIL_GAP = 0.35
 
-DAILY_MAX_LOSS = 2
-MIN_VOLUME = 6_000_000
-MAX_SPREAD = 0.15
+DAILY_MAX_LOSS = 3
+MIN_VOLUME = 5_000_000
+MAX_SPREAD = 0.18
 
 BANNED = ["BTC","ETH","BNB","SOL"]
 
 highest = {}
 daily_loss = 0
 current_day = datetime.now(timezone.utc).day
+
+# =====================
+# YARDIMCI
+# =====================
 
 def safe(x):
     try:
@@ -58,11 +68,15 @@ def ema(data, period):
 
 def btc_trend():
     try:
-        candles = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=60)
+        candles = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=50)
         closes = [c[4] for c in candles]
         return ema(closes,20) > ema(closes,50)
     except:
         return None
+
+# =====================
+# EMİR
+# =====================
 
 def open_trade(symbol, side):
     try:
@@ -76,8 +90,8 @@ def open_trade(symbol, side):
             return
 
         ticker = exchange.fetch_ticker(symbol)
-        spread = (ticker["ask"] - ticker["bid"]) / ticker["last"] * 100
 
+        spread = (ticker["ask"] - ticker["bid"]) / ticker["last"] * 100
         if spread > MAX_SPREAD:
             return
 
@@ -94,13 +108,21 @@ def open_trade(symbol, side):
         )
 
         highest[symbol] = 0
-        bot.send_message(MY_CHAT_ID,f"🚀 {symbol} {side.upper()} | 10x")
+
+        bot.send_message(
+            MY_CHAT_ID,
+            f"⚡ {symbol} {side.upper()} | 10x SCALP"
+        )
 
     except Exception as e:
         print("OPEN ERROR:", e)
 
+# =====================
+# POZİSYON YÖNETİMİ
+# =====================
+
 def manager():
-    global daily_loss,current_day
+    global daily_loss, current_day
 
     while True:
         try:
@@ -123,6 +145,7 @@ def manager():
                 pnl = ((last-entry)/entry*100 if side=="long"
                        else (entry-last)/entry*100)
 
+                # STOP
                 if pnl <= -STOP_PERCENT:
                     exchange.create_market_order(
                         sym,
@@ -134,9 +157,11 @@ def manager():
                     highest.pop(sym,None)
                     continue
 
+                # highest güncelle
                 if pnl > highest.get(sym,0):
                     highest[sym] = pnl
 
+                # TRAILING
                 if highest.get(sym,0) >= TRAIL_START and \
                    highest[sym] - pnl >= TRAIL_GAP:
 
@@ -153,6 +178,10 @@ def manager():
         except Exception as e:
             print("MANAGER ERROR:", e)
             time.sleep(3)
+
+# =====================
+# SCANNER
+# =====================
 
 def scanner():
     while True:
@@ -183,7 +212,7 @@ def scanner():
                 if m.get("quoteVolume",0) < MIN_VOLUME:
                     continue
 
-                candles = exchange.fetch_ohlcv(symbol,"5m",limit=40)
+                candles = exchange.fetch_ohlcv(symbol,"5m",limit=30)
                 closes = [c[4] for c in candles]
 
                 ema9 = ema(closes,9)
@@ -195,21 +224,30 @@ def scanner():
                 if not trend and ema9 < ema21:
                     open_trade(symbol,"short")
 
-            time.sleep(6)
+            time.sleep(5)
 
         except Exception as e:
             print("SCAN ERROR:", e)
             time.sleep(5)
+
+# =====================
+# TELEGRAM
+# =====================
 
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
     if str(msg.chat.id) != str(MY_CHAT_ID):
         return
     if msg.text.lower() == "dur":
+        bot.send_message(MY_CHAT_ID,"Bot durduruldu.")
         os._exit(0)
+
+# =====================
+# START
+# =====================
 
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🚀 TREND TAŞIYAN 10X AKTİF")
+    bot.send_message(MY_CHAT_ID,"⚡ STABLE SCALP PRO 10X AKTİF")
     bot.infinity_polling()
