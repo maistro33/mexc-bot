@@ -1,212 +1,178 @@
-import os, time, ccxt, telebot, threading
-from datetime import datetime, timedelta
+import os, time, telebot, ccxt, threading
 
-# ================= API =================
-TELE_TOKEN = os.getenv("TELE_TOKEN")
-CHAT_ID = os.getenv("MY_CHAT_ID")
-API_KEY = os.getenv("BITGET_API")
-API_SEC = os.getenv("BITGET_SEC")
-PASSPHRASE = os.getenv("BITGET_PASS")
+TELE_TOKEN = os.getenv('TELE_TOKEN')
+MY_CHAT_ID = os.getenv('MY_CHAT_ID')
+API_KEY = os.getenv('BITGET_API')
+API_SEC = os.getenv('BITGET_SEC')
+PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-def exchange():
+def get_exch():
     return ccxt.bitget({
-        "apiKey": API_KEY,
-        "secret": API_SEC,
-        "password": PASSPHRASE,
-        "options": {"defaultType": "swap"},
-        "enableRateLimit": True
+        'apiKey': API_KEY,
+        'secret': API_SEC,
+        'password': PASSPHRASE,
+        'options': {'defaultType': 'swap'},
+        'enableRateLimit': True
     })
 
-# ================= AYAR =================
+def safe(x):
+    try: return float(x)
+    except: return 0.0
+
+# ===== AYAR =====
 MARGIN = 5
 LEV = 10
 MAX_POS = 1
-DAILY_MAX_LOSS = 2
-SL = 0.6
-TRAIL_START = 1.0
-FEE_BUFFER = 0.08
-
-BLACKLIST = ["BTC","ETH","SOL","BNB","XRP"]
+SL = 0.8
+TRAIL_START = 1.2
+TRAIL_GAP = 0.4
 
 profits = {}
-daily_loss = 0
-today = datetime.now().date()
 
-# ================= EMA =================
-def ema(data, period):
-    if len(data) < period:
-        return sum(data)/len(data)
-    return sum(data[-period:]) / period
+BANNED = ['BTC','ETH','XRP','SOL','BNB','DOGE']
 
-# ================= BTC TREND =================
-def btc_mode():
+# ===== BTC TREND =====
+def btc_trend():
     try:
-        ex = exchange()
-        candles = ex.fetch_ohlcv("BTC/USDT","1h",limit=50)
+        ex = get_exch()
+        candles = ex.fetch_ohlcv('BTC/USDT:USDT','15m',limit=20)
         closes = [c[4] for c in candles]
-        highs = [c[2] for c in candles]
-        lows = [c[3] for c in candles]
-
-        ema20 = ema(closes,20)
-        ema50 = ema(closes,50)
-
-        trend = "none"
-        if ema20 > ema50:
-            trend = "long"
-        elif ema20 < ema50:
-            trend = "short"
-
-        # ADX benzeri basit trend gücü ölçümü
-        ranges = [highs[i]-lows[i] for i in range(-15,-1)]
-        avg_range = sum(ranges)/len(ranges)
-
-        if avg_range < closes[-1]*0.003:
-            return "none"
-
-        return trend
+        ema20 = sum(closes)/20
+        return closes[-1] > ema20
     except:
-        return "none"
+        return False
 
-# ================= OPEN TRADE =================
-def open_trade(symbol, side):
-    global daily_loss, today
-
-    if daily_loss >= DAILY_MAX_LOSS:
-        return
-
+# ===== EMİR =====
+def open_trade(sym, side):
     try:
-        ex = exchange()
+        ex = get_exch()
+        pos = ex.fetch_positions()
+        active = [p for p in pos if safe(p.get('contracts'))>0]
 
-        price = ex.fetch_ticker(symbol)["last"]
+        if len(active) >= MAX_POS:
+            return
+        if any(p['symbol']==sym for p in active):
+            return
+
+        price = safe(ex.fetch_ticker(sym)['last'])
         qty = (MARGIN * LEV) / price
-        qty = float(ex.amount_to_precision(symbol, qty))
+        qty = float(ex.amount_to_precision(sym, qty))
 
-        ex.set_leverage(LEV, symbol)
+        ex.set_leverage(LEV, sym)
 
         ex.create_market_order(
-            symbol,
+            sym,
             "buy" if side=="long" else "sell",
             qty
         )
 
-        profits[symbol] = 0
-        bot.send_message(CHAT_ID,f"🚀 {symbol} {side.upper()} açıldı")
+        profits[sym] = 0
+        bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
 
-# ================= MANAGER =================
+# ===== KAR YÖNETİMİ =====
 def manager():
-    global daily_loss, today
-
     while True:
         try:
-            ex = exchange()
-            positions = [p for p in ex.fetch_positions() if float(p["contracts"])>0]
+            ex = get_exch()
+            for p in [p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]:
 
-            for p in positions:
-                sym = p["symbol"].split(":")[0]
-                side = p["side"]
-                qty = float(p["contracts"])
-                entry = float(p["entryPrice"])
-                last = ex.fetch_ticker(sym)["last"]
+                sym = p['symbol']
+                side = p['side']
+                qty = safe(p.get('contracts'))
+                entry = safe(p.get('entryPrice'))
+                last = safe(ex.fetch_ticker(sym)['last'])
 
                 profit = (last-entry)*qty if side=="long" else (entry-last)*qty
-                profit -= FEE_BUFFER
 
                 if profit > profits.get(sym,0):
                     profits[sym] = profit
 
                 # STOP
                 if profit <= -SL:
-                    ex.create_market_order(
-                        sym,
-                        "sell" if side=="long" else "buy",
-                        qty,
-                        params={"reduceOnly":True}
-                    )
-                    daily_loss += abs(profit)
+                    ex.create_market_order(sym,
+                        'sell' if side=='long' else 'buy',
+                        qty, params={'reduceOnly':True})
                     profits.pop(sym,None)
 
                 # TRAILING
-                elif profits[sym] >= TRAIL_START:
-                    peak = profits[sym]
-                    gap = peak*0.25 if peak < 2 else peak*0.15
+                elif profits.get(sym,0) >= TRAIL_START and \
+                     profits[sym]-profit >= TRAIL_GAP:
+                    ex.create_market_order(sym,
+                        'sell' if side=='long' else 'buy',
+                        qty, params={'reduceOnly':True})
+                    profits.pop(sym,None)
 
-                    if peak - profit >= gap:
-                        ex.create_market_order(
-                            sym,
-                            "sell" if side=="long" else "buy",
-                            qty,
-                            params={"reduceOnly":True}
-                        )
-                        profits.pop(sym,None)
-
-            time.sleep(3)
+            time.sleep(2)
         except Exception as e:
             print("MANAGER ERROR:", e)
-            time.sleep(3)
+            time.sleep(2)
 
-# ================= SCANNER =================
+# ===== AKILLI SCANNER =====
 def scanner():
     while True:
         try:
-            ex = exchange()
-
-            if len([p for p in ex.fetch_positions() if float(p["contracts"])>0]) >= MAX_POS:
-                time.sleep(5)
-                continue
-
-            mode = btc_mode()
-            if mode == "none":
-                time.sleep(10)
-                continue
-
+            ex = get_exch()
             markets = ex.load_markets()
 
+            btc_up = btc_trend()
+
+            pos = ex.fetch_positions()
+            active = [p for p in pos if safe(p.get('contracts'))>0]
+
             for m in markets.values():
-                symbol = m["symbol"]
 
-                if ":USDT" not in symbol:
+                sym = m['symbol']
+                if ':USDT' not in sym: continue
+                if any(x in sym for x in BANNED): continue
+                if len(active) >= MAX_POS: break
+
+                ticker = ex.fetch_ticker(sym)
+
+                # HACİM FİLTRESİ
+                if safe(ticker.get('quoteVolume')) < 5_000_000:
                     continue
 
-                if any(x in symbol for x in BLACKLIST):
-                    continue
-
-                ticker = ex.fetch_ticker(symbol)
-                if ticker["quoteVolume"] < 5_000_000:
-                    continue
-
-                candles = ex.fetch_ohlcv(symbol,"5m",limit=40)
+                candles = ex.fetch_ohlcv(sym,'5m',limit=30)
                 closes = [c[4] for c in candles]
                 highs = [c[2] for c in candles]
                 lows = [c[3] for c in candles]
                 vols = [c[5] for c in candles]
 
-                breakout_up = closes[-1] > max(highs[-20:-1])
-                breakout_down = closes[-1] < min(lows[-20:-1])
+                ema9 = sum(closes[-9:])/9
+                ema20 = sum(closes[-20:])/20
+                vol_spike = vols[-1] > sum(vols[-10:-1])/9
 
-                vol_spike = vols[-1] > (sum(vols[:-1])/len(vols[:-1]))*1.8
+                breakout_up = closes[-1] > max(highs[-10:-1])
+                breakout_down = closes[-1] < min(lows[-10:-1])
 
-                if mode=="long" and breakout_up and vol_spike:
-                    open_trade(symbol,"long")
-                    break
+                # LONG
+                if btc_up and ema9 > ema20 and vol_spike and breakout_up:
+                    open_trade(sym,"long")
 
-                if mode=="short" and breakout_down and vol_spike:
-                    open_trade(symbol,"short")
-                    break
+                # SHORT
+                if not btc_up and ema9 < ema20 and vol_spike and breakout_down:
+                    open_trade(sym,"short")
 
-            time.sleep(5)
-
+            time.sleep(4)
         except Exception as e:
             print("SCANNER ERROR:", e)
-            time.sleep(5)
+            time.sleep(4)
 
-# ================= START =================
+# ===== TELEGRAM =====
+@bot.message_handler(func=lambda m: True)
+def stop(msg):
+    if str(msg.chat.id)!=str(MY_CHAT_ID): return
+    if msg.text.lower()=="dur":
+        os._exit(0)
+
+# ===== BAŞLAT =====
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(CHAT_ID,"🔥 ADAPTİF BOT AKTİF")
+    bot.send_message(MY_CHAT_ID,"🔥 SMART BREAKOUT BOT AKTİF")
     bot.infinity_polling()
