@@ -5,10 +5,6 @@ import telebot
 import threading
 from datetime import datetime
 
-# =====================
-# ENV
-# =====================
-
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 MY_CHAT_ID = os.getenv("MY_CHAT_ID")
 API_KEY = os.getenv("BITGET_API")
@@ -16,10 +12,6 @@ API_SEC = os.getenv("BITGET_SEC")
 PASSPHRASE = os.getenv("BITGET_PASS")
 
 bot = telebot.TeleBot(TELE_TOKEN)
-
-# =====================
-# EXCHANGE
-# =====================
 
 exchange = ccxt.bitget({
     "apiKey": API_KEY,
@@ -29,17 +21,15 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-# =====================
-# AYARLAR
-# =====================
+# ===== AYARLAR =====
 
 MARGIN = 2.5
 LEVERAGE = 10
 MAX_POS = 2
 
-STOP_PERCENT = 0.6
-TRAIL_START = 1.5
-TRAIL_GAP = 0.7
+STOP_PERCENT = 0.8      # biraz daha toleranslı
+TRAIL_START = 1.0       # daha erken takip
+TRAIL_GAP = 0.4         # fazla geri vermeden çık
 
 DAILY_MAX_LOSS = 2
 MIN_VOLUME = 6_000_000
@@ -51,10 +41,6 @@ highest = {}
 daily_loss = 0
 current_day = datetime.utcnow().day
 
-# =====================
-# YARDIMCI
-# =====================
-
 def safe(x):
     try:
         return float(x)
@@ -62,27 +48,19 @@ def safe(x):
         return 0.0
 
 def ema(data, period):
-    k = 2 / (period + 1)
+    k = 2/(period+1)
     e = data[0]
     for p in data[1:]:
-        e = p * k + e * (1 - k)
+        e = p*k + e*(1-k)
     return e
-
-# =====================
-# BTC TREND
-# =====================
 
 def btc_trend():
     try:
-        candles = exchange.fetch_ohlcv("BTC/USDT:USDT", "5m", limit=60)
+        candles = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=60)
         closes = [c[4] for c in candles]
-        return ema(closes, 20) > ema(closes, 50)
+        return ema(closes,20) > ema(closes,50)
     except:
         return None
-
-# =====================
-# EMİR AÇMA
-# =====================
 
 def open_trade(symbol, side):
     try:
@@ -109,30 +87,21 @@ def open_trade(symbol, side):
 
         exchange.create_market_order(
             symbol,
-            "buy" if side == "long" else "sell",
+            "buy" if side=="long" else "sell",
             qty
         )
 
         highest[symbol] = 0
-
-        bot.send_message(
-            MY_CHAT_ID,
-            f"🚀 {symbol} {side.upper()} | 10x"
-        )
+        bot.send_message(MY_CHAT_ID,f"🚀 {symbol} {side.upper()} | 10x")
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"HATA: {e}")
-
-# =====================
-# POZİSYON YÖNETİMİ
-# =====================
+        bot.send_message(MY_CHAT_ID,f"HATA: {e}")
 
 def manager():
-    global daily_loss, current_day
+    global daily_loss,current_day
 
     while True:
         try:
-            # Gün değişimi reset
             if datetime.utcnow().day != current_day:
                 daily_loss = 0
                 current_day = datetime.utcnow().day
@@ -149,48 +118,41 @@ def manager():
                 entry = safe(p["entryPrice"])
                 last = safe(exchange.fetch_ticker(sym)["last"])
 
-                pnl = (
-                    (last - entry) / entry * 100
-                    if side == "long"
-                    else (entry - last) / entry * 100
-                )
+                pnl = ((last-entry)/entry*100 if side=="long"
+                       else (entry-last)/entry*100)
 
                 # STOP
                 if pnl <= -STOP_PERCENT:
                     exchange.create_market_order(
                         sym,
-                        "sell" if side == "long" else "buy",
+                        "sell" if side=="long" else "buy",
                         qty,
-                        params={"reduceOnly": True}
+                        params={"reduceOnly":True}
                     )
                     daily_loss += 1
-                    highest.pop(sym, None)
+                    highest.pop(sym,None)
                     continue
 
-                # En yüksek kârı takip et
-                if pnl > highest.get(sym, 0):
+                # Highest güncelle
+                if pnl > highest.get(sym,0):
                     highest[sym] = pnl
 
                 # TRAILING
-                if highest.get(sym, 0) >= TRAIL_START and \
+                if highest.get(sym,0) >= TRAIL_START and \
                    highest[sym] - pnl >= TRAIL_GAP:
 
                     exchange.create_market_order(
                         sym,
-                        "sell" if side == "long" else "buy",
+                        "sell" if side=="long" else "buy",
                         qty,
-                        params={"reduceOnly": True}
+                        params={"reduceOnly":True}
                     )
-                    highest.pop(sym, None)
+                    highest.pop(sym,None)
 
             time.sleep(2)
 
         except:
             time.sleep(3)
-
-# =====================
-# MARKET TARAMA
-# =====================
 
 def scanner():
     while True:
@@ -208,7 +170,7 @@ def scanner():
 
             markets = sorted(
                 [t for t in tickers.values() if ":USDT" in t["symbol"]],
-                key=lambda x: x.get("quoteVolume", 0),
+                key=lambda x:x.get("quoteVolume",0),
                 reverse=True
             )[5:25]
 
@@ -218,29 +180,25 @@ def scanner():
                 if any(b in symbol for b in BANNED):
                     continue
 
-                if m.get("quoteVolume", 0) < MIN_VOLUME:
+                if m.get("quoteVolume",0) < MIN_VOLUME:
                     continue
 
-                candles = exchange.fetch_ohlcv(symbol, "5m", limit=40)
+                candles = exchange.fetch_ohlcv(symbol,"5m",limit=40)
                 closes = [c[4] for c in candles]
 
-                ema9 = ema(closes, 9)
-                ema21 = ema(closes, 21)
+                ema9 = ema(closes,9)
+                ema21 = ema(closes,21)
 
                 if trend and ema9 > ema21:
-                    open_trade(symbol, "long")
+                    open_trade(symbol,"long")
 
                 if not trend and ema9 < ema21:
-                    open_trade(symbol, "short")
+                    open_trade(symbol,"short")
 
             time.sleep(6)
 
         except:
             time.sleep(5)
-
-# =====================
-# TELEGRAM
-# =====================
 
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
@@ -248,15 +206,11 @@ def handle(msg):
         return
 
     if msg.text.lower() == "dur":
-        bot.send_message(MY_CHAT_ID, "Bot durduruldu.")
+        bot.send_message(MY_CHAT_ID,"Bot durduruldu.")
         os._exit(0)
 
-# =====================
-# START
-# =====================
-
-if __name__ == "__main__":
-    threading.Thread(target=manager, daemon=True).start()
-    threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "🚀 TREND TAŞIYAN 10X AKTİF")
+if __name__=="__main__":
+    threading.Thread(target=manager,daemon=True).start()
+    threading.Thread(target=scanner,daemon=True).start()
+    bot.send_message(MY_CHAT_ID,"🚀 TREND TAŞIYAN 10X (OPTİMİZE)")
     bot.infinity_polling()
