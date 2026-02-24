@@ -1,19 +1,13 @@
-import os
-import time
-import telebot
-import ccxt
-import threading
+import os, time, telebot, ccxt, threading
 
-# ===== ENV =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
 API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASSPHRASE')
+PASSPHRASE = "Berfin33"   # Çalışıyorsa bunu bırakıyoruz
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== EXCHANGE =====
 def get_exch():
     return ccxt.bitget({
         'apiKey': API_KEY,
@@ -24,25 +18,21 @@ def get_exch():
     })
 
 def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0.0
+    try: return float(x)
+    except: return 0.0
 
-# ===== AYAR (STABİL) =====
+# ===== AYAR =====
 MARGIN = 3
 LEV = 10
 MAX_POS = 1
-
 SL = 0.6
 TRAIL_START = 1.0
 TRAIL_GAP = 0.3
-
 profits = {}
 
-BANNED = ['BTC','ETH','XRP','SOL','BNB','DOGE']
+BANNED = ['BTC','ETH','XRP','SOL','BNB']
 
-# ===== BTC TREND FİLTRE =====
+# ===== BTC TREND =====
 def btc_trend():
     try:
         ex = get_exch()
@@ -52,25 +42,22 @@ def btc_trend():
         return closes[-1] > ema20
     except Exception as e:
         print("BTC ERROR:", e)
-        return False
+        return None
 
-# ===== EMİR AÇ =====
+# ===== EMİR =====
 def open_trade(sym, side):
     try:
         ex = get_exch()
 
-        positions = ex.fetch_positions()
-        active = [p for p in positions if safe(p.get('contracts')) > 0]
+        pos = ex.fetch_positions()
+        active = [p for p in pos if safe(p.get('contracts'))>0]
 
         if len(active) >= MAX_POS:
             return
-
-        if any(p['symbol'] == sym for p in active):
+        if any(p['symbol']==sym for p in active):
             return
 
-        ticker = ex.fetch_ticker(sym)
-        price = safe(ticker['last'])
-
+        price = safe(ex.fetch_ticker(sym)['last'])
         qty = (MARGIN * LEV) / price
         qty = float(ex.amount_to_precision(sym, qty))
 
@@ -78,12 +65,12 @@ def open_trade(sym, side):
 
         ex.create_market_order(
             sym,
-            "buy" if side == "long" else "sell",
+            "buy" if side=="long" else "sell",
             qty
         )
 
         profits[sym] = 0
-        bot.send_message(MY_CHAT_ID, f"🔥 {sym} {side.upper()} açıldı")
+        bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -93,11 +80,7 @@ def manager():
     while True:
         try:
             ex = get_exch()
-            positions = ex.fetch_positions()
-
-            for p in positions:
-                if safe(p.get('contracts')) <= 0:
-                    continue
+            for p in [p for p in ex.fetch_positions() if safe(p.get('contracts'))>0]:
 
                 sym = p['symbol']
                 side = p['side']
@@ -110,29 +93,22 @@ def manager():
                 if profit > profits.get(sym,0):
                     profits[sym] = profit
 
-                # STOP LOSS
+                # STOP
                 if profit <= -SL:
-                    ex.create_market_order(
-                        sym,
+                    ex.create_market_order(sym,
                         'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
+                        qty, params={'reduceOnly':True})
                     profits.pop(sym,None)
 
                 # TRAILING
                 elif profits.get(sym,0) >= TRAIL_START and \
-                     profits[sym] - profit >= TRAIL_GAP:
-                    ex.create_market_order(
-                        sym,
+                     profits[sym]-profit >= TRAIL_GAP:
+                    ex.create_market_order(sym,
                         'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
+                        qty, params={'reduceOnly':True})
                     profits.pop(sym,None)
 
             time.sleep(2)
-
         except Exception as e:
             print("MANAGER ERROR:", e)
             time.sleep(2)
@@ -144,71 +120,62 @@ def scanner():
             ex = get_exch()
             markets = ex.load_markets()
 
-            btc_up = btc_trend()
+            btc_dir = btc_trend()
+            if btc_dir is None:
+                time.sleep(5)
+                continue
 
-            positions = ex.fetch_positions()
-            active = [p for p in positions if safe(p.get('contracts')) > 0]
+            pos = ex.fetch_positions()
+            active = [p for p in pos if safe(p.get('contracts'))>0]
 
             for m in markets.values():
 
                 sym = m['symbol']
 
-                if ':USDT' not in sym:
-                    continue
-
-                if any(x in sym for x in BANNED):
-                    continue
-
-                if len(active) >= MAX_POS:
-                    break
+                if ':USDT' not in sym: continue
+                if any(x in sym for x in BANNED): continue
+                if len(active) >= MAX_POS: break
 
                 ticker = ex.fetch_ticker(sym)
 
-                # HACİM FİLTRESİ (minimum 5M)
-                if safe(ticker.get('quoteVolume')) < 5_000_000:
+                # HACİM FİLTRESİ
+                if safe(ticker.get('quoteVolume')) < 3_000_000:
                     continue
 
-                candles = ex.fetch_ohlcv(sym,'5m',limit=30)
-
+                candles = ex.fetch_ohlcv(sym,'5m',limit=20)
                 closes = [c[4] for c in candles]
-                highs = [c[2] for c in candles]
-                lows = [c[3] for c in candles]
                 vols = [c[5] for c in candles]
 
                 ema9 = sum(closes[-9:])/9
-                ema20 = sum(closes[-20:])/20
-
-                vol_spike = vols[-1] > sum(vols[-10:-1])/9
-
-                breakout_up = closes[-1] > max(highs[-10:-1])
-                breakout_down = closes[-1] < min(lows[-10:-1])
+                ema20 = sum(closes)/20
+                vol_spike = vols[-1] > sum(vols[:-1])/len(vols[:-1])
 
                 # LONG
-                if btc_up and ema9 > ema20 and vol_spike and breakout_up:
+                if btc_dir and ema9 > ema20 and vol_spike \
+                   and closes[-1] > closes[-2] > closes[-3]:
                     open_trade(sym,"long")
 
                 # SHORT
-                if not btc_up and ema9 < ema20 and vol_spike and breakout_down:
+                if not btc_dir and ema9 < ema20 and vol_spike \
+                   and closes[-1] < closes[-2] < closes[-3]:
                     open_trade(sym,"short")
 
-            time.sleep(4)
+            time.sleep(3)
 
         except Exception as e:
             print("SCANNER ERROR:", e)
-            time.sleep(4)
+            time.sleep(3)
 
-# ===== TELEGRAM STOP =====
+# ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
-def stop_bot(msg):
-    if str(msg.chat.id) != str(MY_CHAT_ID):
-        return
-
-    if msg.text.lower() == "dur":
+def stop(msg):
+    if str(msg.chat.id)!=str(MY_CHAT_ID): return
+    if msg.text.lower()=="dur":
         os._exit(0)
 
 # ===== BAŞLAT =====
-if __name__ == "__main__":
+if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🔥 STABİL BREAKOUT BOT AKTİF")
+    bot.send_message(MY_CHAT_ID,"🔥 STABİL BOT AKTİF")
     bot.infinity_polling()
