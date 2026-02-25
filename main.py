@@ -14,16 +14,12 @@ PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== SABİT AYAR =====
+# ===== AYAR =====
 MARGIN = 3
 LEV = 10
 MAX_POS = 1
 
 FIXED_STOP = 0.45
-
-BE_TRIGGER = 0.40
-LOCK_TRIGGER = 0.70
-TIGHT_TRIGGER = 1.00
 
 BANNED = ['BTC','ETH','XRP','SOL']
 
@@ -36,6 +32,7 @@ exchange = ccxt.bitget({
 })
 
 profits = {}
+lock_levels = {}
 lock = threading.Lock()
 
 def safe(x):
@@ -44,7 +41,7 @@ def safe(x):
     except:
         return 0.0
 
-# ===== POZİSYON AÇ =====
+# ===== OPEN =====
 def open_trade(sym, side):
     try:
         positions = [p for p in exchange.fetch_positions()
@@ -61,12 +58,13 @@ def open_trade(sym, side):
 
         exchange.create_market_order(
             sym,
-            "buy" if side == "long" else "sell",
+            "buy" if side=="long" else "sell",
             qty
         )
 
         with lock:
             profits[sym] = 0
+            lock_levels[sym] = 0
 
         bot.send_message(MY_CHAT_ID, f"🎯 {sym} {side.upper()}")
         return True
@@ -94,7 +92,9 @@ def manager():
                 with lock:
                     if profit > profits.get(sym, 0):
                         profits[sym] = profit
+
                     peak = profits.get(sym, 0)
+                    locked = lock_levels.get(sym, 0)
 
                 # HARD STOP
                 if profit <= -FIXED_STOP:
@@ -105,32 +105,30 @@ def manager():
                         params={'reduceOnly':True}
                     )
                     profits.pop(sym,None)
+                    lock_levels.pop(sym,None)
                     continue
 
                 # BREAK EVEN
-                if peak >= BE_TRIGGER and profit <= 0:
-                    exchange.create_market_order(
-                        sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
-                    profits.pop(sym,None)
-                    continue
+                if peak >= 0.40 and locked == 0:
+                    lock_levels[sym] = 0
+                    locked = 0
 
-                # LOCK PROFIT
-                if peak >= LOCK_TRIGGER and profit <= 0.30:
-                    exchange.create_market_order(
-                        sym,
-                        'sell' if side=='long' else 'buy',
-                        qty,
-                        params={'reduceOnly':True}
-                    )
-                    profits.pop(sym,None)
-                    continue
+                # LOCK 1 USDT
+                if peak >= 1.0 and locked < 1.0:
+                    lock_levels[sym] = 1.0
 
-                # TIGHT TRAILING
-                if peak >= TIGHT_TRIGGER and peak - profit >= 0.30:
+                # LOCK 1.5 USDT
+                if peak >= 1.5 and locked < 1.5:
+                    lock_levels[sym] = 1.5
+
+                # LOCK 2.0 USDT
+                if peak >= 2.0 and locked < 2.0:
+                    lock_levels[sym] = 2.0
+
+                locked = lock_levels.get(sym, 0)
+
+                # EXIT IF BELOW LOCK
+                if locked > 0 and profit <= locked:
                     exchange.create_market_order(
                         sym,
                         'sell' if side=='long' else 'buy',
@@ -138,6 +136,7 @@ def manager():
                         params={'reduceOnly':True}
                     )
                     profits.pop(sym,None)
+                    lock_levels.pop(sym,None)
 
             time.sleep(3)
 
@@ -166,20 +165,18 @@ def scanner():
                 if any(x in sym for x in BANNED):
                     continue
 
-                candles = exchange.fetch_ohlcv(sym, '5m', limit=30)
+                candles = exchange.fetch_ohlcv(sym,'5m',limit=30)
                 closes = [c[4] for c in candles]
 
-                ema9 = sum(closes[-9:]) / 9
-                ema21 = sum(closes[-21:]) / 21
+                ema9 = sum(closes[-9:])/9
+                ema21 = sum(closes[-21:])/21
 
-                # LONG
                 if ema9 > ema21 and closes[-1] > closes[-2]:
-                    if open_trade(sym, "long"):
+                    if open_trade(sym,"long"):
                         break
 
-                # SHORT
                 if ema9 < ema21 and closes[-1] < closes[-2]:
-                    if open_trade(sym, "short"):
+                    if open_trade(sym,"short"):
                         break
 
                 time.sleep(0.2)
@@ -190,17 +187,15 @@ def scanner():
             print("SCAN ERROR:", e)
             time.sleep(12)
 
-# ===== TELEGRAM STOP =====
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
-    if str(msg.chat.id) != str(MY_CHAT_ID):
+    if str(msg.chat.id)!=str(MY_CHAT_ID):
         return
-    if msg.text.lower() == "dur":
+    if msg.text.lower()=="dur":
         os._exit(0)
 
-# ===== START =====
-if __name__ == "__main__":
-    threading.Thread(target=manager, daemon=True).start()
-    threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "⚡ STABLE SCALP v2 AKTİF")
+if __name__=="__main__":
+    threading.Thread(target=manager,daemon=True).start()
+    threading.Thread(target=scanner,daemon=True).start()
+    bot.send_message(MY_CHAT_ID,"🚀 SCALP LOCK ENGINE AKTİF")
     bot.infinity_polling()
