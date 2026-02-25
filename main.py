@@ -15,16 +15,15 @@ PASSPHRASE = "Berfin33"
 bot = telebot.TeleBot(TELE_TOKEN)
 
 # ===== SABİT AYAR =====
-MARGIN = 3            # SABİT 3 USDT
+MARGIN = 3
 LEV = 10
-MAX_POS = 1           # TEK POZİSYON
+MAX_POS = 1
 
-FIXED_STOP = 0.45     # Max zarar ~0.45 USDT
+FIXED_STOP = 0.45
 
-# SCALP TRAILING
-BE_TRIGGER = 0.40     # +0.40'da break-even
-LOCK_TRIGGER = 0.70   # +0.70'de min kâr kilitle
-TIGHT_TRIGGER = 1.00  # +1.00'de sıkı takip
+BE_TRIGGER = 0.40
+LOCK_TRIGGER = 0.70
+TIGHT_TRIGGER = 1.00
 
 BANNED = ['BTC','ETH','XRP','SOL']
 
@@ -97,7 +96,7 @@ def manager():
                         profits[sym] = profit
                     peak = profits.get(sym, 0)
 
-                # ----- HARD STOP -----
+                # HARD STOP
                 if profit <= -FIXED_STOP:
                     exchange.create_market_order(
                         sym,
@@ -108,7 +107,7 @@ def manager():
                     profits.pop(sym,None)
                     continue
 
-                # ----- BREAK EVEN -----
+                # BREAK EVEN
                 if peak >= BE_TRIGGER and profit <= 0:
                     exchange.create_market_order(
                         sym,
@@ -119,7 +118,7 @@ def manager():
                     profits.pop(sym,None)
                     continue
 
-                # ----- LOCK PROFIT -----
+                # LOCK PROFIT
                 if peak >= LOCK_TRIGGER and profit <= 0.30:
                     exchange.create_market_order(
                         sym,
@@ -130,7 +129,7 @@ def manager():
                     profits.pop(sym,None)
                     continue
 
-                # ----- TIGHT TRAILING -----
+                # TIGHT TRAILING
                 if peak >= TIGHT_TRIGGER and peak - profit >= 0.30:
                     exchange.create_market_order(
                         sym,
@@ -140,11 +139,11 @@ def manager():
                     )
                     profits.pop(sym,None)
 
-            time.sleep(2)
+            time.sleep(3)
 
         except Exception as e:
-            print("MANAGER:", e)
-            time.sleep(2)
+            print("MANAGER ERROR:", e)
+            time.sleep(3)
 
 # ===== SCANNER =====
 def scanner():
@@ -156,7 +155,7 @@ def scanner():
                          if safe(p.get('contracts')) > 0]
 
             if len(positions) >= MAX_POS:
-                time.sleep(5)
+                time.sleep(10)
                 continue
 
             for m in markets.values():
@@ -170,8 +169,8 @@ def scanner():
                 candles = exchange.fetch_ohlcv(sym, '5m', limit=30)
                 closes = [c[4] for c in candles]
 
-                ema9 = sum(closes[-9:])/9
-                ema21 = sum(closes[-21:])/21
+                ema9 = sum(closes[-9:]) / 9
+                ema21 = sum(closes[-21:]) / 21
 
                 # LONG
                 if ema9 > ema21 and closes[-1] > closes[-2]:
@@ -183,11 +182,13 @@ def scanner():
                     if open_trade(sym, "short"):
                         break
 
-            time.sleep(6)
+                time.sleep(0.2)
+
+            time.sleep(12)
 
         except Exception as e:
-            print("SCAN:", e)
-            time.sleep(6)
+            print("SCAN ERROR:", e)
+            time.sleep(12)
 
 # ===== TELEGRAM STOP =====
 @bot.message_handler(func=lambda m: True)
@@ -201,5 +202,5 @@ def stop(msg):
 if __name__ == "__main__":
     threading.Thread(target=manager, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "⚡ STABLE SCALP MODE AKTİF")
+    bot.send_message(MY_CHAT_ID, "⚡ STABLE SCALP v2 AKTİF")
     bot.infinity_polling()
