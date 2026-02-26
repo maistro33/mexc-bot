@@ -3,6 +3,7 @@ import time
 import telebot
 import ccxt
 import threading
+import datetime
 
 # ===== TELEGRAM =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
@@ -15,11 +16,11 @@ PASSPHRASE = "Berfin33"
 bot = telebot.TeleBot(TELE_TOKEN)
 
 # ===== AYAR =====
-MARGIN = 3
 LEV = 10
-MAX_POS = 1
-
+MAX_POS = 2
+RISK_PERCENT = 0.25
 FIXED_STOP = 0.45
+DAILY_MAX_LOSS = -1.5
 
 BANNED = ['BTC','ETH','XRP','SOL']
 
@@ -33,6 +34,9 @@ exchange = ccxt.bitget({
 
 profits = {}
 lock_levels = {}
+last_trade_time = {}
+daily_pnl = 0
+today = datetime.date.today()
 lock = threading.Lock()
 
 def safe(x):
@@ -41,20 +45,33 @@ def safe(x):
     except:
         return 0.0
 
+def get_margin_size(sym):
+    balance = exchange.fetch_balance()['USDT']['free']
+    margin = balance * RISK_PERCENT
+    price = safe(exchange.fetch_ticker(sym)['last'])
+    qty = (margin * LEV) / price
+    return float(exchange.amount_to_precision(sym, qty))
+
 # ===== OPEN =====
 def open_trade(sym, side):
+    global daily_pnl
     try:
+        if daily_pnl <= DAILY_MAX_LOSS:
+            return False
+
         positions = [p for p in exchange.fetch_positions()
                      if safe(p.get('contracts')) > 0]
 
         if len(positions) >= MAX_POS:
             return False
 
-        exchange.set_leverage(LEV, sym)
+        # aynı coine 5 dk içinde tekrar girme
+        if sym in last_trade_time:
+            if time.time() - last_trade_time[sym] < 300:
+                return False
 
-        price = safe(exchange.fetch_ticker(sym)['last'])
-        qty = (MARGIN * LEV) / price
-        qty = float(exchange.amount_to_precision(sym, qty))
+        exchange.set_leverage(LEV, sym)
+        qty = get_margin_size(sym)
 
         exchange.create_market_order(
             sym,
@@ -65,6 +82,7 @@ def open_trade(sym, side):
         with lock:
             profits[sym] = 0
             lock_levels[sym] = 0
+            last_trade_time[sym] = time.time()
 
         bot.send_message(MY_CHAT_ID, f"🎯 {sym} {side.upper()}")
         return True
@@ -75,8 +93,15 @@ def open_trade(sym, side):
 
 # ===== MANAGER =====
 def manager():
+    global daily_pnl, today
+
     while True:
         try:
+            # gün reset
+            if datetime.date.today() != today:
+                today = datetime.date.today()
+                daily_pnl = 0
+
             positions = [p for p in exchange.fetch_positions()
                          if safe(p.get('contracts')) > 0]
 
@@ -92,7 +117,6 @@ def manager():
                 with lock:
                     if profit > profits.get(sym, 0):
                         profits[sym] = profit
-
                     peak = profits.get(sym, 0)
                     locked = lock_levels.get(sym, 0)
 
@@ -104,30 +128,29 @@ def manager():
                         qty,
                         params={'reduceOnly':True}
                     )
+                    daily_pnl += profit
                     profits.pop(sym,None)
                     lock_levels.pop(sym,None)
                     continue
 
-                # BREAK EVEN
-                if peak >= 0.40 and locked == 0:
+                # LOCK 0.50 BE
+                if peak >= 0.50 and locked < 0:
                     lock_levels[sym] = 0
-                    locked = 0
 
-                # LOCK 1 USDT
-                if peak >= 1.0 and locked < 1.0:
-                    lock_levels[sym] = 1.0
+                # LOCK 0.80 → 0.50
+                if peak >= 0.80 and locked < 0.50:
+                    lock_levels[sym] = 0.50
 
-                # LOCK 1.5 USDT
-                if peak >= 1.5 and locked < 1.5:
-                    lock_levels[sym] = 1.5
+                # LOCK 1.20 → 0.90
+                if peak >= 1.20 and locked < 0.90:
+                    lock_levels[sym] = 0.90
 
-                # LOCK 2.0 USDT
-                if peak >= 2.0 and locked < 2.0:
-                    lock_levels[sym] = 2.0
+                # TRAILING 1.80+
+                if peak >= 1.80:
+                    lock_levels[sym] = max(lock_levels.get(sym,0), peak - 0.40)
 
                 locked = lock_levels.get(sym, 0)
 
-                # EXIT IF BELOW LOCK
                 if locked > 0 and profit <= locked:
                     exchange.create_market_order(
                         sym,
@@ -135,6 +158,7 @@ def manager():
                         qty,
                         params={'reduceOnly':True}
                     )
+                    daily_pnl += profit
                     profits.pop(sym,None)
                     lock_levels.pop(sym,None)
 
@@ -197,5 +221,5 @@ def stop(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🚀 SCALP LOCK ENGINE AKTİF")
+    bot.send_message(MY_CHAT_ID,"⚡ AKTİF DÖNGÜ SCALP vFINAL AKTİF")
     bot.infinity_polling()
