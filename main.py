@@ -7,7 +7,6 @@ import threading
 # ===== TELEGRAM =====
 TELE_TOKEN = os.getenv("TELE_TOKEN")
 MY_CHAT_ID = os.getenv("MY_CHAT_ID")
-
 bot = telebot.TeleBot(TELE_TOKEN)
 
 # ===== API =====
@@ -24,6 +23,14 @@ LEVERAGE = 5
 MARGIN = 3
 STOP_PERCENT = 0.01
 TP_PERCENT = 0.02
+MIN_24H_CHANGE = 4
+MIN_VOLUME = 3_000_000
+
+# MAJOR COINLERİ DIŞLA
+MAJORS = [
+    "BTC","ETH","BNB","SOL","XRP","ADA","DOGE",
+    "AVAX","DOT","LINK","LTC","BCH","ATOM"
+]
 
 def safe(x):
     try:
@@ -67,7 +74,6 @@ def get_position():
 
 def open_trade(symbol, side):
     exchange.set_leverage(LEVERAGE, symbol)
-
     price = safe(exchange.fetch_ticker(symbol)["last"])
     qty = (MARGIN * LEVERAGE) / price
     qty = float(exchange.amount_to_precision(symbol, qty))
@@ -136,38 +142,45 @@ def scanner():
                 time.sleep(10)
                 continue
 
-            for m in markets.values():
-                symbol = m["symbol"]
+            for symbol in markets:
                 if ":USDT" not in symbol:
                     continue
 
-                candles15 = exchange.fetch_ohlcv(symbol, "15m", limit=250)
-                closes15 = [c[4] for c in candles15]
+                if any(m in symbol for m in MAJORS):
+                    continue
 
-                ema50 = ema(closes15[-50:], 50)
-                ema200 = ema(closes15[-200:], 200)
+                ticker = exchange.fetch_ticker(symbol)
+                change = safe(ticker.get("percentage"))
+                volume = safe(ticker.get("quoteVolume"))
 
-                candles5 = exchange.fetch_ohlcv(symbol, "5m", limit=50)
-                closes5 = [c[4] for c in candles5]
+                if abs(change) < MIN_24H_CHANGE:
+                    continue
 
-                ema20 = ema(closes5[-20:], 20)
-                rsi_val = rsi(closes5)
+                if volume < MIN_VOLUME:
+                    continue
 
-                last_close = closes5[-1]
+                candles = exchange.fetch_ohlcv(symbol, "5m", limit=50)
+                closes = [c[4] for c in candles]
 
-                # LONG
-                if ema50 > ema200 and 45 < rsi_val < 60 and last_close > ema20:
+                ema20 = ema(closes[-20:], 20)
+                ema50 = ema(closes[-50:], 50)
+                rsi_val = rsi(closes)
+
+                last_close = closes[-1]
+
+                # LONG MOMENTUM
+                if change > 0 and ema20 > ema50 and rsi_val > 55:
                     open_trade(symbol, "long")
                     break
 
-                # SHORT
-                if ema50 < ema200 and 40 < rsi_val < 55 and last_close < ema20:
+                # SHORT MOMENTUM
+                if change < 0 and ema20 < ema50 and rsi_val < 45:
                     open_trade(symbol, "short")
                     break
 
                 time.sleep(0.2)
 
-            time.sleep(15)
+            time.sleep(20)
 
         except Exception as e:
             print("SCAN ERROR:", e)
@@ -183,5 +196,5 @@ def stop(msg):
 if __name__ == "__main__":
     threading.Thread(target=manager, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "TREND BOT AKTİF")
+    bot.send_message(MY_CHAT_ID, "MEME MOMENTUM BOT AKTİF")
     bot.infinity_polling()
