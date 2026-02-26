@@ -1,200 +1,195 @@
-import os
-import time
-import ccxt
-import telebot
-import threading
+import os, time, telebot, ccxt, threading
 
-# ===== TELEGRAM =====
-TELE_TOKEN = os.getenv("TELE_TOKEN")
-MY_CHAT_ID = os.getenv("MY_CHAT_ID")
+# --- BAĞLANTILAR ---
+TELE_TOKEN = os.getenv('TELE_TOKEN')
+MY_CHAT_ID = os.getenv('MY_CHAT_ID')
+API_KEY = os.getenv('BITGET_API')
+API_SEC = os.getenv('BITGET_SEC')
+PASSPHRASE = "Berfin33"
+
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== API =====
-exchange = ccxt.bitget({
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS") or "Berfin33",
-    "options": {"defaultType": "swap"},
-    "enableRateLimit": True
-})
+# --- EXCHANGE ---
+def get_exch():
+    return ccxt.bitget({
+        'apiKey': API_KEY,
+        'secret': API_SEC,
+        'password': PASSPHRASE,
+        'options': {'defaultType': 'swap'},
+        'enableRateLimit': True,
+        'timeout': 30000
+    })
 
-# ===== AYAR =====
-LEVERAGE = 5
-MARGIN = 3
-STOP_PERCENT = 0.008
-TP_PERCENT = 0.016
-MIN_24H_CHANGE = 4
-MIN_VOLUME = 3_000_000
+def safe_num(x):
+    try: return float(x)
+    except: return 0.0
 
-# MAJOR COINLERİ DIŞLA
-MAJORS = [
-    "BTC","ETH","BNB","SOL","XRP","ADA","DOGE",
-    "AVAX","DOT","LINK","LTC","BCH","ATOM"
-]
+# --- AYARLAR ---
+MARGIN_PER_TRADE = 1        # 1 USDT TEST
+LEVERAGE = 5                # 5x
+MAX_POSITIONS = 1           # Aynı anda 1
+STOP_USDT = 0.3
+TRAIL_USDT = 0.25
 
-def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0.0
+MIN_24H_CHANGE = 20         # %20 üstü pump adayı
+MAX_DAILY_TRADES = 3
 
-def ema(data, period):
-    k = 2 / (period + 1)
-    ema_val = data[0]
-    for price in data[1:]:
-        ema_val = price * k + ema_val * (1 - k)
-    return ema_val
+highest_profits = {}
+daily_trades = 0
+day_reset = time.time()
 
-def rsi(closes, period=14):
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
-        if diff > 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
+BANNED = ['BTC','ETH','XRP','SOL','BNB','ADA','AVAX']
 
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def get_position():
-    positions = exchange.fetch_positions()
-    for p in positions:
-        if safe(p.get("contracts")) > 0:
-            return p
-    return None
-
+# --- EMİR ---
 def open_trade(symbol, side):
-    exchange.set_leverage(LEVERAGE, symbol)
-    price = safe(exchange.fetch_ticker(symbol)["last"])
-    qty = (MARGIN * LEVERAGE) / price
-    qty = float(exchange.amount_to_precision(symbol, qty))
+    global daily_trades
 
-    exchange.create_market_order(
-        symbol,
-        "buy" if side == "long" else "sell",
-        qty
-    )
+    if daily_trades >= MAX_DAILY_TRADES:
+        return
 
-    bot.send_message(MY_CHAT_ID, f"{symbol} {side.upper()} AÇILDI")
+    try:
+        exch = get_exch()
+        exch.load_markets()
 
-def manager():
+        pos = exch.fetch_positions()
+        active = [p for p in pos if safe_num(p.get('contracts'))>0]
+
+        if len(active) >= MAX_POSITIONS:
+            return
+
+        ticker = exch.fetch_ticker(symbol)
+        price = safe_num(ticker['last'])
+
+        qty = (MARGIN_PER_TRADE * LEVERAGE) / price
+        qty = float(exch.amount_to_precision(symbol, qty))
+
+        exch.create_market_order(symbol,"buy",qty)
+
+        highest_profits[symbol] = 0
+        daily_trades += 1
+
+        bot.send_message(
+            MY_CHAT_ID,
+            f"🎯 PUMP AVCI {symbol} LONG açtı"
+        )
+
+    except Exception as e:
+        bot.send_message(MY_CHAT_ID, f"Hata: {e}")
+
+# --- KAR YÖNETİMİ ---
+def auto_manager():
     while True:
         try:
-            pos = get_position()
-            if not pos:
-                time.sleep(3)
-                continue
+            exch = get_exch()
+            pos = exch.fetch_positions()
 
-            symbol = pos["symbol"]
-            side = pos["side"]
-            entry = safe(pos["entryPrice"])
-            qty = safe(pos["contracts"])
-            price = safe(exchange.fetch_ticker(symbol)["last"])
+            for p in [p for p in pos if safe_num(p.get('contracts'))>0]:
 
-            if side == "long":
-                stop = entry * (1 - STOP_PERCENT)
-                tp = entry * (1 + TP_PERCENT)
-                exit_side = "sell"
-            else:
-                stop = entry * (1 + STOP_PERCENT)
-                tp = entry * (1 - TP_PERCENT)
-                exit_side = "buy"
+                sym = p['symbol']
+                qty = safe_num(p.get('contracts'))
+                entry = safe_num(p.get('entryPrice'))
 
-            if (side == "long" and price <= stop) or \
-               (side == "short" and price >= stop):
+                ticker = exch.fetch_ticker(sym)
+                last = safe_num(ticker['last'])
 
-                exchange.create_market_order(
-                    symbol, exit_side, qty,
-                    params={"reduceOnly": True}
-                )
-                bot.send_message(MY_CHAT_ID, "STOP ❌")
+                profit = (last-entry)*qty
 
-            elif (side == "long" and price >= tp) or \
-                 (side == "short" and price <= tp):
+                if profit > highest_profits.get(sym,0):
+                    highest_profits[sym] = profit
 
-                exchange.create_market_order(
-                    symbol, exit_side, qty,
-                    params={"reduceOnly": True}
-                )
-                bot.send_message(MY_CHAT_ID, "TP ✅")
+                # STOP
+                if profit <= -STOP_USDT:
+                    exch.create_market_order(
+                        sym,'sell',qty,
+                        params={'reduceOnly':True}
+                    )
+                    highest_profits.pop(sym,None)
+
+                # TRAILING
+                elif highest_profits[sym] >= TRAIL_USDT and \
+                     (highest_profits[sym]-profit)>=0.15:
+
+                    exch.create_market_order(
+                        sym,'sell',qty,
+                        params={'reduceOnly':True}
+                    )
+                    highest_profits.pop(sym,None)
 
             time.sleep(3)
 
-        except Exception as e:
-            print("MANAGER ERROR:", e)
+        except:
             time.sleep(3)
 
-def scanner():
-    markets = exchange.load_markets()
+# --- AVCI SCANNER ---
+def market_scanner():
+    global daily_trades, day_reset
 
     while True:
         try:
-            if get_position():
-                time.sleep(10)
-                continue
+            # Günlük reset
+            if time.time() - day_reset > 86400:
+                daily_trades = 0
+                day_reset = time.time()
 
-            for symbol in markets:
-                if ":USDT" not in symbol:
+            exch = get_exch()
+            markets = exch.load_markets()
+
+            pos = exch.fetch_positions()
+            active = [p for p in pos if safe_num(p.get('contracts'))>0]
+
+            for m in markets.values():
+
+                sym = m['symbol']
+
+                if ':USDT' not in sym:
                     continue
 
-                if any(m in symbol for m in MAJORS):
+                if any(x in sym for x in BANNED):
                     continue
 
-                ticker = exchange.fetch_ticker(symbol)
-                change = safe(ticker.get("percentage"))
-                volume = safe(ticker.get("quoteVolume"))
+                if len(active) >= MAX_POSITIONS:
+                    break
 
-                if abs(change) < MIN_24H_CHANGE:
+                ticker = exch.fetch_ticker(sym)
+                change = safe_num(ticker.get('percentage'))
+
+                if change < MIN_24H_CHANGE:
                     continue
 
-                if volume < MIN_VOLUME:
-                    continue
-
-                candles = exchange.fetch_ohlcv(symbol, "5m", limit=50)
+                candles = exch.fetch_ohlcv(sym,'5m',limit=15)
                 closes = [c[4] for c in candles]
+                volumes = [c[5] for c in candles]
 
-                ema20 = ema(closes[-20:], 20)
-                ema50 = ema(closes[-50:], 50)
-                rsi_val = rsi(closes)
+                # SIKIŞMA
+                range_size = max(closes[:-1]) - min(closes[:-1])
 
-                last_close = closes[-1]
+                # Hacim patlaması
+                avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+                volume_spike = volumes[-1] > avg_vol * 1.8
 
-                # LONG MOMENTUM
-                if change > 0 and ema20 > ema50 and rsi_val > 55:
-                    open_trade(symbol, "long")
-                    break
+                # KIRILIM
+                breakout_up = closes[-1] > max(closes[:-1])
 
-                # SHORT MOMENTUM
-                if change < 0 and ema20 < ema50 and rsi_val < 45:
-                    open_trade(symbol, "short")
-                    break
+                if range_size/closes[-1] < 0.01 and breakout_up and volume_spike:
+                    open_trade(sym,"long")
 
-                time.sleep(0.2)
-
-            time.sleep(20)
-
-        except Exception as e:
-            print("SCAN ERROR:", e)
             time.sleep(10)
 
+        except:
+            time.sleep(10)
+
+# --- TELEGRAM ---
 @bot.message_handler(func=lambda m: True)
-def stop(msg):
-    if str(msg.chat.id) != str(MY_CHAT_ID):
-        return
-    if msg.text.lower() == "dur":
+def handle(msg):
+    if str(msg.chat.id)!=str(MY_CHAT_ID): return
+
+    if msg.text.lower()=="dur":
+        bot.send_message(MY_CHAT_ID,"Bot durduruldu")
         os._exit(0)
 
-if __name__ == "__main__":
-    threading.Thread(target=manager, daemon=True).start()
-    threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "MEME MOMENTUM BOT AKTİF")
+# --- BAŞLAT ---
+if __name__=="__main__":
+    threading.Thread(target=auto_manager,daemon=True).start()
+    threading.Thread(target=market_scanner,daemon=True).start()
+    bot.send_message(MY_CHAT_ID,"🚀 PUMP AVCI BOT aktif")
     bot.infinity_polling()
