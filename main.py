@@ -1,7 +1,7 @@
 import os
 import time
-import telebot
 import ccxt
+import telebot
 import threading
 import datetime
 
@@ -22,7 +22,7 @@ RISK_PERCENT = 0.25
 FIXED_STOP = 0.45
 DAILY_MAX_LOSS = -1.5
 
-BANNED = ['BTC','ETH','XRP','SOL']
+BANNED = ['BTC','ETH','XRP','SOL','BNB']
 
 exchange = ccxt.bitget({
     'apiKey': API_KEY,
@@ -34,7 +34,6 @@ exchange = ccxt.bitget({
 
 profits = {}
 lock_levels = {}
-last_trade_time = {}
 daily_pnl = 0
 today = datetime.date.today()
 lock = threading.Lock()
@@ -45,7 +44,8 @@ def safe(x):
     except:
         return 0.0
 
-def get_margin_size(sym):
+# ===== POSITION SIZE =====
+def get_qty(sym):
     balance = exchange.fetch_balance()['USDT']['free']
     margin = balance * RISK_PERCENT
     price = safe(exchange.fetch_ticker(sym)['last'])
@@ -55,41 +55,30 @@ def get_margin_size(sym):
 # ===== OPEN =====
 def open_trade(sym, side):
     global daily_pnl
-    try:
-        if daily_pnl <= DAILY_MAX_LOSS:
-            return False
 
-        positions = [p for p in exchange.fetch_positions()
-                     if safe(p.get('contracts')) > 0]
-
-        if len(positions) >= MAX_POS:
-            return False
-
-        # aynı coine 5 dk içinde tekrar girme
-        if sym in last_trade_time:
-            if time.time() - last_trade_time[sym] < 300:
-                return False
-
-        exchange.set_leverage(LEV, sym)
-        qty = get_margin_size(sym)
-
-        exchange.create_market_order(
-            sym,
-            "buy" if side=="long" else "sell",
-            qty
-        )
-
-        with lock:
-            profits[sym] = 0
-            lock_levels[sym] = 0
-            last_trade_time[sym] = time.time()
-
-        bot.send_message(MY_CHAT_ID, f"🎯 {sym} {side.upper()}")
-        return True
-
-    except Exception as e:
-        print("OPEN ERROR:", e)
+    if daily_pnl <= DAILY_MAX_LOSS:
         return False
+
+    positions = [p for p in exchange.fetch_positions()
+                 if safe(p.get('contracts')) > 0]
+
+    if len(positions) >= MAX_POS:
+        return False
+
+    exchange.set_leverage(LEV, sym)
+    qty = get_qty(sym)
+
+    exchange.create_market_order(
+        sym,
+        "buy" if side=="long" else "sell",
+        qty
+    )
+
+    profits[sym] = 0
+    lock_levels[sym] = 0
+
+    bot.send_message(MY_CHAT_ID,f"🔥 {sym} {side.upper()} BREAKOUT")
+    return True
 
 # ===== MANAGER =====
 def manager():
@@ -97,7 +86,6 @@ def manager():
 
     while True:
         try:
-            # gün reset
             if datetime.date.today() != today:
                 today = datetime.date.today()
                 daily_pnl = 0
@@ -114,11 +102,11 @@ def manager():
 
                 profit = (last-entry)*qty if side=="long" else (entry-last)*qty
 
-                with lock:
-                    if profit > profits.get(sym, 0):
-                        profits[sym] = profit
-                    peak = profits.get(sym, 0)
-                    locked = lock_levels.get(sym, 0)
+                if profit > profits.get(sym,0):
+                    profits[sym] = profit
+
+                peak = profits.get(sym,0)
+                locked = lock_levels.get(sym,0)
 
                 # HARD STOP
                 if profit <= -FIXED_STOP:
@@ -133,23 +121,22 @@ def manager():
                     lock_levels.pop(sym,None)
                     continue
 
-                # LOCK 0.50 BE
-                if peak >= 0.50 and locked < 0:
+                # BREAK EVEN
+                if peak >= 0.60 and locked < 0:
                     lock_levels[sym] = 0
 
-                # LOCK 0.80 → 0.50
-                if peak >= 0.80 and locked < 0.50:
-                    lock_levels[sym] = 0.50
+                # LOCK LEVELS
+                if peak >= 1.0 and locked < 0.70:
+                    lock_levels[sym] = 0.70
 
-                # LOCK 1.20 → 0.90
-                if peak >= 1.20 and locked < 0.90:
-                    lock_levels[sym] = 0.90
+                if peak >= 1.5 and locked < 1.10:
+                    lock_levels[sym] = 1.10
 
-                # TRAILING 1.80+
-                if peak >= 1.80:
-                    lock_levels[sym] = max(lock_levels.get(sym,0), peak - 0.40)
+                # TRAILING
+                if peak >= 2.0:
+                    lock_levels[sym] = max(lock_levels.get(sym,0), peak - 0.50)
 
-                locked = lock_levels.get(sym, 0)
+                locked = lock_levels.get(sym,0)
 
                 if locked > 0 and profit <= locked:
                     exchange.create_market_order(
@@ -168,7 +155,7 @@ def manager():
             print("MANAGER ERROR:", e)
             time.sleep(3)
 
-# ===== SCANNER =====
+# ===== BREAKOUT SCANNER =====
 def scanner():
     markets = exchange.load_markets()
 
@@ -189,27 +176,47 @@ def scanner():
                 if any(x in sym for x in BANNED):
                     continue
 
-                candles = exchange.fetch_ohlcv(sym,'5m',limit=30)
+                candles = exchange.fetch_ohlcv(sym,'5m',limit=25)
+
+                highs = [c[2] for c in candles]
+                lows = [c[3] for c in candles]
                 closes = [c[4] for c in candles]
+                vols = [c[5] for c in candles]
 
-                ema9 = sum(closes[-9:])/9
-                ema21 = sum(closes[-21:])/21
+                recent_range = max(highs[-10:]) - min(lows[-10:])
+                total_range = max(highs[-20:]) - min(lows[-20:])
 
-                if ema9 > ema21 and closes[-1] > closes[-2]:
+                if total_range == 0:
+                    continue
+
+                # SIKISMA
+                if recent_range / total_range > 0.4:
+                    continue
+
+                avg_vol = sum(vols[-10:-1]) / 9
+                last_vol = vols[-1]
+
+                # HACİM SPIKE
+                if last_vol < avg_vol * 2:
+                    continue
+
+                # LONG BREAKOUT
+                if closes[-1] > max(highs[-10:-1]):
                     if open_trade(sym,"long"):
                         break
 
-                if ema9 < ema21 and closes[-1] < closes[-2]:
+                # SHORT BREAKOUT
+                if closes[-1] < min(lows[-10:-1]):
                     if open_trade(sym,"short"):
                         break
 
                 time.sleep(0.2)
 
-            time.sleep(12)
+            time.sleep(15)
 
         except Exception as e:
             print("SCAN ERROR:", e)
-            time.sleep(12)
+            time.sleep(15)
 
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
@@ -221,5 +228,5 @@ def stop(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"⚡ AKTİF DÖNGÜ SCALP vFINAL AKTİF")
+    bot.send_message(MY_CHAT_ID,"🚀 BREAKOUT SCALP ENGINE AKTİF")
     bot.infinity_polling()
