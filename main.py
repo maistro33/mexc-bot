@@ -1,39 +1,29 @@
 import os
 import time
-import telebot
 import ccxt
+import telebot
 import threading
 
 # ===== TELEGRAM =====
-TELE_TOKEN = os.getenv('TELE_TOKEN')
-MY_CHAT_ID = os.getenv('MY_CHAT_ID')
-
-API_KEY = os.getenv('BITGET_API')
-API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = os.getenv('BITGET_PASS')
+TELE_TOKEN = os.getenv("TELE_TOKEN")
+MY_CHAT_ID = os.getenv("MY_CHAT_ID")
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# ===== AYAR =====
-MARGIN = 3
-LEV = 5              # 10 yerine 5 (10 çok agresif)
-MAX_POS = 1
-
-STOP_PERCENT = 0.01  # %1 fiyat stop
-
-BANNED = ['BTC','ETH','XRP','SOL']
-
+# ===== API =====
 exchange = ccxt.bitget({
-    'apiKey': API_KEY,
-    'secret': API_SEC,
-    'password': PASSPHRASE,
-    'options': {'defaultType': 'swap'},
-    'enableRateLimit': True
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": os.getenv("BITGET_PASS") or "Berfin33",
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True
 })
 
-profits = {}
-lock_levels = {}
-lock = threading.Lock()
+# ===== AYAR =====
+LEVERAGE = 5
+MARGIN = 3
+STOP_PERCENT = 0.01
+TP_PERCENT = 0.02
 
 def safe(x):
     try:
@@ -41,111 +31,95 @@ def safe(x):
     except:
         return 0.0
 
+def ema(data, period):
+    k = 2 / (period + 1)
+    ema_val = data[0]
+    for price in data[1:]:
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
 
-# ===== POZİSYON VAR MI =====
-def has_position():
+def rsi(closes, period=14):
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i-1]
+        if diff > 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def get_position():
     positions = exchange.fetch_positions()
-    return [p for p in positions if safe(p.get('contracts')) > 0]
+    for p in positions:
+        if safe(p.get("contracts")) > 0:
+            return p
+    return None
 
+def open_trade(symbol, side):
+    exchange.set_leverage(LEVERAGE, symbol)
 
-# ===== OPEN =====
-def open_trade(sym, side):
-    try:
-        if has_position():
-            return False
+    price = safe(exchange.fetch_ticker(symbol)["last"])
+    qty = (MARGIN * LEVERAGE) / price
+    qty = float(exchange.amount_to_precision(symbol, qty))
 
-        exchange.set_leverage(LEV, sym)
+    exchange.create_market_order(
+        symbol,
+        "buy" if side == "long" else "sell",
+        qty
+    )
 
-        price = safe(exchange.fetch_ticker(sym)['last'])
-        qty = (MARGIN * LEV) / price
-        qty = float(exchange.amount_to_precision(sym, qty))
+    bot.send_message(MY_CHAT_ID, f"{symbol} {side.upper()} AÇILDI")
 
-        order_side = "buy" if side == "long" else "sell"
-
-        exchange.create_market_order(
-            sym,
-            order_side,
-            qty
-        )
-
-        with lock:
-            profits[sym] = 0
-            lock_levels[sym] = 0
-
-        bot.send_message(MY_CHAT_ID, f"{sym} {side.upper()} AÇILDI")
-        return True
-
-    except Exception as e:
-        print("OPEN ERROR:", e)
-        return False
-
-
-# ===== MANAGER =====
 def manager():
     while True:
         try:
-            positions = has_position()
+            pos = get_position()
+            if not pos:
+                time.sleep(3)
+                continue
 
-            for p in positions:
-                sym = p['symbol']
-                side = p['side']
-                qty = safe(p.get('contracts'))
-                entry = safe(p.get('entryPrice'))
-                last = safe(exchange.fetch_ticker(sym)['last'])
+            symbol = pos["symbol"]
+            side = pos["side"]
+            entry = safe(pos["entryPrice"])
+            qty = safe(pos["contracts"])
+            price = safe(exchange.fetch_ticker(symbol)["last"])
 
-                # FİYAT BAZLI STOP
-                if side == "long":
-                    stop_price = entry * (1 - STOP_PERCENT)
-                    profit = (last - entry) * qty
-                    exit_side = "sell"
-                else:
-                    stop_price = entry * (1 + STOP_PERCENT)
-                    profit = (entry - last) * qty
-                    exit_side = "buy"
+            if side == "long":
+                stop = entry * (1 - STOP_PERCENT)
+                tp = entry * (1 + TP_PERCENT)
+                exit_side = "sell"
+            else:
+                stop = entry * (1 + STOP_PERCENT)
+                tp = entry * (1 - TP_PERCENT)
+                exit_side = "buy"
 
-                # HARD STOP
-                if (side == "long" and last <= stop_price) or \
-                   (side == "short" and last >= stop_price):
+            if (side == "long" and price <= stop) or \
+               (side == "short" and price >= stop):
 
-                    exchange.create_market_order(
-                        sym,
-                        exit_side,
-                        qty,
-                        params={'reduceOnly': True}
-                    )
+                exchange.create_market_order(
+                    symbol, exit_side, qty,
+                    params={"reduceOnly": True}
+                )
+                bot.send_message(MY_CHAT_ID, "STOP ❌")
 
-                    profits.pop(sym, None)
-                    lock_levels.pop(sym, None)
-                    bot.send_message(MY_CHAT_ID, "STOP ❌")
-                    continue
+            elif (side == "long" and price >= tp) or \
+                 (side == "short" and price <= tp):
 
-                # PROFIT TAKİP
-                with lock:
-                    if profit > profits.get(sym, 0):
-                        profits[sym] = profit
-
-                    peak = profits.get(sym, 0)
-                    locked = lock_levels.get(sym, 0)
-
-                # LOCK SİSTEMİ
-                if peak >= 1.0 and locked < 1.0:
-                    lock_levels[sym] = 1.0
-                if peak >= 2.0 and locked < 2.0:
-                    lock_levels[sym] = 2.0
-
-                locked = lock_levels.get(sym, 0)
-
-                if locked > 0 and profit <= locked:
-                    exchange.create_market_order(
-                        sym,
-                        exit_side,
-                        qty,
-                        params={'reduceOnly': True}
-                    )
-
-                    profits.pop(sym, None)
-                    lock_levels.pop(sym, None)
-                    bot.send_message(MY_CHAT_ID, "LOCK EXIT ✅")
+                exchange.create_market_order(
+                    symbol, exit_side, qty,
+                    params={"reduceOnly": True}
+                )
+                bot.send_message(MY_CHAT_ID, "TP ✅")
 
             time.sleep(3)
 
@@ -153,58 +127,61 @@ def manager():
             print("MANAGER ERROR:", e)
             time.sleep(3)
 
-
-# ===== SCANNER =====
 def scanner():
     markets = exchange.load_markets()
 
     while True:
         try:
-            if has_position():
+            if get_position():
                 time.sleep(10)
                 continue
 
             for m in markets.values():
-                sym = m['symbol']
-
-                if ':USDT' not in sym:
-                    continue
-                if any(x in sym for x in BANNED):
+                symbol = m["symbol"]
+                if ":USDT" not in symbol:
                     continue
 
-                candles = exchange.fetch_ohlcv(sym,'5m',limit=30)
-                closes = [c[4] for c in candles]
+                candles15 = exchange.fetch_ohlcv(symbol, "15m", limit=250)
+                closes15 = [c[4] for c in candles15]
 
-                ema9 = sum(closes[-9:])/9
-                ema21 = sum(closes[-21:])/21
+                ema50 = ema(closes15[-50:], 50)
+                ema200 = ema(closes15[-200:], 200)
 
-                if ema9 > ema21 and closes[-1] > closes[-2]:
-                    if open_trade(sym,"long"):
-                        break
+                candles5 = exchange.fetch_ohlcv(symbol, "5m", limit=50)
+                closes5 = [c[4] for c in candles5]
 
-                if ema9 < ema21 and closes[-1] < closes[-2]:
-                    if open_trade(sym,"short"):
-                        break
+                ema20 = ema(closes5[-20:], 20)
+                rsi_val = rsi(closes5)
+
+                last_close = closes5[-1]
+
+                # LONG
+                if ema50 > ema200 and 45 < rsi_val < 60 and last_close > ema20:
+                    open_trade(symbol, "long")
+                    break
+
+                # SHORT
+                if ema50 < ema200 and 40 < rsi_val < 55 and last_close < ema20:
+                    open_trade(symbol, "short")
+                    break
 
                 time.sleep(0.2)
 
-            time.sleep(12)
+            time.sleep(15)
 
         except Exception as e:
             print("SCAN ERROR:", e)
-            time.sleep(12)
-
+            time.sleep(10)
 
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
-    if str(msg.chat.id)!=str(MY_CHAT_ID):
+    if str(msg.chat.id) != str(MY_CHAT_ID):
         return
-    if msg.text.lower()=="dur":
+    if msg.text.lower() == "dur":
         os._exit(0)
 
-
-if __name__=="__main__":
-    threading.Thread(target=manager,daemon=True).start()
-    threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"SCALP LOCK ENGINE AKTİF")
+if __name__ == "__main__":
+    threading.Thread(target=manager, daemon=True).start()
+    threading.Thread(target=scanner, daemon=True).start()
+    bot.send_message(MY_CHAT_ID, "TREND BOT AKTİF")
     bot.infinity_polling()
