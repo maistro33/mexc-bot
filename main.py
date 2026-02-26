@@ -19,9 +19,15 @@ MARGIN = 3
 LEV = 10
 MAX_POS = 3
 
-FIXED_STOP = 0.45
+FIXED_STOP = 0.45          # Sert zarar durdur
+MIN_VOLUME = 200000       # Minimum 24h hacim
+MIN_VOLATILITY = 1.5      # Minimum % hareket (pump yakalamak için)
 
-BANNED = ['BTC','ETH','XRP','SOL']
+BANNED = [
+    'BTC','ETH','XRP','SOL',
+    'BCH','LTC','ADA','DOT',
+    'LINK','BNB','AVAX'
+]
 
 exchange = ccxt.bitget({
     'apiKey': API_KEY,
@@ -96,7 +102,7 @@ def manager():
                     peak = profits.get(sym, 0)
                     locked = lock_levels.get(sym, 0)
 
-                # HARD STOP
+                # ===== HARD STOP =====
                 if profit <= -FIXED_STOP:
                     exchange.create_market_order(
                         sym,
@@ -108,26 +114,27 @@ def manager():
                     lock_levels.pop(sym,None)
                     continue
 
-                # BREAK EVEN
-                if peak >= 0.40 and locked == 0:
-                    lock_levels[sym] = 0
-                    locked = 0
+                # ===== TRAILING LOCK SİSTEMİ =====
 
-                # LOCK 1 USDT
+                # 0.40 USDT üstü break-even aktif
+                if peak >= 0.40 and locked < 0:
+                    lock_levels[sym] = 0
+
+                # 1 USDT kilitle
                 if peak >= 1.0 and locked < 1.0:
                     lock_levels[sym] = 1.0
 
-                # LOCK 1.5 USDT
+                # 1.5 USDT kilitle
                 if peak >= 1.5 and locked < 1.5:
                     lock_levels[sym] = 1.5
 
-                # LOCK 2.0 USDT
+                # 2 USDT kilitle
                 if peak >= 2.0 and locked < 2.0:
                     lock_levels[sym] = 2.0
 
                 locked = lock_levels.get(sym, 0)
 
-                # EXIT IF BELOW LOCK
+                # ===== EXIT IF PROFIT DÜŞERSE =====
                 if locked > 0 and profit <= locked:
                     exchange.create_market_order(
                         sym,
@@ -154,7 +161,7 @@ def scanner():
                          if safe(p.get('contracts')) > 0]
 
             if len(positions) >= MAX_POS:
-                time.sleep(10)
+                time.sleep(8)
                 continue
 
             for m in markets.values():
@@ -162,7 +169,19 @@ def scanner():
 
                 if ':USDT' not in sym:
                     continue
+
                 if any(x in sym for x in BANNED):
+                    continue
+
+                ticker = exchange.fetch_ticker(sym)
+                volume = safe(ticker.get('quoteVolume'))
+                percentage = abs(safe(ticker.get('percentage')))
+
+                # Hacim ve volatilite filtresi
+                if volume < MIN_VOLUME:
+                    continue
+
+                if percentage < MIN_VOLATILITY:
                     continue
 
                 candles = exchange.fetch_ohlcv(sym,'5m',limit=30)
@@ -171,21 +190,23 @@ def scanner():
                 ema9 = sum(closes[-9:])/9
                 ema21 = sum(closes[-21:])/21
 
-                if ema9 > ema21 and closes[-1] > closes[-2]:
+                # Pump başlangıcı long
+                if ema9 > ema21 and closes[-1] > max(closes[-5:-1]):
                     if open_trade(sym,"long"):
                         break
 
-                if ema9 < ema21 and closes[-1] < closes[-2]:
+                # Dump başlangıcı short
+                if ema9 < ema21 and closes[-1] < min(closes[-5:-1]):
                     if open_trade(sym,"short"):
                         break
 
                 time.sleep(0.2)
 
-            time.sleep(12)
+            time.sleep(10)
 
         except Exception as e:
             print("SCAN ERROR:", e)
-            time.sleep(12)
+            time.sleep(10)
 
 @bot.message_handler(func=lambda m: True)
 def stop(msg):
@@ -197,5 +218,5 @@ def stop(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🚀 SCALP LOCK ENGINE AKTİF")
+    bot.send_message(MY_CHAT_ID,"🚀 SMART SCALP ENGINE AKTİF")
     bot.infinity_polling()
