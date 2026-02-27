@@ -21,24 +21,21 @@ def safe(x):
     try: return float(x)
     except: return 0.0
 
-# --- AYARLAR ---
+# --- AYAR ---
 LEV = 5
-MARGIN = 1.1        # 🔥 1 USDT yerine 1.1 garanti
+MARGIN = 1.1
 MAX_POS = 1
 MIN_CHANGE = 8
 
-STOP_P = 0.012      # %1.2 sabit stop
-BE_TRIGGER = 0.02   # %2'de BE
-TRAIL_TRIGGER = 0.03 # %3'te trailing başlar
-TRAIL_GAP = 0.01    # %1 trailing boşluk
-
+STOP_P = 0.009        # %0.9 stop
+TRAIL_START = 0.012   # %1.2'de trailing başlar
+TRAIL_GAP = 0.006     # %0.6 geri gelirse satar
 SPIKE_LIMIT = 0.04
 
 BANNED = ['BTC','ETH','BNB','SOL','XRP','ADA','AVAX']
 
 state = {}
 
-# --- EMİR ---
 def open_trade(sym):
     try:
         exch = get_exch()
@@ -50,7 +47,6 @@ def open_trade(sym):
             return
 
         price = safe(exch.fetch_ticker(sym)['last'])
-
         notional = MARGIN * LEV
         qty = notional / price
         qty = float(exch.amount_to_precision(sym, qty))
@@ -59,16 +55,14 @@ def open_trade(sym):
 
         state[sym] = {
             "entry": price,
-            "highest": price,
-            "be_active": False
+            "highest": price
         }
 
-        bot.send_message(MY_CHAT_ID, f"🚀 {sym} LONG açıldı")
+        bot.send_message(MY_CHAT_ID, f"⚡ SCALP LONG {sym}")
 
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"Hata: {e}")
 
-# --- MANAGER ---
 def manager():
     while True:
         try:
@@ -83,20 +77,13 @@ def manager():
                 last = safe(exch.fetch_ticker(sym)['last'])
 
                 if sym not in state:
-                    state[sym] = {
-                        "entry": entry,
-                        "highest": last,
-                        "be_active": False
-                    }
+                    state[sym] = {"entry": entry, "highest": last}
 
-                # En yüksek fiyat güncelle
                 if last > state[sym]["highest"]:
                     state[sym]["highest"] = last
 
-                stop_price = entry * (1 - STOP_P)
-
-                # Normal stop
-                if last <= stop_price:
+                # STOP
+                if last <= entry * (1 - STOP_P):
                     exch.create_market_order(sym,'sell',qty,
                         params={'reduceOnly':True})
                     state.pop(sym,None)
@@ -105,34 +92,21 @@ def manager():
 
                 profit = (last - entry) / entry
 
-                # BE aktif
-                if profit >= BE_TRIGGER:
-                    state[sym]["be_active"] = True
-
-                # Break-even
-                if state[sym]["be_active"] and last <= entry:
-                    exch.create_market_order(sym,'sell',qty,
-                        params={'reduceOnly':True})
-                    state.pop(sym,None)
-                    bot.send_message(MY_CHAT_ID,f"🔒 BE {sym}")
-                    continue
-
-                # Trailing
-                if profit >= TRAIL_TRIGGER:
-                    trail_stop = state[sym]["highest"] * (1 - TRAIL_GAP)
-                    if last <= trail_stop:
+                # TRAILING
+                if profit >= TRAIL_START:
+                    trail_price = state[sym]["highest"] * (1 - TRAIL_GAP)
+                    if last <= trail_price:
                         exch.create_market_order(sym,'sell',qty,
                             params={'reduceOnly':True})
                         state.pop(sym,None)
-                        bot.send_message(MY_CHAT_ID,f"🎯 TRAIL EXIT {sym}")
+                        bot.send_message(MY_CHAT_ID,f"💰 SCALP EXIT {sym}")
                         continue
 
-            time.sleep(3)
+            time.sleep(2)
 
         except:
-            time.sleep(3)
+            time.sleep(2)
 
-# --- SCANNER ---
 def scanner():
     while True:
         try:
@@ -151,20 +125,18 @@ def scanner():
                     candidates.append((sym, change))
 
             candidates.sort(key=lambda x: x[1], reverse=True)
-            candidates = candidates[:120]
+            candidates = candidates[:100]
 
             pos = exch.fetch_positions()
             active = [p for p in pos if safe(p.get('contracts')) > 0]
 
             for sym,_ in candidates:
-
                 if len(active) >= MAX_POS:
                     break
 
-                candles = exch.fetch_ohlcv(sym,'5m',limit=30)
+                candles = exch.fetch_ohlcv(sym,'5m',limit=20)
                 closes = [c[4] for c in candles]
                 opens = [c[1] for c in candles]
-                highs = [c[2] for c in candles]
                 volumes = [c[5] for c in candles]
 
                 last_close = closes[-1]
@@ -173,22 +145,14 @@ def scanner():
                 if (last_close-last_open)/last_open > SPIKE_LIMIT:
                     continue
 
-                avg_vol = sum(volumes[-10:])/10
-                volume_spike = volumes[-1] > avg_vol*1.4
-
-                ema9 = sum(closes[-9:])/9
-                ema21 = sum(closes[-21:])/21
-
-                breakout = highs[-1] > max(highs[:-1])
-                trend = ema9 > ema21
-
-                if volume_spike and (breakout or trend):
+                avg_vol = sum(volumes[-8:])/8
+                if volumes[-1] > avg_vol*1.3:
                     open_trade(sym)
 
-            time.sleep(8)
+            time.sleep(6)
 
         except:
-            time.sleep(8)
+            time.sleep(6)
 
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
@@ -200,5 +164,5 @@ def handle(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🔥 AVCI V7 AKTİF")
+    bot.send_message(MY_CHAT_ID,"⚡ AVCI V8 SCALP AKTİF")
     bot.infinity_polling()
