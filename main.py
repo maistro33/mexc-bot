@@ -29,19 +29,17 @@ MARGIN = 1
 LEV = 5
 MAX_POS = 1
 MAX_DAILY = 3
-MIN_CHANGE = 10
+MIN_CHANGE = 8
 
 STOP_P = 0.008
 TP1_P  = 0.015
 TP2_P  = 0.04
-
-SPIKE_LIMIT = 0.02   # %2 tek mum üstü girme
+SPIKE_LIMIT = 0.04
 
 BANNED = ['BTC','ETH','BNB','SOL','XRP','ADA','AVAX']
 
 daily_count = 0
 day_reset = time.time()
-
 trade_state = {}
 
 # --- EMİR ---
@@ -68,7 +66,7 @@ def open_trade(sym):
         trade_state[sym] = {"tp1_hit": False}
         daily_count += 1
 
-        bot.send_message(MY_CHAT_ID, f"🎯 {sym} ERKEN LONG açıldı")
+        bot.send_message(MY_CHAT_ID, f"🎯 {sym} LONG açıldı")
 
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"Hata: {e}")
@@ -109,7 +107,7 @@ def manager():
                         params={'reduceOnly': True}
                     )
                     trade_state[sym]["tp1_hit"] = True
-                    bot.send_message(MY_CHAT_ID, f"💰 TP1 {sym} %50 kapandı")
+                    bot.send_message(MY_CHAT_ID, f"💰 TP1 {sym}")
 
                 # Break-even
                 if trade_state.get(sym, {}).get("tp1_hit"):
@@ -175,7 +173,7 @@ def scanner():
                 if len(active) >= MAX_POS:
                     break
 
-                candles = exch.fetch_ohlcv(sym, '5m', limit=20)
+                candles = exch.fetch_ohlcv(sym, '5m', limit=30)
 
                 closes = [c[4] for c in candles]
                 opens  = [c[1] for c in candles]
@@ -184,20 +182,30 @@ def scanner():
 
                 last_close = closes[-1]
                 last_open  = opens[-1]
-                last_high  = highs[-1]
 
-                # Spike filtresi
                 single_move = (last_close - last_open) / last_open
                 if single_move > SPIKE_LIMIT:
                     continue
 
-                range_size = max(closes[:-1]) - min(closes[:-1])
-                avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-                volume_spike = volumes[-1] > avg_vol * 2.0
+                avg_vol = sum(volumes[-10:]) / 10
+                volume_spike = volumes[-1] > avg_vol * 1.8
 
-                breakout = last_high > max(highs[:-1])  # kapanış beklemiyoruz
+                # EMA hesap
+                ema9 = sum(closes[-9:]) / 9
+                ema21 = sum(closes[-21:]) / 21
 
-                if range_size / closes[-1] < 0.02 and breakout and volume_spike:
+                higher_high = highs[-1] > highs[-3]
+
+                # MODEL 1: Breakout
+                breakout = highs[-1] > max(highs[:-1])
+                squeeze = (max(closes[-15:]) - min(closes[-15:])) / closes[-1] < 0.03
+
+                model1 = breakout and squeeze and volume_spike
+
+                # MODEL 2: Trend başlama
+                model2 = ema9 > ema21 and higher_high and volume_spike
+
+                if model1 or model2:
                     open_trade(sym)
 
             time.sleep(12)
@@ -218,5 +226,5 @@ def handle(msg):
 if __name__ == "__main__":
     threading.Thread(target=manager, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "🚀 PUMP AVCI ERKEN MOD aktif")
+    bot.send_message(MY_CHAT_ID, "🚀 HİBRİT PUMP + TREND aktif")
     bot.infinity_polling()
