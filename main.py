@@ -22,14 +22,14 @@ def safe(x):
     try: return float(x)
     except: return 0.0
 
-# === AYAR ===
+# ===== AYAR =====
 MARGIN = 1
 LEV = 5
 MAX_POS = 1
 
-STOP_P = 0.008
-TP1_P = 0.015
-TP2_P = 0.04
+STOP_P = 0.012      # %1.2 stop
+TP1_P  = 0.01       # %1 tp1
+TP2_P  = 0.04       # %4 tp2
 
 SPIKE_LIMIT = 0.04
 MIN_CHANGE = 8
@@ -39,7 +39,7 @@ BANNED = ['BTC','ETH','BNB','SOL','XRP','ADA','AVAX']
 trade_state = {}
 cooldown = {}
 
-# === OPEN ===
+# ===== OPEN =====
 def open_trade(sym):
     try:
         now = time.time()
@@ -72,7 +72,7 @@ def open_trade(sym):
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"Hata: {e}")
 
-# === MANAGER ===
+# ===== MANAGER =====
 def manager():
     while True:
         try:
@@ -87,9 +87,10 @@ def manager():
                 last = safe(exch.fetch_ticker(sym)['last'])
 
                 stop = entry * (1 - STOP_P)
-                tp1 = entry * (1 + TP1_P)
-                tp2 = entry * (1 + TP2_P)
+                tp1  = entry * (1 + TP1_P)
+                tp2  = entry * (1 + TP2_P)
 
+                # STOP
                 if last <= stop:
                     exch.create_market_order(
                         sym, 'sell', qty,
@@ -99,6 +100,7 @@ def manager():
                     bot.send_message(MY_CHAT_ID, f"❌ STOP {sym}")
                     continue
 
+                # TP1
                 if not trade_state.get(sym, {}).get("tp1") and last >= tp1:
                     half = float(exch.amount_to_precision(sym, qty/2))
                     exch.create_market_order(
@@ -108,6 +110,7 @@ def manager():
                     trade_state[sym]["tp1"] = True
                     bot.send_message(MY_CHAT_ID, f"💰 TP1 {sym}")
 
+                # BREAK EVEN
                 if trade_state.get(sym, {}).get("tp1"):
                     if last <= entry:
                         exch.create_market_order(
@@ -118,6 +121,7 @@ def manager():
                         bot.send_message(MY_CHAT_ID, f"🔒 BE EXIT {sym}")
                         continue
 
+                # TP2
                 if last >= tp2:
                     exch.create_market_order(
                         sym, 'sell', qty,
@@ -132,7 +136,7 @@ def manager():
         except:
             time.sleep(3)
 
-# === SCANNER ===
+# ===== SCANNER =====
 def scanner():
     while True:
         try:
@@ -195,5 +199,5 @@ def handle(msg):
 if __name__ == "__main__":
     threading.Thread(target=manager, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "🔥 AGRESIF MOD AKTİF (5x ISOLATED)")
+    bot.send_message(MY_CHAT_ID, "🔥 AGRESIF MOD v2 AKTİF (5x ISOLATED)")
     bot.infinity_polling()
