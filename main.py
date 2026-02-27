@@ -26,7 +26,7 @@ def safe(x):
         return 0.0
 
 # --- AYARLAR (10x CROSS OPTIMIZE) ---
-MARGIN_PER_TRADE = 0.5
+MARGIN_PER_TRADE = 0.55
 LEVERAGE = 10
 MAX_POSITIONS = 2
 
