@@ -1,6 +1,6 @@
 import os, time, telebot, ccxt, threading
 
-# --- BAĞLANTILAR ---
+# ===== BAĞLANTILAR =====
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -9,7 +9,7 @@ PASSPHRASE = os.getenv('BITGET_PASS')
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- EXCHANGE ---
+# ===== EXCHANGE =====
 def get_exch():
     return ccxt.bitget({
         'apiKey': API_KEY,
@@ -26,7 +26,7 @@ def safe(x):
         return 0.0
 
 # ===== AYARLAR =====
-MARGIN_PER_TRADE = 0.55   # min 5 USDT garanti
+MARGIN_PER_TRADE = 0.55
 LEVERAGE = 10
 MAX_POSITIONS = 2
 
@@ -88,6 +88,7 @@ def auto_manager():
 
                 profit = (last - entry) * qty
 
+                # En yüksek karı kaydet
                 if profit > highest_profit.get(sym, 0):
                     highest_profit[sym] = profit
 
@@ -116,7 +117,7 @@ def auto_manager():
         except:
             time.sleep(3)
 
-# ===== SCANNER (HIZLI) =====
+# ===== SCANNER =====
 def market_scanner():
     while True:
         try:
@@ -146,13 +147,14 @@ def market_scanner():
                 if len(closes) < 6:
                     continue
 
-                # %1 mum artışı yeterli
+                # %0.8 mum artışı
                 last_change = (closes[-1] - closes[-2]) / closes[-2]
 
+                # Hacim ortalamanın üstünde
                 avg_vol = sum(volumes[:-1]) / 5
-                volume_spike = volumes[-1] > avg_vol * 1.3
+                volume_ok = volumes[-1] > avg_vol
 
-                if last_change > 0.01 and volume_spike:
+                if last_change > 0.008 and volume_ok:
                     open_trade(sym)
 
             time.sleep(3)
@@ -174,5 +176,5 @@ def handle(msg):
 if __name__ == "__main__":
     threading.Thread(target=auto_manager, daemon=True).start()
     threading.Thread(target=market_scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "🔥 AVCI BOT V4 HIZLI MOD AKTİF")
+    bot.send_message(MY_CHAT_ID, "🔥 AVCI BOT V5 DENGELİ AGRESİF AKTİF")
     bot.infinity_polling()
