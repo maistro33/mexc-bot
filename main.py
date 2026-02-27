@@ -88,7 +88,6 @@ def auto_manager():
 
                 profit = (last - entry) * qty
 
-                # En yüksek karı kaydet
                 if profit > highest_profit.get(sym, 0):
                     highest_profit[sym] = profit
 
@@ -140,27 +139,22 @@ def market_scanner():
                 if len(active) >= MAX_POSITIONS:
                     break
 
-                candles = exch.fetch_ohlcv(sym, '5m', limit=6)
+                candles = exch.fetch_ohlcv(sym, '5m', limit=3)
                 closes = [c[4] for c in candles]
-                volumes = [c[5] for c in candles]
 
-                if len(closes) < 6:
+                if len(closes) < 3:
                     continue
 
-                # %0.8 mum artışı
+                # %0.6 mum artışı yeterli
                 last_change = (closes[-1] - closes[-2]) / closes[-2]
 
-                # Hacim ortalamanın üstünde
-                avg_vol = sum(volumes[:-1]) / 5
-                volume_ok = volumes[-1] > avg_vol
-
-                if last_change > 0.008 and volume_ok:
+                if last_change > 0.006:
                     open_trade(sym)
 
-            time.sleep(3)
+            time.sleep(2)
 
         except:
-            time.sleep(3)
+            time.sleep(2)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
@@ -176,5 +170,5 @@ def handle(msg):
 if __name__ == "__main__":
     threading.Thread(target=auto_manager, daemon=True).start()
     threading.Thread(target=market_scanner, daemon=True).start()
-    bot.send_message(MY_CHAT_ID, "🔥 AVCI BOT V5 DENGELİ AGRESİF AKTİF")
+    bot.send_message(MY_CHAT_ID, "🔥 AVCI BOT V6 ERKEN MOMENTUM AKTİF")
     bot.infinity_polling()
