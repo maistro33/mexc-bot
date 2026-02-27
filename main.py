@@ -1,6 +1,5 @@
 import os, time, telebot, ccxt, threading
 
-# --- BAĞLANTILAR ---
 TELE_TOKEN = os.getenv('TELE_TOKEN')
 MY_CHAT_ID = os.getenv('MY_CHAT_ID')
 API_KEY = os.getenv('BITGET_API')
@@ -9,7 +8,6 @@ PASSPHRASE = "Berfin33"
 
 bot = telebot.TeleBot(TELE_TOKEN)
 
-# --- EXCHANGE ---
 def get_exch():
     return ccxt.bitget({
         'apiKey': API_KEY,
@@ -21,31 +19,24 @@ def get_exch():
     })
 
 def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0.0
+    try: return float(x)
+    except: return 0.0
 
 # --- AYARLAR ---
-MARGIN = 1.1        # minimum hatası için yükseltildi
 LEV = 5
 MAX_POS = 1
 MIN_CHANGE = 8
-
 STOP_P = 0.012
-TP1_P  = 0.015
-TP2_P  = 0.04
+TP_P   = 0.04
 SPIKE_LIMIT = 0.04
 
 BANNED = ['BTC','ETH','BNB','SOL','XRP','ADA','AVAX']
 
-trade_state = {}
-
-# --- EMİR ---
 def open_trade(sym):
     try:
         exch = get_exch()
-        exch.load_markets()
+        markets = exch.load_markets()
+        market = markets[sym]
 
         pos = exch.fetch_positions()
         active = [p for p in pos if safe(p.get('contracts')) > 0]
@@ -53,18 +44,29 @@ def open_trade(sym):
             return
 
         price = safe(exch.fetch_ticker(sym)['last'])
-        qty = (MARGIN * LEV) / price
+
+        min_cost = 5
+        if market.get('limits') and market['limits'].get('cost'):
+            if market['limits']['cost'].get('min'):
+                min_cost = market['limits']['cost']['min']
+
+        notional = max(min_cost * 1.2, 6)
+
+        qty = notional / price
         qty = float(exch.amount_to_precision(sym, qty))
 
-        exch.create_market_order(sym, "buy", qty)
+        exch.create_market_order(
+            sym,
+            "buy",
+            qty,
+            params={"leverage": LEV}
+        )
 
-        trade_state[sym] = {"tp1_hit": False}
-        bot.send_message(MY_CHAT_ID, f"🎯 {sym} LONG açıldı")
+        bot.send_message(MY_CHAT_ID, f"🚀 {sym} LONG açıldı")
 
     except Exception as e:
         bot.send_message(MY_CHAT_ID, f"Hata: {e}")
 
-# --- MANAGER ---
 def manager():
     while True:
         try:
@@ -79,8 +81,7 @@ def manager():
                 last = safe(exch.fetch_ticker(sym)['last'])
 
                 stop_price = entry * (1 - STOP_P)
-                tp1_price  = entry * (1 + TP1_P)
-                tp2_price  = entry * (1 + TP2_P)
+                tp_price   = entry * (1 + TP_P)
 
                 # STOP
                 if last <= stop_price:
@@ -88,39 +89,16 @@ def manager():
                         sym, 'sell', qty,
                         params={'reduceOnly': True}
                     )
-                    trade_state.pop(sym, None)
                     bot.send_message(MY_CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # TP1
-                if not trade_state.get(sym, {}).get("tp1_hit") and last >= tp1_price:
-                    half_qty = float(exch.amount_to_precision(sym, qty / 2))
-                    exch.create_market_order(
-                        sym, 'sell', half_qty,
-                        params={'reduceOnly': True}
-                    )
-                    trade_state[sym]["tp1_hit"] = True
-                    bot.send_message(MY_CHAT_ID, f"💰 TP1 {sym}")
-
-                # Break-even
-                if trade_state.get(sym, {}).get("tp1_hit"):
-                    if last <= entry:
-                        exch.create_market_order(
-                            sym, 'sell', qty,
-                            params={'reduceOnly': True}
-                        )
-                        trade_state.pop(sym, None)
-                        bot.send_message(MY_CHAT_ID, f"🔒 BE EXIT {sym}")
-                        continue
-
-                # TP2
-                if last >= tp2_price:
+                # TP
+                if last >= tp_price:
                     exch.create_market_order(
                         sym, 'sell', qty,
                         params={'reduceOnly': True}
                     )
-                    trade_state.pop(sym, None)
-                    bot.send_message(MY_CHAT_ID, f"🚀 TP2 {sym}")
+                    bot.send_message(MY_CHAT_ID, f"🎯 TP {sym}")
                     continue
 
             time.sleep(3)
@@ -128,17 +106,14 @@ def manager():
         except:
             time.sleep(3)
 
-# --- SCANNER ---
 def scanner():
     while True:
         try:
             exch = get_exch()
             tickers = exch.fetch_tickers()
-
             candidates = []
 
             for sym, data in tickers.items():
-
                 if ':USDT' not in sym:
                     continue
                 if any(x in sym for x in BANNED):
@@ -160,7 +135,6 @@ def scanner():
                     break
 
                 candles = exch.fetch_ohlcv(sym,'5m',limit=30)
-
                 closes = [c[4] for c in candles]
                 opens  = [c[1] for c in candles]
                 highs  = [c[2] for c in candles]
@@ -205,5 +179,5 @@ def handle(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🚀 HİBRİT PUMP + TREND V3 AKTİF")
+    bot.send_message(MY_CHAT_ID,"🔥 BÜYÜME MODU AKTİF")
     bot.infinity_polling()
