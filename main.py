@@ -21,16 +21,18 @@ def get_exch():
     })
 
 def safe(x):
-    try: return float(x)
-    except: return 0.0
+    try:
+        return float(x)
+    except:
+        return 0.0
 
 # --- AYARLAR ---
-MARGIN = 1
+MARGIN = 1.1        # minimum hatası için yükseltildi
 LEV = 5
 MAX_POS = 1
 MIN_CHANGE = 8
 
-STOP_P = 0.012      # Güncellendi (%1.2)
+STOP_P = 0.012
 TP1_P  = 0.015
 TP2_P  = 0.04
 SPIKE_LIMIT = 0.04
@@ -172,7 +174,7 @@ def scanner():
                     continue
 
                 avg_vol = sum(volumes[-10:]) / 10
-                volume_spike = volumes[-1] > avg_vol * 1.4   # 1.8 → 1.4
+                volume_spike = volumes[-1] > avg_vol * 1.4
 
                 ema9 = sum(closes[-9:]) / 9
                 ema21 = sum(closes[-21:]) / 21
@@ -203,5 +205,5 @@ def handle(msg):
 if __name__=="__main__":
     threading.Thread(target=manager,daemon=True).start()
     threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🚀 HİBRİT PUMP + TREND V2 AKTİF")
+    bot.send_message(MY_CHAT_ID,"🚀 HİBRİT PUMP + TREND V3 AKTİF")
     bot.infinity_polling()
