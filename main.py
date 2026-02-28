@@ -1,186 +1,244 @@
-import os, time, telebot, ccxt, threading
+import os
+import time
+import ccxt
+import telebot
+import threading
 
-TELE_TOKEN = os.getenv('TELE_TOKEN')
-MY_CHAT_ID = os.getenv('MY_CHAT_ID')
-API_KEY = os.getenv('BITGET_API')
-API_SEC = os.getenv('BITGET_SEC')
-PASSPHRASE = "Berfin33"
+# =====================
+# ===== AYARLAR =======
+# =====================
 
+LEV = 10
+MARGIN = 10
+MAX_POS = 1
+
+TP_SPLIT = [0.4, 0.3, 0.3]  # TP1, TP2, TP3
+
+# =====================
+# ===== TELEGRAM ======
+# =====================
+
+TELE_TOKEN = os.getenv("TELE_TOKEN")
+CHAT_ID = os.getenv("MY_CHAT_ID")
 bot = telebot.TeleBot(TELE_TOKEN)
 
-def get_exch():
-    return ccxt.bitget({
-        'apiKey': API_KEY,
-        'secret': API_SEC,
-        'password': PASSPHRASE,
-        'options': {'defaultType': 'swap'},
-        'enableRateLimit': True
-    })
+# =====================
+# ===== BITGET ========
+# =====================
+
+API_KEY = os.getenv("BITGET_API")
+API_SEC = os.getenv("BITGET_SEC")
+PASSPHRASE = "Berfin33"
+
+exchange = ccxt.bitget({
+    "apiKey": API_KEY,
+    "secret": API_SEC,
+    "password": PASSPHRASE,
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True,
+    "timeout": 30000
+})
+
+# =====================
+# ===== YARDIMCI ======
+# =====================
 
 def safe(x):
-    try: return float(x)
-    except: return 0.0
-
-# ==== AYAR ====
-LEV = 5
-MARGIN = 2          # 🔥 Yeni margin
-MAX_POS = 1
-MIN_CHANGE = 8
-
-STOP_P = 0.009
-TRAIL_START = 0.012
-TRAIL_GAP = 0.006
-
-DAILY_MAX_LOSS = -2   # 🔒 Günlük zarar kilidi
-
-SPIKE_LIMIT = 0.04
-BANNED = ['BTC','ETH','BNB','SOL','XRP','ADA','AVAX']
-
-state = {}
-daily_pnl = 0
-day_start = time.time()
-
-# ==== EMİR ====
-def open_trade(sym):
-    global daily_pnl
-    if daily_pnl <= DAILY_MAX_LOSS:
-        return
-
     try:
-        exch = get_exch()
-        exch.load_markets()
+        return float(x)
+    except:
+        return 0.0
 
-        pos = exch.fetch_positions()
-        active = [p for p in pos if safe(p.get('contracts')) > 0]
-        if len(active) >= MAX_POS:
-            return
+def get_candles(sym, tf, limit=100):
+    return exchange.fetch_ohlcv(sym, tf, limit=limit)
 
-        price = safe(exch.fetch_ticker(sym)['last'])
+def has_position():
+    positions = exchange.fetch_positions()
+    active = [p for p in positions if safe(p.get("contracts")) > 0]
+    return len(active) > 0
+
+# =====================
+# ===== YÖN ======
+# =====================
+
+def get_direction(sym):
+    try:
+        d = get_candles(sym, "1d", 50)
+        h4 = get_candles(sym, "4h", 50)
+
+        d_high = [c[2] for c in d]
+        d_low  = [c[3] for c in d]
+
+        h_high = [c[2] for c in h4]
+        h_low  = [c[3] for c in h4]
+
+        daily_long = d_high[-1] > d_high[-2] and d_low[-1] > d_low[-2]
+        daily_short = d_high[-1] < d_high[-2] and d_low[-1] < d_low[-2]
+
+        h4_long = h_high[-1] > h_high[-2] and h_low[-1] > h_low[-2]
+        h4_short = h_high[-1] < h_high[-2] and h_low[-1] < h_low[-2]
+
+        if daily_long and h4_long:
+            return "long"
+        if daily_short and h4_short:
+            return "short"
+
+        return None
+
+    except:
+        return None
+
+# =====================
+# ===== LİKİDİTE ======
+# =====================
+
+def liquidity_sweep(sym, direction):
+    try:
+        h1 = get_candles(sym, "1h", 30)
+        highs = [c[2] for c in h1]
+        lows = [c[3] for c in h1]
+
+        if direction == "long":
+            return lows[-1] < min(lows[:-2])
+        else:
+            return highs[-1] > max(highs[:-2])
+
+    except:
+        return False
+
+# =====================
+# ===== ENTRY MODEL ===
+# =====================
+
+def entry_model(sym, direction):
+    try:
+        m15 = get_candles(sym, "15m", 50)
+
+        o = [c[1] for c in m15]
+        h = [c[2] for c in m15]
+        l = [c[3] for c in m15]
+        c_ = [c[4] for c in m15]
+
+        body = abs(c_[-1] - o[-1])
+        avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
+
+        # Displacement
+        if body < avg_body * 1.5:
+            return None
+
+        # BOS
+        if direction == "long":
+            if c_[-1] <= max(h[-5:-1]):
+                return None
+        else:
+            if c_[-1] >= min(l[-5:-1]):
+                return None
+
+        # FVG
+        if direction == "long":
+            if h[-3] < l[-1]:
+                entry = (h[-3] + l[-1]) / 2
+                sl = l[-2]
+                return {"entry": entry, "sl": sl}
+        else:
+            if l[-3] > h[-1]:
+                entry = (l[-3] + h[-1]) / 2
+                sl = h[-2]
+                return {"entry": entry, "sl": sl}
+
+        return None
+
+    except:
+        return None
+
+# =====================
+# ===== EMİR ==========
+# =====================
+
+def place_trade(sym, direction, setup):
+    try:
+        exchange.set_leverage(LEV, sym)
+
+        ticker = exchange.fetch_ticker(sym)
+        price = safe(ticker["last"])
+
         notional = MARGIN * LEV
         qty = notional / price
-        qty = float(exch.amount_to_precision(sym, qty))
+        qty = float(exchange.amount_to_precision(sym, qty))
 
-        exch.create_market_order(sym, "buy", qty)
+        side = "buy" if direction == "long" else "sell"
 
-        state[sym] = {"entry": price, "highest": price}
+        exchange.create_market_order(sym, side, qty)
 
-        bot.send_message(MY_CHAT_ID, f"⚡ SCALP LONG {sym}")
+        entry_price = price
+        sl = setup["sl"]
+        risk = abs(entry_price - sl)
+
+        tp1 = entry_price + risk if direction == "long" else entry_price - risk
+        tp2 = entry_price + 2*risk if direction == "long" else entry_price - 2*risk
+        tp3 = entry_price + 3*risk if direction == "long" else entry_price - 3*risk
+
+        bot.send_message(
+            CHAT_ID,
+            f"{sym} {direction.upper()} AÇILDI\n"
+            f"Entry: {entry_price}\n"
+            f"SL: {sl}\n"
+            f"TP1: {tp1}\n"
+            f"TP2: {tp2}\n"
+            f"TP3: {tp3}"
+        )
 
     except Exception as e:
-        bot.send_message(MY_CHAT_ID, f"Hata: {e}")
+        bot.send_message(CHAT_ID, f"Emir Hata: {e}")
 
-# ==== MANAGER ====
-def manager():
-    global daily_pnl, day_start
+# =====================
+# ===== ANA LOOP ======
+# =====================
+
+def run():
+    markets = exchange.load_markets()
+    symbols = [s for s in markets if ":USDT" in s]
 
     while True:
         try:
-            if time.time() - day_start > 86400:
-                daily_pnl = 0
-                day_start = time.time()
+            if has_position():
+                time.sleep(20)
+                continue
 
-            exch = get_exch()
-            positions = exch.fetch_positions()
-
-            for p in [p for p in positions if safe(p.get('contracts')) > 0]:
-
-                sym = p['symbol']
-                qty = safe(p.get('contracts'))
-                entry = safe(p.get('entryPrice'))
-                last = safe(exch.fetch_ticker(sym)['last'])
-
-                if sym not in state:
-                    state[sym] = {"entry": entry, "highest": last}
-
-                if last > state[sym]["highest"]:
-                    state[sym]["highest"] = last
-
-                profit_ratio = (last - entry) / entry
-
-                # STOP
-                if last <= entry * (1 - STOP_P):
-                    exch.create_market_order(sym,'sell',qty,
-                        params={'reduceOnly':True})
-                    pnl = (last-entry)*qty
-                    daily_pnl += pnl
-                    state.pop(sym,None)
-                    bot.send_message(MY_CHAT_ID,f"❌ STOP {sym} | Günlük PnL: {round(daily_pnl,2)}")
-                    continue
-
-                # TRAILING
-                if profit_ratio >= TRAIL_START:
-                    trail_price = state[sym]["highest"] * (1 - TRAIL_GAP)
-                    if last <= trail_price:
-                        exch.create_market_order(sym,'sell',qty,
-                            params={'reduceOnly':True})
-                        pnl = (last-entry)*qty
-                        daily_pnl += pnl
-                        state.pop(sym,None)
-                        bot.send_message(MY_CHAT_ID,f"💰 EXIT {sym} | Günlük PnL: {round(daily_pnl,2)}")
+            for sym in symbols:
+                try:
+                    direction = get_direction(sym)
+                    if not direction:
                         continue
 
-            time.sleep(2)
+                    if not liquidity_sweep(sym, direction):
+                        continue
+
+                    setup = entry_model(sym, direction)
+                    if not setup:
+                        continue
+
+                    place_trade(sym, direction, setup)
+                    time.sleep(60)
+
+                except:
+                    continue
+
+            time.sleep(30)
 
         except:
-            time.sleep(2)
+            time.sleep(30)
 
-# ==== SCANNER ====
-def scanner():
-    while True:
-        try:
-            exch = get_exch()
-            tickers = exch.fetch_tickers()
-            candidates = []
+# =====================
+# ===== START =========
+# =====================
 
-            for sym,data in tickers.items():
-                if ':USDT' not in sym:
-                    continue
-                if any(x in sym for x in BANNED):
-                    continue
+try:
+    exchange.fetch_balance()
+    print("Bitget bağlantı OK")
+except Exception as e:
+    print("Bağlantı Hatası:", e)
 
-                change = safe(data.get('percentage'))
-                if change >= MIN_CHANGE:
-                    candidates.append((sym,change))
-
-            candidates.sort(key=lambda x:x[1], reverse=True)
-            candidates = candidates[:80]
-
-            pos = exch.fetch_positions()
-            active = [p for p in pos if safe(p.get('contracts')) > 0]
-
-            for sym,_ in candidates:
-                if len(active) >= MAX_POS:
-                    break
-
-                candles = exch.fetch_ohlcv(sym,'5m',limit=20)
-                closes = [c[4] for c in candles]
-                opens = [c[1] for c in candles]
-                volumes = [c[5] for c in candles]
-
-                last_close = closes[-1]
-                last_open = opens[-1]
-
-                if (last_close-last_open)/last_open > SPIKE_LIMIT:
-                    continue
-
-                avg_vol = sum(volumes[-8:])/8
-                if volumes[-1] > avg_vol*1.3:
-                    open_trade(sym)
-
-            time.sleep(5)
-
-        except:
-            time.sleep(5)
-
-@bot.message_handler(func=lambda m: True)
-def handle(msg):
-    if str(msg.chat.id)!=str(MY_CHAT_ID):
-        return
-    if msg.text.lower()=="dur":
-        os._exit(0)
-
-if __name__=="__main__":
-    threading.Thread(target=manager,daemon=True).start()
-    threading.Thread(target=scanner,daemon=True).start()
-    bot.send_message(MY_CHAT_ID,"🔥 AVCI V9 SCALP PRO AKTİF")
-    bot.infinity_polling()
+threading.Thread(target=run, daemon=True).start()
+bot.send_message(CHAT_ID, "SMART MONEY SNIPER BOT AKTİF")
+bot.infinity_polling()
