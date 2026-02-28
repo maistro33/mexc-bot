@@ -10,7 +10,7 @@ MARGIN = 10
 MIN_VOLUME = 5_000_000
 TOP_COINS = 80
 BUFFER_PCT = 0.0015
-CRISIS_DROP_PCT = -5  # BTC 24h -5%
+CRISIS_DROP_PCT = -5
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
@@ -19,14 +19,10 @@ bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
 # ===== BITGET =====
-API_KEY = os.getenv("BITGET_API")
-API_SEC = os.getenv("BITGET_SEC")
-PASSPHRASE = "Berfin33"
-
 exchange = ccxt.bitget({
-    "apiKey": API_KEY,
-    "secret": API_SEC,
-    "password": PASSPHRASE,
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
     "timeout": 30000
@@ -49,17 +45,12 @@ def has_position():
 # ===== CRISIS MODE =====
 def crisis_mode():
     try:
-        btc_ticker = exchange.fetch_ticker("BTC/USDT:USDT")
-        pct = safe(btc_ticker.get("percentage"))
-
+        btc = exchange.fetch_ticker("BTC/USDT:USDT")
+        pct = safe(btc.get("percentage"))
         d = get_candles("BTC/USDT:USDT", "1d", 5)
         lows = [c[3] for c in d]
-
         lower_low = lows[-1] < lows[-2]
-
-        if pct <= CRISIS_DROP_PCT and lower_low:
-            return True
-        return False
+        return pct <= CRISIS_DROP_PCT and lower_low
     except:
         return False
 
@@ -67,32 +58,24 @@ def crisis_mode():
 def get_symbols():
     tickers = exchange.fetch_tickers()
     filtered = []
-
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
         vol = safe(data.get("quoteVolume"))
         if vol >= MIN_VOLUME:
             filtered.append((sym, vol))
-
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
 
 # ===== DIRECTION =====
 def get_direction(sym):
-    d = get_candles(sym, "1d", 50)
-    h4 = get_candles(sym, "4h", 50)
+    d = get_candles(sym, "1d", 20)
+    h4 = get_candles(sym, "4h", 20)
 
-    d_high = [c[2] for c in d]
-    d_low  = [c[3] for c in d]
-
-    h_high = [c[2] for c in h4]
-    h_low  = [c[3] for c in h4]
-
-    if d_high[-1] > d_high[-2] and h_high[-1] > h_high[-2]:
+    if d[-1][2] > d[-2][2] and h4[-1][2] > h4[-2][2]:
         return "long"
 
-    if d_low[-1] < d_low[-2] and h_low[-1] < h_low[-2]:
+    if d[-1][3] < d[-2][3] and h4[-1][3] < h4[-2][3]:
         return "short"
 
     return None
@@ -101,20 +84,19 @@ def get_direction(sym):
 def liquidity_sweep(sym, direction):
     h1 = get_candles(sym, "1h", 30)
     highs = [c[2] for c in h1]
-    lows  = [c[3] for c in h1]
+    lows = [c[3] for c in h1]
 
     if direction == "long":
         return lows[-1] < min(lows[:-2])
     else:
         return highs[-1] > max(highs[:-2])
 
-# ===== ENTRY MODEL =====
+# ===== DISCIPLINED ENTRY =====
 def entry_model(sym, direction):
     m15 = get_candles(sym, "15m", 60)
-
-    o = [c[1] for c in m15]
     h = [c[2] for c in m15]
     l = [c[3] for c in m15]
+    o = [c[1] for c in m15]
     c_ = [c[4] for c in m15]
 
     body = abs(c_[-1] - o[-1])
@@ -137,6 +119,37 @@ def entry_model(sym, direction):
 
     return None
 
+# ===== AGGRESSIVE ENTRY =====
+def aggressive_entry(sym, direction):
+    if crisis_mode():
+        return None
+
+    m15 = get_candles(sym, "15m", 20)
+    o = [c[1] for c in m15]
+    h = [c[2] for c in m15]
+    l = [c[3] for c in m15]
+    c_ = [c[4] for c in m15]
+    v = [c[5] for c in m15]
+
+    body = abs(c_[-1] - o[-1])
+    avg_body = sum(abs(c_[i] - o[i]) for i in range(-11, -1)) / 10
+    avg_vol = sum(v[-11:-1]) / 10
+
+    if body < avg_body * 2.5:
+        return None
+
+    if v[-1] < avg_vol * 2:
+        return None
+
+    if direction == "long":
+        entry = l[-1] + (h[-1] - l[-1]) * 0.3
+        sl = l[-1] - (l[-1] * BUFFER_PCT)
+    else:
+        entry = h[-1] - (h[-1] - l[-1]) * 0.3
+        sl = h[-1] + (h[-1] * BUFFER_PCT)
+
+    return {"entry": entry, "sl": sl}
+
 # ===== TRADE STATE =====
 trade_state = {}
 
@@ -153,10 +166,9 @@ def manage():
 
                 sym = p["symbol"]
                 entry = safe(p["entryPrice"])
-                side = p["side"]
-                direction = "long" if side == "long" else "short"
-
+                direction = "long" if p["side"] == "long" else "short"
                 price = safe(exchange.fetch_ticker(sym)["last"])
+
                 sl = trade_state[sym]["sl"]
                 risk = abs(entry - sl)
 
@@ -174,7 +186,6 @@ def manage():
                         params={"reduceOnly": True}
                     )
                     trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
                 # TP1
@@ -190,7 +201,6 @@ def manage():
                     )
                     trade_state[sym]["tp1"] = True
                     trade_state[sym]["sl"] = entry
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 # TP2
                 if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
@@ -204,7 +214,6 @@ def manage():
                         params={"reduceOnly": True}
                     )
                     trade_state[sym]["tp2"] = True
-                    bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
                 # TP3
                 if trade_state[sym]["tp2"] and \
@@ -217,10 +226,8 @@ def manage():
                         params={"reduceOnly": True}
                     )
                     trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
 
             time.sleep(5)
-
         except:
             time.sleep(5)
 
@@ -232,9 +239,8 @@ def run():
                 time.sleep(20)
                 continue
 
-            CRISIS = crisis_mode()
-
             symbols = get_symbols()
+            CRISIS = crisis_mode()
 
             for sym in symbols:
 
@@ -243,20 +249,23 @@ def run():
                     continue
 
                 if CRISIS and direction == "long":
-                    continue  # kriz modunda long yok
+                    continue
 
                 if not liquidity_sweep(sym, direction):
                     continue
 
-                setup = entry_model(sym, direction)
+                setup = aggressive_entry(sym, direction)
+
+                if not setup:
+                    setup = entry_model(sym, direction)
+
                 if not setup:
                     continue
 
                 exchange.set_leverage(LEV, sym)
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
-                notional = MARGIN * LEV
-                qty = notional / price
+                qty = (MARGIN * LEV) / price
                 qty = float(exchange.amount_to_precision(sym, qty))
 
                 side = "buy" if direction == "long" else "sell"
@@ -269,12 +278,9 @@ def run():
                     "tp2": False
                 }
 
-                bot.send_message(CHAT_ID, f"📈 {sym} {direction.upper()} AÇILDI | CRISIS={CRISIS}")
-
                 break
 
             time.sleep(30)
-
         except:
             time.sleep(30)
 
@@ -284,5 +290,4 @@ exchange.fetch_balance()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "SMC PRO BOT + CRISIS MODE AKTİF")
 bot.infinity_polling()
