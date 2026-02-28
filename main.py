@@ -4,24 +4,21 @@ import ccxt
 import telebot
 import threading
 
-# ================= SETTINGS =================
-
+# ===== SETTINGS =====
 LEV = 10
 MARGIN = 10
 MAX_POS = 1
 MIN_VOLUME = 5_000_000
 TOP_COINS = 80
+BUFFER_PCT = 0.0015  # %0.15
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
-# ================= TELEGRAM =================
-
-TELE_TOKEN = os.getenv("TELE_TOKEN")
+# ===== TELEGRAM =====
+bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
-bot = telebot.TeleBot(TELE_TOKEN)
 
-# ================= BITGET ===================
-
+# ===== BITGET =====
 API_KEY = os.getenv("BITGET_API")
 API_SEC = os.getenv("BITGET_SEC")
 PASSPHRASE = "Berfin33"
@@ -35,24 +32,21 @@ exchange = ccxt.bitget({
     "timeout": 30000
 })
 
-# ================= HELPERS ==================
-
+# ===== HELPERS =====
 def safe(x):
     try:
         return float(x)
     except:
         return 0.0
 
-def has_position():
-    positions = exchange.fetch_positions()
-    active = [p for p in positions if safe(p.get("contracts")) > 0]
-    return len(active) > 0
-
 def get_candles(sym, tf, limit=100):
     return exchange.fetch_ohlcv(sym, tf, limit=limit)
 
-# ================= MARKET FILTER ============
+def has_position():
+    pos = exchange.fetch_positions()
+    return any(safe(p.get("contracts")) > 0 for p in pos)
 
+# ===== MARKET FILTER =====
 def get_symbols():
     tickers = exchange.fetch_tickers()
     filtered = []
@@ -67,41 +61,39 @@ def get_symbols():
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
 
-# ================= DIRECTION =================
-
+# ===== DIRECTION =====
 def get_direction(sym):
     d = get_candles(sym, "1d", 50)
     h4 = get_candles(sym, "4h", 50)
 
     d_high = [c[2] for c in d]
-    d_low = [c[3] for c in d]
+    d_low  = [c[3] for c in d]
 
     h_high = [c[2] for c in h4]
-    h_low = [c[3] for c in h4]
+    h_low  = [c[3] for c in h4]
 
     if d_high[-1] > d_high[-2] and h_high[-1] > h_high[-2]:
         return "long"
+
     if d_low[-1] < d_low[-2] and h_low[-1] < h_low[-2]:
         return "short"
 
     return None
 
-# ================= LIQUIDITY =================
-
+# ===== LIQUIDITY =====
 def liquidity_sweep(sym, direction):
     h1 = get_candles(sym, "1h", 30)
     highs = [c[2] for c in h1]
-    lows = [c[3] for c in h1]
+    lows  = [c[3] for c in h1]
 
     if direction == "long":
         return lows[-1] < min(lows[:-2])
     else:
         return highs[-1] > max(highs[:-2])
 
-# ================= ENTRY MODEL ===============
-
+# ===== ENTRY MODEL =====
 def entry_model(sym, direction):
-    m15 = get_candles(sym, "15m", 50)
+    m15 = get_candles(sym, "15m", 60)
 
     o = [c[1] for c in m15]
     h = [c[2] for c in m15]
@@ -114,23 +106,29 @@ def entry_model(sym, direction):
     if body < avg_body * 1.5:
         return None
 
-    if direction == "long":
-        if h[-3] < l[-1]:
-            entry = (h[-3] + l[-1]) / 2
-            sl = l[-2]
-            return {"entry": entry, "sl": sl}
-    else:
-        if l[-3] > h[-1]:
-            entry = (l[-3] + h[-1]) / 2
-            sl = h[-2]
-            return {"entry": entry, "sl": sl}
+    # FVG
+    if direction == "long" and h[-3] < l[-1]:
+        entry = (h[-3] + l[-1]) / 2
+
+        swing_low = min(l[-15:])
+        sl = swing_low - (swing_low * BUFFER_PCT)
+
+        return {"entry": entry, "sl": sl}
+
+    if direction == "short" and l[-3] > h[-1]:
+        entry = (l[-3] + h[-1]) / 2
+
+        swing_high = max(h[-15:])
+        sl = swing_high + (swing_high * BUFFER_PCT)
+
+        return {"entry": entry, "sl": sl}
 
     return None
 
-# ================= POSITION MANAGER ==========
-
+# ===== TRADE STATE =====
 trade_state = {}
 
+# ===== POSITION MANAGER =====
 def manage():
     while True:
         try:
@@ -146,8 +144,7 @@ def manage():
                 side = p["side"]
                 direction = "long" if side == "long" else "short"
 
-                ticker = exchange.fetch_ticker(sym)
-                price = safe(ticker["last"])
+                price = safe(exchange.fetch_ticker(sym)["last"])
 
                 sl = trade_state[sym]["sl"]
                 risk = abs(entry - sl)
@@ -176,28 +173,33 @@ def manage():
                     (direction == "short" and price <= tp1)):
 
                     part = qty * TP_SPLIT[0]
+
                     exchange.create_market_order(
                         sym,
                         "sell" if direction == "long" else "buy",
                         part,
                         params={"reduceOnly": True}
                     )
+
                     trade_state[sym]["tp1"] = True
-                    trade_state[sym]["sl"] = entry  # BE
+                    trade_state[sym]["sl"] = entry
+
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # TP2 + Trailing
+                # TP2
                 if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp2) or
                     (direction == "short" and price <= tp2)):
 
                     part = qty * TP_SPLIT[1]
+
                     exchange.create_market_order(
                         sym,
                         "sell" if direction == "long" else "buy",
                         part,
                         params={"reduceOnly": True}
                     )
+
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
@@ -212,6 +214,7 @@ def manage():
                         qty,
                         params={"reduceOnly": True}
                     )
+
                     bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
                     trade_state.pop(sym, None)
 
@@ -220,8 +223,7 @@ def manage():
         except:
             time.sleep(5)
 
-# ================= ENTRY LOOP =================
-
+# ===== ENTRY LOOP =====
 def run():
     while True:
         try:
@@ -246,9 +248,7 @@ def run():
 
                 exchange.set_leverage(LEV, sym)
 
-                ticker = exchange.fetch_ticker(sym)
-                price = safe(ticker["last"])
-
+                price = safe(exchange.fetch_ticker(sym)["last"])
                 notional = MARGIN * LEV
                 qty = notional / price
                 qty = float(exchange.amount_to_precision(sym, qty))
@@ -272,10 +272,11 @@ def run():
         except:
             time.sleep(30)
 
-# ================= START =================
+# ===== START =====
+exchange.fetch_balance()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "SMC PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "SMC PRO BOT SWING SL AKTİF")
 bot.infinity_polling()
