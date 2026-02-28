@@ -7,10 +7,10 @@ import threading
 # ===== SETTINGS =====
 LEV = 10
 MARGIN = 10
-MAX_POS = 1
 MIN_VOLUME = 5_000_000
 TOP_COINS = 80
-BUFFER_PCT = 0.0015  # %0.15
+BUFFER_PCT = 0.0015
+CRISIS_DROP_PCT = -5  # BTC 24h -5%
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
@@ -45,6 +45,23 @@ def get_candles(sym, tf, limit=100):
 def has_position():
     pos = exchange.fetch_positions()
     return any(safe(p.get("contracts")) > 0 for p in pos)
+
+# ===== CRISIS MODE =====
+def crisis_mode():
+    try:
+        btc_ticker = exchange.fetch_ticker("BTC/USDT:USDT")
+        pct = safe(btc_ticker.get("percentage"))
+
+        d = get_candles("BTC/USDT:USDT", "1d", 5)
+        lows = [c[3] for c in d]
+
+        lower_low = lows[-1] < lows[-2]
+
+        if pct <= CRISIS_DROP_PCT and lower_low:
+            return True
+        return False
+    except:
+        return False
 
 # ===== MARKET FILTER =====
 def get_symbols():
@@ -106,21 +123,16 @@ def entry_model(sym, direction):
     if body < avg_body * 1.5:
         return None
 
-    # FVG
     if direction == "long" and h[-3] < l[-1]:
         entry = (h[-3] + l[-1]) / 2
-
         swing_low = min(l[-15:])
         sl = swing_low - (swing_low * BUFFER_PCT)
-
         return {"entry": entry, "sl": sl}
 
     if direction == "short" and l[-3] > h[-1]:
         entry = (l[-3] + h[-1]) / 2
-
         swing_high = max(h[-15:])
         sl = swing_high + (swing_high * BUFFER_PCT)
-
         return {"entry": entry, "sl": sl}
 
     return None
@@ -128,7 +140,7 @@ def entry_model(sym, direction):
 # ===== TRADE STATE =====
 trade_state = {}
 
-# ===== POSITION MANAGER =====
+# ===== MANAGER =====
 def manage():
     while True:
         try:
@@ -145,7 +157,6 @@ def manage():
                 direction = "long" if side == "long" else "short"
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
-
                 sl = trade_state[sym]["sl"]
                 risk = abs(entry - sl)
 
@@ -156,50 +167,42 @@ def manage():
                 # STOP
                 if (direction == "long" and price <= sl) or \
                    (direction == "short" and price >= sl):
-
                     exchange.create_market_order(
                         sym,
                         "sell" if direction == "long" else "buy",
                         qty,
                         params={"reduceOnly": True}
                     )
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     trade_state.pop(sym, None)
+                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
                 # TP1
                 if not trade_state[sym]["tp1"] and \
                    ((direction == "long" and price >= tp1) or
                     (direction == "short" and price <= tp1)):
-
                     part = qty * TP_SPLIT[0]
-
                     exchange.create_market_order(
                         sym,
                         "sell" if direction == "long" else "buy",
                         part,
                         params={"reduceOnly": True}
                     )
-
                     trade_state[sym]["tp1"] = True
                     trade_state[sym]["sl"] = entry
-
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 # TP2
                 if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp2) or
                     (direction == "short" and price <= tp2)):
-
                     part = qty * TP_SPLIT[1]
-
                     exchange.create_market_order(
                         sym,
                         "sell" if direction == "long" else "buy",
                         part,
                         params={"reduceOnly": True}
                     )
-
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
@@ -207,16 +210,14 @@ def manage():
                 if trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp3) or
                     (direction == "short" and price <= tp3)):
-
                     exchange.create_market_order(
                         sym,
                         "sell" if direction == "long" else "buy",
                         qty,
                         params={"reduceOnly": True}
                     )
-
-                    bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
                     trade_state.pop(sym, None)
+                    bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
 
             time.sleep(5)
 
@@ -231,6 +232,8 @@ def run():
                 time.sleep(20)
                 continue
 
+            CRISIS = crisis_mode()
+
             symbols = get_symbols()
 
             for sym in symbols:
@@ -238,6 +241,9 @@ def run():
                 direction = get_direction(sym)
                 if not direction:
                     continue
+
+                if CRISIS and direction == "long":
+                    continue  # kriz modunda long yok
 
                 if not liquidity_sweep(sym, direction):
                     continue
@@ -263,7 +269,7 @@ def run():
                     "tp2": False
                 }
 
-                bot.send_message(CHAT_ID, f"📈 {sym} {direction.upper()} AÇILDI")
+                bot.send_message(CHAT_ID, f"📈 {sym} {direction.upper()} AÇILDI | CRISIS={CRISIS}")
 
                 break
 
@@ -278,5 +284,5 @@ exchange.fetch_balance()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "SMC PRO BOT SWING SL AKTİF")
+bot.send_message(CHAT_ID, "SMC PRO BOT + CRISIS MODE AKTİF")
 bot.infinity_polling()
