@@ -11,12 +11,13 @@ MIN_VOLUME = 5_000_000
 TOP_COINS = 80
 BUFFER_PCT = 0.0015
 CRISIS_DROP_PCT = -5
-
 TP_SPLIT = [0.4, 0.3, 0.3]
 
 # ===== TELEGRAM =====
-bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
+TELE_TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
+
+bot = telebot.TeleBot(TELE_TOKEN)
 
 # ===== BITGET =====
 exchange = ccxt.bitget({
@@ -176,7 +177,6 @@ def manage():
                 tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
                 tp3 = entry + 3*risk if direction == "long" else entry - 3*risk
 
-                # STOP
                 if (direction == "long" and price <= sl) or \
                    (direction == "short" and price >= sl):
                     exchange.create_market_order(
@@ -186,9 +186,9 @@ def manage():
                         params={"reduceOnly": True}
                     )
                     trade_state.pop(sym, None)
+                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # TP1
                 if not trade_state[sym]["tp1"] and \
                    ((direction == "long" and price >= tp1) or
                     (direction == "short" and price <= tp1)):
@@ -201,21 +201,8 @@ def manage():
                     )
                     trade_state[sym]["tp1"] = True
                     trade_state[sym]["sl"] = entry
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # TP2
-                if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
-                   ((direction == "long" and price >= tp2) or
-                    (direction == "short" and price <= tp2)):
-                    part = qty * TP_SPLIT[1]
-                    exchange.create_market_order(
-                        sym,
-                        "sell" if direction == "long" else "buy",
-                        part,
-                        params={"reduceOnly": True}
-                    )
-                    trade_state[sym]["tp2"] = True
-
-                # TP3
                 if trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp3) or
                     (direction == "short" and price <= tp3)):
@@ -226,9 +213,11 @@ def manage():
                         params={"reduceOnly": True}
                     )
                     trade_state.pop(sym, None)
+                    bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
 
             time.sleep(5)
-        except:
+        except Exception as e:
+            bot.send_message(CHAT_ID, f"MANAGER ERROR: {e}")
             time.sleep(5)
 
 # ===== ENTRY LOOP =====
@@ -278,14 +267,17 @@ def run():
                     "tp2": False
                 }
 
+                bot.send_message(CHAT_ID, f"📈 {sym} {direction.upper()} AÇILDI")
+
                 break
 
             time.sleep(30)
-        except:
+        except Exception as e:
+            bot.send_message(CHAT_ID, f"RUN ERROR: {e}")
             time.sleep(30)
 
 # ===== START =====
-exchange.fetch_balance()
+bot.send_message(CHAT_ID, "🚀 HIBRIT SMC PRO AKTİF")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
