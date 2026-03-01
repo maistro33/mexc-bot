@@ -3,208 +3,267 @@ import time
 import ccxt
 import telebot
 import threading
-import traceback
 
-# ===== AYAR =====
-RISK_PERCENT = 0.01
+# ===== SETTINGS =====
 LEV = 10
-MIN_VOLUME = 1_000_000
-TOP_COINS = 50
-RR = 2
-VOL_THRESHOLD = 0.004
-DISP_MULT = 1.2
+MARGIN = 10
+MAX_POS = 1
+MIN_VOLUME = 5_000_000
+TOP_COINS = 80
+BUFFER_PCT = 0.0015
+
+TP_SPLIT = [0.4, 0.3, 0.3]
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-def send(msg):
-    try:
-        print(msg)
-        bot.send_message(CHAT_ID, msg)
-    except Exception as e:
-        print("Telegram hata:", e)
-
-# ===== EXCHANGE =====
-PASSPHRASE = "Berfin33"   # 🔥 BURAYA EKLENDİ
+# ===== BITGET =====
+API_KEY = os.getenv("BITGET_API")
+API_SEC = os.getenv("BITGET_SEC")
+PASSPHRASE = "Berfin33"
 
 exchange = ccxt.bitget({
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
-    "password": PASSPHRASE,   # 🔥 HATA ÇÖZÜLDÜ
+    "apiKey": API_KEY,
+    "secret": API_SEC,
+    "password": PASSPHRASE,
     "options": {"defaultType": "swap"},
-    "enableRateLimit": True
+    "enableRateLimit": True,
+    "timeout": 30000
 })
 
-markets = exchange.load_markets()
-
-trade_active = False
-
+# ===== HELPERS =====
 def safe(x):
-    try: return float(x)
-    except: return 0
-
-def candles(sym, tf, limit=100):
     try:
-        return exchange.fetch_ohlcv(sym, tf, limit=limit)
-    except Exception as e:
-        print(sym, "candle hata:", e)
-        return []
+        return float(x)
+    except:
+        return 0.0
 
-def balance():
-    try:
-        b = exchange.fetch_balance()
-        return safe(b["USDT"]["free"])
-    except Exception as e:
-        print("Balance hata:", e)
-        return 0
+def get_candles(sym, tf, limit=100):
+    return exchange.fetch_ohlcv(sym, tf, limit=limit)
+
+def has_position():
+    pos = exchange.fetch_positions()
+    return any(safe(p.get("contracts")) > 0 for p in pos)
 
 # ===== MARKET FILTER =====
-def volatility(sym):
-    h1 = candles(sym, "1h", 30)
-    if len(h1) < 20: return False
-    avg = sum((c[2]-c[3])/c[4] for c in h1[-20:]) / 20
-    return avg > VOL_THRESHOLD
-
-def symbols():
+def get_symbols():
     tickers = exchange.fetch_tickers()
-    data = []
-    for s,t in tickers.items():
-        if ":USDT" not in s: continue
-        if safe(t.get("quoteVolume")) < MIN_VOLUME: continue
-        if not volatility(s): continue
-        data.append((s, safe(t.get("quoteVolume"))))
-    data.sort(key=lambda x:x[1], reverse=True)
-    return [x[0] for x in data[:TOP_COINS]]
+    filtered = []
 
-# ===== SMC CORE =====
-def sweep(sym, direction):
-    h1 = candles(sym,"1h",20)
-    if len(h1)<8: return False
-    highs=[c[2] for c in h1]
-    lows=[c[3] for c in h1]
-    if direction=="long":
-        return lows[-1] < min(lows[-4:-1])
-    else:
-        return highs[-1] > max(highs[-4:-1])
+    for sym, data in tickers.items():
+        if ":USDT" not in sym:
+            continue
+        vol = safe(data.get("quoteVolume"))
+        if vol >= MIN_VOLUME:
+            filtered.append((sym, vol))
 
-def displacement(c):
-    body=abs(c[-1][4]-c[-1][1])
-    avg=sum(abs(x[4]-x[1]) for x in c[-6:-1])/5
-    return body > avg * DISP_MULT
+    filtered.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in filtered[:TOP_COINS]]
 
-def bos(c, direction):
-    highs=[x[2] for x in c]
-    lows=[x[3] for x in c]
-    if direction=="long":
-        return highs[-1] > max(highs[-8:-1])
-    else:
-        return lows[-1] < min(lows[-8:-1])
+# ===== DIRECTION (1D KALDIRILDI) =====
+def get_direction(sym):
+    h4 = get_candles(sym, "4h", 50)
 
-def fvg_zone(c, direction):
-    c1,c2,c3=c[-3],c[-2],c[-1]
-    if direction=="long":
-        if c1[2] < c3[3]:
-            return (c1[2], c3[3])
-    else:
-        if c1[3] > c3[2]:
-            return (c3[2], c1[3])
+    h_high = [c[2] for c in h4]
+    h_low  = [c[3] for c in h4]
+
+    if h_high[-1] > h_high[-2]:
+        return "long"
+
+    if h_low[-1] < h_low[-2]:
+        return "short"
+
     return None
 
-def retest(price, zone):
-    low,high=zone
-    return low <= price <= high
+# ===== LIQUIDITY =====
+def liquidity_sweep(sym, direction):
+    h1 = get_candles(sym, "1h", 30)
+    highs = [c[2] for c in h1]
+    lows  = [c[3] for c in h1]
 
-# ===== ENTRY =====
-def try_trade(sym):
-    global trade_active
-    if trade_active: return
+    if direction == "long":
+        return lows[-1] < min(lows[:-2])
+    else:
+        return highs[-1] > max(highs[:-2])
 
-    m15=candles(sym,"15m",60)
-    if len(m15)<20: return
+# ===== ENTRY MODEL =====
+def entry_model(sym, direction):
+    m15 = get_candles(sym, "15m", 60)
 
-    d=candles(sym,"1d",3)
-    if len(d)<2: return
-    direction="long" if d[-1][4]>d[-2][4] else "short"
+    o = [c[1] for c in m15]
+    h = [c[2] for c in m15]
+    l = [c[3] for c in m15]
+    c_ = [c[4] for c in m15]
 
-    if not sweep(sym,direction): return
-    if not displacement(m15): return
-    if not bos(m15,direction): return
+    body = abs(c_[-1] - o[-1])
+    avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
 
-    zone=fvg_zone(m15,direction)
-    if not zone: return
+    if body < avg_body * 1.5:
+        return None
 
-    price=safe(exchange.fetch_ticker(sym)["last"])
-    if not retest(price,zone): return
+    if direction == "long" and h[-3] < l[-1]:
+        entry = (h[-3] + l[-1]) / 2
+        swing_low = min(l[-15:])
+        sl = swing_low - (swing_low * BUFFER_PCT)
+        return {"entry": entry, "sl": sl}
 
-    entry=price
-    sl=zone[0] if direction=="long" else zone[1]
-    risk=abs(entry-sl)
-    if risk<=0: return
+    if direction == "short" and l[-3] > h[-1]:
+        entry = (l[-3] + h[-1]) / 2
+        swing_high = max(h[-15:])
+        sl = swing_high + (swing_high * BUFFER_PCT)
+        return {"entry": entry, "sl": sl}
 
-    tp=entry + RR*risk if direction=="long" else entry - RR*risk
+    return None
 
-    bal=balance()
-    if bal <= 10: 
-        send("Bakiye düşük")
-        return
+# ===== TRADE STATE =====
+trade_state = {}
 
-    risk_amt=bal*RISK_PERCENT
-    qty=risk_amt/risk
-    qty=float(exchange.amount_to_precision(sym, qty))
-
-    min_cost = markets[sym]["limits"]["cost"]["min"]
-    if min_cost:
-        if qty*price < min_cost:
-            return
-
-    try:
-        exchange.set_leverage(LEV,sym)
-        side="buy" if direction=="long" else "sell"
-
-        exchange.create_market_order(sym,side,qty)
-
-        exchange.create_order(
-            sym,"stop_market",
-            "sell" if direction=="long" else "buy",
-            qty,None,
-            {"stopPrice": sl, "reduceOnly": True}
-        )
-
-        exchange.create_order(
-            sym,"take_profit_market",
-            "sell" if direction=="long" else "buy",
-            qty,None,
-            {"stopPrice": tp, "reduceOnly": True}
-        )
-
-        trade_active=True
-        send(f"{sym} {direction.upper()} AÇILDI\nEntry:{entry}\nSL:{sl}\nTP:{tp}")
-
-    except Exception as e:
-        print("Order hata:", e)
-        traceback.print_exc()
-
-# ===== LOOP =====
-def run():
-    global trade_active
-    send("SMC PRO AKTIF")
+# ===== POSITION MANAGER =====
+def manage():
     while True:
         try:
-            pos=exchange.fetch_positions()
-            trade_active=any(abs(safe(p.get("contracts",0)))>0 for p in pos)
+            positions = exchange.fetch_positions()
 
-            if not trade_active:
-                for s in symbols():
-                    try_trade(s)
-                    if trade_active:
-                        break
+            for p in positions:
+                qty = safe(p.get("contracts"))
+                if qty <= 0:
+                    continue
 
-            time.sleep(20)
+                sym = p["symbol"]
+                entry = safe(p["entryPrice"])
+                side = p["side"]
+                direction = "long" if side == "long" else "short"
 
-        except Exception as e:
-            print("Loop hata:", e)
-            time.sleep(20)
+                price = safe(exchange.fetch_ticker(sym)["last"])
 
-threading.Thread(target=run,daemon=True).start()
+                sl = trade_state[sym]["sl"]
+                risk = abs(entry - sl)
+
+                tp1 = entry + risk if direction == "long" else entry - risk
+                tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
+                tp3 = entry + 3*risk if direction == "long" else entry - 3*risk
+
+                if (direction == "long" and price <= sl) or \
+                   (direction == "short" and price >= sl):
+
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        qty,
+                        params={"reduceOnly": True}
+                    )
+                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
+                    trade_state.pop(sym, None)
+                    continue
+
+                if not trade_state[sym]["tp1"] and \
+                   ((direction == "long" and price >= tp1) or
+                    (direction == "short" and price <= tp1)):
+
+                    part = qty * TP_SPLIT[0]
+
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        part,
+                        params={"reduceOnly": True}
+                    )
+
+                    trade_state[sym]["tp1"] = True
+                    trade_state[sym]["sl"] = entry
+
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+
+                if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
+                   ((direction == "long" and price >= tp2) or
+                    (direction == "short" and price <= tp2)):
+
+                    part = qty * TP_SPLIT[1]
+
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        part,
+                        params={"reduceOnly": True}
+                    )
+
+                    trade_state[sym]["tp2"] = True
+                    bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
+
+                if trade_state[sym]["tp2"] and \
+                   ((direction == "long" and price >= tp3) or
+                    (direction == "short" and price <= tp3)):
+
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        qty,
+                        params={"reduceOnly": True}
+                    )
+
+                    bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
+                    trade_state.pop(sym, None)
+
+            time.sleep(5)
+
+        except:
+            time.sleep(5)
+
+# ===== ENTRY LOOP =====
+def run():
+    while True:
+        try:
+            if has_position():
+                time.sleep(20)
+                continue
+
+            symbols = get_symbols()
+
+            for sym in symbols:
+
+                direction = get_direction(sym)
+                if not direction:
+                    continue
+
+                if not liquidity_sweep(sym, direction):
+                    continue
+
+                setup = entry_model(sym, direction)
+                if not setup:
+                    continue
+
+                exchange.set_leverage(LEV, sym)
+
+                price = safe(exchange.fetch_ticker(sym)["last"])
+                notional = MARGIN * LEV
+                qty = notional / price
+                qty = float(exchange.amount_to_precision(sym, qty))
+
+                side = "buy" if direction == "long" else "sell"
+
+                exchange.create_market_order(sym, side, qty)
+
+                trade_state[sym] = {
+                    "sl": setup["sl"],
+                    "tp1": False,
+                    "tp2": False
+                }
+
+                bot.send_message(CHAT_ID, f"📈 {sym} {direction.upper()} AÇILDI")
+
+                break
+
+            time.sleep(30)
+
+        except:
+            time.sleep(30)
+
+# ===== START =====
+exchange.fetch_balance()
+
+threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=run, daemon=True).start()
+
+bot.send_message(CHAT_ID, "SMC PRO BOT (1D FILTRE KALDIRILDI) AKTİF")
 bot.infinity_polling()
