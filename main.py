@@ -26,10 +26,12 @@ def send(msg):
         print("Telegram hata:", e)
 
 # ===== EXCHANGE =====
+PASSPHRASE = "Berfin33"   # 🔥 BURAYA EKLENDİ
+
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": PASSPHRASE,   # 🔥 HATA ÇÖZÜLDÜ
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -101,8 +103,6 @@ def bos(c, direction):
 
 def fvg_zone(c, direction):
     c1,c2,c3=c[-3],c[-2],c[-1]
-
-    # Doğru FVG mantığı
     if direction=="long":
         if c1[2] < c3[3]:
             return (c1[2], c3[3])
@@ -151,14 +151,11 @@ def try_trade(sym):
 
     risk_amt=bal*RISK_PERCENT
     qty=risk_amt/risk
-
     qty=float(exchange.amount_to_precision(sym, qty))
 
-    # Min notional kontrolü
     min_cost = markets[sym]["limits"]["cost"]["min"]
     if min_cost:
         if qty*price < min_cost:
-            print("Min notional yetmedi")
             return
 
     try:
@@ -167,23 +164,17 @@ def try_trade(sym):
 
         exchange.create_market_order(sym,side,qty)
 
-        # SL
         exchange.create_order(
-            sym,
-            "stop_market",
+            sym,"stop_market",
             "sell" if direction=="long" else "buy",
-            qty,
-            None,
+            qty,None,
             {"stopPrice": sl, "reduceOnly": True}
         )
 
-        # TP
         exchange.create_order(
-            sym,
-            "take_profit_market",
+            sym,"take_profit_market",
             "sell" if direction=="long" else "buy",
-            qty,
-            None,
+            qty,None,
             {"stopPrice": tp, "reduceOnly": True}
         )
 
