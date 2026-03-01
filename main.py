@@ -3,7 +3,7 @@ import time
 import ccxt
 import telebot
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ===== SETTINGS =====
 LEV = 10
@@ -13,17 +13,20 @@ MIN_VOLUME = 20_000_000
 TOP_COINS = 40
 BUFFER_PCT = 0.002
 TP_SPLIT = [0.4, 0.3, 0.3]
-SPREAD_LIMIT = 0.0015  # %0.15
+SPREAD_LIMIT = 0.0015
 
 # ===== TELEGRAM =====
-bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
+TELE_TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
+
+bot = telebot.TeleBot(TELE_TOKEN, threaded=True)
+bot.remove_webhook()  # webhook temizle
 
 # ===== BITGET =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -31,7 +34,7 @@ exchange = ccxt.bitget({
 # ===== STATE =====
 trade_state = {}
 daily_stops = 0
-last_day = datetime.utcnow().day
+last_day = datetime.now(timezone.utc).day
 
 # ===== HELPERS =====
 def safe(x):
@@ -47,8 +50,8 @@ def get_balance():
     return safe(exchange.fetch_balance()['total']['USDT'])
 
 def has_position():
-    pos = exchange.fetch_positions()
-    return any(safe(p.get("contracts")) > 0 for p in pos)
+    positions = exchange.fetch_positions()
+    return any(safe(p.get("contracts")) > 0 for p in positions)
 
 # ===== MARKET FILTER =====
 def get_symbols():
@@ -118,9 +121,9 @@ def manage():
 
     while True:
         try:
-            if datetime.utcnow().day != last_day:
+            if datetime.now(timezone.utc).day != last_day:
                 daily_stops = 0
-                last_day = datetime.utcnow().day
+                last_day = datetime.now(timezone.utc).day
 
             positions = exchange.fetch_positions()
 
@@ -143,7 +146,6 @@ def manage():
 
                 tp1 = entry + risk if direction == "long" else entry - risk
                 tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
-                tp3 = entry + 3*risk if direction == "long" else entry - 3*risk
 
                 # STOP
                 if (direction == "long" and price <= sl) or \
@@ -172,7 +174,6 @@ def manage():
                         part,
                         params={"reduceOnly": True}
                     )
-
                     trade_state[sym]["tp1"] = True
                     trade_state[sym]["sl"] = entry
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
@@ -189,7 +190,6 @@ def manage():
                         part,
                         params={"reduceOnly": True}
                     )
-
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
@@ -259,7 +259,7 @@ def run():
 
                 exchange.set_leverage(LEV, sym)
 
-                # HYBRID ENTRY
+                # LIMIT → 10 dk → MARKET fallback
                 try:
                     order = exchange.create_limit_order(
                         sym,
@@ -304,4 +304,4 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
 bot.send_message(CHAT_ID, "🔥 SMC HYBRID BOT AKTİF (7/24)")
-bot.infinity_polling()
+bot.infinity_polling(timeout=60, long_polling_timeout=60)
