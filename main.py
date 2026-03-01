@@ -20,13 +20,13 @@ TELE_TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
 bot = telebot.TeleBot(TELE_TOKEN, threaded=True)
-bot.remove_webhook()  # webhook temizle
+bot.remove_webhook()
 
 # ===== BITGET =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",   # ← PASS SABİT
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -193,7 +193,7 @@ def manage():
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
-                # TRAILING (15m)
+                # TRAILING
                 if trade_state[sym]["tp2"]:
                     m15 = get_candles(sym, "15m", 10)
                     lows = [c[3] for c in m15]
@@ -259,7 +259,6 @@ def run():
 
                 exchange.set_leverage(LEV, sym)
 
-                # LIMIT → 10 dk → MARKET fallback
                 try:
                     order = exchange.create_limit_order(
                         sym,
