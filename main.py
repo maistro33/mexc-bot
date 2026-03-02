@@ -61,6 +61,8 @@ def now():
 
 def spread_ok(sym):
     t = exchange.fetch_ticker(sym)
+    if not t["ask"] or not t["bid"] or not t["last"]:
+        return False
     return (t["ask"] - t["bid"]) / t["last"] <= SPREAD_LIMIT
 
 def cooldown_active(sym):
@@ -81,14 +83,20 @@ def get_symbols():
     return [x[0] for x in filtered[:TOP_COINS]]
 
 def get_position_qty(sym):
-    pos = exchange.fetch_positions([sym])
-    if not pos:
+    try:
+        pos = exchange.fetch_positions([sym])
+        if not pos:
+            return 0
+        return safe(pos[0].get("contracts"))
+    except:
         return 0
-    return safe(pos[0].get("contracts"))
 
 # ================= TREND FILTER =================
 def trend_direction(sym):
     h4 = exchange.fetch_ohlcv(sym, "4h", limit=60)
+    if not h4 or len(h4) < 50:
+        return None
+
     closes = [c[4] for c in h4]
     highs = [c[2] for c in h4]
     lows = [c[3] for c in h4]
@@ -105,10 +113,14 @@ def trend_direction(sym):
 # ================= MOMENTUM =================
 def momentum_signal(sym, direction):
     m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
+    if not m5 or len(m5) < 10:
+        return False
+
     last = m5[-1]
     prev = m5[-2]
+
     body = abs(last[4] - last[1])
-    avg = sum(abs(c[4]-c[1]) for c in m5[:-1]) / 9
+    avg = sum(abs(c[4] - c[1]) for c in m5[:-1]) / 9
 
     if body > avg * 1.8:
         if direction == "long" and last[4] > prev[2]:
@@ -120,6 +132,9 @@ def momentum_signal(sym, direction):
 # ================= REVERSION =================
 def reversion_signal(sym):
     m5 = exchange.fetch_ohlcv(sym, "5m", limit=30)
+    if not m5 or len(m5) < 30:
+        return None
+
     closes = [c[4] for c in m5]
     mean = sum(closes) / len(closes)
     dev = (closes[-1] - mean) / mean
@@ -135,13 +150,13 @@ def open_position(sym, direction, mode):
     with state_lock:
 
         trend_count = sum(1 for p in positions_state.values() if p["mode"] == "trend")
-        small_count = sum(1 for p in positions_state.values() if p["mode"] in ["scalp","reversion"])
+        small_count = sum(1 for p in positions_state.values() if p["mode"] in ["scalp", "reversion"])
 
         if len(positions_state) >= MAX_TOTAL_POS:
             return
         if mode == "trend" and trend_count >= MAX_TREND:
             return
-        if mode in ["scalp","reversion"] and small_count >= MAX_SMALL:
+        if mode in ["scalp", "reversion"] and small_count >= MAX_SMALL:
             return
         if sym in positions_state:
             return
@@ -149,6 +164,9 @@ def open_position(sym, direction, mode):
             return
 
         price = safe(exchange.fetch_ticker(sym)["last"])
+        if price <= 0:
+            return
+
         margin = TREND_MARGIN if mode == "trend" else SMALL_MARGIN
         qty = (margin * LEV) / price
         qty = float(exchange.amount_to_precision(sym, qty))
@@ -160,7 +178,6 @@ def open_position(sym, direction, mode):
         side = "buy" if direction == "long" else "sell"
         exchange.create_market_order(sym, side, qty)
 
-        # TP SL logic
         if mode == "trend":
             tp_perc = TREND_TP
             sl_perc = TREND_SL
@@ -181,9 +198,9 @@ def open_position(sym, direction, mode):
         positions_state[sym] = {
             "mode": mode,
             "direction": direction,
-            "sl": sl_price,
+            "entry": price,
             "tp": tp_price,
-            "entry": price
+            "sl": sl_price
         }
 
         bot.send_message(CHAT_ID, f"🚀 {mode.upper()} {sym} {direction}")
@@ -229,30 +246,38 @@ def manage():
                             state["sl"] = min(state["sl"], price * (1 + trail))
 
                 # ===== STOP =====
-                if (direction=="long" and price<=state["sl"]) or \
-                   (direction=="short" and price>=state["sl"]):
+                if (direction == "long" and price <= state["sl"]) or \
+                   (direction == "short" and price >= state["sl"]):
 
-                    side = "sell" if direction=="long" else "buy"
+                    side = "sell" if direction == "long" else "buy"
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
 
                     with state_lock:
                         positions_state.pop(sym, None)
 
-                    set_cooldown(sym, COOLDOWN_SMALL)
+                    if state["mode"] == "trend":
+                        set_cooldown(sym, COOLDOWN_TREND)
+                    else:
+                        set_cooldown(sym, COOLDOWN_SMALL)
+
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
                 # ===== TP =====
-                if (direction=="long" and price>=state["tp"]) or \
-                   (direction=="short" and price<=state["tp"]):
+                if (direction == "long" and price >= state["tp"]) or \
+                   (direction == "short" and price <= state["tp"]):
 
-                    side = "sell" if direction=="long" else "buy"
+                    side = "sell" if direction == "long" else "buy"
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
 
                     with state_lock:
                         positions_state.pop(sym, None)
 
-                    set_cooldown(sym, COOLDOWN_SMALL)
+                    if state["mode"] == "trend":
+                        set_cooldown(sym, COOLDOWN_TREND)
+                    else:
+                        set_cooldown(sym, COOLDOWN_SMALL)
+
                     bot.send_message(CHAT_ID, f"💰 TP {sym}")
 
             time.sleep(3)
@@ -295,5 +320,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 3 MOTORLU STABİL ENGINE AKTİF (PRO MODE)")
+bot.send_message(CHAT_ID, "🔥 3 MOTORLU STABİL ENGINE AKTİF (FINAL)")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
