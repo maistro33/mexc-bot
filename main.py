@@ -24,6 +24,9 @@ SCALP_SL = 0.005
 REV_TP = 0.005
 REV_SL = 0.004
 
+TREND_TP = 0.02
+TREND_SL = 0.01
+
 COOLDOWN_TREND = 60
 COOLDOWN_SMALL = 30
 
@@ -157,11 +160,30 @@ def open_position(sym, direction, mode):
         side = "buy" if direction == "long" else "sell"
         exchange.create_market_order(sym, side, qty)
 
+        # TP SL logic
+        if mode == "trend":
+            tp_perc = TREND_TP
+            sl_perc = TREND_SL
+        elif mode == "scalp":
+            tp_perc = SCALP_TP
+            sl_perc = SCALP_SL
+        else:
+            tp_perc = REV_TP
+            sl_perc = REV_SL
+
+        if direction == "long":
+            tp_price = price * (1 + tp_perc)
+            sl_price = price * (1 - sl_perc)
+        else:
+            tp_price = price * (1 - tp_perc)
+            sl_price = price * (1 + sl_perc)
+
         positions_state[sym] = {
             "mode": mode,
             "direction": direction,
-            "sl": price * 0.99 if direction=="long" else price * 1.01,
-            "tp": price * 1.01 if direction=="long" else price * 0.99
+            "sl": sl_price,
+            "tp": tp_price,
+            "entry": price
         }
 
         bot.send_message(CHAT_ID, f"🚀 {mode.upper()} {sym} {direction}")
@@ -187,7 +209,26 @@ def manage():
                         positions_state.pop(sym, None)
                     continue
 
-                # STOP
+                # ===== TREND TRAILING =====
+                if state["mode"] == "trend":
+                    entry = state["entry"]
+
+                    if direction == "long":
+                        profit = (price - entry) / entry
+                    else:
+                        profit = (entry - price) / entry
+
+                    if profit > 0.015:
+                        state["sl"] = entry
+
+                    if profit > 0.03:
+                        trail = 0.01
+                        if direction == "long":
+                            state["sl"] = max(state["sl"], price * (1 - trail))
+                        else:
+                            state["sl"] = min(state["sl"], price * (1 + trail))
+
+                # ===== STOP =====
                 if (direction=="long" and price<=state["sl"]) or \
                    (direction=="short" and price>=state["sl"]):
 
@@ -201,7 +242,7 @@ def manage():
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # TP
+                # ===== TP =====
                 if (direction=="long" and price>=state["tp"]) or \
                    (direction=="short" and price<=state["tp"]):
 
@@ -254,5 +295,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 3 MOTORLU STABİL ENGINE AKTİF (HARD LIMIT)")
+bot.send_message(CHAT_ID, "🔥 3 MOTORLU STABİL ENGINE AKTİF (PRO MODE)")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
