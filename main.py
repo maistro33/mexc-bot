@@ -6,8 +6,8 @@ import threading
 from datetime import datetime, timezone, timedelta
 
 # ================= SETTINGS =================
-LEV = 8
-MARGIN = 8
+LEV = 7
+MARGIN = 7
 
 MIN_VOLUME = 8_000_000
 TOP_COINS = 80
@@ -17,6 +17,8 @@ MAX_TOTAL_POS = 1
 
 SCALP_TP = 0.007   # %0.7
 SCALP_SL = 0.005   # %0.5
+
+VOL_FILTER = 0.005  # Son 5 mumda en az %0.5 hareket
 
 COOLDOWN_MIN = 20
 
@@ -87,11 +89,20 @@ def get_position_qty(sym):
     except:
         return 0
 
-# ================= MOMENTUM SCALP =================
+# ================= MOMENTUM + VOLATILITY =================
 def momentum_signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
         if not m5 or len(m5) < 10:
+            return None
+
+        highs = [c[2] for c in m5]
+        lows = [c[3] for c in m5]
+        closes = [c[4] for c in m5]
+
+        # ---- VOLATILITY FILTER ----
+        range_pct = (max(highs[-5:]) - min(lows[-5:])) / closes[-1]
+        if range_pct < VOL_FILTER:
             return None
 
         last = m5[-1]
@@ -105,7 +116,9 @@ def momentum_signal(sym):
                 return "long"
             if last[4] < prev[3]:
                 return "short"
+
         return None
+
     except:
         return None
 
@@ -149,7 +162,7 @@ def open_position(sym, direction):
             "sl": sl
         }
 
-        bot.send_message(CHAT_ID, f"⚡ SCALP {sym} {direction}")
+        bot.send_message(CHAT_ID, f"⚡ VOL SCALP {sym} {direction}")
 
 # ================= MANAGE =================
 def manage():
@@ -231,5 +244,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "⚡ VURKAÇ SCALP ENGINE AKTİF")
+bot.send_message(CHAT_ID, "⚡ VOLATİLİTE FİLTRELİ SCALP ENGINE AKTİF")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
