@@ -3,7 +3,6 @@ import time
 import ccxt
 import telebot
 import threading
-import numpy as np
 from datetime import datetime, timezone
 
 # ================= SETTINGS =================
@@ -47,30 +46,52 @@ def safe(x):
         return 0.0
 
 def ema(values, period):
-    weights = np.exp(np.linspace(-1., 0., period))
-    weights /= weights.sum()
-    return np.convolve(values, weights, mode='valid')[-1]
+    if len(values) < period:
+        return None
+    k = 2 / (period + 1)
+    ema_val = sum(values[:period]) / period
+    for price in values[period:]:
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
 
 def rsi(values, period=14):
-    deltas = np.diff(values)
-    ups = deltas.clip(min=0)
-    downs = -deltas.clip(max=0)
-    avg_gain = np.mean(ups[-period:])
-    avg_loss = np.mean(downs[-period:])
+    if len(values) < period + 1:
+        return 50
+
+    gains = []
+    losses = []
+
+    for i in range(-period, 0):
+        diff = values[i] - values[i - 1]
+        if diff > 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
     if avg_loss == 0:
         return 100
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def atr(ohlcv, period=14):
+    if len(ohlcv) < period + 1:
+        return 0
+
     trs = []
     for i in range(1, len(ohlcv)):
         high = ohlcv[i][2]
         low = ohlcv[i][3]
-        prev_close = ohlcv[i-1][4]
-        tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
+        prev_close = ohlcv[i - 1][4]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         trs.append(tr)
-    return np.mean(trs[-period:])
+
+    return sum(trs[-period:]) / period
 
 def reset_daily():
     global daily_trades, current_day
@@ -113,8 +134,7 @@ def calculate_qty(sym, price):
     if usdt < 4.5:
         return None
 
-    margin = FIXED_MARGIN
-    position_value = margin * LEV
+    position_value = FIXED_MARGIN * LEV
     qty = position_value / price
     qty = float(exchange.amount_to_precision(sym, qty))
 
@@ -129,8 +149,11 @@ def calculate_qty(sym, price):
 # ================= TREND =================
 def trend_direction(sym):
     h4 = exchange.fetch_ohlcv(sym, "4h", limit=210)
-    closes = np.array([c[4] for c in h4])
+    closes = [c[4] for c in h4]
+
     ema200 = ema(closes, 200)
+    if not ema200:
+        return None
 
     if closes[-1] > ema200:
         return "long"
@@ -141,18 +164,22 @@ def trend_direction(sym):
 # ================= ENTRY =================
 def good_entry(sym, direction):
     m15 = exchange.fetch_ohlcv(sym, "15m", limit=50)
-    closes = np.array([c[4] for c in m15])
+
+    closes = [c[4] for c in m15]
     highs = [c[2] for c in m15]
     lows = [c[3] for c in m15]
     volumes = [c[5] for c in m15]
 
     ema20 = ema(closes, 20)
+    if not ema20:
+        return False
+
     current = closes[-1]
     rsi_val = rsi(closes)
 
     highest_10 = max(highs[-10:])
     lowest_10 = min(lows[-10:])
-    volume_avg = np.mean(volumes[-20:])
+    volume_avg = sum(volumes[-20:]) / 20
     volume_now = volumes[-1]
 
     if atr(m15) < current * 0.002:
@@ -192,6 +219,7 @@ def open_position(sym, direction):
 
     exchange.set_leverage(LEV, sym)
     side = "buy" if direction == "long" else "sell"
+
     exchange.create_market_order(sym, side, qty)
 
     trade_state[sym] = {
@@ -234,12 +262,12 @@ def manage():
                     continue
 
                 if roe >= TP1_ROE and not trade_state[sym]["tp1"]:
-                    exchange.create_market_order(sym, side, qty*0.3, params={"reduceOnly": True})
+                    exchange.create_market_order(sym, side, qty * 0.3, params={"reduceOnly": True})
                     trade_state[sym]["tp1"] = True
                     bot.send_message(CHAT_ID, f"💰 TP1 30% {sym}")
 
                 if roe >= TP2_ROE and not trade_state[sym]["tp2"]:
-                    exchange.create_market_order(sym, side, qty*0.4, params={"reduceOnly": True})
+                    exchange.create_market_order(sym, side, qty * 0.4, params={"reduceOnly": True})
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"💰 TP2 40% {sym}")
 
@@ -293,5 +321,5 @@ exchange.fetch_balance()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 ALTCOIN PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF")
 bot.infinity_polling()
