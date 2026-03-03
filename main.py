@@ -36,6 +36,7 @@ exchange = ccxt.bitget({
 trade_state = {}
 daily_stops = 0
 last_day = datetime.now(timezone.utc).day
+last_trade_time = 0
 
 # ===== HELPERS =====
 def safe(x):
@@ -78,7 +79,7 @@ def get_direction(sym):
         return "short"
     return None
 
-# ===== LIQUIDITY =====
+# ===== SWEEP MODEL =====
 def liquidity_sweep(sym, direction):
     h1 = get_candles(sym, "1h", 30)
     highs = [c[2] for c in h1]
@@ -88,8 +89,7 @@ def liquidity_sweep(sym, direction):
     else:
         return highs[-1] > max(highs[:-2])
 
-# ===== ENTRY MODEL =====
-def entry_model(sym, direction):
+def sweep_entry(sym, direction):
     m15 = get_candles(sym, "15m", 60)
     o = [c[1] for c in m15]
     h = [c[2] for c in m15]
@@ -114,6 +114,23 @@ def entry_model(sym, direction):
         entry = (l[-3] + h[-1]) / 2
         return {"entry": entry, "sl": sl}
 
+    return None
+
+# ===== BREAKOUT MODEL =====
+def breakout_entry(sym, direction):
+    m15 = get_candles(sym, "15m", 50)
+    highs = [c[2] for c in m15]
+    lows = [c[3] for c in m15]
+    closes = [c[4] for c in m15]
+
+    if direction == "long":
+        if closes[-1] > max(highs[-10:-1]):
+            sl = min(lows[-10:])
+            return {"entry": closes[-1], "sl": sl}
+    else:
+        if closes[-1] < min(lows[-10:-1]):
+            sl = max(highs[-10:])
+            return {"entry": closes[-1], "sl": sl}
     return None
 
 # ===== MANAGE =====
@@ -144,7 +161,6 @@ def manage():
 
                 sl = trade_state[sym]["sl"]
                 risk = abs(entry - sl)
-
                 tp1 = entry + risk if direction == "long" else entry - risk
                 tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
 
@@ -175,7 +191,6 @@ def manage():
                         part,
                         params={"reduceOnly": True}
                     )
-
                     trade_state[sym]["tp1"] = True
                     trade_state[sym]["sl"] = entry
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
@@ -192,11 +207,10 @@ def manage():
                         part,
                         params={"reduceOnly": True}
                     )
-
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
-                # TRAILING RUNNER (8 candles)
+                # TRAILING
                 if trade_state[sym]["tp2"]:
                     m15 = get_candles(sym, "15m", TRAIL_CANDLES + 2)
                     lows = [c[3] for c in m15]
@@ -217,7 +231,7 @@ def manage():
 
 # ===== ENTRY LOOP =====
 def run():
-    global daily_stops
+    global daily_stops, last_trade_time
 
     while True:
         try:
@@ -243,10 +257,16 @@ def run():
                 if not direction:
                     continue
 
-                if not liquidity_sweep(sym, direction):
-                    continue
+                setup = None
 
-                setup = entry_model(sym, direction)
+                # Model 1: Sweep
+                if liquidity_sweep(sym, direction):
+                    setup = sweep_entry(sym, direction)
+
+                # Model 2: Breakout (fallback)
+                if not setup:
+                    setup = breakout_entry(sym, direction)
+
                 if not setup:
                     continue
 
@@ -287,5 +307,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SMC RUNNER BOT AKTİF (8C TRAILING)")
+bot.send_message(CHAT_ID, "🔥 SMC DUAL RUNNER BOT AKTİF")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
