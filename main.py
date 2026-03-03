@@ -3,20 +3,22 @@ import time
 import ccxt
 import telebot
 import threading
+import numpy as np
 from datetime import datetime, timezone
 
 # ================= SETTINGS =================
 LEV = 10
-FIXED_MARGIN = 2
+FIXED_MARGIN = 4
 MAX_DAILY_TRADES = 4
 MIN_VOLUME = 10_000_000
 TOP_COINS = 80
 
-TP1_ROE = 12
-TP2_ROE = 30
-SL_ROE = -10
+TP1_ROE = 15
+TP2_ROE = 32
+TRAIL_TRIGGER = 38
+TRAIL_GAP = 15
+SL_ROE = -8
 
-# HANTAL COIN BLACKLIST
 BLACKLIST = ["BTC", "ETH", "BNB", "SOL", "XRP"]
 
 # ================= TELEGRAM =================
@@ -27,7 +29,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -37,13 +39,38 @@ trade_state = {}
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
 
-
 # ================= HELPERS =================
 def safe(x):
     try:
         return float(x)
     except:
         return 0.0
+
+def ema(values, period):
+    weights = np.exp(np.linspace(-1., 0., period))
+    weights /= weights.sum()
+    return np.convolve(values, weights, mode='valid')[-1]
+
+def rsi(values, period=14):
+    deltas = np.diff(values)
+    ups = deltas.clip(min=0)
+    downs = -deltas.clip(max=0)
+    avg_gain = np.mean(ups[-period:])
+    avg_loss = np.mean(downs[-period:])
+    if avg_loss == 0:
+        return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def atr(ohlcv, period=14):
+    trs = []
+    for i in range(1, len(ohlcv)):
+        high = ohlcv[i][2]
+        low = ohlcv[i][3]
+        prev_close = ohlcv[i-1][4]
+        tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
+        trs.append(tr)
+    return np.mean(trs[-period:])
 
 def reset_daily():
     global daily_trades, current_day
@@ -68,61 +95,90 @@ def get_symbols():
         if base in BLACKLIST:
             continue
 
-        if safe(data.get("quoteVolume")) >= MIN_VOLUME:
-            filtered.append((sym, data["quoteVolume"]))
+        if safe(data.get("quoteVolume")) < MIN_VOLUME:
+            continue
+
+        if safe(data.get("percentage")) < 2:
+            continue
+
+        filtered.append((sym, data["quoteVolume"]))
 
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
 
 def calculate_qty(sym, price):
+    balance = exchange.fetch_balance()
+    usdt = balance["USDT"]["free"]
+
+    if usdt < 4.5:
+        return None
+
+    margin = FIXED_MARGIN
+    position_value = margin * LEV
+    qty = position_value / price
+    qty = float(exchange.amount_to_precision(sym, qty))
+
     market = exchange.market(sym)
     min_qty = market["limits"]["amount"]["min"]
 
-    qty = (FIXED_MARGIN * LEV) / price
-    qty = float(exchange.amount_to_precision(sym, qty))
-
     if qty < min_qty:
         return None
-    return qty
 
+    return qty
 
 # ================= TREND =================
 def trend_direction(sym):
-    h4 = exchange.fetch_ohlcv(sym, "4h", limit=60)
-    closes = [c[4] for c in h4]
-    ema = sum(closes[-50:]) / 50
+    h4 = exchange.fetch_ohlcv(sym, "4h", limit=210)
+    closes = np.array([c[4] for c in h4])
+    ema200 = ema(closes, 200)
 
-    if closes[-1] > ema:
+    if closes[-1] > ema200:
         return "long"
-    if closes[-1] < ema:
+    if closes[-1] < ema200:
         return "short"
     return None
 
-
-# ================= ENTRY FILTER =================
+# ================= ENTRY =================
 def good_entry(sym, direction):
-    m15 = exchange.fetch_ohlcv(sym, "15m", limit=20)
-    closes = [c[4] for c in m15]
-    opens = [c[1] for c in m15]
+    m15 = exchange.fetch_ohlcv(sym, "15m", limit=50)
+    closes = np.array([c[4] for c in m15])
+    highs = [c[2] for c in m15]
+    lows = [c[3] for c in m15]
+    volumes = [c[5] for c in m15]
 
-    ema20 = sum(closes[-20:]) / 20
-    last_close = closes[-1]
-    prev_close = closes[-2]
+    ema20 = ema(closes, 20)
+    current = closes[-1]
+    rsi_val = rsi(closes)
 
-    # Pump filtresi
-    if abs(last_close - prev_close) / prev_close > 0.012:
+    highest_10 = max(highs[-10:])
+    lowest_10 = min(lows[-10:])
+    volume_avg = np.mean(volumes[-20:])
+    volume_now = volumes[-1]
+
+    if atr(m15) < current * 0.002:
         return False
 
     if direction == "long":
-        if last_close < ema20:
+        if current < ema20:
+            return False
+        if rsi_val > 68:
+            return False
+        if current >= highest_10 * 0.997:
+            return False
+        if volume_now < volume_avg:
             return False
 
     if direction == "short":
-        if last_close > ema20:
+        if current > ema20:
+            return False
+        if rsi_val < 32:
+            return False
+        if current <= lowest_10 * 1.003:
+            return False
+        if volume_now < volume_avg:
             return False
 
     return True
-
 
 # ================= OPEN =================
 def open_position(sym, direction):
@@ -136,16 +192,16 @@ def open_position(sym, direction):
 
     exchange.set_leverage(LEV, sym)
     side = "buy" if direction == "long" else "sell"
-
     exchange.create_market_order(sym, side, qty)
 
     trade_state[sym] = {
-        "direction": direction
+        "tp1": False,
+        "tp2": False,
+        "max_roe": 0
     }
 
     daily_trades += 1
     bot.send_message(CHAT_ID, f"🚀 {sym} {direction.upper()} AÇILDI")
-
 
 # ================= MANAGE =================
 def manage():
@@ -161,32 +217,43 @@ def manage():
                 sym = p["symbol"]
                 direction = "long" if p["side"] == "long" else "short"
                 roe = safe(p.get("percentage"))
+                side = "sell" if direction == "long" else "buy"
 
-                # STOP
+                if sym not in trade_state:
+                    trade_state[sym] = {"tp1": False, "tp2": False, "max_roe": roe}
+
+                if roe > trade_state[sym]["max_roe"]:
+                    trade_state[sym]["max_roe"] = roe
+
+                max_roe = trade_state[sym]["max_roe"]
+
                 if roe <= SL_ROE:
-                    side = "sell" if direction == "long" else "buy"
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    trade_state.pop(sym, None)
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # TP1
-                if roe >= TP1_ROE:
-                    side = "sell" if direction == "long" else "buy"
-                    exchange.create_market_order(sym, side, qty * 0.5, params={"reduceOnly": True})
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                if roe >= TP1_ROE and not trade_state[sym]["tp1"]:
+                    exchange.create_market_order(sym, side, qty*0.3, params={"reduceOnly": True})
+                    trade_state[sym]["tp1"] = True
+                    bot.send_message(CHAT_ID, f"💰 TP1 30% {sym}")
 
-                # TP2
-                if roe >= TP2_ROE:
-                    side = "sell" if direction == "long" else "buy"
-                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                    bot.send_message(CHAT_ID, f"🏆 TP2 {sym}")
+                if roe >= TP2_ROE and not trade_state[sym]["tp2"]:
+                    exchange.create_market_order(sym, side, qty*0.4, params={"reduceOnly": True})
+                    trade_state[sym]["tp2"] = True
+                    bot.send_message(CHAT_ID, f"💰 TP2 40% {sym}")
+
+                if max_roe >= TRAIL_TRIGGER:
+                    if roe <= max_roe - TRAIL_GAP:
+                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                        trade_state.pop(sym, None)
+                        bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym}")
 
             time.sleep(5)
 
         except Exception as e:
             print("MANAGE ERROR:", e)
             time.sleep(5)
-
 
 # ================= RUN =================
 def run():
@@ -221,10 +288,8 @@ def run():
             print("RUN ERROR:", e)
             time.sleep(20)
 
-
 # ================= START =================
 exchange.fetch_balance()
-
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
