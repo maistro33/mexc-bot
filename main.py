@@ -15,9 +15,8 @@ SPREAD_LIMIT = 0.0015
 
 TP1_ROE = 10
 TP2_ROE = 22
-TRAIL_START = 22
-TRAIL_EXIT = 15
-SL_ROE = -8
+TRAIL_CANDLES = 8
+BUFFER = 0.002  # %0.2 güvenlik payı
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"), threaded=True)
@@ -48,8 +47,8 @@ def safe(x):
 
 def has_position():
     try:
-        positions = exchange.fetch_positions()
-        return any(safe(p.get("contracts")) > 0 for p in positions)
+        pos = exchange.fetch_positions()
+        return any(safe(p.get("contracts")) > 0 for p in pos)
     except:
         return False
 
@@ -80,23 +79,22 @@ def ema(values, length):
 
 def get_direction(sym):
     try:
-        # 4H Trend
         h4 = exchange.fetch_ohlcv(sym, "4h", limit=60)
-        h4_close = [c[4] for c in h4]
-        ema50_4h = ema(h4_close, 50)
-
-        # 1H Trend
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=30)
-        h1_close = [c[4] for c in h1]
-        ema20_1h = ema(h1_close, 20)
 
-        if ema50_4h is None or ema20_1h is None:
+        h4_close = [c[4] for c in h4]
+        h1_close = [c[4] for c in h1]
+
+        ema50 = ema(h4_close, 50)
+        ema20 = ema(h1_close, 20)
+
+        if ema50 is None or ema20 is None:
             return None
 
-        if h4_close[-1] > ema50_4h and h1_close[-1] > ema20_1h:
+        if h4_close[-1] > ema50 and h1_close[-1] > ema20:
             return "long"
 
-        if h4_close[-1] < ema50_4h and h1_close[-1] < ema20_1h:
+        if h4_close[-1] < ema50 and h1_close[-1] < ema20:
             return "short"
 
         return None
@@ -112,18 +110,15 @@ def entry_signal(sym, direction):
         lows = [c[3] for c in m15]
         closes = [c[4] for c in m15]
 
-        # Breakout
         if direction == "long":
             breakout = closes[-2] > max(highs[-7:-2])
             pullback = closes[-1] < closes[-2]
-            if breakout and pullback:
-                return True
+            return breakout and pullback
 
         if direction == "short":
             breakout = closes[-2] < min(lows[-7:-2])
             pullback = closes[-1] > closes[-2]
-            if breakout and pullback:
-                return True
+            return breakout and pullback
 
         return False
 
@@ -158,22 +153,36 @@ def manage():
                     roe = ((entry - price) / entry) * LEV * 100
 
                 if sym not in trade_state:
-                    trade_state[sym] = {"tp1": False, "tp2": False, "trail": False}
+                    trade_state[sym] = {"tp1": False, "tp2": False}
 
-                # STOP
-                if roe <= SL_ROE:
-                    exchange.create_market_order(
-                        sym,
-                        "sell" if direction == "long" else "buy",
-                        qty,
-                        params={"reduceOnly": True}
-                    )
-                    daily_stops += 1
-                    trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"❌ SL {sym}")
-                    continue
+                # ===== STRUCTURAL SL =====
+                candles = exchange.fetch_ohlcv(sym, "15m", limit=12)
+                highs = [c[2] for c in candles]
+                lows = [c[3] for c in candles]
 
-                # TP1
+                if direction == "long":
+                    structural_sl = min(lows[:-1]) * (1 - BUFFER)
+                    if price <= structural_sl:
+                        exchange.create_market_order(
+                            sym, "sell", qty, params={"reduceOnly": True}
+                        )
+                        daily_stops += 1
+                        trade_state.pop(sym, None)
+                        bot.send_message(CHAT_ID, f"❌ STRUCTURAL SL {sym}")
+                        continue
+
+                if direction == "short":
+                    structural_sl = max(highs[:-1]) * (1 + BUFFER)
+                    if price >= structural_sl:
+                        exchange.create_market_order(
+                            sym, "buy", qty, params={"reduceOnly": True}
+                        )
+                        daily_stops += 1
+                        trade_state.pop(sym, None)
+                        bot.send_message(CHAT_ID, f"❌ STRUCTURAL SL {sym}")
+                        continue
+
+                # ===== TP1 =====
                 if roe >= TP1_ROE and not trade_state[sym]["tp1"]:
                     part = qty * 0.4
                     exchange.create_market_order(
@@ -185,7 +194,7 @@ def manage():
                     trade_state[sym]["tp1"] = True
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # TP2
+                # ===== TP2 =====
                 if roe >= TP2_ROE and not trade_state[sym]["tp2"]:
                     part = qty * 0.3
                     exchange.create_market_order(
@@ -195,19 +204,31 @@ def manage():
                         params={"reduceOnly": True}
                     )
                     trade_state[sym]["tp2"] = True
-                    trade_state[sym]["trail"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
-                # TRAILING
-                if trade_state[sym]["trail"] and roe <= TRAIL_EXIT:
-                    exchange.create_market_order(
-                        sym,
-                        "sell" if direction == "long" else "buy",
-                        qty,
-                        params={"reduceOnly": True}
-                    )
-                    trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"🏁 TRAIL EXIT {sym}")
+                # ===== TRAILING (mum bazlı) =====
+                if trade_state[sym]["tp2"]:
+                    trail_candles = exchange.fetch_ohlcv(sym, "15m", limit=TRAIL_CANDLES + 1)
+                    highs_t = [c[2] for c in trail_candles]
+                    lows_t = [c[3] for c in trail_candles]
+
+                    if direction == "long":
+                        trail_sl = min(lows_t[:-1])
+                        if price <= trail_sl:
+                            exchange.create_market_order(
+                                sym, "sell", qty, params={"reduceOnly": True}
+                            )
+                            trade_state.pop(sym, None)
+                            bot.send_message(CHAT_ID, f"🏁 TRAIL EXIT {sym}")
+
+                    if direction == "short":
+                        trail_sl = max(highs_t[:-1])
+                        if price >= trail_sl:
+                            exchange.create_market_order(
+                                sym, "buy", qty, params={"reduceOnly": True}
+                            )
+                            trade_state.pop(sym, None)
+                            bot.send_message(CHAT_ID, f"🏁 TRAIL EXIT {sym}")
 
             time.sleep(5)
 
@@ -271,7 +292,7 @@ def run():
                     qty
                 )
 
-                trade_state[sym] = {"tp1": False, "tp2": False, "trail": False}
+                trade_state[sym] = {"tp1": False, "tp2": False}
 
                 bot.send_message(CHAT_ID, f"📈 {sym} {direction.upper()} OPEN")
                 break
@@ -287,5 +308,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO BALANCED BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO HYBRID BOT AKTİF")
 bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
