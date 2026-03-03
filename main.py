@@ -7,14 +7,13 @@ from datetime import datetime, timezone
 
 # ===== SETTINGS =====
 LEV = 10
-FIXED_RISK_USDT = 2
+FIXED_MARGIN = 2
 MAX_DAILY_STOPS = 3
 MIN_VOLUME = 20_000_000
 TOP_COINS = 80
-BUFFER_PCT = 0.002
-TP_SPLIT = [0.4, 0.3, 0.3]
 SPREAD_LIMIT = 0.0015
 TRAIL_CANDLES = 8
+TP_SPLIT = [0.4, 0.3, 0.3]
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"), threaded=True)
@@ -40,9 +39,6 @@ def safe(x):
         return float(x)
     except:
         return 0.0
-
-def get_balance():
-    return safe(exchange.fetch_balance()['total']['USDT'])
 
 def get_candles(sym, tf, limit=100):
     return exchange.fetch_ohlcv(sym, tf, limit=limit)
@@ -88,6 +84,7 @@ def entry_model(sym, direction):
             return {"entry": closes[-1], "sl": sl}
     return None
 
+# ===== MANAGE =====
 def manage():
     global daily_stops, last_day
 
@@ -147,7 +144,7 @@ def manage():
                     )
 
                     trade_state[sym]["tp1"] = True
-                    trade_state[sym]["sl"] = entry
+                    trade_state[sym]["sl"] = entry  # BE
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 # TP2
@@ -185,6 +182,7 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(5)
 
+# ===== ENTRY LOOP =====
 def run():
     global daily_stops
 
@@ -213,11 +211,9 @@ def run():
                 if not setup:
                     continue
 
-                sl_distance = abs(setup["entry"] - setup["sl"])
-                if sl_distance <= 0:
-                    continue
-
-                qty = FIXED_RISK_USDT / sl_distance
+                # ===== SABİT 2 USDT MARGIN =====
+                notional = FIXED_MARGIN * LEV
+                qty = notional / setup["entry"]
 
                 market = exchange.market(sym)
                 precision = market['precision']['amount']
@@ -256,5 +252,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SABİT 2 USDT RISK BOT AKTİF")
-bot.infinity_polling(timeout=60, long_polling_timeout=60)
+bot.send_message(CHAT_ID, "🔥 SABİT 2 USDT MARGIN BOT AKTİF")
+bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
