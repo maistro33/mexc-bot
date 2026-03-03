@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timezone
 
 # ================= SETTINGS =================
-LEV = 5
+LEV = 10
 MARGIN = 4
 MAX_DAILY_TRADES = 3
 MIN_VOLUME = 8_000_000
@@ -15,10 +15,9 @@ TOP_COINS = 120
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
 
-TP1_PCT = 0.008   # +0.8%
-TP2_PCT = 0.016   # +1.6%
-
-TRAIL_GAP = 0.007  # %0.7 geri çekilme
+TP1_PCT = 0.008
+TP2_PCT = 0.016
+TRAIL_GAP = 0.007
 
 # ================= TELEGRAM =================
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -28,7 +27,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -37,7 +36,6 @@ exchange = ccxt.bitget({
 trade_state = {}
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
-
 
 # ================= HELPERS =================
 def safe(x):
@@ -66,7 +64,6 @@ def get_position_qty(sym):
 def get_symbols():
     tickers = exchange.fetch_tickers()
     filtered = []
-
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
@@ -75,17 +72,8 @@ def get_symbols():
         if abs(safe(data.get("percentage"))) < 2:
             continue
         filtered.append((sym, data["quoteVolume"]))
-
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
-
-# ================= BTC FILTER =================
-def btc_trend_ok():
-    btc = "BTC/USDT:USDT"
-    h4 = exchange.fetch_ohlcv(btc, "4h", limit=60)
-    closes = [c[4] for c in h4]
-    ema = sum(closes[-50:]) / 50
-    return closes[-1] > ema  # sadece long için izin
 
 # ================= TREND =================
 def trend_direction(sym):
@@ -126,7 +114,7 @@ def momentum_confirm(sym, direction):
             return True
     return False
 
-# ================= RESISTANCE FILTER =================
+# ================= RESISTANCE ROOM =================
 def resistance_room(sym, direction):
     m15 = exchange.fetch_ohlcv(sym, "15m", limit=30)
     highs = [c[2] for c in m15]
@@ -135,7 +123,7 @@ def resistance_room(sym, direction):
 
     if direction == "long":
         recent_high = max(highs[-20:])
-        return price < recent_high * 0.993  # %0.7 boşluk
+        return price < recent_high * 0.993
 
     if direction == "short":
         recent_low = min(lows[-20:])
@@ -192,7 +180,6 @@ def manage():
                 if direction == "short" and price < state["max_price"]:
                     state["max_price"] = price
 
-                # TP1
                 if not state["tp1_hit"]:
                     if (direction == "long" and price >= entry * (1 + TP1_PCT)) or \
                        (direction == "short" and price <= entry * (1 - TP1_PCT)):
@@ -200,7 +187,6 @@ def manage():
                         state["tp1_hit"] = True
                         bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # TP2
                 if state["tp1_hit"] and not state["tp2_hit"]:
                     if (direction == "long" and price >= entry * (1 + TP2_PCT)) or \
                        (direction == "short" and price <= entry * (1 - TP2_PCT)):
@@ -208,7 +194,6 @@ def manage():
                         state["tp2_hit"] = True
                         bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
 
-                # TRAILING
                 if state["tp2_hit"]:
                     if direction == "long":
                         if price <= state["max_price"] * (1 - TRAIL_GAP):
@@ -252,16 +237,10 @@ def run():
                 direction = trend_direction(sym)
                 if not direction:
                     continue
-
-                if direction == "long" and not btc_trend_ok():
-                    continue
-
                 if not retest_signal(sym, direction):
                     continue
-
                 if not momentum_confirm(sym, direction):
                     continue
-
                 if not resistance_room(sym, direction):
                     continue
 
@@ -275,10 +254,14 @@ def run():
             time.sleep(30)
 
 # ================= START =================
-exchange.fetch_balance()
+try:
+    exchange.fetch_balance()
+    print("API OK")
+except Exception as e:
+    print("API ERROR:", e)
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🛡 ELITE TREND ENGINE AKTİF")
+bot.send_message(CHAT_ID, "🛡 ELITE TREND ENGINE STABLE AKTİF")
 bot.infinity_polling()
