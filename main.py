@@ -6,19 +6,16 @@ import threading
 from datetime import datetime, timezone
 
 # ================= SETTINGS =================
-LEV = 10
-FIXED_MARGIN = 4
+LEV = 5
+MARGIN = 4  # SABİT 4 USDT
 MAX_DAILY_TRADES = 4
-MIN_VOLUME = 10_000_000
-TOP_COINS = 80
+MIN_VOLUME = 8_000_000
+TOP_COINS = 120
 
-TP1_ROE = 15
-TP2_ROE = 32
-TRAIL_TRIGGER = 38
-TRAIL_GAP = 15
-SL_ROE = -8
+TP1_RATIO = 0.30
+TP2_RATIO = 0.40
 
-BLACKLIST = ["BTC", "ETH", "BNB", "SOL", "XRP"]
+TRAIL_GAP = 0.008  # %0.8 geri çekilirse çık
 
 # ================= TELEGRAM =================
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -28,7 +25,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",  # iskelet aynı kaldı
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -38,60 +35,13 @@ trade_state = {}
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
 
+
 # ================= HELPERS =================
 def safe(x):
     try:
         return float(x)
     except:
         return 0.0
-
-def ema(values, period):
-    if len(values) < period:
-        return None
-    k = 2 / (period + 1)
-    ema_val = sum(values[:period]) / period
-    for price in values[period:]:
-        ema_val = price * k + ema_val * (1 - k)
-    return ema_val
-
-def rsi(values, period=14):
-    if len(values) < period + 1:
-        return 50
-
-    gains = []
-    losses = []
-
-    for i in range(-period, 0):
-        diff = values[i] - values[i - 1]
-        if diff > 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
-
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def atr(ohlcv, period=14):
-    if len(ohlcv) < period + 1:
-        return 0
-
-    trs = []
-    for i in range(1, len(ohlcv)):
-        high = ohlcv[i][2]
-        low = ohlcv[i][3]
-        prev_close = ohlcv[i - 1][4]
-        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        trs.append(tr)
-
-    return sum(trs[-period:]) / period
 
 def reset_daily():
     global daily_trades, current_day
@@ -104,128 +54,80 @@ def has_position():
     positions = exchange.fetch_positions()
     return any(safe(p.get("contracts")) > 0 for p in positions)
 
+def get_position_qty(sym):
+    pos = exchange.fetch_positions([sym])
+    if not pos:
+        return 0
+    return safe(pos[0].get("contracts"))
+
 def get_symbols():
     tickers = exchange.fetch_tickers()
     filtered = []
-
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
-
-        base = sym.split("/")[0]
-        if base in BLACKLIST:
-            continue
-
-        if safe(data.get("quoteVolume")) < MIN_VOLUME:
-            continue
-
-        if safe(data.get("percentage")) < 2:
-            continue
-
-        filtered.append((sym, data["quoteVolume"]))
-
+        if safe(data.get("quoteVolume")) >= MIN_VOLUME:
+            filtered.append((sym, data["quoteVolume"]))
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
 
-def calculate_qty(sym, price):
-    balance = exchange.fetch_balance()
-    usdt = balance["USDT"]["free"]
-
-    if usdt < 4.5:
-        return None
-
-    position_value = FIXED_MARGIN * LEV
-    qty = position_value / price
-    qty = float(exchange.amount_to_precision(sym, qty))
-
-    market = exchange.market(sym)
-    min_qty = market["limits"]["amount"]["min"]
-
-    if qty < min_qty:
-        return None
-
-    return qty
-
 # ================= TREND =================
 def trend_direction(sym):
-    h4 = exchange.fetch_ohlcv(sym, "4h", limit=210)
+    h4 = exchange.fetch_ohlcv(sym, "4h", limit=60)
     closes = [c[4] for c in h4]
+    ema = sum(closes[-50:]) / 50
 
-    ema200 = ema(closes, 200)
-    if not ema200:
-        return None
-
-    if closes[-1] > ema200:
+    if closes[-1] > ema:
         return "long"
-    if closes[-1] < ema200:
+    if closes[-1] < ema:
         return "short"
     return None
 
-# ================= ENTRY =================
-def good_entry(sym, direction):
-    m15 = exchange.fetch_ohlcv(sym, "15m", limit=50)
-
-    closes = [c[4] for c in m15]
-    highs = [c[2] for c in m15]
-    lows = [c[3] for c in m15]
-    volumes = [c[5] for c in m15]
-
-    ema20 = ema(closes, 20)
-    if not ema20:
-        return False
-
-    current = closes[-1]
-    rsi_val = rsi(closes)
-
-    highest_10 = max(highs[-10:])
-    lowest_10 = min(lows[-10:])
-    volume_avg = sum(volumes[-20:]) / 20
-    volume_now = volumes[-1]
-
-    if atr(m15) < current * 0.002:
-        return False
+# ================= RETEST =================
+def retest_signal(sym, direction):
+    h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
+    highs = [c[2] for c in h1]
+    lows = [c[3] for c in h1]
 
     if direction == "long":
-        if current < ema20:
-            return False
-        if rsi_val > 68:
-            return False
-        if current >= highest_10 * 0.997:
-            return False
-        if volume_now < volume_avg:
-            return False
+        return lows[-1] <= min(lows[-5:-1])
+    else:
+        return highs[-1] >= max(highs[-5:-1])
 
-    if direction == "short":
-        if current > ema20:
-            return False
-        if rsi_val < 32:
-            return False
-        if current <= lowest_10 * 1.003:
-            return False
-        if volume_now < volume_avg:
-            return False
+# ================= MOMENTUM =================
+def momentum_confirm(sym, direction):
+    m15 = exchange.fetch_ohlcv(sym, "15m", limit=10)
+    last = m15[-1]
+    prev = m15[-2]
 
-    return True
+    body = abs(last[4] - last[1])
+    avg = sum(abs(c[4] - c[1]) for c in m15[:-1]) / 9
 
-# ================= OPEN =================
+    if body > avg * 1.5:
+        if direction == "long" and last[4] > prev[2]:
+            return True
+        if direction == "short" and last[4] < prev[3]:
+            return True
+    return False
+
+# ================= ENTRY =================
 def open_position(sym, direction):
     global daily_trades
 
     price = safe(exchange.fetch_ticker(sym)["last"])
-    qty = calculate_qty(sym, price)
-
-    if qty is None:
-        return
+    qty = (MARGIN * LEV) / price
+    qty = float(exchange.amount_to_precision(sym, qty))
 
     exchange.set_leverage(LEV, sym)
     side = "buy" if direction == "long" else "sell"
-
     exchange.create_market_order(sym, side, qty)
 
     trade_state[sym] = {
-        "tp1": False,
-        "tp2": False,
-        "max_roe": 0
+        "direction": direction,
+        "entry": price,
+        "tp1_hit": False,
+        "tp2_hit": False,
+        "max_price": price
     }
 
     daily_trades += 1
@@ -243,39 +145,54 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-                direction = "long" if p["side"] == "long" else "short"
-                roe = safe(p.get("percentage"))
-                side = "sell" if direction == "long" else "buy"
-
                 if sym not in trade_state:
-                    trade_state[sym] = {"tp1": False, "tp2": False, "max_roe": roe}
-
-                if roe > trade_state[sym]["max_roe"]:
-                    trade_state[sym]["max_roe"] = roe
-
-                max_roe = trade_state[sym]["max_roe"]
-
-                if roe <= SL_ROE:
-                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                    trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                if roe >= TP1_ROE and not trade_state[sym]["tp1"]:
-                    exchange.create_market_order(sym, side, qty * 0.3, params={"reduceOnly": True})
-                    trade_state[sym]["tp1"] = True
-                    bot.send_message(CHAT_ID, f"💰 TP1 30% {sym}")
+                state = trade_state[sym]
+                direction = state["direction"]
+                entry = state["entry"]
+                price = safe(exchange.fetch_ticker(sym)["last"])
+                side = "sell" if direction == "long" else "buy"
 
-                if roe >= TP2_ROE and not trade_state[sym]["tp2"]:
-                    exchange.create_market_order(sym, side, qty * 0.4, params={"reduceOnly": True})
-                    trade_state[sym]["tp2"] = True
-                    bot.send_message(CHAT_ID, f"💰 TP2 40% {sym}")
+                # Max price takibi
+                if direction == "long" and price > state["max_price"]:
+                    state["max_price"] = price
+                if direction == "short" and price < state["max_price"]:
+                    state["max_price"] = price
 
-                if max_roe >= TRAIL_TRIGGER:
-                    if roe <= max_roe - TRAIL_GAP:
-                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                        trade_state.pop(sym, None)
-                        bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym}")
+                # TP1 (%30)
+                if not state["tp1_hit"] and \
+                   ((direction == "long" and price >= entry * 1.01) or
+                    (direction == "short" and price <= entry * 0.99)):
+
+                    exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
+                    state["tp1_hit"] = True
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+
+                # TP2 (%40)
+                if state["tp1_hit"] and not state["tp2_hit"] and \
+                   ((direction == "long" and price >= entry * 1.02) or
+                    (direction == "short" and price <= entry * 0.98)):
+
+                    exchange.create_market_order(sym, side, qty * TP2_RATIO, params={"reduceOnly": True})
+                    state["tp2_hit"] = True
+                    bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
+
+                # TRAILING (%30 kalan)
+                if state["tp2_hit"]:
+                    if direction == "long":
+                        if price <= state["max_price"] * (1 - TRAIL_GAP):
+                            remaining = get_position_qty(sym)
+                            exchange.create_market_order(sym, side, remaining, params={"reduceOnly": True})
+                            trade_state.pop(sym)
+                            bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym}")
+
+                    if direction == "short":
+                        if price >= state["max_price"] * (1 + TRAIL_GAP):
+                            remaining = get_position_qty(sym)
+                            exchange.create_market_order(sym, side, remaining, params={"reduceOnly": True})
+                            trade_state.pop(sym)
+                            bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym}")
 
             time.sleep(5)
 
@@ -285,6 +202,8 @@ def manage():
 
 # ================= RUN =================
 def run():
+    global daily_trades
+
     while True:
         try:
             reset_daily()
@@ -304,22 +223,26 @@ def run():
                 if not direction:
                     continue
 
-                if not good_entry(sym, direction):
+                if not retest_signal(sym, direction):
+                    continue
+
+                if not momentum_confirm(sym, direction):
                     continue
 
                 open_position(sym, direction)
                 break
 
-            time.sleep(20)
+            time.sleep(30)
 
         except Exception as e:
             print("RUN ERROR:", e)
-            time.sleep(20)
+            time.sleep(30)
 
 # ================= START =================
 exchange.fetch_balance()
+
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF")
+bot.send_message(CHAT_ID, "🛡 TREND ENGINE PRO AKTİF")
 bot.infinity_polling()
