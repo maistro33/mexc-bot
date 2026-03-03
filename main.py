@@ -7,8 +7,7 @@ from datetime import datetime, timezone
 
 # ===== SETTINGS =====
 LEV = 10
-RISK_PCT = 0.05
-MIN_RISK_USDT = 2
+FIXED_RISK_USDT = 2
 MAX_DAILY_STOPS = 3
 MIN_VOLUME = 20_000_000
 TOP_COINS = 80
@@ -36,7 +35,6 @@ trade_state = {}
 daily_stops = 0
 last_day = datetime.now(timezone.utc).day
 
-# ===== HELPERS =====
 def safe(x):
     try:
         return float(x)
@@ -53,7 +51,6 @@ def has_position():
     positions = exchange.fetch_positions()
     return any(safe(p.get("contracts")) > 0 for p in positions)
 
-# ===== MARKET FILTER =====
 def get_symbols():
     tickers = exchange.fetch_tickers()
     filtered = []
@@ -65,7 +62,6 @@ def get_symbols():
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
 
-# ===== TREND =====
 def get_direction(sym):
     h4 = get_candles(sym, "4h", 100)
     closes = [c[4] for c in h4]
@@ -76,7 +72,6 @@ def get_direction(sym):
         return "short"
     return None
 
-# ===== ENTRY MODEL =====
 def entry_model(sym, direction):
     m15 = get_candles(sym, "15m", 50)
     highs = [c[2] for c in m15]
@@ -93,7 +88,6 @@ def entry_model(sym, direction):
             return {"entry": closes[-1], "sl": sl}
     return None
 
-# ===== MANAGE =====
 def manage():
     global daily_stops, last_day
 
@@ -134,7 +128,6 @@ def manage():
                         qty,
                         params={"reduceOnly": True}
                     )
-
                     daily_stops += 1
                     trade_state.pop(sym, None)
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
@@ -192,7 +185,6 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(5)
 
-# ===== ENTRY LOOP =====
 def run():
     global daily_stops
 
@@ -221,14 +213,11 @@ def run():
                 if not setup:
                     continue
 
-                balance = get_balance()
-                risk_amount = max(balance * RISK_PCT, MIN_RISK_USDT)
-
                 sl_distance = abs(setup["entry"] - setup["sl"])
                 if sl_distance <= 0:
                     continue
 
-                qty = risk_amount / sl_distance
+                qty = FIXED_RISK_USDT / sl_distance
 
                 market = exchange.market(sym)
                 precision = market['precision']['amount']
@@ -264,9 +253,8 @@ def run():
             print("RUN ERROR:", e)
             time.sleep(20)
 
-# ===== START =====
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL STABLE BOT (MIN 2 USDT RISK) AKTİF")
+bot.send_message(CHAT_ID, "🔥 SABİT 2 USDT RISK BOT AKTİF")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
