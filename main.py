@@ -7,15 +7,18 @@ from datetime import datetime, timezone
 
 # ================= SETTINGS =================
 LEV = 5
-MARGIN = 4  # SABİT 4 USDT
-MAX_DAILY_TRADES = 4
+MARGIN = 4
+MAX_DAILY_TRADES = 3
 MIN_VOLUME = 8_000_000
-TOP_COINS = 120
+TOP_COINS = 50
 
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
 
-TRAIL_GAP = 0.008  # %0.8 geri çekilirse çık
+TP1_PCT = 0.008   # +0.8%
+TP2_PCT = 0.016   # +1.6%
+
+TRAIL_GAP = 0.007  # %0.7 geri çekilme
 
 # ================= TELEGRAM =================
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -25,7 +28,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",  # iskelet aynı kaldı
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -63,13 +66,26 @@ def get_position_qty(sym):
 def get_symbols():
     tickers = exchange.fetch_tickers()
     filtered = []
+
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
-        if safe(data.get("quoteVolume")) >= MIN_VOLUME:
-            filtered.append((sym, data["quoteVolume"]))
+        if safe(data.get("quoteVolume")) < MIN_VOLUME:
+            continue
+        if abs(safe(data.get("percentage"))) < 2:
+            continue
+        filtered.append((sym, data["quoteVolume"]))
+
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
+
+# ================= BTC FILTER =================
+def btc_trend_ok():
+    btc = "BTC/USDT:USDT"
+    h4 = exchange.fetch_ohlcv(btc, "4h", limit=60)
+    closes = [c[4] for c in h4]
+    ema = sum(closes[-50:]) / 50
+    return closes[-1] > ema  # sadece long için izin
 
 # ================= TREND =================
 def trend_direction(sym):
@@ -108,6 +124,23 @@ def momentum_confirm(sym, direction):
             return True
         if direction == "short" and last[4] < prev[3]:
             return True
+    return False
+
+# ================= RESISTANCE FILTER =================
+def resistance_room(sym, direction):
+    m15 = exchange.fetch_ohlcv(sym, "15m", limit=30)
+    highs = [c[2] for c in m15]
+    lows = [c[3] for c in m15]
+    price = m15[-1][4]
+
+    if direction == "long":
+        recent_high = max(highs[-20:])
+        return price < recent_high * 0.993  # %0.7 boşluk
+
+    if direction == "short":
+        recent_low = min(lows[-20:])
+        return price > recent_low * 1.007
+
     return False
 
 # ================= ENTRY =================
@@ -154,31 +187,28 @@ def manage():
                 price = safe(exchange.fetch_ticker(sym)["last"])
                 side = "sell" if direction == "long" else "buy"
 
-                # Max price takibi
                 if direction == "long" and price > state["max_price"]:
                     state["max_price"] = price
                 if direction == "short" and price < state["max_price"]:
                     state["max_price"] = price
 
-                # TP1 (%30)
-                if not state["tp1_hit"] and \
-                   ((direction == "long" and price >= entry * 1.01) or
-                    (direction == "short" and price <= entry * 0.99)):
+                # TP1
+                if not state["tp1_hit"]:
+                    if (direction == "long" and price >= entry * (1 + TP1_PCT)) or \
+                       (direction == "short" and price <= entry * (1 - TP1_PCT)):
+                        exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
+                        state["tp1_hit"] = True
+                        bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                    exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
-                    state["tp1_hit"] = True
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                # TP2
+                if state["tp1_hit"] and not state["tp2_hit"]:
+                    if (direction == "long" and price >= entry * (1 + TP2_PCT)) or \
+                       (direction == "short" and price <= entry * (1 - TP2_PCT)):
+                        exchange.create_market_order(sym, side, qty * TP2_RATIO, params={"reduceOnly": True})
+                        state["tp2_hit"] = True
+                        bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
 
-                # TP2 (%40)
-                if state["tp1_hit"] and not state["tp2_hit"] and \
-                   ((direction == "long" and price >= entry * 1.02) or
-                    (direction == "short" and price <= entry * 0.98)):
-
-                    exchange.create_market_order(sym, side, qty * TP2_RATIO, params={"reduceOnly": True})
-                    state["tp2_hit"] = True
-                    bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
-
-                # TRAILING (%30 kalan)
+                # TRAILING
                 if state["tp2_hit"]:
                     if direction == "long":
                         if price <= state["max_price"] * (1 - TRAIL_GAP):
@@ -223,10 +253,16 @@ def run():
                 if not direction:
                     continue
 
+                if direction == "long" and not btc_trend_ok():
+                    continue
+
                 if not retest_signal(sym, direction):
                     continue
 
                 if not momentum_confirm(sym, direction):
+                    continue
+
+                if not resistance_room(sym, direction):
                     continue
 
                 open_position(sym, direction)
@@ -244,5 +280,5 @@ exchange.fetch_balance()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🛡 TREND ENGINE PRO AKTİF")
+bot.send_message(CHAT_ID, "🛡 ELITE TREND ENGINE AKTİF")
 bot.infinity_polling()
