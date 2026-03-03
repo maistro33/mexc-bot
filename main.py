@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 # ===== SETTINGS =====
 LEV = 10
 RISK_PCT = 0.05
+MIN_RISK_USDT = 2
 MAX_DAILY_STOPS = 3
 MIN_VOLUME = 20_000_000
 TOP_COINS = 80
@@ -36,7 +37,6 @@ exchange = ccxt.bitget({
 trade_state = {}
 daily_stops = 0
 last_day = datetime.now(timezone.utc).day
-last_trade_time = 0
 
 # ===== HELPERS =====
 def safe(x):
@@ -231,7 +231,7 @@ def manage():
 
 # ===== ENTRY LOOP =====
 def run():
-    global daily_stops, last_trade_time
+    global daily_stops
 
     while True:
         try:
@@ -259,11 +259,9 @@ def run():
 
                 setup = None
 
-                # Model 1: Sweep
                 if liquidity_sweep(sym, direction):
                     setup = sweep_entry(sym, direction)
 
-                # Model 2: Breakout (fallback)
                 if not setup:
                     setup = breakout_entry(sym, direction)
 
@@ -271,9 +269,11 @@ def run():
                     continue
 
                 balance = get_balance()
-                risk_amount = balance * RISK_PCT
-                sl_distance = abs(setup["entry"] - setup["sl"])
 
+                # 🔥 MIN 2 USDT RISK
+                risk_amount = max(balance * RISK_PCT, MIN_RISK_USDT)
+
+                sl_distance = abs(setup["entry"] - setup["sl"])
                 if sl_distance == 0:
                     continue
 
@@ -307,5 +307,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SMC DUAL RUNNER BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 SMC DUAL RUNNER BOT (MIN 2 USDT RISK) AKTİF")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
