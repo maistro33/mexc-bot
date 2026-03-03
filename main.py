@@ -18,11 +18,9 @@ SPREAD_LIMIT = 0.0015
 TRAIL_CANDLES = 8
 
 # ===== TELEGRAM =====
-TELE_TOKEN = os.getenv("TELE_TOKEN")
-CHAT_ID = os.getenv("MY_CHAT_ID")
-
-bot = telebot.TeleBot(TELE_TOKEN, threaded=True)
+bot = telebot.TeleBot(os.getenv("TELE_TOKEN"), threaded=True)
 bot.remove_webhook()
+CHAT_ID = os.getenv("MY_CHAT_ID")
 
 # ===== BITGET =====
 exchange = ccxt.bitget({
@@ -45,11 +43,11 @@ def safe(x):
     except:
         return 0.0
 
-def get_candles(sym, tf, limit=100):
-    return exchange.fetch_ohlcv(sym, tf, limit=limit)
-
 def get_balance():
     return safe(exchange.fetch_balance()['total']['USDT'])
+
+def get_candles(sym, tf, limit=100):
+    return exchange.fetch_ohlcv(sym, tf, limit=limit)
 
 def has_position():
     positions = exchange.fetch_positions()
@@ -62,9 +60,8 @@ def get_symbols():
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
-        vol = safe(data.get("quoteVolume"))
-        if vol >= MIN_VOLUME:
-            filtered.append((sym, vol))
+        if safe(data.get("quoteVolume")) >= MIN_VOLUME:
+            filtered.append((sym, data["quoteVolume"]))
     filtered.sort(key=lambda x: x[1], reverse=True)
     return [x[0] for x in filtered[:TOP_COINS]]
 
@@ -79,45 +76,8 @@ def get_direction(sym):
         return "short"
     return None
 
-# ===== SWEEP MODEL =====
-def liquidity_sweep(sym, direction):
-    h1 = get_candles(sym, "1h", 30)
-    highs = [c[2] for c in h1]
-    lows = [c[3] for c in h1]
-    if direction == "long":
-        return lows[-1] < min(lows[:-2])
-    else:
-        return highs[-1] > max(highs[:-2])
-
-def sweep_entry(sym, direction):
-    m15 = get_candles(sym, "15m", 60)
-    o = [c[1] for c in m15]
-    h = [c[2] for c in m15]
-    l = [c[3] for c in m15]
-    c_ = [c[4] for c in m15]
-
-    body = abs(c_[-1] - o[-1])
-    avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
-
-    if body < avg_body * 1.5:
-        return None
-
-    if direction == "long" and h[-3] < l[-1]:
-        swing_low = min(l[-20:])
-        sl = swing_low * (1 - BUFFER_PCT)
-        entry = (h[-3] + l[-1]) / 2
-        return {"entry": entry, "sl": sl}
-
-    if direction == "short" and l[-3] > h[-1]:
-        swing_high = max(h[-20:])
-        sl = swing_high * (1 + BUFFER_PCT)
-        entry = (l[-3] + h[-1]) / 2
-        return {"entry": entry, "sl": sl}
-
-    return None
-
-# ===== BREAKOUT MODEL =====
-def breakout_entry(sym, direction):
+# ===== ENTRY MODEL =====
+def entry_model(sym, direction):
     m15 = get_candles(sym, "15m", 50)
     highs = [c[2] for c in m15]
     lows = [c[3] for c in m15]
@@ -155,12 +115,12 @@ def manage():
                     continue
 
                 entry = safe(p["entryPrice"])
-                side = p["side"]
-                direction = "long" if side == "long" else "short"
+                direction = "long" if p["side"] == "long" else "short"
                 price = safe(exchange.fetch_ticker(sym)["last"])
 
                 sl = trade_state[sym]["sl"]
                 risk = abs(entry - sl)
+
                 tp1 = entry + risk if direction == "long" else entry - risk
                 tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
 
@@ -174,6 +134,7 @@ def manage():
                         qty,
                         params={"reduceOnly": True}
                     )
+
                     daily_stops += 1
                     trade_state.pop(sym, None)
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
@@ -191,6 +152,7 @@ def manage():
                         part,
                         params={"reduceOnly": True}
                     )
+
                     trade_state[sym]["tp1"] = True
                     trade_state[sym]["sl"] = entry
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
@@ -207,6 +169,7 @@ def manage():
                         part,
                         params={"reduceOnly": True}
                     )
+
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
@@ -218,10 +181,10 @@ def manage():
 
                     if direction == "long":
                         new_sl = min(lows[-TRAIL_CANDLES:])
-                        trade_state[sym]["sl"] = max(trade_state[sym]["sl"], new_sl)
+                        trade_state[sym]["sl"] = max(sl, new_sl)
                     else:
                         new_sl = max(highs[-TRAIL_CANDLES:])
-                        trade_state[sym]["sl"] = min(trade_state[sym]["sl"], new_sl)
+                        trade_state[sym]["sl"] = min(sl, new_sl)
 
             time.sleep(5)
 
@@ -243,13 +206,10 @@ def run():
                 time.sleep(15)
                 continue
 
-            symbols = get_symbols()
-
-            for sym in symbols:
+            for sym in get_symbols():
 
                 ticker = exchange.fetch_ticker(sym)
                 spread = (ticker["ask"] - ticker["bid"]) / ticker["last"]
-
                 if spread > SPREAD_LIMIT:
                     continue
 
@@ -257,28 +217,29 @@ def run():
                 if not direction:
                     continue
 
-                setup = None
-
-                if liquidity_sweep(sym, direction):
-                    setup = sweep_entry(sym, direction)
-
-                if not setup:
-                    setup = breakout_entry(sym, direction)
-
+                setup = entry_model(sym, direction)
                 if not setup:
                     continue
 
                 balance = get_balance()
-
-                # 🔥 MIN 2 USDT RISK
                 risk_amount = max(balance * RISK_PCT, MIN_RISK_USDT)
 
                 sl_distance = abs(setup["entry"] - setup["sl"])
-                if sl_distance == 0:
+                if sl_distance <= 0:
                     continue
 
                 qty = risk_amount / sl_distance
-                qty = float(exchange.amount_to_precision(sym, qty))
+
+                market = exchange.market(sym)
+                precision = market['precision']['amount']
+
+                if precision == 0:
+                    qty = int(qty)
+                else:
+                    qty = round(qty, precision)
+
+                if qty <= 0:
+                    continue
 
                 exchange.set_leverage(LEV, sym)
 
@@ -307,5 +268,5 @@ def run():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SMC DUAL RUNNER BOT (MIN 2 USDT RISK) AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL STABLE BOT (MIN 2 USDT RISK) AKTİF")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
