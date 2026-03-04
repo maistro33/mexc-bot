@@ -19,6 +19,8 @@ TP1_PCT = 0.008
 TP2_PCT = 0.016
 TRAIL_GAP = 0.007
 
+COOLDOWN_MINUTES = 60
+
 # ================= TELEGRAM =================
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -34,8 +36,10 @@ exchange = ccxt.bitget({
 
 # ================= STATE =================
 trade_state = {}
+cooldown = {}
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
+
 
 # ================= HELPERS =================
 def safe(x):
@@ -139,7 +143,11 @@ def open_position(sym, direction):
     qty = (MARGIN * LEV) / price
     qty = float(exchange.amount_to_precision(sym, qty))
 
-    exchange.set_leverage(LEV, sym)
+    try:
+        exchange.set_leverage(LEV, sym)
+    except:
+        pass
+
     side = "buy" if direction == "long" else "sell"
     exchange.create_market_order(sym, side, qty)
 
@@ -180,6 +188,7 @@ def manage():
                 if direction == "short" and price < state["max_price"]:
                     state["max_price"] = price
 
+                # TP1
                 if not state["tp1_hit"]:
                     if (direction == "long" and price >= entry * (1 + TP1_PCT)) or \
                        (direction == "short" and price <= entry * (1 - TP1_PCT)):
@@ -187,6 +196,7 @@ def manage():
                         state["tp1_hit"] = True
                         bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
+                # TP2
                 if state["tp1_hit"] and not state["tp2_hit"]:
                     if (direction == "long" and price >= entry * (1 + TP2_PCT)) or \
                        (direction == "short" and price <= entry * (1 - TP2_PCT)):
@@ -194,12 +204,14 @@ def manage():
                         state["tp2_hit"] = True
                         bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
 
+                # TRAILING EXIT
                 if state["tp2_hit"]:
                     if direction == "long":
                         if price <= state["max_price"] * (1 - TRAIL_GAP):
                             remaining = get_position_qty(sym)
                             exchange.create_market_order(sym, side, remaining, params={"reduceOnly": True})
                             trade_state.pop(sym)
+                            cooldown[sym] = time.time()
                             bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym}")
 
                     if direction == "short":
@@ -207,6 +219,7 @@ def manage():
                             remaining = get_position_qty(sym)
                             exchange.create_market_order(sym, side, remaining, params={"reduceOnly": True})
                             trade_state.pop(sym)
+                            cooldown[sym] = time.time()
                             bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym}")
 
             time.sleep(5)
@@ -234,6 +247,13 @@ def run():
             symbols = get_symbols()
 
             for sym in symbols:
+
+                # COOLDOWN CHECK
+                if sym in cooldown:
+                    elapsed = (time.time() - cooldown[sym]) / 60
+                    if elapsed < COOLDOWN_MINUTES:
+                        continue
+
                 direction = trend_direction(sym)
                 if not direction:
                     continue
@@ -263,5 +283,5 @@ except Exception as e:
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🛡 ELITE TREND ENGINE STABLE AKTİF")
+bot.send_message(CHAT_ID, "🛡 ELITE TREND ENGINE + COOLDOWN AKTİF")
 bot.infinity_polling()
