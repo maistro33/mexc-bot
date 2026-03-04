@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timezone
 
 # ================= SETTINGS =================
-LEV = 5
+LEV = 8
 MARGIN = 4
 MAX_DAILY_TRADES = 3
 MIN_VOLUME = 8_000_000
