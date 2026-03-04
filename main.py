@@ -10,7 +10,7 @@ LEV = 5
 MARGIN = 4
 MAX_DAILY_TRADES = 3
 MIN_VOLUME = 8_000_000
-TOP_COINS = 120
+TOP_COINS = 130
 
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
@@ -29,7 +29,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",  # SABİT PASS (ESKİ SİSTEM GİBİ)
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
 })
@@ -41,7 +41,15 @@ daily_trades = 0
 current_day = datetime.now(timezone.utc).day
 
 
-# ================= HELPERS =================
+# ================= SAFE API =================
+def safe_api(call):
+    try:
+        return call()
+    except Exception as e:
+        print("API ERROR:", str(e)[:200])
+        time.sleep(5)
+        return None
+
 def safe(x):
     try:
         return float(x)
@@ -55,14 +63,6 @@ def reset_daily():
         daily_trades = 0
         current_day = now_day
 
-def safe_api(call):
-    try:
-        return call()
-    except Exception as e:
-        print("API ERROR:", str(e)[:200])
-        time.sleep(5)
-        return None
-
 def has_position():
     positions = safe_api(lambda: exchange.fetch_positions())
     if not positions:
@@ -75,6 +75,7 @@ def get_position_qty(sym):
         return 0
     return safe(pos[0].get("contracts"))
 
+# ================= SYMBOL FILTER =================
 def get_symbols():
     tickers = safe_api(lambda: exchange.fetch_tickers())
     if not tickers:
@@ -199,7 +200,6 @@ def manage():
                 price = safe(ticker["last"])
                 side = "sell" if direction == "long" else "buy"
 
-                # extreme tracking
                 if direction == "long" and price > state["extreme"]:
                     state["extreme"] = price
                 if direction == "short" and price < state["extreme"]:
@@ -268,7 +268,6 @@ def run():
 
             for sym in symbols:
 
-                # cooldown
                 if sym in cooldown:
                     elapsed = (time.time() - cooldown[sym]) / 60
                     if elapsed < COOLDOWN_MINUTES:
@@ -297,5 +296,5 @@ print("BOT STARTING...")
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🛡 STABLE PRO ENGINE AKTİF")
+bot.send_message(CHAT_ID, "🛡 FINAL ENGINE AKTİF")
 bot.infinity_polling()
