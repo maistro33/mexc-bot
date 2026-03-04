@@ -23,42 +23,50 @@ COOLDOWN_MINUTES = 60
 # ================= COIN HAVUZU =================
 
 SYMBOLS = [
-AVAX/USDT:USDT
-POL/USDT:USDT
-DOT/USDT:USDT
-ATOM/USDT:USDT
-NEAR/USDT:USDT
-ARB/USDT:USDT
-OP/USDT:USDT
-IMX/USDT:USDT
-RENDER/USDT:USDT
-FET/USDT:USDT
-GRT/USDT:USDT
-GALA/USDT:USDT
-BEAM/USDT:USDT
-ALGO/USDT:USDT
-INJ/USDT:USDT
-SEI/USDT:USDT
-SUI/USDT:USDT
-APT/USDT:USDT
-TIA/USDT:USDT
-PYTH/USDT:USDT
-FARTCOIN/USDT:USDT
-PEPE/USDT:USDT
-WIF/USDT:USDT
-BONK/USDT:USDT
-FLOKI/USDT:USDT
-MEME/USDT:USDT
-TURBO/USDT:USDT
-MYRO/USDT:USDT
-BOME/USDT:USDT
-POPCAT/USDT:USDT
-DOGS/USDT:USDT
-NOT/USDT:USDT
-MEW/USDT:USDT
-BRETT/USDT:USDT
-SLERF/USDT:USDT
-PONKE/USDT:USDT
+
+# ELIT COINLER
+"INJ/USDT:USDT",
+"SEI/USDT:USDT",
+"SUI/USDT:USDT",
+"APT/USDT:USDT",
+"TIA/USDT:USDT",
+"PYTH/USDT:USDT",
+
+# TREND COINLER
+"AVAX/USDT:USDT",
+"POL/USDT:USDT",
+"DOT/USDT:USDT",
+"ATOM/USDT:USDT",
+"NEAR/USDT:USDT",
+"ARB/USDT:USDT",
+"OP/USDT:USDT",
+"IMX/USDT:USDT",
+"RENDER/USDT:USDT",
+"FET/USDT:USDT",
+"GRT/USDT:USDT",
+"GALA/USDT:USDT",
+"BEAM/USDT:USDT",
+"ALGO/USDT:USDT",
+
+# VOLATIL
+"PEPE/USDT:USDT",
+"WIF/USDT:USDT",
+"BONK/USDT:USDT",
+"FLOKI/USDT:USDT",
+"BOME/USDT:USDT",
+"POPCAT/USDT:USDT",
+"TURBO/USDT:USDT",
+"JASMY/USDT:USDT",
+"KAS/USDT:USDT",
+
+# MEME
+"MEME/USDT:USDT",
+"MEW/USDT:USDT",
+"SLERF/USDT:USDT",
+"PONKE/USDT:USDT",
+"MYRO/USDT:USDT",
+"BRETT/USDT:USDT",
+
 ]
 
 # ================= TELEGRAM =================
@@ -84,7 +92,7 @@ cooldown = {}
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
 
-# ================= SAFE FUNCTIONS =================
+# ================= HELPERS =================
 
 def safe(x):
     try:
@@ -96,14 +104,12 @@ def safe_api(call):
     try:
         return call()
     except Exception as e:
-        print("API ERROR:", str(e)[:200])
+        print("API ERROR:", e)
         time.sleep(5)
         return None
 
 def reset_daily():
-
     global daily_trades,current_day
-
     now_day = datetime.now(timezone.utc).day
 
     if now_day != current_day:
@@ -111,7 +117,6 @@ def reset_daily():
         current_day = now_day
 
 def has_position():
-
     positions = safe_api(lambda: exchange.fetch_positions())
 
     if not positions:
@@ -302,7 +307,6 @@ def manage():
                         sym,side,qty*TP1_RATIO,params={"reduceOnly":True}))
 
                         state["tp1_hit"]=True
-
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
                 if state["tp1_hit"] and not state["tp2_hit"]:
@@ -314,7 +318,6 @@ def manage():
                         sym,side,qty*TP2_RATIO,params={"reduceOnly":True}))
 
                         state["tp2_hit"]=True
-
                         bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
 
                 if state["tp2_hit"]:
@@ -416,6 +419,6 @@ print("BOT STARTING...")
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=run,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
+bot.send_message(CHAT_ID,"🤖 PROFESYONEL BOT AKTİF")
 
 bot.infinity_polling()
