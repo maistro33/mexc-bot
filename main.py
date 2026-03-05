@@ -24,16 +24,34 @@ COOLDOWN_MIN = 60
 
 SYMBOLS = [
 
-"INJ/USDT:USDT","SEI/USDT:USDT","SUI/USDT:USDT","APT/USDT:USDT","TIA/USDT:USDT","PYTH/USDT:USDT",
+"INJ/USDT:USDT",
+"SEI/USDT:USDT",
+"SUI/USDT:USDT",
+"APT/USDT:USDT",
+"TIA/USDT:USDT",
+"PYTH/USDT:USDT",
 
-"AVAX/USDT:USDT","DOT/USDT:USDT","ATOM/USDT:USDT","NEAR/USDT:USDT","ARB/USDT:USDT","OP/USDT:USDT",
-"IMX/USDT:USDT","RENDER/USDT:USDT",
+"AVAX/USDT:USDT",
+"DOT/USDT:USDT",
+"ATOM/USDT:USDT",
+"NEAR/USDT:USDT",
+"ARB/USDT:USDT",
+"OP/USDT:USDT",
+"IMX/USDT:USDT",
+"RENDER/USDT:USDT",
 
-"FET/USDT:USDT","GRT/USDT:USDT","GALA/USDT:USDT","ALGO/USDT:USDT",
+"FET/USDT:USDT",
+"GRT/USDT:USDT",
+"GALA/USDT:USDT",
+"ALGO/USDT:USDT",
 
-"KAS/USDT:USDT","JASMY/USDT:USDT",
+"KAS/USDT:USDT",
+"JASMY/USDT:USDT",
 
-"PEPE/USDT:USDT","FLOKI/USDT:USDT","BOME/USDT:USDT","WIF/USDT:USDT"
+"PEPE/USDT:USDT",
+"FLOKI/USDT:USDT",
+"BOME/USDT:USDT",
+"WIF/USDT:USDT"
 
 ]
 
@@ -71,6 +89,7 @@ def safe(x):
 def reset_daily():
     global daily_trades,current_day
     now_day = datetime.now(timezone.utc).day
+
     if now_day != current_day:
         daily_trades = 0
         current_day = now_day
@@ -91,66 +110,79 @@ def get_qty(sym):
     except:
         return 0
 
-def in_cooldown(sym):
-    if sym not in cooldown:
-        return False
-    elapsed = (time.time() - cooldown[sym]) / 60
-    return elapsed < COOLDOWN_MIN
-
 # ================= TREND =================
 
 def trend_direction(sym):
+
     try:
+
         h4 = exchange.fetch_ohlcv(sym,"4h",limit=60)
+
         closes=[c[4] for c in h4]
+
         ema=sum(closes[-50:])/50
 
         if closes[-1] > ema:
             return "long"
+
         if closes[-1] < ema:
             return "short"
+
     except:
         return None
 
 # ================= RETEST =================
 
 def retest(sym,direction):
+
     try:
+
         h1=exchange.fetch_ohlcv(sym,"1h",limit=20)
+
         highs=[c[2] for c in h1]
         lows=[c[3] for c in h1]
 
         if direction=="long":
             return lows[-1] <= min(lows[-5:-1])
+
         else:
             return highs[-1] >= max(highs[-5:-1])
+
     except:
         return False
 
 # ================= BREAKOUT =================
 
 def breakout(sym):
+
     try:
+
         m15=exchange.fetch_ohlcv(sym,"15m",limit=15)
+
         highs=[c[2] for c in m15]
         lows=[c[3] for c in m15]
         closes=[c[4] for c in m15]
 
         resistance=max(highs[:-1])
         support=min(lows[:-1])
+
         last=closes[-1]
 
         if last > resistance:
             return "long"
+
         if last < support:
             return "short"
+
     except:
         return None
 
 # ================= VOLATILITY =================
 
 def volatility(sym):
+
     try:
+
         m15=exchange.fetch_ohlcv(sym,"15m",limit=10)
 
         last=m15[-1]
@@ -159,13 +191,14 @@ def volatility(sym):
         body=abs(last[4]-last[1])
         avg=sum(abs(c[4]-c[1]) for c in m15[:-1])/9
 
-        if body > avg*1.5:
+        if body > avg*1.8:
 
             if last[4] > prev[4]:
                 return "long"
 
             if last[4] < prev[4]:
                 return "short"
+
     except:
         return None
 
@@ -178,7 +211,9 @@ def open_trade(sym,direction):
     try:
 
         price=exchange.fetch_ticker(sym)["last"]
+
         qty=(MARGIN*LEV)/price
+
         qty=float(exchange.amount_to_precision(sym,qty))
 
         exchange.set_leverage(LEV,sym)
@@ -200,6 +235,7 @@ def open_trade(sym,direction):
         bot.send_message(CHAT_ID,f"🚀 {sym} {direction}")
 
     except Exception as e:
+
         print("ENTRY ERROR",e)
 
 # ================= MANAGE =================
@@ -229,6 +265,7 @@ def manage():
                 price=exchange.fetch_ticker(sym)["last"]
 
                 entry=state["entry"]
+
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
@@ -244,11 +281,10 @@ def manage():
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
                        (direction=="short" and price<=entry*(1-TP1_PCT)):
 
-                        close_qty=float(exchange.amount_to_precision(sym,qty*TP1_RATIO))
-
-                        exchange.create_market_order(sym,side,close_qty,params={"reduceOnly":True})
+                        exchange.create_market_order(sym,side,qty*TP1_RATIO,params={"reduceOnly":True})
 
                         state["tp1"]=True
+
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
                 elif not state["tp2"]:
@@ -256,11 +292,10 @@ def manage():
                     if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
                        (direction=="short" and price<=entry*(1-TP2_PCT)):
 
-                        close_qty=float(exchange.amount_to_precision(sym,qty*TP2_RATIO))
-
-                        exchange.create_market_order(sym,side,close_qty,params={"reduceOnly":True})
+                        exchange.create_market_order(sym,side,qty*TP2_RATIO,params={"reduceOnly":True})
 
                         state["tp2"]=True
+
                         bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
 
                 elif state["tp2"]:
@@ -272,7 +307,6 @@ def manage():
                             exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
 
                             trade_state.pop(sym)
-                            cooldown[sym]=time.time()
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
@@ -283,13 +317,13 @@ def manage():
                             exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
 
                             trade_state.pop(sym)
-                            cooldown[sym]=time.time()
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
             time.sleep(6)
 
         except:
+
             time.sleep(6)
 
 # ================= RUN =================
@@ -309,13 +343,10 @@ def run():
                 continue
 
             if has_position():
-                time.sleep(30)
+                time.sleep(12)
                 continue
 
             for sym in SYMBOLS:
-
-                if in_cooldown(sym):
-                    continue
 
                 direction=trend_direction(sym)
 
@@ -336,10 +367,11 @@ def run():
                     open_trade(sym,v)
                     break
 
-            time.sleep(12)
+            time.sleep(35)
 
         except:
-            time.sleep(12)
+
+            time.sleep(35)
 
 # ================= START =================
 
