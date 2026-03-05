@@ -1,5 +1,3 @@
-# ================= IMPORT =================
-
 import os
 import time
 import ccxt
@@ -7,22 +5,25 @@ import telebot
 import threading
 from datetime import datetime, timezone, timedelta
 
-
 # ================= SETTINGS =================
 
 LEV = 10
 MARGIN = 4
+
 MAX_DAILY_TRADES = 6
+MAX_POSITIONS = 2
 
 TP1_PCT = 0.008
 TP2_PCT = 0.016
-TRAIL_GAP = 0.007
+TRAIL_GAP = 0.018
 
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
 
 COOLDOWN_MIN = 60
 
+MIN_VOLUME = 5_000_000
+MAX_SPREAD = 0.003
 
 # ================= COINS =================
 
@@ -39,14 +40,13 @@ SYMBOLS = [
 "KAS/USDT:USDT","JASMY/USDT:USDT",
 
 "PEPE/USDT:USDT","FLOKI/USDT:USDT","BOME/USDT:USDT","WIF/USDT:USDT"
-]
 
+]
 
 # ================= TELEGRAM =================
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
-
 
 # ================= EXCHANGE =================
 
@@ -58,7 +58,6 @@ exchange = ccxt.bitget({
 "enableRateLimit": True
 })
 
-
 # ================= STATE =================
 
 trade_state = {}
@@ -66,7 +65,6 @@ cooldown = {}
 
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
-
 
 # ================= HELPERS =================
 
@@ -76,38 +74,51 @@ def safe(x):
     except:
         return 0
 
-
 def reset_daily():
+
     global daily_trades,current_day
 
     now_day = datetime.now(timezone.utc).day
 
     if now_day != current_day:
+
         daily_trades = 0
         current_day = now_day
-
 
 def has_position():
 
     try:
-        positions = exchange.fetch_positions()
-        return any(safe(p.get("contracts")) > 0 for p in positions)
-    except:
-        return False
 
+        positions = exchange.fetch_positions()
+
+        active = 0
+
+        for p in positions:
+
+            if safe(p.get("contracts")) > 0:
+
+                active += 1
+
+        return active >= MAX_POSITIONS
+
+    except:
+
+        return False
 
 def get_qty(sym):
 
     try:
+
         pos = exchange.fetch_positions([sym])
+
         if not pos:
             return 0
 
         return safe(pos[0]["contracts"])
 
     except:
-        return 0
 
+        return 0
 
 # ================= TREND =================
 
@@ -130,7 +141,6 @@ def trend_direction(sym):
     except:
         return None
 
-
 # ================= RETEST =================
 
 def retest(sym,direction):
@@ -144,13 +154,11 @@ def retest(sym,direction):
 
         if direction=="long":
             return lows[-1] <= min(lows[-5:-1])
-
         else:
             return highs[-1] >= max(highs[-5:-1])
 
     except:
         return False
-
 
 # ================= BREAKOUT =================
 
@@ -164,10 +172,11 @@ def breakout(sym):
         lows=[c[3] for c in m15]
         closes=[c[4] for c in m15]
 
-        last=m15[-1]
-        prev=m15[-2]
+        last = m15[-1]
+        prev = m15[-2]
 
-        move=abs(last[4]-prev[4])/prev[4]
+        # pump filtresi
+        move = abs(last[4]-prev[4]) / prev[4]
 
         if move > 0.025:
             return None
@@ -177,6 +186,16 @@ def breakout(sym):
 
         last_close=closes[-1]
 
+        # fake breakout filtresi
+        body=abs(last[4]-last[1])
+        candle_range=last[2]-last[3]
+
+        if candle_range == 0:
+            return None
+
+        if body/candle_range < 0.5:
+            return None
+
         if last_close > resistance:
             return "long"
 
@@ -185,7 +204,6 @@ def breakout(sym):
 
     except:
         return None
-
 
 # ================= VOLATILITY =================
 
@@ -212,7 +230,6 @@ def volatility(sym):
     except:
         return None
 
-
 # ================= ENTRY =================
 
 def open_trade(sym,direction):
@@ -223,9 +240,14 @@ def open_trade(sym,direction):
 
         ticker=exchange.fetch_ticker(sym)
 
+        # volume filtresi
+        if ticker["quoteVolume"] < MIN_VOLUME:
+            return
+
+        # spread filtresi
         spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
 
-        if spread > 0.003:
+        if spread > MAX_SPREAD:
             return
 
         price=ticker["last"]
@@ -240,11 +262,13 @@ def open_trade(sym,direction):
         exchange.create_market_order(sym,side,qty)
 
         trade_state[sym] = {
+
         "entry":price,
         "direction":direction,
         "tp1":False,
         "tp2":False,
         "extreme":price
+
         }
 
         cooldown[sym] = datetime.now() + timedelta(minutes=COOLDOWN_MIN)
@@ -257,7 +281,6 @@ def open_trade(sym,direction):
 
         print("ENTRY ERROR",e)
 
-
 # ================= MANAGE =================
 
 def manage():
@@ -267,7 +290,7 @@ def manage():
         try:
 
             if not trade_state:
-                time.sleep(6)
+                time.sleep(8)
                 continue
 
             pos=exchange.fetch_positions()
@@ -289,7 +312,6 @@ def manage():
                 price=exchange.fetch_ticker(sym)["last"]
 
                 entry=state["entry"]
-
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
@@ -344,12 +366,10 @@ def manage():
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
-            time.sleep(6)
+            time.sleep(8)
 
         except:
-
-            time.sleep(6)
-
+            time.sleep(8)
 
 # ================= RUN =================
 
@@ -395,12 +415,11 @@ def run():
                     open_trade(sym,v)
                     break
 
-            time.sleep(35)
+            time.sleep(45)
 
         except:
 
-            time.sleep(35)
-
+            time.sleep(45)
 
 # ================= START =================
 
