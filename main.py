@@ -175,7 +175,6 @@ def breakout(sym):
         last = m15[-1]
         prev = m15[-2]
 
-        # pump filtresi
         move = abs(last[4]-prev[4]) / prev[4]
 
         if move > 0.025:
@@ -186,7 +185,6 @@ def breakout(sym):
 
         last_close=closes[-1]
 
-        # fake breakout filtresi
         body=abs(last[4]-last[1])
         candle_range=last[2]-last[3]
 
@@ -240,11 +238,9 @@ def open_trade(sym,direction):
 
         ticker=exchange.fetch_ticker(sym)
 
-        # volume filtresi
         if ticker["quoteVolume"] < MIN_VOLUME:
             return
 
-        # spread filtresi
         spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
 
         if spread > MAX_SPREAD:
@@ -392,8 +388,9 @@ def run():
                 continue
 
             for sym in SYMBOLS:
+
                 if sym in trade_state:
-    continue
+                    continue
 
                 if sym in cooldown and datetime.now() < cooldown[sym]:
                     continue
