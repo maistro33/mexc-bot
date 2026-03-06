@@ -29,11 +29,11 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 # ================= EXCHANGE =================
 
 exchange = ccxt.bitget({
-"apiKey": os.getenv("BITGET_API"),
-"secret": os.getenv("BITGET_SEC"),
-"password": "Berfin33",
-"options": {"defaultType": "swap"},
-"enableRateLimit": True
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": "Berfin33",
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True
 })
 
 # ================= HELPERS =================
@@ -130,6 +130,34 @@ def liquidation_spike(sym):
         return False
 
 
+# 🐋 Whale Wall Detection
+
+def whale_wall(sym):
+
+    try:
+
+        ob = exchange.fetch_order_book(sym, limit=50)
+
+        bids = ob["bids"]
+        asks = ob["asks"]
+
+        for price, vol in bids:
+
+            if vol > 150:
+                return "long"
+
+        for price, vol in asks:
+
+            if vol > 150:
+                return "short"
+
+        return None
+
+    except:
+
+        return None
+
+
 def get_qty(sym):
 
     try:
@@ -191,6 +219,12 @@ def whale_action(side,sym):
         direction = "long" if side=="buy" else "short"
 
         if sym not in whale_positions:
+
+            # 🐋 Whale wall kontrolü
+            wall_dir = whale_wall(sym)
+
+            if wall_dir != direction:
+                return
 
             if orderbook_imbalance(sym) != direction:
                 return
