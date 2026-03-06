@@ -1,3 +1,6 @@
 ccxt==4.3.92
 pyTelegramBotAPI==4.15.4
 requests
+ccxt
+pyTelegramBotAPI
+websocket-client
