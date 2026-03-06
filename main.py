@@ -392,6 +392,8 @@ def run():
                 continue
 
             for sym in SYMBOLS:
+                if sym in trade_state:
+    continue
 
                 if sym in cooldown and datetime.now() < cooldown[sym]:
                     continue
