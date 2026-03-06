@@ -15,7 +15,7 @@ MAX_POSITIONS = 2
 
 TP1_PCT = 0.008
 TP2_PCT = 0.016
-TRAIL_GAP = 0.018
+TRAIL_GAP = 0.012
 
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
@@ -366,10 +366,10 @@ def manage():
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
-            time.sleep(8)
+            time.sleep(10)
 
         except:
-            time.sleep(8)
+            time.sleep(10)
 
 # ================= RUN =================
 
