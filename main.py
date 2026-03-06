@@ -17,6 +17,7 @@ MAX_SPREAD = 0.003
 
 WHALE_THRESHOLD = 150000
 WHALE_DELAY = 1.2
+WHALE_WALL = 40
 
 last_whale_time = 0
 whale_positions = {}
@@ -29,11 +30,11 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 # ================= EXCHANGE =================
 
 exchange = ccxt.bitget({
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",
-    "options": {"defaultType": "swap"},
-    "enableRateLimit": True
+"apiKey": os.getenv("BITGET_API"),
+"secret": os.getenv("BITGET_SEC"),
+"password": "Berfin33",
+"options": {"defaultType": "swap"},
+"enableRateLimit": True
 })
 
 # ================= HELPERS =================
@@ -130,7 +131,7 @@ def liquidation_spike(sym):
         return False
 
 
-# 🐋 Whale Wall Detection
+# 🐋 Whale Wall
 
 def whale_wall(sym):
 
@@ -143,12 +144,12 @@ def whale_wall(sym):
 
         for price, vol in bids:
 
-            if vol > 150:
+            if vol > WHALE_WALL:
                 return "long"
 
         for price, vol in asks:
 
-            if vol > 150:
+            if vol > WHALE_WALL:
                 return "short"
 
         return None
@@ -156,6 +157,25 @@ def whale_wall(sym):
     except:
 
         return None
+
+
+# 📊 Open Interest Spike
+
+def open_interest_spike(sym):
+
+    try:
+
+        oi = exchange.fetch_open_interest_history(sym,"5m",limit=6)
+
+        values=[safe(x["openInterest"]) for x in oi]
+
+        if values[-1] > (sum(values[:-1])/5)*1.5:
+            return True
+
+        return False
+
+    except:
+        return True
 
 
 def get_qty(sym):
@@ -220,7 +240,6 @@ def whale_action(side,sym):
 
         if sym not in whale_positions:
 
-            # 🐋 Whale wall kontrolü
             wall_dir = whale_wall(sym)
 
             if wall_dir != direction:
@@ -233,6 +252,9 @@ def whale_action(side,sym):
                 return
 
             if not liquidation_spike(sym):
+                return
+
+            if not open_interest_spike(sym):
                 return
 
             time.sleep(WHALE_DELAY)
