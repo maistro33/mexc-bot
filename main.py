@@ -387,10 +387,10 @@ def manage():
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
-            time.sleep(10)
+            time.sleep(3)
 
         except:
-            time.sleep(10)
+            time.sleep(3)
 
 # ================= RUN =================
 
