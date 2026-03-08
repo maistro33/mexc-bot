@@ -3,6 +3,7 @@ import time
 import ccxt
 import telebot
 import threading
+import requests
 from datetime import datetime, timezone, timedelta
 
 # ================= SETTINGS =================
@@ -27,6 +28,8 @@ COOLDOWN_MIN = 60
 MIN_VOLUME = 5_000_000
 MAX_SPREAD = 0.003
 
+WHALE_CHECK_INTERVAL = 300
+
 # ================= COINS =================
 
 SYMBOLS = [
@@ -38,6 +41,9 @@ SYMBOLS = [
 "PEPE/USDT:USDT","FLOKI/USDT:USDT","BOME/USDT:USDT","WIF/USDT:USDT"
 ]
 
+whale_symbols=set()
+last_whale_check=0
+
 # ================= TELEGRAM =================
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -48,28 +54,43 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
 "apiKey": os.getenv("BITGET_API"),
 "secret": os.getenv("BITGET_SEC"),
-"password": os.getenv("BITGET_PASS"),
+"password": "Berfin33",
 "options": {"defaultType": "swap"},
 "enableRateLimit": True
 })
 
+markets = exchange.load_markets()
+
 # ================= STATE =================
 
-trade_state = {}
-cooldown = {}
+trade_state={}
+cooldown={}
 
-daily_trades = 0
-current_day = datetime.now(timezone.utc).day
+daily_trades=0
+current_day=datetime.now(timezone.utc).day
+
+# ================= RESET DAILY =================
+
+def reset_daily():
+
+    global daily_trades,current_day
+
+    now_day=datetime.now(timezone.utc).day
+
+    if now_day!=current_day:
+
+        daily_trades=0
+        current_day=now_day
 
 # ================= EMA =================
 
-def ema(values, period):
+def ema(values,period):
 
-    k = 2/(period+1)
-    ema_val = values[0]
+    k=2/(period+1)
+    ema_val=values[0]
 
     for price in values[1:]:
-        ema_val = price*k + ema_val*(1-k)
+        ema_val=price*k+ema_val*(1-k)
 
     return ema_val
 
@@ -81,19 +102,48 @@ def safe(x):
     except:
         return 0
 
+# ================= WHALE DETECT =================
+
+def detect_whale_coin():
+
+    try:
+
+        url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
+
+        headers={
+        "accept":"application/json",
+        "coinglassSecret":os.getenv("COINGLASS_API")
+        }
+
+        r=requests.get(url,headers=headers,timeout=10).json()
+
+        data=r.get("data",[])
+
+        if not data:
+            return None
+
+        coin=data[0]["symbol"]
+
+        return f"{coin}/USDT:USDT"
+
+    except Exception as e:
+
+        print("WHALE ERROR:",e)
+        return None
+
 # ================= BTC TREND =================
 
 def btc_trend():
 
     try:
 
-        btc = exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
+        btc=exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
 
         closes=[c[4] for c in btc]
 
-        ema_val = ema(closes,50)
+        ema_val=ema(closes,50)
 
-        if closes[-1] > ema_val:
+        if closes[-1]>ema_val:
             return "bull"
         else:
             return "bear"
@@ -115,10 +165,7 @@ def atr_filter(sym):
 
         price=candles[-1][4]
 
-        if atr/price > 0.004:
-            return True
-
-        return False
+        return atr/price>0.004
 
     except:
         return False
@@ -183,9 +230,9 @@ def retest(sym,direction):
         lows=[c[3] for c in h1]
 
         if direction=="long":
-            return lows[-1] <= min(lows[-5:-1])
+            return lows[-1]<=min(lows[-5:-1])
         else:
-            return highs[-1] >= max(highs[-5:-1])
+            return highs[-1]>=max(highs[-5:-1])
 
     except:
         return False
@@ -200,12 +247,12 @@ def open_trade(sym,direction):
 
         ticker=exchange.fetch_ticker(sym)
 
-        if ticker["quoteVolume"] < MIN_VOLUME:
+        if ticker["quoteVolume"]<MIN_VOLUME:
             return
 
         spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
 
-        if spread > MAX_SPREAD:
+        if spread>MAX_SPREAD:
             return
 
         price=ticker["last"]
@@ -228,7 +275,8 @@ def open_trade(sym,direction):
         bot.send_message(CHAT_ID,f"🚀 {sym} {direction}")
 
     except Exception as e:
-        print("ENTRY ERROR",e)
+
+        print("ENTRY ERROR:",e)
 
 # ================= MANAGE =================
 
@@ -271,7 +319,6 @@ def manage():
                 if direction=="short" and price<state["extreme"]:
                     state["extreme"]=price
 
-                # TP1
                 if not state["tp1"]:
 
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
@@ -283,24 +330,22 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
-                # BREAK EVEN
                 elif state["tp1"] and not state["tp2"]:
 
-                    if direction=="long" and price <= entry*(1+BREAKEVEN_BUFFER):
+                    if direction=="long" and price<=entry*(1+BREAKEVEN_BUFFER):
 
                         exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
                         trade_state.pop(sym)
 
                         bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
 
-                    if direction=="short" and price >= entry*(1-BREAKEVEN_BUFFER):
+                    if direction=="short" and price>=entry*(1-BREAKEVEN_BUFFER):
 
                         exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
                         trade_state.pop(sym)
 
                         bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
 
-                # TP2
                 if not state["tp2"]:
 
                     if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
@@ -312,12 +357,11 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
 
-                # TRAILING
                 elif state["tp2"]:
 
                     if direction=="long":
 
-                        if price <= state["extreme"]*(1-TRAIL_GAP):
+                        if price<=state["extreme"]*(1-TRAIL_GAP):
 
                             exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
                             trade_state.pop(sym)
@@ -326,7 +370,7 @@ def manage():
 
                     else:
 
-                        if price >= state["extreme"]*(1+TRAIL_GAP):
+                        if price>=state["extreme"]*(1+TRAIL_GAP):
 
                             exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
                             trade_state.pop(sym)
@@ -335,31 +379,52 @@ def manage():
 
             time.sleep(3)
 
-        except:
-            time.sleep(3)
+        except Exception as e:
+
+            print("MANAGE ERROR:",e)
+            time.sleep(5)
 
 # ================= RUN =================
 
 def run():
 
-    global daily_trades
+    global last_whale_check
 
     while True:
 
         try:
 
+            reset_daily()
+
             btc_state=btc_trend()
+
+            if time.time()-last_whale_check>WHALE_CHECK_INTERVAL:
+
+                whale_coin=detect_whale_coin()
+
+                if whale_coin and whale_coin not in SYMBOLS:
+
+                    if whale_coin in markets:
+
+                        SYMBOLS.append(whale_coin)
+                        whale_symbols.add(whale_coin)
+
+                        bot.send_message(CHAT_ID,f"🐋 Whale coin detected: {whale_coin}")
+
+                last_whale_check=time.time()
 
             for sym in SYMBOLS:
 
                 if sym in trade_state:
                     continue
 
-                if sym in cooldown and datetime.now() < cooldown[sym]:
+                if sym in cooldown and datetime.now()<cooldown[sym]:
                     continue
 
-                if not atr_filter(sym):
-                    continue
+                if sym not in whale_symbols:
+
+                    if not atr_filter(sym):
+                        continue
 
                 pressure=orderbook_pressure(sym)
 
@@ -378,10 +443,10 @@ def run():
 
             time.sleep(30)
 
-        except:
-            time.sleep(30)
+        except Exception as e:
 
-# ================= START =================
+            print("RUN ERROR:",e)
+            time.sleep(30)
 
 print("BOT STARTING")
 
