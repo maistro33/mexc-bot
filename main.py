@@ -20,6 +20,8 @@ TRAIL_GAP = 0.012
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
 
+BREAKEVEN_BUFFER = 0.0015
+
 COOLDOWN_MIN = 60
 
 MIN_VOLUME = 5_000_000
@@ -28,44 +30,12 @@ MAX_SPREAD = 0.003
 # ================= COINS =================
 
 SYMBOLS = [
-
-# eski coinler
 "INJ/USDT:USDT","SEI/USDT:USDT","SUI/USDT:USDT","APT/USDT:USDT",
-"TIA/USDT:USDT","PYTH/USDT:USDT",
-
-"AVAX/USDT:USDT","DOT/USDT:USDT","ATOM/USDT:USDT","NEAR/USDT:USDT",
-"ARB/USDT:USDT","OP/USDT:USDT","IMX/USDT:USDT","RENDER/USDT:USDT",
-
-"FET/USDT:USDT","GRT/USDT:USDT","GALA/USDT:USDT","ALGO/USDT:USDT",
-
-"KAS/USDT:USDT","JASMY/USDT:USDT",
-
-"PEPE/USDT:USDT","FLOKI/USDT:USDT","BOME/USDT:USDT","WIF/USDT:USDT",
-
-# yeni coinler
-"ANKR/USDT:USDT",
-"MOVR/USDT:USDT",
-"GRASS/USDT:USDT",
-"BEAT/USDT:USDT",
-"PLUME/USDT:USDT",
-"KAVA/USDT:USDT",
-"RIVER/USDT:USDT",
-"POWER/USDT:USDT",
-"CVX/USDT:USDT",
-"STEEM/USDT:USDT",
-"BANANA/USDT:USDT",
-"MLN/USDT:USDT",
-"RESOLV/USDT:USDT",
-"LYN/USDT:USDT",
-"KITE/USDT:USDT",
-"AKT/USDT:USDT",
-"SIGN/USDT:USDT",
-"PIPPIN/USDT:USDT",
-"ZORA/USDT:USDT",
-"M/USDT:USDT",
-"BABY/USDT:USDT",
-"ZRO/USDT:USDT"
-
+"TIA/USDT:USDT","PYTH/USDT:USDT","AVAX/USDT:USDT","DOT/USDT:USDT",
+"ATOM/USDT:USDT","NEAR/USDT:USDT","ARB/USDT:USDT","OP/USDT:USDT",
+"IMX/USDT:USDT","RENDER/USDT:USDT","FET/USDT:USDT","GRT/USDT:USDT",
+"GALA/USDT:USDT","ALGO/USDT:USDT","KAS/USDT:USDT","JASMY/USDT:USDT",
+"PEPE/USDT:USDT","FLOKI/USDT:USDT","BOME/USDT:USDT","WIF/USDT:USDT"
 ]
 
 # ================= TELEGRAM =================
@@ -78,7 +48,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
 "apiKey": os.getenv("BITGET_API"),
 "secret": os.getenv("BITGET_SEC"),
-"password": "Berfin33",
+"password": os.getenv("BITGET_PASS"),
 "options": {"defaultType": "swap"},
 "enableRateLimit": True
 })
@@ -91,6 +61,18 @@ cooldown = {}
 daily_trades = 0
 current_day = datetime.now(timezone.utc).day
 
+# ================= EMA =================
+
+def ema(values, period):
+
+    k = 2/(period+1)
+    ema_val = values[0]
+
+    for price in values[1:]:
+        ema_val = price*k + ema_val*(1-k)
+
+    return ema_val
+
 # ================= HELPERS =================
 
 def safe(x):
@@ -99,51 +81,74 @@ def safe(x):
     except:
         return 0
 
-def reset_daily():
+# ================= BTC TREND =================
 
-    global daily_trades,current_day
-
-    now_day = datetime.now(timezone.utc).day
-
-    if now_day != current_day:
-
-        daily_trades = 0
-        current_day = now_day
-
-def has_position():
+def btc_trend():
 
     try:
 
-        positions = exchange.fetch_positions()
+        btc = exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
 
-        active = 0
+        closes=[c[4] for c in btc]
 
-        for p in positions:
+        ema_val = ema(closes,50)
 
-            if safe(p.get("contracts")) > 0:
-
-                active += 1
-
-        return active >= MAX_POSITIONS
+        if closes[-1] > ema_val:
+            return "bull"
+        else:
+            return "bear"
 
     except:
+        return "neutral"
+
+# ================= ATR =================
+
+def atr_filter(sym):
+
+    try:
+
+        candles=exchange.fetch_ohlcv(sym,"15m",limit=20)
+
+        ranges=[c[2]-c[3] for c in candles]
+
+        atr=sum(ranges)/len(ranges)
+
+        price=candles[-1][4]
+
+        if atr/price > 0.004:
+            return True
 
         return False
 
-def get_qty(sym):
+    except:
+        return False
+
+# ================= ORDERBOOK =================
+
+def orderbook_pressure(sym):
 
     try:
 
-        pos = exchange.fetch_positions([sym])
+        book=exchange.fetch_order_book(sym,limit=20)
 
-        if not pos:
-            return 0
+        bids=sum([b[1] for b in book["bids"]])
+        asks=sum([a[1] for a in book["asks"]])
 
-        return safe(pos[0]["contracts"])
+        if bids==0 or asks==0:
+            return None
+
+        ratio=bids/asks
+
+        if ratio>1.4:
+            return "long"
+
+        if ratio<0.7:
+            return "short"
+
+        return None
 
     except:
-
-        return 0
+        return None
 
 # ================= TREND =================
 
@@ -151,16 +156,16 @@ def trend_direction(sym):
 
     try:
 
-        h4 = exchange.fetch_ohlcv(sym,"4h",limit=60)
+        h4=exchange.fetch_ohlcv(sym,"4h",limit=60)
 
         closes=[c[4] for c in h4]
 
-        ema=sum(closes[-50:])/50
+        ema_val=ema(closes[-50:],50)
 
-        if closes[-1] > ema:
+        if closes[-1]>ema_val:
             return "long"
 
-        if closes[-1] < ema:
+        if closes[-1]<ema_val:
             return "short"
 
     except:
@@ -184,74 +189,6 @@ def retest(sym,direction):
 
     except:
         return False
-
-# ================= BREAKOUT =================
-
-def breakout(sym):
-
-    try:
-
-        m15=exchange.fetch_ohlcv(sym,"15m",limit=15)
-
-        highs=[c[2] for c in m15]
-        lows=[c[3] for c in m15]
-        closes=[c[4] for c in m15]
-
-        last = m15[-1]
-        prev = m15[-2]
-
-        move = abs(last[4]-prev[4]) / prev[4]
-
-        if move > 0.025:
-            return None
-
-        resistance=max(highs[:-1])
-        support=min(lows[:-1])
-
-        last_close=closes[-1]
-
-        body=abs(last[4]-last[1])
-        candle_range=last[2]-last[3]
-
-        if candle_range == 0:
-            return None
-
-        if body/candle_range < 0.5:
-            return None
-
-        if last_close > resistance:
-            return "long"
-
-        if last_close < support:
-            return "short"
-
-    except:
-        return None
-
-# ================= VOLATILITY =================
-
-def volatility(sym):
-
-    try:
-
-        m15=exchange.fetch_ohlcv(sym,"15m",limit=10)
-
-        last=m15[-1]
-        prev=m15[-2]
-
-        body=abs(last[4]-last[1])
-        avg=sum(abs(c[4]-c[1]) for c in m15[:-1])/9
-
-        if body > avg*1.8:
-
-            if last[4] > prev[4]:
-                return "long"
-
-            if last[4] < prev[4]:
-                return "short"
-
-    except:
-        return None
 
 # ================= ENTRY =================
 
@@ -282,24 +219,15 @@ def open_trade(sym,direction):
 
         exchange.create_market_order(sym,side,qty)
 
-        trade_state[sym] = {
+        trade_state[sym]={"entry":price,"direction":direction,"tp1":False,"tp2":False,"extreme":price}
 
-        "entry":price,
-        "direction":direction,
-        "tp1":False,
-        "tp2":False,
-        "extreme":price
-
-        }
-
-        cooldown[sym] = datetime.now() + timedelta(minutes=COOLDOWN_MIN)
+        cooldown[sym]=datetime.now()+timedelta(minutes=COOLDOWN_MIN)
 
         daily_trades+=1
 
         bot.send_message(CHAT_ID,f"🚀 {sym} {direction}")
 
     except Exception as e:
-
         print("ENTRY ERROR",e)
 
 # ================= MANAGE =================
@@ -311,7 +239,7 @@ def manage():
         try:
 
             if not trade_state:
-                time.sleep(8)
+                time.sleep(5)
                 continue
 
             pos=exchange.fetch_positions()
@@ -320,7 +248,7 @@ def manage():
 
                 qty=safe(p.get("contracts"))
 
-                if qty <=0:
+                if qty<=0:
                     continue
 
                 sym=p["symbol"]
@@ -337,12 +265,13 @@ def manage():
 
                 side="sell" if direction=="long" else "buy"
 
-                if direction=="long" and price > state["extreme"]:
+                if direction=="long" and price>state["extreme"]:
                     state["extreme"]=price
 
-                if direction=="short" and price < state["extreme"]:
+                if direction=="short" and price<state["extreme"]:
                     state["extreme"]=price
 
+                # TP1
                 if not state["tp1"]:
 
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
@@ -354,7 +283,25 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
-                elif not state["tp2"]:
+                # BREAK EVEN
+                elif state["tp1"] and not state["tp2"]:
+
+                    if direction=="long" and price <= entry*(1+BREAKEVEN_BUFFER):
+
+                        exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
+                        trade_state.pop(sym)
+
+                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+
+                    if direction=="short" and price >= entry*(1-BREAKEVEN_BUFFER):
+
+                        exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
+                        trade_state.pop(sym)
+
+                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+
+                # TP2
+                if not state["tp2"]:
 
                     if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
                        (direction=="short" and price<=entry*(1-TP2_PCT)):
@@ -365,14 +312,14 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
 
+                # TRAILING
                 elif state["tp2"]:
 
                     if direction=="long":
 
                         if price <= state["extreme"]*(1-TRAIL_GAP):
 
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
+                            exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
                             trade_state.pop(sym)
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
@@ -381,8 +328,7 @@ def manage():
 
                         if price >= state["extreme"]*(1+TRAIL_GAP):
 
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
+                            exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
                             trade_state.pop(sym)
 
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
@@ -402,15 +348,7 @@ def run():
 
         try:
 
-            reset_daily()
-
-            if daily_trades >= MAX_DAILY_TRADES:
-                time.sleep(60)
-                continue
-
-            if has_position():
-                time.sleep(12)
-                continue
+            btc_state=btc_trend()
 
             for sym in SYMBOLS:
 
@@ -420,30 +358,28 @@ def run():
                 if sym in cooldown and datetime.now() < cooldown[sym]:
                     continue
 
+                if not atr_filter(sym):
+                    continue
+
+                pressure=orderbook_pressure(sym)
+
                 direction=trend_direction(sym)
 
                 if direction and retest(sym,direction):
 
+                    if direction=="long" and btc_state=="bear":
+                        continue
+
+                    if pressure and pressure!=direction:
+                        continue
+
                     open_trade(sym,direction)
                     break
 
-                b=breakout(sym)
-
-                if b:
-                    open_trade(sym,b)
-                    break
-
-                v=volatility(sym)
-
-                if v:
-                    open_trade(sym,v)
-                    break
-
-            time.sleep(45)
+            time.sleep(30)
 
         except:
-
-            time.sleep(45)
+            time.sleep(30)
 
 # ================= START =================
 
