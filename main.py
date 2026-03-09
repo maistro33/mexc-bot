@@ -72,15 +72,58 @@ current_day=datetime.now(timezone.utc).day
 # ================= RESET DAILY =================
 
 def reset_daily():
-
     global daily_trades,current_day
-
     now_day=datetime.now(timezone.utc).day
-
     if now_day!=current_day:
-
         daily_trades=0
         current_day=now_day
+
+# ================= HELPERS =================
+
+def safe(x):
+    try:
+        return float(x)
+    except:
+        return 0
+
+def get_qty(sym):
+    try:
+        pos=exchange.fetch_positions([sym])
+        if not pos:
+            return 0
+        return safe(pos[0]["contracts"])
+    except:
+        return 0
+
+# ================= SYNC EXISTING POSITIONS =================
+
+def sync_existing_positions():
+    try:
+        positions=exchange.fetch_positions()
+
+        for p in positions:
+
+            qty=safe(p.get("contracts"))
+            if qty<=0:
+                continue
+
+            sym=p["symbol"]
+            entry=safe(p["entryPrice"])
+
+            side="long" if p["side"]=="long" else "short"
+
+            trade_state[sym]={
+            "entry":entry,
+            "direction":side,
+            "tp1":False,
+            "tp2":False,
+            "extreme":entry
+            }
+
+        print("Synced existing positions")
+
+    except Exception as e:
+        print("SYNC ERROR:",e)
 
 # ================= EMA =================
 
@@ -93,43 +136,6 @@ def ema(values,period):
         ema_val=price*k+ema_val*(1-k)
 
     return ema_val
-
-# ================= HELPERS =================
-
-def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0
-
-# ================= WHALE DETECT =================
-
-def detect_whale_coin():
-
-    try:
-
-        url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
-
-        headers={
-        "accept":"application/json",
-        "coinglassSecret":os.getenv("COINGLASS_API")
-        }
-
-        r=requests.get(url,headers=headers,timeout=10).json()
-
-        data=r.get("data",[])
-
-        if not data:
-            return None
-
-        coin=data[0]["symbol"]
-
-        return f"{coin}/USDT:USDT"
-
-    except Exception as e:
-
-        print("WHALE ERROR:",e)
-        return None
 
 # ================= BTC TREND =================
 
@@ -245,6 +251,9 @@ def open_trade(sym,direction):
 
     try:
 
+        if get_qty(sym)>0:
+            return
+
         ticker=exchange.fetch_ticker(sym)
 
         if ticker["quoteVolume"]<MIN_VOLUME:
@@ -275,7 +284,6 @@ def open_trade(sym,direction):
         bot.send_message(CHAT_ID,f"🚀 {sym} {direction}")
 
     except Exception as e:
-
         print("ENTRY ERROR:",e)
 
 # ================= MANAGE =================
@@ -285,10 +293,6 @@ def manage():
     while True:
 
         try:
-
-            if not trade_state:
-                time.sleep(5)
-                continue
 
             pos=exchange.fetch_positions()
 
@@ -380,7 +384,6 @@ def manage():
             time.sleep(3)
 
         except Exception as e:
-
             print("MANAGE ERROR:",e)
             time.sleep(5)
 
@@ -397,6 +400,9 @@ def run():
             reset_daily()
 
             btc_state=btc_trend()
+
+            positions=exchange.fetch_positions()
+            active=sum(1 for p in positions if safe(p.get("contracts"))>0)
 
             if time.time()-last_whale_check>WHALE_CHECK_INTERVAL:
 
@@ -421,8 +427,13 @@ def run():
                 if sym in cooldown and datetime.now()<cooldown[sym]:
                     continue
 
-                if sym not in whale_symbols:
+                if get_qty(sym)>0:
+                    continue
 
+                if sym not in whale_symbols and active>=MAX_POSITIONS:
+                    continue
+
+                if sym not in whale_symbols:
                     if not atr_filter(sym):
                         continue
 
@@ -444,11 +455,12 @@ def run():
             time.sleep(30)
 
         except Exception as e:
-
             print("RUN ERROR:",e)
             time.sleep(30)
 
 print("BOT STARTING")
+
+sync_existing_positions()
 
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=run,daemon=True).start()
