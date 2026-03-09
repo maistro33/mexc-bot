@@ -21,11 +21,9 @@ TRAIL_GAP = 0.012
 TP1_RATIO = 0.30
 TP2_RATIO = 0.40
 
-BREAKEVEN_BUFFER = 0.0015
-
 COOLDOWN_MIN = 60
 
-MIN_VOLUME = 5_000_000
+MIN_VOLUME = 5000000
 MAX_SPREAD = 0.003
 
 WHALE_CHECK_INTERVAL = 300
@@ -41,8 +39,8 @@ SYMBOLS = [
 "PEPE/USDT:USDT","FLOKI/USDT:USDT","BOME/USDT:USDT","WIF/USDT:USDT"
 ]
 
-whale_symbols=set()
-last_whale_check=0
+whale_symbols = set()
+last_whale_check = 0
 
 # ================= TELEGRAM =================
 
@@ -63,20 +61,11 @@ markets = exchange.load_markets()
 
 # ================= STATE =================
 
-trade_state={}
-cooldown={}
+trade_state = {}
+cooldown = {}
 
-daily_trades=0
-current_day=datetime.now(timezone.utc).day
-
-# ================= RESET DAILY =================
-
-def reset_daily():
-    global daily_trades,current_day
-    now_day=datetime.now(timezone.utc).day
-    if now_day!=current_day:
-        daily_trades=0
-        current_day=now_day
+daily_trades = 0
+current_day = datetime.now(timezone.utc).day
 
 # ================= HELPERS =================
 
@@ -88,7 +77,7 @@ def safe(x):
 
 def get_qty(sym):
     try:
-        pos=exchange.fetch_positions([sym])
+        pos = exchange.fetch_positions([sym])
         if not pos:
             return 0
         return safe(pos[0]["contracts"])
@@ -98,150 +87,64 @@ def get_qty(sym):
 # ================= SYNC EXISTING POSITIONS =================
 
 def sync_existing_positions():
+
     try:
-        positions=exchange.fetch_positions()
+
+        positions = exchange.fetch_positions()
 
         for p in positions:
 
-            qty=safe(p.get("contracts"))
-            if qty<=0:
+            qty = safe(p.get("contracts"))
+
+            if qty <= 0:
                 continue
 
-            sym=p["symbol"]
-            entry=safe(p["entryPrice"])
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+            side = "long" if p["side"] == "long" else "short"
 
-            side="long" if p["side"]=="long" else "short"
-
-            trade_state[sym]={
-            "entry":entry,
-            "direction":side,
-            "tp1":False,
-            "tp2":False,
-            "extreme":entry
+            trade_state[sym] = {
+            "entry": entry,
+            "direction": side,
+            "tp1": False,
+            "tp2": False,
+            "extreme": entry
             }
 
         print("Synced existing positions")
 
     except Exception as e:
+
         print("SYNC ERROR:",e)
 
-# ================= EMA =================
+# ================= WHALE DETECT =================
 
-def ema(values,period):
-
-    k=2/(period+1)
-    ema_val=values[0]
-
-    for price in values[1:]:
-        ema_val=price*k+ema_val*(1-k)
-
-    return ema_val
-
-# ================= BTC TREND =================
-
-def btc_trend():
+def detect_whale_coin():
 
     try:
 
-        btc=exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
+        url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
 
-        closes=[c[4] for c in btc]
+        headers={
+        "accept":"application/json",
+        "coinglassSecret":os.getenv("COINGLASS_API")
+        }
 
-        ema_val=ema(closes,50)
+        r=requests.get(url,headers=headers,timeout=10).json()
 
-        if closes[-1]>ema_val:
-            return "bull"
-        else:
-            return "bear"
+        data=r.get("data",[])
 
-    except:
-        return "neutral"
-
-# ================= ATR =================
-
-def atr_filter(sym):
-
-    try:
-
-        candles=exchange.fetch_ohlcv(sym,"15m",limit=20)
-
-        ranges=[c[2]-c[3] for c in candles]
-
-        atr=sum(ranges)/len(ranges)
-
-        price=candles[-1][4]
-
-        return atr/price>0.004
-
-    except:
-        return False
-
-# ================= ORDERBOOK =================
-
-def orderbook_pressure(sym):
-
-    try:
-
-        book=exchange.fetch_order_book(sym,limit=20)
-
-        bids=sum([b[1] for b in book["bids"]])
-        asks=sum([a[1] for a in book["asks"]])
-
-        if bids==0 or asks==0:
+        if not data:
             return None
 
-        ratio=bids/asks
+        coin=data[0]["symbol"]
 
-        if ratio>1.4:
-            return "long"
+        return f"{coin}/USDT:USDT"
 
-        if ratio<0.7:
-            return "short"
+    except Exception as e:
 
+        print("WHALE ERROR:",e)
         return None
-
-    except:
-        return None
-
-# ================= TREND =================
-
-def trend_direction(sym):
-
-    try:
-
-        h4=exchange.fetch_ohlcv(sym,"4h",limit=60)
-
-        closes=[c[4] for c in h4]
-
-        ema_val=ema(closes[-50:],50)
-
-        if closes[-1]>ema_val:
-            return "long"
-
-        if closes[-1]<ema_val:
-            return "short"
-
-    except:
-        return None
-
-# ================= RETEST =================
-
-def retest(sym,direction):
-
-    try:
-
-        h1=exchange.fetch_ohlcv(sym,"1h",limit=20)
-
-        highs=[c[2] for c in h1]
-        lows=[c[3] for c in h1]
-
-        if direction=="long":
-            return lows[-1]<=min(lows[-5:-1])
-        else:
-            return highs[-1]>=max(highs[-5:-1])
-
-    except:
-        return False
 
 # ================= ENTRY =================
 
@@ -251,20 +154,20 @@ def open_trade(sym,direction):
 
     try:
 
-        if get_qty(sym)>0:
+        if get_qty(sym) > 0:
             return
 
-        ticker=exchange.fetch_ticker(sym)
+        ticker = exchange.fetch_ticker(sym)
 
-        if ticker["quoteVolume"]<MIN_VOLUME:
+        if ticker["quoteVolume"] < MIN_VOLUME:
             return
 
         spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
 
-        if spread>MAX_SPREAD:
+        if spread > MAX_SPREAD:
             return
 
-        price=ticker["last"]
+        price = ticker["last"]
 
         qty=(MARGIN*LEV)/price
         qty=float(exchange.amount_to_precision(sym,qty))
@@ -284,6 +187,7 @@ def open_trade(sym,direction):
         bot.send_message(CHAT_ID,f"🚀 {sym} {direction}")
 
     except Exception as e:
+
         print("ENTRY ERROR:",e)
 
 # ================= MANAGE =================
@@ -334,22 +238,6 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
-                elif state["tp1"] and not state["tp2"]:
-
-                    if direction=="long" and price<=entry*(1+BREAKEVEN_BUFFER):
-
-                        exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
-                        trade_state.pop(sym)
-
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-
-                    if direction=="short" and price>=entry*(1-BREAKEVEN_BUFFER):
-
-                        exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
-                        trade_state.pop(sym)
-
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-
                 if not state["tp2"]:
 
                     if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
@@ -384,86 +272,17 @@ def manage():
             time.sleep(3)
 
         except Exception as e:
+
             print("MANAGE ERROR:",e)
             time.sleep(5)
 
-# ================= RUN =================
-
-def run():
-
-    global last_whale_check
-
-    while True:
-
-        try:
-
-            reset_daily()
-
-            btc_state=btc_trend()
-
-            positions=exchange.fetch_positions()
-            active=sum(1 for p in positions if safe(p.get("contracts"))>0)
-
-            if time.time()-last_whale_check>WHALE_CHECK_INTERVAL:
-
-                whale_coin=detect_whale_coin()
-
-                if whale_coin and whale_coin not in SYMBOLS:
-
-                    if whale_coin in markets:
-
-                        SYMBOLS.append(whale_coin)
-                        whale_symbols.add(whale_coin)
-
-                        bot.send_message(CHAT_ID,f"🐋 Whale coin detected: {whale_coin}")
-
-                last_whale_check=time.time()
-
-            for sym in SYMBOLS:
-
-                if sym in trade_state:
-                    continue
-
-                if sym in cooldown and datetime.now()<cooldown[sym]:
-                    continue
-
-                if get_qty(sym)>0:
-                    continue
-
-                if sym not in whale_symbols and active>=MAX_POSITIONS:
-                    continue
-
-                if sym not in whale_symbols:
-                    if not atr_filter(sym):
-                        continue
-
-                pressure=orderbook_pressure(sym)
-
-                direction=trend_direction(sym)
-
-                if direction and retest(sym,direction):
-
-                    if direction=="long" and btc_state=="bear":
-                        continue
-
-                    if pressure and pressure!=direction:
-                        continue
-
-                    open_trade(sym,direction)
-                    break
-
-            time.sleep(30)
-
-        except Exception as e:
-            print("RUN ERROR:",e)
-            time.sleep(30)
+# ================= START =================
 
 print("BOT STARTING")
 
 sync_existing_positions()
 
 threading.Thread(target=manage,daemon=True).start()
-threading.Thread(target=run,daemon=True).start()
 
 bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
 
