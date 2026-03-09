@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 
 LEV = 10
 MARGIN = 2
-
 MAX_POSITIONS = 5
 
 TP1_PCT = 0.006
@@ -36,7 +35,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -72,7 +71,7 @@ def get_qty(sym):
     except:
         return 0
 
-# ================= SYNC OPEN POSITIONS =================
+# ================= SYNC POSITIONS =================
 
 def sync_existing():
 
@@ -100,7 +99,7 @@ def sync_existing():
                 "extreme": entry
             }
 
-        print("Synced positions")
+        print("Synced existing positions")
 
     except Exception as e:
 
@@ -114,8 +113,8 @@ def orderbook_pressure(sym):
 
         ob = exchange.fetch_order_book(sym, limit=20)
 
-        bid_vol = sum([b[1] for b in ob["bids"]])
-        ask_vol = sum([a[1] for a in ob["asks"]])
+        bid_vol = sum(b[1] for b in ob["bids"])
+        ask_vol = sum(a[1] for a in ob["asks"])
 
         if bid_vol > ask_vol * 1.5:
             return "long"
@@ -232,39 +231,27 @@ def manage():
                 if direction == "short" and price < state["extreme"]:
                     state["extreme"] = price
 
-                # TP1
-
                 if not state["tp1"]:
 
                     if (direction == "long" and price >= entry * (1 + TP1_PCT)) or \
                        (direction == "short" and price <= entry * (1 - TP1_PCT)):
 
-                        exchange.create_market_order(
-                            sym, side, qty * TP1_RATIO,
-                            params={"reduceOnly": True}
-                        )
+                        exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
 
                         state["tp1"] = True
 
                         bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
-
-                # TP2
 
                 elif not state["tp2"]:
 
                     if (direction == "long" and price >= entry * (1 + TP2_PCT)) or \
                        (direction == "short" and price <= entry * (1 - TP2_PCT)):
 
-                        exchange.create_market_order(
-                            sym, side, qty * TP2_RATIO,
-                            params={"reduceOnly": True}
-                        )
+                        exchange.create_market_order(sym, side, qty * TP2_RATIO, params={"reduceOnly": True})
 
                         state["tp2"] = True
 
                         bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
-
-                # TRAILING
 
                 elif state["tp2"]:
 
@@ -272,10 +259,7 @@ def manage():
 
                         if price <= state["extreme"] * (1 - TRAIL_GAP):
 
-                            exchange.create_market_order(
-                                sym, side, get_qty(sym),
-                                params={"reduceOnly": True}
-                            )
+                            exchange.create_market_order(sym, side, get_qty(sym), params={"reduceOnly": True})
 
                             trade_state.pop(sym)
 
@@ -285,10 +269,7 @@ def manage():
 
                         if price >= state["extreme"] * (1 + TRAIL_GAP):
 
-                            exchange.create_market_order(
-                                sym, side, get_qty(sym),
-                                params={"reduceOnly": True}
-                            )
+                            exchange.create_market_order(sym, side, get_qty(sym), params={"reduceOnly": True})
 
                             trade_state.pop(sym)
 
