@@ -45,35 +45,39 @@ def safe(x):
     except:
         return 0
 
-############################################
+#################################################
 # OI SPIKE
-############################################
+#################################################
 
 def oi_spike(sym):
     try:
-        history = exchange.fetch_open_interest_history(sym, "5m", limit=5)
 
-        if not history:
+        ticker = exchange.fetch_ticker(sym)
+
+        oi = ticker.get("info", {}).get("openInterest")
+
+        oi = safe(oi)
+
+        if oi == 0:
             return False
 
-        oi=[safe(x["openInterest"]) for x in history]
-
-        avg=sum(oi[:-1])/4
-
-        if oi[-1] > avg*1.4:
+        if oi > 1000000:
             return True
 
         return False
+
     except:
         return False
 
-############################################
+
+#################################################
 # SHORT SQUEEZE
-############################################
+#################################################
 
 def short_squeeze(sym):
     try:
-        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=5)
 
         change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
 
@@ -81,16 +85,19 @@ def short_squeeze(sym):
             return True
 
         return False
+
     except:
         return False
 
-############################################
+
+#################################################
 # LONG SQUEEZE
-############################################
+#################################################
 
 def long_squeeze(sym):
     try:
-        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=5)
 
         change=(candles[-2][4]-candles[-1][4])/candles[-2][4]
 
@@ -98,16 +105,19 @@ def long_squeeze(sym):
             return True
 
         return False
+
     except:
         return False
 
-############################################
+
+#################################################
 # LIQUIDATION HUNT
-############################################
+#################################################
 
 def liquidation_hunt(sym):
     try:
-        candles=exchange.fetch_ohlcv(sym,"1m",limit=6)
+
+        candles = exchange.fetch_ohlcv(sym,"1m",limit=6)
 
         ranges=[c[2]-c[3] for c in candles]
 
@@ -117,14 +127,17 @@ def liquidation_hunt(sym):
             return True
 
         return False
+
     except:
         return False
 
-############################################
+
+#################################################
 # WHALE TRADE
-############################################
+#################################################
 
 def whale_trade(sym):
+
     try:
 
         if oi_spike(sym) and volume_spike(sym):
@@ -144,6 +157,7 @@ def whale_trade(sym):
     except:
         return False
 
+
 def get_qty(sym):
     try:
         pos = exchange.fetch_positions([sym])
@@ -152,6 +166,7 @@ def get_qty(sym):
         return safe(pos[0]["contracts"])
     except:
         return 0
+
 
 def sync_positions():
     try:
@@ -176,6 +191,7 @@ def sync_positions():
     except:
         pass
 
+
 def btc_trend():
     try:
         candles = exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
@@ -186,6 +202,7 @@ def btc_trend():
         return "bear"
     except:
         return "neutral"
+
 
 def orderbook_pressure(sym):
     try:
@@ -204,6 +221,7 @@ def orderbook_pressure(sym):
     except:
         return None
 
+
 def volume_spike(sym):
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
@@ -219,6 +237,7 @@ def volume_spike(sym):
     except:
         return False
 
+
 def funding_flip(sym):
     try:
         fr=exchange.fetch_funding_rate(sym)
@@ -230,6 +249,7 @@ def funding_flip(sym):
         return False
     except:
         return False
+
 
 def liquidation_heatmap(sym):
     try:
@@ -245,6 +265,7 @@ def liquidation_heatmap(sym):
         return False
     except:
         return False
+
 
 def fake_breakout(sym):
     try:
@@ -265,6 +286,7 @@ def fake_breakout(sym):
     except:
         return False
 
+
 def liquidity_sweep(sym):
     try:
         candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
@@ -278,6 +300,7 @@ def liquidity_sweep(sym):
         return False
     except:
         return False
+
 
 def coinglass_whale():
     try:
@@ -301,9 +324,10 @@ def coinglass_whale():
     except:
         return None
 
-############################################
-# GELİŞMİŞ WHALE SIGNAL
-############################################
+
+#################################################
+# WHALE SIGNAL (GELİŞTİRİLDİ)
+#################################################
 
 def whale_signal(sym):
     try:
@@ -329,6 +353,7 @@ def whale_signal(sym):
 
     except:
         return None
+
 
 def open_trade(sym,direction,label):
 
@@ -374,178 +399,3 @@ def open_trade(sym,direction,label):
 
     except:
         pass
-
-def manage():
-
-    while True:
-
-        try:
-
-            pos=exchange.fetch_positions()
-
-            for p in pos:
-
-                qty=safe(p.get("contracts"))
-
-                if qty<=0:
-                    continue
-
-                sym=p["symbol"]
-
-                if sym not in trade_state:
-                    continue
-
-                state=trade_state[sym]
-
-                price=exchange.fetch_ticker(sym)["last"]
-                entry=state["entry"]
-                direction=state["direction"]
-
-                side="sell" if direction=="long" else "buy"
-
-                if direction=="long" and price>state["extreme"]:
-                    state["extreme"]=price
-
-                if direction=="short" and price<state["extreme"]:
-                    state["extreme"]=price
-
-                if not state["tp1"]:
-
-                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
-                       (direction=="short" and price<=entry*(1-TP1_PCT)):
-
-                        exchange.create_market_order(sym,side,qty*TP1_RATIO,params={"reduceOnly":True})
-
-                        state["tp1"]=True
-                        state["be"]=True
-
-                        bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
-
-                elif state["be"]:
-
-                    if direction=="long" and price<=entry:
-
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                        trade_state.pop(sym)
-
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-
-                        continue
-
-                    if direction=="short" and price>=entry:
-
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                        trade_state.pop(sym)
-
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-
-                        continue
-
-                if not state["tp2"]:
-
-                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
-                       (direction=="short" and price<=entry*(1-TP2_PCT)):
-
-                        exchange.create_market_order(sym,side,qty*TP2_RATIO,params={"reduceOnly":True})
-
-                        state["tp2"]=True
-
-                        bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
-
-                elif state["tp2"]:
-
-                    if direction=="long":
-
-                        if price<=state["extreme"]*(1-TRAIL_GAP):
-
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                            trade_state.pop(sym)
-
-                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
-
-                    else:
-
-                        if price>=state["extreme"]*(1+TRAIL_GAP):
-
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                            trade_state.pop(sym)
-
-                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
-
-            time.sleep(4)
-
-        except:
-            time.sleep(6)
-
-def scanner():
-
-    while True:
-
-        try:
-
-            btc=btc_trend()
-
-            positions=exchange.fetch_positions()
-
-            active=sum(1 for p in positions if safe(p.get("contracts"))>0)
-
-            for sym in SYMBOLS:
-
-                if get_qty(sym)>0:
-                    continue
-
-                whale=whale_signal(sym)
-
-                if whale:
-
-                    if active < MAX_POSITIONS + BALINA_LIMIT:
-
-                        pressure=orderbook_pressure(sym)
-
-                        if pressure:
-                            open_trade(sym,pressure,"whale")
-                            break
-
-                if active >= MAX_POSITIONS:
-                    break
-
-                if not volume_spike(sym):
-                    continue
-
-                if not liquidity_sweep(sym):
-                    continue
-
-                if not fake_breakout(sym):
-                    continue
-
-                pressure=orderbook_pressure(sym)
-
-                if not pressure:
-                    continue
-
-                if pressure=="long" and btc=="bear":
-                    continue
-
-                open_trade(sym,pressure,"normal")
-
-                break
-
-            time.sleep(SCAN_DELAY)
-
-        except:
-            time.sleep(15)
-
-print("BOT STARTING")
-
-sync_positions()
-
-threading.Thread(target=manage,daemon=True).start()
-threading.Thread(target=scanner,daemon=True).start()
-
-bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
-
-bot.infinity_polling()
