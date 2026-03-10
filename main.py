@@ -3,9 +3,8 @@ import time
 import ccxt
 import telebot
 import threading
+import requests
 from datetime import datetime, timedelta
-
-# ================= SETTINGS =================
 
 LEV = 10
 MARGIN = 2
@@ -25,12 +24,11 @@ MAX_SPREAD = 0.003
 
 SCAN_DELAY = 20
 
-# ================= TELEGRAM =================
+OI_SPIKE_THRESHOLD = 5.0
+OI_DROP_THRESHOLD = -2.0
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
-
-# ================= EXCHANGE =================
 
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
@@ -42,19 +40,10 @@ exchange = ccxt.bitget({
 
 markets = exchange.load_markets()
 
-# ================= FUTURES LIST =================
-
-SYMBOLS = [
-    s for s in markets
-    if markets[s]["swap"] and "USDT" in s
-][:120]
-
-# ================= STATE =================
+SYMBOLS = [s for s in markets if markets[s].get("swap") and "USDT" in s][:120]
 
 trade_state = {}
 cooldown = {}
-
-# ================= HELPERS =================
 
 def safe(x):
     try:
@@ -71,90 +60,71 @@ def get_qty(sym):
     except:
         return 0
 
-# ================= SYNC POSITIONS =================
+def oi_change_percent():
+    try:
+        url = "https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
+        headers = {
+            "accept": "application/json",
+            "coinglassSecret": os.getenv("COINGLASS_API")
+        }
+        r = requests.get(url, headers=headers, timeout=10).json()
+        data = r.get("data", [])
+        if not data:
+            return 0
+        oi_vals = [safe(x.get("openInterest",0)) for x in data[:2]]
+        if len(oi_vals) < 2 or oi_vals[1] == 0:
+            return 0
+        return (oi_vals[0]-oi_vals[1])/oi_vals[1]*100
+    except:
+        return 0
+
+def orderbook_pressure(sym):
+    try:
+        ob = exchange.fetch_order_book(sym, limit=20)
+        bid_vol = sum(b[1] for b in ob["bids"])
+        ask_vol = sum(a[1] for a in ob["asks"])
+        if bid_vol > ask_vol*1.5:
+            return "long"
+        if ask_vol > bid_vol*1.5:
+            return "short"
+        return None
+    except:
+        return None
+
+def volume_spike(sym):
+    try:
+        m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
+        vols=[c[5] for c in m5]
+        avg=sum(vols[:-1])/5
+        return vols[-1] > avg*2
+    except:
+        return False
 
 def sync_existing():
-
     try:
-
         positions = exchange.fetch_positions()
-
         for p in positions:
-
             qty = safe(p.get("contracts"))
-
             if qty <= 0:
                 continue
-
             sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-
-            side = "long" if p["side"] == "long" else "short"
-
+            entry = safe(p.get("entryPrice"))
+            side = "long" if p.get("side") == "long" else "short"
             trade_state[sym] = {
                 "entry": entry,
                 "direction": side,
                 "tp1": False,
                 "tp2": False,
-                "extreme": entry
+                "extreme": entry,
+                "whale": False
             }
-
         print("Synced existing positions")
-
     except Exception as e:
-
         print("SYNC ERROR", e)
 
-# ================= ORDERBOOK PRESSURE =================
-
-def orderbook_pressure(sym):
-
+def open_trade(sym,direction,whale=False):
     try:
-
-        ob = exchange.fetch_order_book(sym, limit=20)
-
-        bid_vol = sum(b[1] for b in ob["bids"])
-        ask_vol = sum(a[1] for a in ob["asks"])
-
-        if bid_vol > ask_vol * 1.5:
-            return "long"
-
-        if ask_vol > bid_vol * 1.5:
-            return "short"
-
-        return None
-
-    except:
-        return None
-
-# ================= VOLUME SPIKE =================
-
-def volume_spike(sym):
-
-    try:
-
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
-
-        vols = [c[5] for c in m5]
-
-        avg = sum(vols[:-1]) / 5
-
-        if vols[-1] > avg * 2:
-            return True
-
-        return False
-
-    except:
-
-        return False
-
-# ================= OPEN TRADE =================
-
-def open_trade(sym, direction):
-
-    try:
-
-        if get_qty(sym) > 0:
+        if get_qty(sym)>0:
             return
 
         ticker = exchange.fetch_ticker(sym)
@@ -162,125 +132,128 @@ def open_trade(sym, direction):
         if ticker["quoteVolume"] < MIN_VOLUME:
             return
 
-        spread = (ticker["ask"] - ticker["bid"]) / ticker["last"]
+        spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
 
-        if spread > MAX_SPREAD:
+        if spread>MAX_SPREAD:
             return
 
-        price = ticker["last"]
+        price=ticker["last"]
 
-        qty = (MARGIN * LEV) / price
-        qty = float(exchange.amount_to_precision(sym, qty))
+        qty=(MARGIN*LEV)/price
+        qty=float(exchange.amount_to_precision(sym,qty))
 
-        exchange.set_leverage(LEV, sym)
+        exchange.set_leverage(LEV,sym)
 
-        side = "buy" if direction == "long" else "sell"
+        side="buy" if direction=="long" else "sell"
 
-        exchange.create_market_order(sym, side, qty)
+        exchange.create_market_order(sym,side,qty)
 
-        trade_state[sym] = {
-            "entry": price,
-            "direction": direction,
-            "tp1": False,
-            "tp2": False,
-            "extreme": price
+        trade_state[sym]={
+            "entry":price,
+            "direction":direction,
+            "tp1":False,
+            "tp2":False,
+            "extreme":price,
+            "whale":whale
         }
 
-        cooldown[sym] = datetime.now() + timedelta(minutes=COOLDOWN_MIN)
+        cooldown[sym]=datetime.now()+timedelta(minutes=COOLDOWN_MIN)
 
-        bot.send_message(CHAT_ID, f"🚀 NORMAL {sym} {direction}")
+        if whale:
+            bot.send_message(CHAT_ID,f"🐋 WHALE {sym} {direction}")
+        else:
+            bot.send_message(CHAT_ID,f"🚀 NORMAL {sym} {direction}")
 
     except Exception as e:
-
-        print("ENTRY ERROR", e)
-
-# ================= MANAGE POSITIONS =================
+        print("ENTRY ERROR",e)
 
 def manage():
-
     while True:
-
         try:
-
-            pos = exchange.fetch_positions()
+            pos=exchange.fetch_positions()
+            oi_pct = oi_change_percent()
 
             for p in pos:
 
-                qty = safe(p.get("contracts"))
+                qty=safe(p.get("contracts"))
 
-                if qty <= 0:
+                if qty<=0:
                     continue
 
-                sym = p["symbol"]
+                sym=p["symbol"]
 
                 if sym not in trade_state:
                     continue
 
-                state = trade_state[sym]
+                state=trade_state[sym]
 
-                price = exchange.fetch_ticker(sym)["last"]
+                price=exchange.fetch_ticker(sym)["last"]
 
-                entry = state["entry"]
-                direction = state["direction"]
+                entry=state["entry"]
+                direction=state["direction"]
 
-                side = "sell" if direction == "long" else "buy"
+                side="sell" if direction=="long" else "buy"
 
-                if direction == "long" and price > state["extreme"]:
-                    state["extreme"] = price
+                if state.get("whale") and oi_pct <= OI_DROP_THRESHOLD:
 
-                if direction == "short" and price < state["extreme"]:
-                    state["extreme"] = price
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+                    trade_state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"🐋 WHALE EXIT {sym}")
+                    continue
+
+                if direction=="long" and price>state["extreme"]:
+                    state["extreme"]=price
+
+                if direction=="short" and price<state["extreme"]:
+                    state["extreme"]=price
 
                 if not state["tp1"]:
 
-                    if (direction == "long" and price >= entry * (1 + TP1_PCT)) or \
-                       (direction == "short" and price <= entry * (1 - TP1_PCT)):
+                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP1_PCT)):
 
-                        exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
+                        exchange.create_market_order(sym,side,qty*TP1_RATIO,params={"reduceOnly":True})
 
-                        state["tp1"] = True
+                        state["tp1"]=True
 
-                        bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                        bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
                 elif not state["tp2"]:
 
-                    if (direction == "long" and price >= entry * (1 + TP2_PCT)) or \
-                       (direction == "short" and price <= entry * (1 - TP2_PCT)):
+                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP2_PCT)):
 
-                        exchange.create_market_order(sym, side, qty * TP2_RATIO, params={"reduceOnly": True})
+                        exchange.create_market_order(sym,side,qty*TP2_RATIO,params={"reduceOnly":True})
 
-                        state["tp2"] = True
+                        state["tp2"]=True
 
-                        bot.send_message(CHAT_ID, f"💰 TP2 {sym}")
+                        bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
 
-                elif state["tp2"]:
+                else:
 
-                    if direction == "long":
+                    if direction=="long":
 
-                        if price <= state["extreme"] * (1 - TRAIL_GAP):
+                        if price<=state["extreme"]*(1-TRAIL_GAP):
 
-                            exchange.create_market_order(sym, side, get_qty(sym), params={"reduceOnly": True})
-
+                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
                             trade_state.pop(sym)
 
-                            bot.send_message(CHAT_ID, f"🏁 TRAILING {sym}")
+                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
                     else:
 
-                        if price >= state["extreme"] * (1 + TRAIL_GAP):
+                        if price>=state["extreme"]*(1+TRAIL_GAP):
 
-                            exchange.create_market_order(sym, side, get_qty(sym), params={"reduceOnly": True})
-
+                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
                             trade_state.pop(sym)
 
-                            bot.send_message(CHAT_ID, f"🏁 TRAILING {sym}")
+                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
 
             time.sleep(3)
 
         except:
             time.sleep(5)
-
-# ================= SCANNER =================
 
 def run():
 
@@ -288,47 +261,47 @@ def run():
 
         try:
 
-            positions = exchange.fetch_positions()
+            positions=exchange.fetch_positions()
 
-            active = sum(1 for p in positions if safe(p.get("contracts")) > 0)
+            active=sum(1 for p in positions if safe(p.get("contracts"))>0)
+
+            oi_pct = oi_change_percent()
 
             for sym in SYMBOLS:
 
-                if active >= MAX_POSITIONS:
+                if active>=MAX_POSITIONS:
                     break
 
-                if sym in cooldown and datetime.now() < cooldown[sym]:
+                if sym in cooldown and datetime.now()<cooldown[sym]:
                     continue
 
-                if get_qty(sym) > 0:
+                if get_qty(sym)>0:
                     continue
 
-                pressure = orderbook_pressure(sym)
+                pressure=orderbook_pressure(sym)
 
-                if not pressure:
-                    continue
+                if oi_pct >= OI_SPIKE_THRESHOLD and pressure:
 
-                if not volume_spike(sym):
-                    continue
+                    open_trade(sym,pressure,True)
+                    break
 
-                open_trade(sym, pressure)
+                if pressure and volume_spike(sym):
 
-                break
+                    open_trade(sym,pressure,False)
+                    break
 
             time.sleep(SCAN_DELAY)
 
         except:
             time.sleep(20)
 
-# ================= START =================
-
 print("BOT STARTING")
 
 sync_existing()
 
-threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=run, daemon=True).start()
+threading.Thread(target=manage,daemon=True).start()
+threading.Thread(target=run,daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF")
+bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
 
 bot.infinity_polling()
