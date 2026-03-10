@@ -64,6 +64,7 @@ def sync_positions():
             sym = p["symbol"]
             entry = safe(p["entryPrice"])
             side = "long" if p["side"] == "long" else "short"
+
             trade_state[sym] = {
                 "entry": entry,
                 "direction": side,
@@ -89,12 +90,16 @@ def btc_trend():
 def orderbook_pressure(sym):
     try:
         ob=exchange.fetch_order_book(sym,limit=20)
+
         bid=sum([b[1] for b in ob["bids"]])
         ask=sum([a[1] for a in ob["asks"]])
+
         if bid > ask*1.5:
             return "long"
+
         if ask > bid*1.5:
             return "short"
+
         return None
     except:
         return None
@@ -102,10 +107,28 @@ def orderbook_pressure(sym):
 def volume_spike(sym):
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
+
         vols=[c[5] for c in candles]
+
         avg=sum(vols[:-1])/5
+
         if vols[-1] > avg*1.5:
             return True
+
+        return False
+    except:
+        return False
+
+def liquidity_sweep(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
+
+        highs=[c[2] for c in candles]
+        lows=[c[3] for c in candles]
+
+        if highs[-1] > max(highs[:-1]) or lows[-1] < min(lows[:-1]):
+            return True
+
         return False
     except:
         return False
@@ -114,8 +137,10 @@ def funding_flip(sym):
     try:
         fr=exchange.fetch_funding_rate(sym)
         rate=fr["fundingRate"]
+
         if abs(rate) > 0.0005:
             return True
+
         return False
     except:
         return False
@@ -123,92 +148,96 @@ def funding_flip(sym):
 def liquidation_heatmap(sym):
     try:
         candles=exchange.fetch_ohlcv(sym,"1m",limit=10)
+
         ranges=[c[2]-c[3] for c in candles]
+
         avg=sum(ranges[:-1])/9
+
         if ranges[-1] > avg*2:
             return True
-        return False
-    except:
-        return False
 
-def fake_breakout(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
-        highs=[c[2] for c in candles]
-        lows=[c[3] for c in candles]
-        last=candles[-1]
-        if last[4] < highs[-2] and last[2] > highs[-2]:
-            return True
-        if last[4] > lows[-2] and last[3] < lows[-2]:
-            return True
-        return False
-    except:
-        return False
-
-def liquidity_sweep(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
-        highs=[c[2] for c in candles]
-        lows=[c[3] for c in candles]
-        if highs[-1] > max(highs[:-1]) or lows[-1] < min(lows[:-1]):
-            return True
         return False
     except:
         return False
 
 def coinglass_whale():
+
     try:
+
         url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
+
         headers={
         "accept":"application/json",
         "coinglassSecret":os.getenv("COINGLASS_API")
         }
+
         r=requests.get(url,headers=headers,timeout=10).json()
+
         data=r.get("data",[])
+
         if not data:
             return None
+
         coin=data[0]["symbol"]
+
         return coin
+
     except:
         return None
 
 def whale_signal(sym):
+
     try:
+
         coin=coinglass_whale()
+
         if not coin:
             return None
+
         if coin not in sym:
             return None
+
         if not volume_spike(sym):
             return None
+
         if not funding_flip(sym):
             return None
+
         if not liquidation_heatmap(sym):
             return None
+
         return True
+
     except:
         return None
 
 def open_trade(sym,direction,label):
+
     try:
+
         if get_qty(sym) > 0:
             return
 
         ticker=exchange.fetch_ticker(sym)
+
         if ticker["quoteVolume"] < MIN_VOLUME:
             return
 
         spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
+
         if spread > MAX_SPREAD:
             return
 
         price=ticker["last"]
+
         qty=(MARGIN*LEV)/price
+
         qty=float(exchange.amount_to_precision(sym,qty))
 
         exchange.set_leverage(LEV,sym)
 
         side="buy" if direction=="long" else "sell"
+
         exchange.create_market_order(sym,side,qty)
 
         trade_state[sym]={
@@ -251,7 +280,9 @@ def manage():
                 state=trade_state[sym]
 
                 price=exchange.fetch_ticker(sym)["last"]
+
                 entry=state["entry"]
+
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
@@ -362,9 +393,6 @@ def scanner():
                     continue
 
                 if not liquidity_sweep(sym):
-                    continue
-
-                if not fake_breakout(sym):
                     continue
 
                 pressure=orderbook_pressure(sym)
