@@ -45,6 +45,105 @@ def safe(x):
     except:
         return 0
 
+############################################
+# OI SPIKE
+############################################
+
+def oi_spike(sym):
+    try:
+        history = exchange.fetch_open_interest_history(sym, "5m", limit=5)
+
+        if not history:
+            return False
+
+        oi=[safe(x["openInterest"]) for x in history]
+
+        avg=sum(oi[:-1])/4
+
+        if oi[-1] > avg*1.4:
+            return True
+
+        return False
+    except:
+        return False
+
+############################################
+# SHORT SQUEEZE
+############################################
+
+def short_squeeze(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+
+        change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
+
+        if change > 0.02 and volume_spike(sym):
+            return True
+
+        return False
+    except:
+        return False
+
+############################################
+# LONG SQUEEZE
+############################################
+
+def long_squeeze(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+
+        change=(candles[-2][4]-candles[-1][4])/candles[-2][4]
+
+        if change > 0.02 and volume_spike(sym):
+            return True
+
+        return False
+    except:
+        return False
+
+############################################
+# LIQUIDATION HUNT
+############################################
+
+def liquidation_hunt(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"1m",limit=6)
+
+        ranges=[c[2]-c[3] for c in candles]
+
+        avg=sum(ranges[:-1])/5
+
+        if ranges[-1] > avg*2.5:
+            return True
+
+        return False
+    except:
+        return False
+
+############################################
+# WHALE TRADE
+############################################
+
+def whale_trade(sym):
+    try:
+
+        if oi_spike(sym) and volume_spike(sym):
+            return True
+
+        if short_squeeze(sym):
+            return True
+
+        if long_squeeze(sym):
+            return True
+
+        if liquidation_hunt(sym):
+            return True
+
+        return False
+
+    except:
+        return False
+
 def get_qty(sym):
     try:
         pos = exchange.fetch_positions([sym])
@@ -202,6 +301,10 @@ def coinglass_whale():
     except:
         return None
 
+############################################
+# GELİŞMİŞ WHALE SIGNAL
+############################################
+
 def whale_signal(sym):
     try:
 
@@ -213,7 +316,7 @@ def whale_signal(sym):
         if coin not in sym:
             return None
 
-        if not volume_spike(sym):
+        if not whale_trade(sym):
             return None
 
         if not funding_flip(sym):
