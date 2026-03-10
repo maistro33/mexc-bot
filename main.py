@@ -446,5 +446,6 @@ threading.Thread(target=scanner,daemon=True).start()
 bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
 
 bot.infinity_polling()
- 
+
+
 
