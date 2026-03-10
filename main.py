@@ -448,4 +448,3 @@ bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
 bot.infinity_polling()
  
 
-Lutfen eklermisin deneyelim
