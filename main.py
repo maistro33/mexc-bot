@@ -133,34 +133,7 @@ def liquidity_sweep(sym):
     except:
         return False
 
-def funding_flip(sym):
-    try:
-        fr=exchange.fetch_funding_rate(sym)
-        rate=fr["fundingRate"]
-
-        if abs(rate) > 0.0005:
-            return True
-
-        return False
-    except:
-        return False
-
-def liquidation_heatmap(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"1m",limit=10)
-
-        ranges=[c[2]-c[3] for c in candles]
-
-        avg=sum(ranges[:-1])/9
-
-        if ranges[-1] > avg*2:
-            return True
-
-        return False
-    except:
-        return False
-
-def coinglass_whale():
+def oi_spike(sym):
 
     try:
 
@@ -180,7 +153,16 @@ def coinglass_whale():
 
         coin=data[0]["symbol"]
 
-        return coin
+        if coin not in sym:
+            return None
+
+        oi=data[0]["close"]
+        oi_prev=data[0]["open"]
+
+        if oi > oi_prev*1.05:
+            return True
+
+        return False
 
     except:
         return None
@@ -189,24 +171,18 @@ def whale_signal(sym):
 
     try:
 
-        coin=coinglass_whale()
-
-        if not coin:
-            return None
-
-        if coin not in sym:
+        if not oi_spike(sym):
             return None
 
         if not volume_spike(sym):
             return None
 
-        if not funding_flip(sym):
+        pressure=orderbook_pressure(sym)
+
+        if not pressure:
             return None
 
-        if not liquidation_heatmap(sym):
-            return None
-
-        return True
+        return pressure
 
     except:
         return None
@@ -380,11 +356,8 @@ def scanner():
 
                     if active < MAX_POSITIONS + BALINA_LIMIT:
 
-                        pressure=orderbook_pressure(sym)
-
-                        if pressure:
-                            open_trade(sym,pressure,"whale")
-                            break
+                        open_trade(sym,whale,"whale")
+                        break
 
                 if active >= MAX_POSITIONS:
                     break
