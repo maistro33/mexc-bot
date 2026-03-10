@@ -7,7 +7,7 @@ import requests
 
 LEV = 10
 MARGIN = 2
-MAX_POSITIONS = 4
+MAX_POSITIONS = 3
 
 TP1_PCT = 0.006
 TP2_PCT = 0.012
