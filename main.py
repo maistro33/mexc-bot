@@ -20,7 +20,7 @@ TP2_RATIO = 0.40
 
 MIN_VOLUME = 5000000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 20
+SCAN_DELAY = 10
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -104,7 +104,7 @@ def volume_spike(sym):
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
-        if vols[-1] > avg*2:
+        if vols[-1] > avg*1,5:
             return True
         return False
     except:
