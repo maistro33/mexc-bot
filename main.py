@@ -15,8 +15,8 @@ TP1_PCT = 0.006
 TP2_PCT = 0.012
 TRAIL_GAP = 0.008
 
-TP1_RATIO = 0.30
-TP2_RATIO = 0.40
+TP1_RATIO = 0.50
+TP2_RATIO = 0.25
 
 MIN_VOLUME = 5000000
 MAX_SPREAD = 0.003
@@ -61,6 +61,7 @@ def sync_positions():
             qty = safe(p.get("contracts"))
             if qty <= 0:
                 continue
+
             sym = p["symbol"]
             entry = safe(p["entryPrice"])
             side = "long" if p["side"] == "long" else "short"
@@ -119,6 +120,52 @@ def volume_spike(sym):
     except:
         return False
 
+def funding_flip(sym):
+    try:
+        fr=exchange.fetch_funding_rate(sym)
+        rate=fr["fundingRate"]
+
+        if abs(rate) > 0.0005:
+            return True
+
+        return False
+    except:
+        return False
+
+def liquidation_heatmap(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"1m",limit=10)
+
+        ranges=[c[2]-c[3] for c in candles]
+
+        avg=sum(ranges[:-1])/9
+
+        if ranges[-1] > avg*2:
+            return True
+
+        return False
+    except:
+        return False
+
+def fake_breakout(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+
+        highs=[c[2] for c in candles]
+        lows=[c[3] for c in candles]
+
+        last=candles[-1]
+
+        if last[4] < highs[-2] and last[2] > highs[-2]:
+            return True
+
+        if last[4] > lows[-2] and last[3] < lows[-2]:
+            return True
+
+        return False
+    except:
+        return False
+
 def liquidity_sweep(sym):
     try:
         candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
@@ -133,10 +180,8 @@ def liquidity_sweep(sym):
     except:
         return False
 
-def oi_spike(sym):
-
+def coinglass_whale():
     try:
-
         url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
 
         headers={
@@ -153,36 +198,31 @@ def oi_spike(sym):
 
         coin=data[0]["symbol"]
 
-        if coin not in sym:
-            return None
-
-        oi=data[0]["close"]
-        oi_prev=data[0]["open"]
-
-        if oi > oi_prev*1.05:
-            return True
-
-        return False
-
+        return coin
     except:
         return None
 
 def whale_signal(sym):
-
     try:
 
-        if not oi_spike(sym):
+        coin=coinglass_whale()
+
+        if not coin:
+            return None
+
+        if coin not in sym:
             return None
 
         if not volume_spike(sym):
             return None
 
-        pressure=orderbook_pressure(sym)
-
-        if not pressure:
+        if not funding_flip(sym):
             return None
 
-        return pressure
+        if not liquidation_heatmap(sym):
+            return None
+
+        return True
 
     except:
         return None
@@ -207,7 +247,6 @@ def open_trade(sym,direction,label):
         price=ticker["last"]
 
         qty=(MARGIN*LEV)/price
-
         qty=float(exchange.amount_to_precision(sym,qty))
 
         exchange.set_leverage(LEV,sym)
@@ -256,9 +295,7 @@ def manage():
                 state=trade_state[sym]
 
                 price=exchange.fetch_ticker(sym)["last"]
-
                 entry=state["entry"]
-
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
@@ -284,15 +321,23 @@ def manage():
                 elif state["be"]:
 
                     if direction=="long" and price<=entry:
+
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                         trade_state.pop(sym)
+
                         bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+
                         continue
 
                     if direction=="short" and price>=entry:
+
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                         trade_state.pop(sym)
+
                         bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+
                         continue
 
                 if not state["tp2"]:
@@ -356,8 +401,11 @@ def scanner():
 
                     if active < MAX_POSITIONS + BALINA_LIMIT:
 
-                        open_trade(sym,whale,"whale")
-                        break
+                        pressure=orderbook_pressure(sym)
+
+                        if pressure:
+                            open_trade(sym,pressure,"whale")
+                            break
 
                 if active >= MAX_POSITIONS:
                     break
@@ -366,6 +414,9 @@ def scanner():
                     continue
 
                 if not liquidity_sweep(sym):
+                    continue
+
+                if not fake_breakout(sym):
                     continue
 
                 pressure=orderbook_pressure(sym)
