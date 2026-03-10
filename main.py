@@ -104,7 +104,7 @@ def volume_spike(sym):
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
-        if vols[-1] > avg*1,5:
+        if vols[-1] > avg*1.5:
             return True
         return False
     except:
