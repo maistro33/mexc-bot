@@ -35,7 +35,7 @@ exchange = ccxt.bitget({
 
 markets = exchange.load_markets()
 
-SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:200]
+SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:120]
 
 trade_state = {}
 
