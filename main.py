@@ -69,6 +69,7 @@ def sync_positions():
                 "direction": side,
                 "tp1": False,
                 "tp2": False,
+                "be": False,
                 "extreme": entry
             }
     except:
@@ -192,109 +193,194 @@ def open_trade(sym,direction,label):
     try:
         if get_qty(sym) > 0:
             return
+
         ticker=exchange.fetch_ticker(sym)
         if ticker["quoteVolume"] < MIN_VOLUME:
             return
+
         spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
         if spread > MAX_SPREAD:
             return
+
         price=ticker["last"]
         qty=(MARGIN*LEV)/price
         qty=float(exchange.amount_to_precision(sym,qty))
+
         exchange.set_leverage(LEV,sym)
+
         side="buy" if direction=="long" else "sell"
         exchange.create_market_order(sym,side,qty)
+
         trade_state[sym]={
         "entry":price,
         "direction":direction,
         "tp1":False,
         "tp2":False,
+        "be":False,
         "extreme":price
         }
+
         if label=="whale":
             bot.send_message(CHAT_ID,f"🐋 WHALE {sym} {direction}")
         else:
             bot.send_message(CHAT_ID,f"🚀 NORMAL {sym} {direction}")
+
     except:
         pass
 
 def manage():
+
     while True:
+
         try:
+
             pos=exchange.fetch_positions()
+
             for p in pos:
+
                 qty=safe(p.get("contracts"))
-                if qty <=0:
+
+                if qty<=0:
                     continue
+
                 sym=p["symbol"]
+
                 if sym not in trade_state:
                     continue
+
                 state=trade_state[sym]
+
                 price=exchange.fetch_ticker(sym)["last"]
                 entry=state["entry"]
                 direction=state["direction"]
+
                 side="sell" if direction=="long" else "buy"
-                if direction=="long" and price > state["extreme"]:
+
+                if direction=="long" and price>state["extreme"]:
                     state["extreme"]=price
-                if direction=="short" and price < state["extreme"]:
+
+                if direction=="short" and price<state["extreme"]:
                     state["extreme"]=price
+
                 if not state["tp1"]:
-                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or (direction=="short" and price<=entry*(1-TP1_PCT)):
+
+                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP1_PCT)):
+
                         exchange.create_market_order(sym,side,qty*TP1_RATIO,params={"reduceOnly":True})
+
                         state["tp1"]=True
+                        state["be"]=True
+
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
-                elif not state["tp2"]:
-                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or (direction=="short" and price<=entry*(1-TP2_PCT)):
+
+                elif state["be"]:
+
+                    if direction=="long" and price<=entry:
+                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+                        trade_state.pop(sym)
+                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+                        continue
+
+                    if direction=="short" and price>=entry:
+                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+                        trade_state.pop(sym)
+                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+                        continue
+
+                if not state["tp2"]:
+
+                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP2_PCT)):
+
                         exchange.create_market_order(sym,side,qty*TP2_RATIO,params={"reduceOnly":True})
+
                         state["tp2"]=True
+
                         bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
+
                 elif state["tp2"]:
+
                     if direction=="long":
-                        if price <= state["extreme"]*(1-TRAIL_GAP):
+
+                        if price<=state["extreme"]*(1-TRAIL_GAP):
+
                             exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                             trade_state.pop(sym)
+
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
+
                     else:
-                        if price >= state["extreme"]*(1+TRAIL_GAP):
+
+                        if price>=state["extreme"]*(1+TRAIL_GAP):
+
                             exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                             trade_state.pop(sym)
+
                             bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
+
             time.sleep(4)
+
         except:
             time.sleep(6)
 
 def scanner():
+
     while True:
+
         try:
+
             btc=btc_trend()
+
             positions=exchange.fetch_positions()
+
             active=sum(1 for p in positions if safe(p.get("contracts"))>0)
+
             for sym in SYMBOLS:
+
                 if get_qty(sym)>0:
                     continue
+
                 whale=whale_signal(sym)
+
                 if whale:
+
                     if active < MAX_POSITIONS + BALINA_LIMIT:
+
                         pressure=orderbook_pressure(sym)
+
                         if pressure:
                             open_trade(sym,pressure,"whale")
                             break
+
                 if active >= MAX_POSITIONS:
                     break
+
                 if not volume_spike(sym):
                     continue
+
                 if not liquidity_sweep(sym):
                     continue
+
                 if not fake_breakout(sym):
                     continue
+
                 pressure=orderbook_pressure(sym)
+
                 if not pressure:
                     continue
+
                 if pressure=="long" and btc=="bear":
                     continue
+
                 open_trade(sym,pressure,"normal")
+
                 break
+
             time.sleep(SCAN_DELAY)
+
         except:
             time.sleep(15)
 
