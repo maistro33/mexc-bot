@@ -6,7 +6,7 @@ import threading
 import requests
 
 LEV = 10
-MARGIN = 2
+MARGIN = 3
 
 MAX_POSITIONS = 3
 BALINA_LIMIT = 1
@@ -20,7 +20,7 @@ TP2_RATIO = 0.25
 
 MIN_VOLUME = 5000000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 10
+SCAN_DELAY = 6
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
