@@ -72,7 +72,8 @@ def sync_positions():
                 "tp1": False,
                 "tp2": False,
                 "be": False,
-                "extreme": entry
+                "extreme": entry,
+                "start": time.time()
             }
     except:
         pass
@@ -172,11 +173,6 @@ def liquidity_sweep(sym):
     except:
         return False
 
-
-#################################################
-# SQUEEZE / PUMP / LIQUIDATION SYSTEM
-#################################################
-
 def short_squeeze(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
@@ -225,7 +221,6 @@ def early_pump(sym):
         return False
     except:
         return False
-
 
 def coinglass_whale():
     try:
@@ -307,7 +302,8 @@ def open_trade(sym,direction,label):
         "tp1":False,
         "tp2":False,
         "be":False,
-        "extreme":price
+        "extreme":price,
+        "start":time.time()
         }
 
         bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
@@ -342,6 +338,14 @@ def manage():
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
+
+                elapsed=time.time()-state["start"]
+
+                if elapsed>14400:
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
+                    continue
 
                 if direction=="long" and price>state["extreme"]:
                     state["extreme"]=price
