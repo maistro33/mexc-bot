@@ -55,32 +55,41 @@ def get_qty(sym):
     except:
         return 0
 
+def count_positions():
+    try:
+        pos = exchange.fetch_positions()
+        return sum(1 for p in pos if safe(p.get("contracts")) > 0)
+    except:
+        return 0
 
 def open_trade(sym,direction,label):
 
     try:
 
+        if count_positions() >= MAX_POSITIONS:
+            return
+
         if get_qty(sym) > 0:
             return
 
-        ticker=exchange.fetch_ticker(sym)
+        ticker = exchange.fetch_ticker(sym)
 
         if ticker["quoteVolume"] < MIN_VOLUME:
             return
 
-        spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
+        spread = (ticker["ask"]-ticker["bid"])/ticker["last"]
 
         if spread > MAX_SPREAD:
             return
 
-        price=ticker["last"]
+        price = ticker["last"]
 
-        qty=(MARGIN*LEV)/price
-        qty=float(exchange.amount_to_precision(sym,qty))
+        qty = (MARGIN*LEV)/price
+        qty = float(exchange.amount_to_precision(sym,qty))
 
         exchange.set_leverage(LEV,sym)
 
-        side="buy" if direction=="long" else "sell"
+        side = "buy" if direction=="long" else "sell"
 
         exchange.create_market_order(sym,side,qty)
 
@@ -104,24 +113,27 @@ def open_trade_whale(sym,direction,label):
 
     try:
 
+        if count_positions() >= MAX_POSITIONS + BALINA_LIMIT:
+            return
+
         if get_qty(sym) > 0:
             return
 
-        ticker=exchange.fetch_ticker(sym)
+        ticker = exchange.fetch_ticker(sym)
 
-        spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
+        spread = (ticker["ask"]-ticker["bid"])/ticker["last"]
 
         if spread > MAX_SPREAD:
             return
 
-        price=ticker["last"]
+        price = ticker["last"]
 
-        qty=(MARGIN*LEV)/price
-        qty=float(exchange.amount_to_precision(sym,qty))
+        qty = (MARGIN*LEV)/price
+        qty = float(exchange.amount_to_precision(sym,qty))
 
         exchange.set_leverage(LEV,sym)
 
-        side="buy" if direction=="long" else "sell"
+        side = "buy" if direction=="long" else "sell"
 
         exchange.create_market_order(sym,side,qty)
 
@@ -147,33 +159,93 @@ def manage():
 
         try:
 
-            pos=exchange.fetch_positions()
+            pos = exchange.fetch_positions()
 
             for p in pos:
 
-                qty=safe(p.get("contracts"))
+                qty = safe(p.get("contracts"))
 
-                if qty<=0:
+                if qty <= 0:
                     continue
 
-                sym=p["symbol"]
+                sym = p["symbol"]
 
                 if sym not in trade_state:
                     continue
 
-                state=trade_state[sym]
+                state = trade_state[sym]
 
-                price=exchange.fetch_ticker(sym)["last"]
-                entry=state["entry"]
-                direction=state["direction"]
+                price = exchange.fetch_ticker(sym)["last"]
+                entry = state["entry"]
+                direction = state["direction"]
 
-                side="sell" if direction=="long" else "buy"
+                side = "sell" if direction=="long" else "buy"
 
-                if direction=="long" and price>state["extreme"]:
-                    state["extreme"]=price
+                # TP1
+                if not state["tp1"]:
 
-                if direction=="short" and price<state["extreme"]:
-                    state["extreme"]=price
+                    if (direction=="long" and price >= entry*(1+TP1_PCT)) or \
+                       (direction=="short" and price <= entry*(1-TP1_PCT)):
+
+                        exchange.create_market_order(
+                            sym,
+                            side,
+                            get_qty(sym)*TP1_RATIO,
+                            params={"reduceOnly":True}
+                        )
+
+                        state["tp1"]=True
+                        state["be"]=True
+
+                        bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
+
+                # Breakeven
+                elif state["be"]:
+
+                    if direction=="long" and price<=entry:
+
+                        exchange.create_market_order(
+                            sym,
+                            side,
+                            get_qty(sym),
+                            params={"reduceOnly":True}
+                        )
+
+                        trade_state.pop(sym)
+
+                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+                        continue
+
+                    if direction=="short" and price>=entry:
+
+                        exchange.create_market_order(
+                            sym,
+                            side,
+                            get_qty(sym),
+                            params={"reduceOnly":True}
+                        )
+
+                        trade_state.pop(sym)
+
+                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
+                        continue
+
+                # TP2
+                if not state["tp2"]:
+
+                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP2_PCT)):
+
+                        exchange.create_market_order(
+                            sym,
+                            side,
+                            get_qty(sym)*TP2_RATIO,
+                            params={"reduceOnly":True}
+                        )
+
+                        state["tp2"]=True
+
+                        bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
 
             time.sleep(4)
 
@@ -187,6 +259,10 @@ def scanner():
 
         try:
 
+            if count_positions() >= MAX_POSITIONS:
+                time.sleep(SCAN_DELAY)
+                continue
+
             for sym in SYMBOLS:
 
                 if get_qty(sym)>0:
@@ -197,22 +273,22 @@ def scanner():
                 if ticker["quoteVolume"] < MIN_VOLUME:
                     continue
 
-                pressure=None
-
                 ob=exchange.fetch_order_book(sym)
 
                 bid=sum([b[1] for b in ob["bids"]])
                 ask=sum([a[1] for a in ob["asks"]])
 
+                direction=None
+
                 if bid>ask*1.5:
-                    pressure="long"
+                    direction="long"
 
                 if ask>bid*1.5:
-                    pressure="short"
+                    direction="short"
 
-                if pressure:
+                if direction:
 
-                    open_trade(sym,pressure,"normal")
+                    open_trade(sym,direction,"normal")
                     break
 
             time.sleep(SCAN_DELAY)
@@ -228,6 +304,10 @@ def whale_engine():
     while True:
 
         try:
+
+            if count_positions() >= MAX_POSITIONS + BALINA_LIMIT:
+                time.sleep(20)
+                continue
 
             url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
 
