@@ -268,6 +268,64 @@ def whale_signal(sym):
     except:
         return None
 
+# -------- EKLENEN BALINA MOTORU --------
+
+def whale_engine():
+
+    last=None
+
+    while True:
+
+        try:
+
+            url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
+
+            headers={
+                "accept":"application/json",
+                "coinglassSecret":os.getenv("COINGLASS_API")
+            }
+
+            r=requests.get(url,headers=headers,timeout=10).json()
+
+            data=r.get("data",[])
+
+            if not data:
+                time.sleep(20)
+                continue
+
+            for d in data[:5]:
+
+                coin=d.get("symbol")
+
+                sym=coin+"/USDT:USDT"
+
+                if sym not in SYMBOLS:
+                    continue
+
+                if get_qty(sym)>0:
+                    continue
+
+                pressure=orderbook_pressure(sym)
+
+                if not pressure:
+                    continue
+
+                if last==sym:
+                    continue
+
+                open_trade(sym,pressure,"whale-engine")
+
+                last=sym
+
+                break
+
+            time.sleep(20)
+
+        except:
+            time.sleep(30)
+
+# ---------------------------------------
+
 def open_trade(sym,direction,label):
 
     try:
@@ -493,6 +551,9 @@ sync_positions()
 
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
+
+# EKLENEN THREAD
+threading.Thread(target=whale_engine,daemon=True).start()
 
 bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
 
