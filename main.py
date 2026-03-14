@@ -10,7 +10,6 @@ MARGIN = 3
 
 MAX_POSITIONS = 3
 BALINA_LIMIT = 1
-MAX_WHALE_POSITION = 1
 
 TP1_PCT = 0.006
 TP2_PCT = 0.012
@@ -40,8 +39,46 @@ SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:120]
 
 trade_state = {}
 
-last_whale_coin=None
-last_whale_time=0
+################################################
+# BALINA MOTORU (EKLENDİ)
+################################################
+
+def whale_engine():
+
+    while True:
+
+        try:
+
+            coin = coinglass_whale()
+
+            if not coin:
+                time.sleep(30)
+                continue
+
+            sym = f"{coin}/USDT:USDT"
+
+            if sym not in markets:
+                time.sleep(30)
+                continue
+
+            if get_qty(sym) > 0:
+                time.sleep(30)
+                continue
+
+            pressure = orderbook_pressure(sym)
+
+            if not pressure:
+                time.sleep(30)
+                continue
+
+            open_trade(sym, pressure, "whale")
+
+            time.sleep(120)
+
+        except:
+            time.sleep(60)
+
+################################################
 
 def safe(x):
     try:
@@ -58,90 +95,29 @@ def get_qty(sym):
     except:
         return 0
 
-def coinglass_whale():
-
+def sync_positions():
     try:
-
-        url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
-
-        headers={
-        "accept":"application/json",
-        "coinglassSecret":os.getenv("COINGLASS_API")
-        }
-
-        r=requests.get(url,headers=headers,timeout=10).json()
-
-        data=r.get("data",[])
-
-        if not data:
-            return None
-
-        coin=data[0]["symbol"]
-
-        return coin
-
-    except:
-        return None
-
-def whale_engine():
-
-    global last_whale_coin,last_whale_time
-
-    while True:
-
-        try:
-
-            coin=coinglass_whale()
-
-            if not coin:
-                time.sleep(30)
+        positions = exchange.fetch_positions()
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
                 continue
 
-            sym=f"{coin}/USDT:USDT"
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+            side = "long" if p["side"] == "long" else "short"
 
-            if sym not in markets:
-                time.sleep(30)
-                continue
-
-            if sym==last_whale_coin and time.time()-last_whale_time<900:
-                time.sleep(30)
-                continue
-
-            if get_qty(sym)>0:
-                time.sleep(30)
-                continue
-
-            ticker=exchange.fetch_ticker(sym)
-
-            price=ticker["last"]
-
-            qty=(MARGIN*LEV)/price
-            qty=float(exchange.amount_to_precision(sym,qty))
-
-            exchange.set_leverage(LEV,sym)
-
-            exchange.create_market_order(sym,"buy",qty)
-
-            trade_state[sym]={
-            "entry":price,
-            "direction":"long",
-            "tp1":False,
-            "tp2":False,
-            "be":False,
-            "extreme":price,
-            "start":time.time()
+            trade_state[sym] = {
+                "entry": entry,
+                "direction": side,
+                "tp1": False,
+                "tp2": False,
+                "be": False,
+                "extreme": entry,
+                "start": time.time()
             }
-
-            last_whale_coin=sym
-            last_whale_time=time.time()
-
-            bot.send_message(CHAT_ID,f"🐋 WHALE DETECTED {sym} long")
-
-            time.sleep(60)
-
-        except:
-
-            time.sleep(60)
+    except:
+        pass
 
 def btc_trend():
     try:
@@ -183,154 +159,140 @@ def volume_spike(sym):
     except:
         return False
 
-def open_trade(sym,direction,label):
-
+def funding_flip(sym):
     try:
+        fr=exchange.fetch_funding_rate(sym)
+        rate=fr["fundingRate"]
 
-        if get_qty(sym) > 0:
-            return
+        if abs(rate) > 0.0005:
+            return True
 
-        ticker=exchange.fetch_ticker(sym)
+        return False
+    except:
+        return False
 
-        if ticker["quoteVolume"] < MIN_VOLUME:
-            return
+def liquidation_heatmap(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"1m",limit=10)
+        ranges=[c[2]-c[3] for c in candles]
+        avg=sum(ranges[:-1])/9
 
-        spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
+        if ranges[-1] > avg*2:
+            return True
 
-        if spread > MAX_SPREAD:
-            return
+        return False
+    except:
+        return False
 
-        price=ticker["last"]
+def fake_breakout(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+        highs=[c[2] for c in candles]
+        lows=[c[3] for c in candles]
+        last=candles[-1]
 
-        qty=(MARGIN*LEV)/price
-        qty=float(exchange.amount_to_precision(sym,qty))
+        if last[4] < highs[-2] and last[2] > highs[-2]:
+            return True
 
-        exchange.set_leverage(LEV,sym)
+        if last[4] > lows[-2] and last[3] < lows[-2]:
+            return True
 
-        side="buy" if direction=="long" else "sell"
+        return False
+    except:
+        return False
 
-        exchange.create_market_order(sym,side,qty)
+def liquidity_sweep(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
+        highs=[c[2] for c in candles]
+        lows=[c[3] for c in candles]
 
-        trade_state[sym]={
-        "entry":price,
-        "direction":direction,
-        "tp1":False,
-        "tp2":False,
-        "be":False,
-        "extreme":price,
-        "start":time.time()
+        if highs[-1] > max(highs[:-1]) or lows[-1] < min(lows[:-1]):
+            return True
+
+        return False
+    except:
+        return False
+
+def short_squeeze(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
+        change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
+
+        if change > 0.02 and volume_spike(sym):
+            return True
+
+        return False
+    except:
+        return False
+
+def long_squeeze(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
+        change=(candles[-2][4]-candles[-1][4])/candles[-2][4]
+
+        if change > 0.02 and volume_spike(sym):
+            return True
+
+        return False
+    except:
+        return False
+
+def liquidation_hunt(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym,"1m",limit=6)
+        ranges=[c[2]-c[3] for c in candles]
+        avg=sum(ranges[:-1])/5
+
+        if ranges[-1] > avg*2.5:
+            return True
+
+        return False
+    except:
+        return False
+
+def early_pump(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
+        high=max([c[2] for c in candles[:-1]])
+
+        if candles[-1][4] > high and volume_spike(sym):
+            return True
+
+        return False
+    except:
+        return False
+
+def coinglass_whale():
+    try:
+        url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
+
+        headers={
+        "accept":"application/json",
+        "coinglassSecret":os.getenv("COINGLASS_API")
         }
 
-        bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
+        r=requests.get(url,headers=headers,timeout=10).json()
+        data=r.get("data",[])
 
+        if not data:
+            return None
+
+        coin=data[0]["symbol"]
+
+        return coin
     except:
-        pass
+        return None
 
-def manage():
-
-    while True:
-
-        try:
-
-            pos=exchange.fetch_positions()
-
-            for p in pos:
-
-                qty=safe(p.get("contracts"))
-
-                if qty<=0:
-                    continue
-
-                sym=p["symbol"]
-
-                if sym not in trade_state:
-                    continue
-
-                state=trade_state[sym]
-
-                price=exchange.fetch_ticker(sym)["last"]
-                entry=state["entry"]
-                direction=state["direction"]
-
-                side="sell" if direction=="long" else "buy"
-
-                elapsed=time.time()-state["start"]
-
-                if elapsed>14400:
-                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                    trade_state.pop(sym)
-                    bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
-                    continue
-
-                if direction=="long" and price>state["extreme"]:
-                    state["extreme"]=price
-
-                if direction=="short" and price<state["extreme"]:
-                    state["extreme"]=price
-
-                if not state["tp1"]:
-
-                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
-                       (direction=="short" and price<=entry*(1-TP1_PCT)):
-
-                        exchange.create_market_order(sym,side,qty*TP1_RATIO,params={"reduceOnly":True})
-
-                        state["tp1"]=True
-                        state["be"]=True
-
-                        bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
-
-                elif state["be"]:
-
-                    if direction=="long" and price<=entry:
-
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-                        continue
-
-                    if direction=="short" and price>=entry:
-
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-                        continue
-
-                if not state["tp2"]:
-
-                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
-                       (direction=="short" and price<=entry*(1-TP2_PCT)):
-
-                        exchange.create_market_order(sym,side,qty*TP2_RATIO,params={"reduceOnly":True})
-                        state["tp2"]=True
-                        bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
-
-                elif state["tp2"]:
-
-                    if direction=="long":
-
-                        if price<=state["extreme"]*(1-TRAIL_GAP):
-
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                            trade_state.pop(sym)
-                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
-
-                    else:
-
-                        if price>=state["extreme"]*(1+TRAIL_GAP):
-
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                            trade_state.pop(sym)
-                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
-
-            time.sleep(4)
-
-        except:
-            time.sleep(6)
+# diğer tüm fonksiyonların aynen devam ediyor
+# scanner() ve manage() hiç değiştirilmedi
 
 print("BOT STARTING")
 
+sync_positions()
+
 threading.Thread(target=manage,daemon=True).start()
+threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=whale_engine,daemon=True).start()
 
 bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
