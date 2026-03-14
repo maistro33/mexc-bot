@@ -20,7 +20,7 @@ TP2_RATIO = 0.25
 
 MIN_VOLUME = 5000000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 6
+SCAN_DELAY = 8
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -214,8 +214,9 @@ def early_pump(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
         high=max([c[2] for c in candles[:-1]])
+        move=(candles[-1][4]-candles[-2][4])/candles[-2][4]
 
-        if candles[-1][4] > high and volume_spike(sym):
+        if candles[-1][4] > high and volume_spike(sym) and move < 0.03:
             return True
 
         return False
@@ -341,7 +342,7 @@ def manage():
 
                 elapsed=time.time()-state["start"]
 
-                if elapsed>14400:
+                if elapsed>21600:
                     exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
@@ -420,10 +421,25 @@ def scanner():
         try:
 
             btc=btc_trend()
+
+            if btc=="bear":
+                time.sleep(SCAN_DELAY)
+                continue
+
             positions=exchange.fetch_positions()
             active=sum(1 for p in positions if safe(p.get("contracts"))>0)
 
+            if active >= MAX_POSITIONS:
+                time.sleep(SCAN_DELAY)
+                continue
+
             for sym in SYMBOLS:
+
+                positions=exchange.fetch_positions()
+                active=sum(1 for p in positions if safe(p.get("contracts"))>0)
+
+                if active >= MAX_POSITIONS:
+                    break
 
                 if get_qty(sym)>0:
                     continue
@@ -458,9 +474,6 @@ def scanner():
                             open_trade(sym,pressure,"whale")
                             break
 
-                if active >= MAX_POSITIONS:
-                    break
-
                 if not volume_spike(sym):
                     continue
 
@@ -473,9 +486,6 @@ def scanner():
                 pressure=orderbook_pressure(sym)
 
                 if not pressure:
-                    continue
-
-                if pressure=="long" and btc=="bear":
                     continue
 
                 open_trade(sym,pressure,"normal")
