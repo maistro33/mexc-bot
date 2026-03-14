@@ -268,7 +268,8 @@ def whale_signal(sym):
     except:
         return None
 
-# -------- EKLENEN BALINA MOTORU --------
+# BALINA MOTORU TÜM FUTURES COINLERİ TARAR
+whale_symbols = [s for s in markets if markets[s]["swap"] and "USDT" in s]
 
 def whale_engine():
 
@@ -299,7 +300,7 @@ def whale_engine():
 
                 sym=coin+"/USDT:USDT"
 
-                if sym not in SYMBOLS:
+                if sym not in whale_symbols:
                     continue
 
                 if get_qty(sym)>0:
@@ -323,8 +324,6 @@ def whale_engine():
 
         except:
             time.sleep(30)
-
-# ---------------------------------------
 
 def open_trade(sym,direction,label):
 
@@ -551,8 +550,6 @@ sync_positions()
 
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
-
-# EKLENEN THREAD
 threading.Thread(target=whale_engine,daemon=True).start()
 
 bot.send_message(CHAT_ID,"🤖 BOT AKTİF")
