@@ -40,7 +40,7 @@ SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:120]
 trade_state = {}
 
 ################################################
-# BALINA MOTORU (EKLENDİ)
+# YENİ EKLENEN BALINA MOTORU
 ################################################
 
 def whale_engine():
@@ -266,26 +266,80 @@ def early_pump(sym):
 def coinglass_whale():
     try:
         url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
-
         headers={
         "accept":"application/json",
         "coinglassSecret":os.getenv("COINGLASS_API")
         }
-
         r=requests.get(url,headers=headers,timeout=10).json()
         data=r.get("data",[])
-
         if not data:
             return None
-
         coin=data[0]["symbol"]
-
         return coin
     except:
         return None
 
-# diğer tüm fonksiyonların aynen devam ediyor
-# scanner() ve manage() hiç değiştirilmedi
+def whale_signal(sym):
+    try:
+        coin=coinglass_whale()
+        if not coin:
+            return None
+        if coin not in sym:
+            return None
+        if not volume_spike(sym):
+            return None
+        if not funding_flip(sym):
+            return None
+        if not liquidation_heatmap(sym):
+            return None
+        return True
+    except:
+        return None
+
+def open_trade(sym,direction,label):
+
+    try:
+
+        if get_qty(sym) > 0:
+            return
+
+        ticker=exchange.fetch_ticker(sym)
+
+        if ticker["quoteVolume"] < MIN_VOLUME:
+            return
+
+        spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
+
+        if spread > MAX_SPREAD:
+            return
+
+        price=ticker["last"]
+
+        qty=(MARGIN*LEV)/price
+        qty=float(exchange.amount_to_precision(sym,qty))
+
+        exchange.set_leverage(LEV,sym)
+
+        side="buy" if direction=="long" else "sell"
+
+        exchange.create_market_order(sym,side,qty)
+
+        trade_state[sym]={
+        "entry":price,
+        "direction":direction,
+        "tp1":False,
+        "tp2":False,
+        "be":False,
+        "extreme":price,
+        "start":time.time()
+        }
+
+        bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
+
+    except:
+        pass
+
+# manage() ve scanner() aynen devam ediyor
 
 print("BOT STARTING")
 
