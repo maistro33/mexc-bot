@@ -3,6 +3,7 @@ import time
 import ccxt
 import telebot
 import threading
+import requests
 import random
 
 LEV = 10
@@ -13,9 +14,8 @@ BALINA_LIMIT = 1
 
 TP1_PCT = 0.006
 STEP_PCT = 0.006
-TP1_RATIO = 0.50
 
-TIMEOUT = 21600
+TP1_RATIO = 0.50
 
 MIN_VOLUME = 3000000
 MAX_SPREAD = 0.003
@@ -33,6 +33,7 @@ exchange = ccxt.bitget({
 })
 
 markets = exchange.load_markets()
+
 SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:120]
 
 trade_state = {}
@@ -86,24 +87,41 @@ def btc_trend():
         candles = exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
         closes=[c[4] for c in candles]
         ema=sum(closes[-20:])/20
-        return "bull" if closes[-1] > ema else "bear"
+
+        if closes[-1] > ema:
+            return "bull"
+
+        return "bear"
+
     except:
         return "neutral"
 
 
 def volume_spike(sym):
+
     try:
+
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
+
         vols=[c[5] for c in candles]
+
         avg=sum(vols[:-1])/5
-        return vols[-1] > avg*1.5
+
+        if vols[-1] > avg*1.5:
+            return True
+
+        return False
+
     except:
         return False
 
 
 def orderbook_pressure(sym):
+
     try:
+
         ob=exchange.fetch_order_book(sym,limit=20)
+
         bid=sum([b[1] for b in ob["bids"]])
         ask=sum([a[1] for a in ob["asks"]])
 
@@ -114,6 +132,7 @@ def orderbook_pressure(sym):
             return "short"
 
         return None
+
     except:
         return None
 
@@ -159,84 +178,9 @@ def liquidity_sweep(sym):
         return False
 
 
-def short_squeeze(sym):
-
-    try:
-
-        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
-
-        change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
-
-        return change > 0.02 and volume_spike(sym)
-
-    except:
-        return False
-
-
-def long_squeeze(sym):
-
-    try:
-
-        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
-
-        change=(candles[-2][4]-candles[-1][4])/candles[-2][4]
-
-        return change > 0.02 and volume_spike(sym)
-
-    except:
-        return False
-
-
-def liquidation_hunt(sym):
-
-    try:
-
-        candles = exchange.fetch_ohlcv(sym,"1m",limit=6)
-
-        ranges=[c[2]-c[3] for c in candles]
-
-        avg=sum(ranges[:-1])/5
-
-        return ranges[-1] > avg*2.5
-
-    except:
-        return False
-
-
-def early_pump(sym):
-
-    try:
-
-        candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
-
-        high=max([c[2] for c in candles[:-1]])
-
-        return candles[-1][4] > high and volume_spike(sym)
-
-    except:
-        return False
-
-
-def whale_signal(sym):
-
-    try:
-
-        fr=exchange.fetch_funding_rate(sym)
-
-        rate=fr["fundingRate"]
-
-        return abs(rate) > 0.0005 and volume_spike(sym)
-
-    except:
-        return False
-
-
 def open_trade(sym,direction,label):
 
     try:
-
-        if sym in trade_state:
-            return
 
         if get_qty(sym) > 0:
             return
@@ -263,11 +207,11 @@ def open_trade(sym,direction,label):
         exchange.create_market_order(sym,side,qty)
 
         trade_state[sym]={
-            "entry":price,
-            "direction":direction,
-            "tp1":False,
-            "step":0,
-            "start":time.time()
+        "entry":price,
+        "direction":direction,
+        "tp1":False,
+        "step":0,
+        "start":time.time()
         }
 
         bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
@@ -306,18 +250,6 @@ def manage():
 
                 side="sell" if direction=="long" else "buy"
 
-                elapsed=time.time()-state["start"]
-
-                if elapsed > TIMEOUT:
-
-                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                    trade_state.pop(sym)
-
-                    bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
-
-                    continue
-
                 if not state["tp1"]:
 
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
@@ -340,17 +272,17 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} LOCKED {sym}")
 
-                    stop_index=max(0,state["step"]-2)
+                    if state["step"] >= 2:
 
-                    stop_price = entry * (1 + STEP_PCT * stop_index) if direction=="long" else entry * (1 - STEP_PCT * stop_index)
+                        stop_price = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
 
-                    if (direction=="long" and price<=stop_price) or (direction=="short" and price>=stop_price):
+                        if (direction=="long" and price<=stop_price) or (direction=="short" and price>=stop_price):
 
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
 
-                        trade_state.pop(sym)
+                            trade_state.pop(sym)
 
-                        bot.send_message(CHAT_ID,f"🏁 STEP TRAILING {sym}")
+                            bot.send_message(CHAT_ID,f"🏁 STEP TRAILING {sym}")
 
             time.sleep(4)
 
@@ -373,39 +305,14 @@ def scanner():
 
             active=sum(1 for p in positions if safe(p.get("contracts"))>0)
 
+            if active >= MAX_POSITIONS:
+                time.sleep(SCAN_DELAY)
+                continue
+
             for sym in SYMBOLS:
 
-                if active >= MAX_POSITIONS:
-                    break
-
-                if sym in trade_state:
+                if get_qty(sym)>0:
                     continue
-
-                if short_squeeze(sym):
-                    open_trade(sym,"long","squeeze")
-                    break
-
-                if long_squeeze(sym):
-                    open_trade(sym,"short","squeeze")
-                    break
-
-                if liquidation_hunt(sym):
-                    pressure=orderbook_pressure(sym)
-
-                    if pressure:
-                        open_trade(sym,pressure,"liquidation")
-                        break
-
-                if early_pump(sym):
-                    open_trade(sym,"long","pump")
-                    break
-
-                if whale_signal(sym):
-                    pressure=orderbook_pressure(sym)
-
-                    if pressure:
-                        open_trade(sym,pressure,"whale")
-                        break
 
                 if not volume_spike(sym):
                     continue
