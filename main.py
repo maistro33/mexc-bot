@@ -12,11 +12,9 @@ MAX_POSITIONS = 3
 BALINA_LIMIT = 1
 
 TP1_PCT = 0.006
-TP2_PCT = 0.009
-TRAIL_GAP = 0.008
+STEP_PCT = 0.006
 
 TP1_RATIO = 0.50
-TP2_RATIO = 0.25
 
 MIN_VOLUME = 5000000
 MAX_SPREAD = 0.003
@@ -82,9 +80,7 @@ def sync_positions():
                 "entry": entry,
                 "direction": side,
                 "tp1": tp1_done,
-                "tp2": False,
-                "be": tp1_done,
-                "extreme": entry,
+                "step": 0,
                 "start": time.time()
             }
 
@@ -220,9 +216,7 @@ def open_trade(sym,direction,label):
         "entry":price,
         "direction":direction,
         "tp1":False,
-        "tp2":False,
-        "be":False,
-        "extreme":price,
+        "step":0,
         "start":time.time()
         }
 
@@ -262,24 +256,6 @@ def manage():
 
                 side="sell" if direction=="long" else "buy"
 
-                elapsed=time.time()-state["start"]
-
-                if elapsed>21600:
-
-                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                    trade_state.pop(sym)
-
-                    bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
-
-                    continue
-
-                if direction=="long" and price>state["extreme"]:
-                    state["extreme"]=price
-
-                if direction=="short" and price<state["extreme"]:
-                    state["extreme"]=price
-
                 if not state["tp1"]:
 
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
@@ -288,64 +264,29 @@ def manage():
                         exchange.create_market_order(sym,side,qty*TP1_RATIO,params={"reduceOnly":True})
 
                         state["tp1"]=True
-                        state["be"]=True
+                        state["step"]=1
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
-                elif state["be"]:
+                else:
 
-                    if direction=="long" and price<=entry:
+                    step_price = entry * (1 + STEP_PCT * state["step"]) if direction=="long" else entry * (1 - STEP_PCT * state["step"])
+
+                    if (direction=="long" and price>=step_price) or (direction=="short" and price<=step_price):
+
+                        state["step"] += 1
+
+                        bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} LOCKED {sym}")
+
+                    stop_price = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
+
+                    if (direction=="long" and price<=stop_price) or (direction=="short" and price>=stop_price):
 
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
 
                         trade_state.pop(sym)
 
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-
-                        continue
-
-                    if direction=="short" and price>=entry:
-
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                        trade_state.pop(sym)
-
-                        bot.send_message(CHAT_ID,f"⚖️ BREAKEVEN {sym}")
-
-                        continue
-
-                if not state["tp2"]:
-
-                    if (direction=="long" and price>=entry*(1+TP2_PCT)) or \
-                       (direction=="short" and price<=entry*(1-TP2_PCT)):
-
-                        exchange.create_market_order(sym,side,qty*TP2_RATIO,params={"reduceOnly":True})
-
-                        state["tp2"]=True
-
-                        bot.send_message(CHAT_ID,f"💰 TP2 {sym}")
-
-                elif state["tp2"]:
-
-                    if direction=="long":
-
-                        if price<=state["extreme"]*(1-TRAIL_GAP):
-
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                            trade_state.pop(sym)
-
-                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
-
-                    else:
-
-                        if price>=state["extreme"]*(1+TRAIL_GAP):
-
-                            exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                            trade_state.pop(sym)
-
-                            bot.send_message(CHAT_ID,f"🏁 TRAILING {sym}")
+                        bot.send_message(CHAT_ID,f"🏁 STEP TRAILING {sym}")
 
             time.sleep(4)
 
