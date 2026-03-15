@@ -15,6 +15,8 @@ TP1_PCT = 0.006
 STEP_PCT = 0.006
 TP1_RATIO = 0.50
 
+TIMEOUT = 21600
+
 MIN_VOLUME = 3000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 6
@@ -70,8 +72,9 @@ def sync_positions():
             trade_state[sym] = {
                 "entry": entry,
                 "direction": side,
-                "tp1": False,
-                "step": 0
+                "tp1": True,
+                "step": 1,
+                "start": time.time()
             }
 
     except:
@@ -101,7 +104,6 @@ def volume_spike(sym):
 def orderbook_pressure(sym):
     try:
         ob=exchange.fetch_order_book(sym,limit=20)
-
         bid=sum([b[1] for b in ob["bids"]])
         ask=sum([a[1] for a in ob["asks"]])
 
@@ -117,7 +119,9 @@ def orderbook_pressure(sym):
 
 
 def fake_breakout(sym):
+
     try:
+
         candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
 
         highs=[c[2] for c in candles]
@@ -262,7 +266,8 @@ def open_trade(sym,direction,label):
             "entry":price,
             "direction":direction,
             "tp1":False,
-            "step":0
+            "step":0,
+            "start":time.time()
         }
 
         bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
@@ -301,6 +306,18 @@ def manage():
 
                 side="sell" if direction=="long" else "buy"
 
+                elapsed=time.time()-state["start"]
+
+                if elapsed > TIMEOUT:
+
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                    trade_state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
+
+                    continue
+
                 if not state["tp1"]:
 
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
@@ -323,7 +340,9 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} LOCKED {sym}")
 
-                    stop_price = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
+                    stop_index=max(0,state["step"]-2)
+
+                    stop_price = entry * (1 + STEP_PCT * stop_index) if direction=="long" else entry * (1 - STEP_PCT * stop_index)
 
                     if (direction=="long" and price<=stop_price) or (direction=="short" and price>=stop_price):
 
