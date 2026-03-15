@@ -3,7 +3,6 @@ import time
 import ccxt
 import telebot
 import threading
-import requests
 import random
 
 LEV = 10
@@ -14,8 +13,9 @@ BALINA_LIMIT = 1
 
 TP1_PCT = 0.006
 STEP_PCT = 0.006
-
 TP1_RATIO = 0.50
+
+TIMEOUT = 21600
 
 MIN_VOLUME = 3000000
 MAX_SPREAD = 0.003
@@ -249,6 +249,18 @@ def manage():
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
+
+                elapsed=time.time()-state["start"]
+
+                if elapsed > TIMEOUT:
+
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                    trade_state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"⏰ TIME EXIT {sym}")
+
+                    continue
 
                 if not state["tp1"]:
 
