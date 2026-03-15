@@ -4,6 +4,7 @@ import ccxt
 import telebot
 import threading
 import requests
+import random
 
 LEV = 10
 MARGIN = 3
@@ -300,6 +301,8 @@ def scanner():
     while True:
 
         try:
+
+            random.shuffle(SYMBOLS)
 
             btc=btc_trend()
 
