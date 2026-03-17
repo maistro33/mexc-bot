@@ -9,7 +9,7 @@ import random
 LEV = 10
 MARGIN = 3
 
-MAX_POSITIONS = 3
+MAX_POSITIONS = 4
 BALINA_LIMIT = 1
 
 TP1_PCT = 0.006
