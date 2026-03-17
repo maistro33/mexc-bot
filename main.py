@@ -64,7 +64,6 @@ def sync_positions():
         positions = exchange.fetch_positions()
 
         for p in positions:
-
             qty = safe(p.get("contracts"))
 
             if qty <= 0:
@@ -453,6 +452,9 @@ def scanner():
                     continue
 
                 if pressure=="long" and btc=="bear":
+                    continue
+
+                if pressure=="short" and btc=="bull":
                     continue
 
                 open_trade(sym,pressure,"normal")
