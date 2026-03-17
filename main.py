@@ -20,6 +20,8 @@ MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 6
 
+TIMEOUT = 21600
+
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -32,9 +34,13 @@ exchange = ccxt.bitget({
 })
 
 markets = exchange.load_markets()
-SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:120]
+
+SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:200]
 
 trade_state = {}
+cooldown = {}
+COOLDOWN_TIME = 1800
+
 
 def safe(x):
     try:
@@ -58,7 +64,9 @@ def sync_positions():
         positions = exchange.fetch_positions()
 
         for p in positions:
+
             qty = safe(p.get("contracts"))
+
             if qty <= 0:
                 continue
 
@@ -101,7 +109,8 @@ def volume_spike(sym):
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
 
-        return vols[-1] > avg*1.5
+        return vols[-1] > avg*1.3
+
     except:
         return False
 
@@ -286,6 +295,8 @@ def open_trade(sym,direction,label):
         "start":time.time()
         }
 
+        cooldown[sym]=time.time()
+
         bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
 
     except:
@@ -321,6 +332,18 @@ def manage():
                 direction=state["direction"]
 
                 side="sell" if direction=="long" else "buy"
+
+                elapsed=time.time()-state["start"]
+
+                if elapsed > TIMEOUT:
+
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                    trade_state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"⏰ TIMEOUT {sym}")
+
+                    continue
 
                 if not state["tp1"]:
 
@@ -380,6 +403,11 @@ def scanner():
                 continue
 
             for sym in SYMBOLS:
+
+                if sym in cooldown:
+
+                    if time.time()-cooldown[sym] < COOLDOWN_TIME:
+                        continue
 
                 if get_qty(sym)>0:
                     continue
