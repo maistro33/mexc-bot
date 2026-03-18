@@ -16,8 +16,6 @@ TP1_PCT = 0.006
 STEP_PCT = 0.005
 TP1_RATIO = 0.50
 
-HARD_SL = 0.05
-
 MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 6
@@ -36,6 +34,7 @@ exchange = ccxt.bitget({
 })
 
 markets = exchange.load_markets()
+
 SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:200]
 
 trade_state = {}
@@ -48,15 +47,6 @@ def safe(x):
         return float(x)
     except:
         return 0
-
-
-def api_safe(func,*args):
-    for _ in range(3):
-        try:
-            return func(*args)
-        except:
-            time.sleep(2)
-    return None
 
 
 def get_qty(sym):
@@ -75,6 +65,7 @@ def sync_positions():
 
         for p in positions:
             qty = safe(p.get("contracts"))
+
             if qty <= 0:
                 continue
 
@@ -110,23 +101,13 @@ def btc_trend():
         return "neutral"
 
 
-def volatility_filter(sym):
-
-    try:
-        candles=exchange.fetch_ohlcv(sym,"5m",limit=10)
-        ranges=[c[2]-c[3] for c in candles]
-        avg=sum(ranges)/len(ranges)
-        return avg > candles[-1][4]*0.002
-    except:
-        return False
-
-
 def volume_spike(sym):
 
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
+
         return vols[-1] > avg*1.3
 
     except:
@@ -171,17 +152,6 @@ def fake_breakout(sym):
 
         return False
 
-    except:
-        return False
-
-
-def fake_breakout_pro(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
-        last=candles[-1]
-        body=abs(last[4]-last[1])
-        wick=last[2]-last[3]
-        return wick > body*2
     except:
         return False
 
@@ -249,36 +219,43 @@ def early_pump(sym):
         return False
 
 
-def early_pump_pro(sym):
+def coinglass_whale():
+
     try:
-        candles=exchange.fetch_ohlcv(sym,"1m",limit=6)
-        vols=[c[5] for c in candles]
-        avg=sum(vols[:-1])/5
-        return vols[-1] > avg*2
-    except:
-        return False
 
+        url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
 
-def micro_momentum(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"1m",limit=4)
-        closes=[c[4] for c in candles]
-        return closes[-1] > closes[-2] > closes[-3]
-    except:
-        return False
+        headers={
+        "accept":"application/json",
+        "coinglassSecret":os.getenv("COINGLASS_API")
+        }
 
+        r=requests.get(url,headers=headers,timeout=10).json()
 
-def funding_filter(sym):
-    try:
-        data=exchange.fetch_funding_rate(sym)
-        rate=float(data["fundingRate"])
-        if rate > 0.01:
-            return "short"
-        if rate < -0.01:
-            return "long"
-        return None
+        data=r.get("data",[])
+
+        if not data:
+            return None
+
+        return data[0]["symbol"]
+
     except:
         return None
+
+
+def whale_signal(sym):
+
+    try:
+
+        coin=coinglass_whale()
+
+        if not coin:
+            return False
+
+        return coin in sym
+
+    except:
+        return False
 
 
 def open_trade(sym,direction,label):
@@ -355,21 +332,54 @@ def manage():
 
                 side="sell" if direction=="long" else "buy"
 
-                if direction=="long" and price <= entry*(1-HARD_SL):
+                elapsed=time.time()-state["start"]
+
+                if elapsed > TIMEOUT:
+
                     exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
+
+                    bot.send_message(CHAT_ID,f"⏰ TIMEOUT {sym}")
+
                     continue
 
-                if direction=="short" and price >= entry*(1+HARD_SL):
-                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                    trade_state.pop(sym)
-                    bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
-                    continue
+                if not state["tp1"]:
+
+                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP1_PCT)):
+
+                        exchange.create_market_order(sym,side,get_qty(sym)*TP1_RATIO,params={"reduceOnly":True})
+
+                        state["tp1"]=True
+                        state["step"]=1
+
+                        bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
+
+                else:
+
+                    step_price = entry * (1 + STEP_PCT * state["step"]) if direction=="long" else entry * (1 - STEP_PCT * state["step"])
+
+                    if (direction=="long" and price>=step_price) or (direction=="short" and price<=step_price):
+
+                        state["step"] += 1
+
+                        bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} LOCKED {sym}")
+
+                    stop_price = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
+
+                    if (direction=="long" and price<=stop_price) or (direction=="short" and price>=stop_price):
+
+                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                        trade_state.pop(sym)
+
+                        bot.send_message(CHAT_ID,f"🏁 STEP TRAILING {sym}")
 
             time.sleep(4)
 
         except:
+
             time.sleep(6)
 
 
@@ -398,10 +408,7 @@ def scanner():
                     if time.time()-cooldown[sym] < COOLDOWN_TIME:
                         continue
 
-                if not volatility_filter(sym):
-                    continue
-
-                if not micro_momentum(sym):
+                if get_qty(sym)>0:
                     continue
 
                 if short_squeeze(sym):
@@ -418,9 +425,17 @@ def scanner():
                         open_trade(sym,pressure,"liquidation")
                         break
 
-                if early_pump(sym) or early_pump_pro(sym):
+                if early_pump(sym):
                     open_trade(sym,"long","pump")
                     break
+
+                if whale_signal(sym):
+
+                    pressure=orderbook_pressure(sym)
+
+                    if pressure:
+                        open_trade(sym,pressure,"whale")
+                        break
 
                 if not volume_spike(sym):
                     continue
@@ -431,17 +446,9 @@ def scanner():
                 if not fake_breakout(sym):
                     continue
 
-                if fake_breakout_pro(sym):
-                    continue
-
                 pressure=orderbook_pressure(sym)
 
                 if not pressure:
-                    continue
-
-                fund=funding_filter(sym)
-
-                if fund and fund!=pressure:
                     continue
 
                 if pressure=="long" and btc=="bear":
