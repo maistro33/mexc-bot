@@ -7,7 +7,7 @@ import requests
 import random
 
 LEV = 10
-MARGIN = 3
+MARGIN = 5
 
 MAX_POSITIONS = 4
 BALINA_LIMIT = 1
