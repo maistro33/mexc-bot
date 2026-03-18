@@ -72,6 +72,7 @@ def get_qty(sym):
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
+
         for p in positions:
             qty = safe(p.get("contracts"))
             if qty <= 0:
@@ -88,23 +89,29 @@ def sync_positions():
                 "step": 0,
                 "start": time.time()
             }
+
     except:
         pass
 
 
 def btc_trend():
+
     try:
         candles = exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
         closes=[c[4] for c in candles]
         ema=sum(closes[-20:])/20
+
         if closes[-1] > ema:
             return "bull"
+
         return "bear"
+
     except:
         return "neutral"
 
 
 def volatility_filter(sym):
+
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=10)
         ranges=[c[2]-c[3] for c in candles]
@@ -115,34 +122,45 @@ def volatility_filter(sym):
 
 
 def volume_spike(sym):
+
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
         return vols[-1] > avg*1.3
+
     except:
         return False
 
 
 def orderbook_pressure(sym):
+
     try:
         ob=exchange.fetch_order_book(sym,limit=20)
+
         bid=sum([b[1] for b in ob["bids"]])
         ask=sum([a[1] for a in ob["asks"]])
+
         if bid > ask*1.5:
             return "long"
+
         if ask > bid*1.5:
             return "short"
+
         return None
+
     except:
         return None
 
 
 def fake_breakout(sym):
+
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
+
         highs=[c[2] for c in candles]
         lows=[c[3] for c in candles]
+
         last=candles[-1]
 
         if last[4] < highs[-2] and last[2] > highs[-2]:
@@ -152,6 +170,7 @@ def fake_breakout(sym):
             return True
 
         return False
+
     except:
         return False
 
@@ -168,11 +187,74 @@ def fake_breakout_pro(sym):
 
 
 def liquidity_sweep(sym):
+
     try:
         candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
+
         highs=[c[2] for c in candles]
         lows=[c[3] for c in candles]
+
         return highs[-1] > max(highs[:-1]) or lows[-1] < min(lows[:-1])
+
+    except:
+        return False
+
+
+def short_squeeze(sym):
+
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
+        change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
+
+        return change > 0.02 and volume_spike(sym)
+
+    except:
+        return False
+
+
+def long_squeeze(sym):
+
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
+        change=(candles[-2][4]-candles[-1][4])/candles[-2][4]
+
+        return change > 0.02 and volume_spike(sym)
+
+    except:
+        return False
+
+
+def liquidation_hunt(sym):
+
+    try:
+        candles = exchange.fetch_ohlcv(sym,"1m",limit=6)
+        ranges=[c[2]-c[3] for c in candles]
+        avg=sum(ranges[:-1])/5
+
+        return ranges[-1] > avg*2.5
+
+    except:
+        return False
+
+
+def early_pump(sym):
+
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
+        high=max([c[2] for c in candles[:-1]])
+
+        return candles[-1][4] > high and volume_spike(sym)
+
+    except:
+        return False
+
+
+def early_pump_pro(sym):
+    try:
+        candles=exchange.fetch_ohlcv(sym,"1m",limit=6)
+        vols=[c[5] for c in candles]
+        avg=sum(vols[:-1])/5
+        return vols[-1] > avg*2
     except:
         return False
 
@@ -199,46 +281,10 @@ def funding_filter(sym):
         return None
 
 
-def market_regime(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"1h",limit=30)
-        closes=[c[4] for c in candles]
-        ma=sum(closes[-20:])/20
-        if closes[-1] > ma:
-            return "bull"
-        return "bear"
-    except:
-        return "neutral"
-
-
-def mtf_confirm(sym,direction):
-    try:
-        c5=exchange.fetch_ohlcv(sym,"5m",limit=3)
-        c15=exchange.fetch_ohlcv(sym,"15m",limit=3)
-
-        if direction=="long":
-            return c5[-1][4] > c5[-2][4] and c15[-1][4] > c15[-2][4]
-
-        if direction=="short":
-            return c5[-1][4] < c5[-2][4] and c15[-1][4] < c15[-2][4]
-
-        return False
-    except:
-        return False
-
-
-def early_pump_pro(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"1m",limit=6)
-        vols=[c[5] for c in candles]
-        avg=sum(vols[:-1])/5
-        return vols[-1] > avg*2
-    except:
-        return False
-
-
 def open_trade(sym,direction,label):
+
     try:
+
         if get_qty(sym) > 0:
             return
 
@@ -280,8 +326,11 @@ def open_trade(sym,direction,label):
 
 
 def manage():
+
     while True:
+
         try:
+
             pos=exchange.fetch_positions()
 
             for p in pos:
@@ -316,18 +365,6 @@ def manage():
                     exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
-                    continue
-
-                elapsed=time.time()-state["start"]
-
-                if elapsed > TIMEOUT:
-
-                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
-                    trade_state.pop(sym)
-
-                    bot.send_message(CHAT_ID,f"⏰ TIMEOUT {sym}")
-
                     continue
 
             time.sleep(4)
@@ -367,6 +404,36 @@ def scanner():
                 if not micro_momentum(sym):
                     continue
 
+                if short_squeeze(sym):
+                    open_trade(sym,"long","squeeze")
+                    break
+
+                if long_squeeze(sym):
+                    open_trade(sym,"short","squeeze")
+                    break
+
+                if liquidation_hunt(sym):
+                    pressure=orderbook_pressure(sym)
+                    if pressure:
+                        open_trade(sym,pressure,"liquidation")
+                        break
+
+                if early_pump(sym) or early_pump_pro(sym):
+                    open_trade(sym,"long","pump")
+                    break
+
+                if not volume_spike(sym):
+                    continue
+
+                if not liquidity_sweep(sym):
+                    continue
+
+                if not fake_breakout(sym):
+                    continue
+
+                if fake_breakout_pro(sym):
+                    continue
+
                 pressure=orderbook_pressure(sym)
 
                 if not pressure:
@@ -377,17 +444,13 @@ def scanner():
                 if fund and fund!=pressure:
                     continue
 
-                if not mtf_confirm(sym,pressure):
+                if pressure=="long" and btc=="bear":
                     continue
 
-                if fake_breakout_pro(sym):
+                if pressure=="short" and btc=="bull":
                     continue
 
-                if early_pump_pro(sym):
-                    open_trade(sym,"long","pump")
-                    break
-
-                open_trade(sym,pressure,"signal")
+                open_trade(sym,pressure,"normal")
 
                 break
 
