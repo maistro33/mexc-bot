@@ -19,6 +19,7 @@ TP1_RATIO = 0.50
 MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 6
+
 TIMEOUT = 21600
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -27,32 +28,18 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
 markets = exchange.load_markets()
+
 SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:200]
 
 trade_state = {}
 cooldown = {}
 COOLDOWN_TIME = 1800
-
-BLACKLIST = [
-"ETH/USDT:USDT",
-"XRP/USDT:USDT"
-]
-
-
-def safe_api_call(func, *args, **kwargs):
-    for i in range(3):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            print("API ERROR:", e)
-            time.sleep(2)
-    return None
 
 
 def safe(x):
@@ -64,7 +51,7 @@ def safe(x):
 
 def get_qty(sym):
     try:
-        pos = safe_api_call(exchange.fetch_positions,[sym])
+        pos = exchange.fetch_positions([sym])
         if not pos:
             return 0
         return safe(pos[0]["contracts"])
@@ -74,13 +61,9 @@ def get_qty(sym):
 
 def sync_positions():
     try:
-        positions = safe_api_call(exchange.fetch_positions)
-
-        if not positions:
-            return
+        positions = exchange.fetch_positions()
 
         for p in positions:
-
             qty = safe(p.get("contracts"))
 
             if qty <= 0:
@@ -103,12 +86,9 @@ def sync_positions():
 
 
 def btc_trend():
+
     try:
-        candles = safe_api_call(exchange.fetch_ohlcv,"BTC/USDT:USDT","1h",limit=50)
-
-        if not candles:
-            return "neutral"
-
+        candles = exchange.fetch_ohlcv("BTC/USDT:USDT","1h",limit=50)
         closes=[c[4] for c in candles]
         ema=sum(closes[-20:])/20
 
@@ -122,26 +102,22 @@ def btc_trend():
 
 
 def volume_spike(sym):
+
     try:
-        candles=safe_api_call(exchange.fetch_ohlcv,sym,"5m",limit=6)
-
-        if not candles:
-            return False
-
+        candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
 
         return vols[-1] > avg*1.3
+
     except:
         return False
 
 
 def orderbook_pressure(sym):
-    try:
-        ob=safe_api_call(exchange.fetch_order_book,sym,limit=20)
 
-        if not ob:
-            return None
+    try:
+        ob=exchange.fetch_order_book(sym,limit=20)
 
         bid=sum([b[1] for b in ob["bids"]])
         ask=sum([a[1] for a in ob["asks"]])
@@ -159,11 +135,9 @@ def orderbook_pressure(sym):
 
 
 def fake_breakout(sym):
-    try:
-        candles=safe_api_call(exchange.fetch_ohlcv,sym,"5m",limit=5)
 
-        if not candles:
-            return False
+    try:
+        candles=exchange.fetch_ohlcv(sym,"5m",limit=5)
 
         highs=[c[2] for c in candles]
         lows=[c[3] for c in candles]
@@ -183,11 +157,9 @@ def fake_breakout(sym):
 
 
 def liquidity_sweep(sym):
-    try:
-        candles=safe_api_call(exchange.fetch_ohlcv,sym,"15m",limit=10)
 
-        if not candles:
-            return False
+    try:
+        candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
 
         highs=[c[2] for c in candles]
         lows=[c[3] for c in candles]
@@ -199,12 +171,9 @@ def liquidity_sweep(sym):
 
 
 def short_squeeze(sym):
+
     try:
-        candles = safe_api_call(exchange.fetch_ohlcv,sym,"5m",limit=3)
-
-        if not candles:
-            return False
-
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
         change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
 
         return change > 0.02 and volume_spike(sym)
@@ -214,12 +183,9 @@ def short_squeeze(sym):
 
 
 def long_squeeze(sym):
+
     try:
-        candles = safe_api_call(exchange.fetch_ohlcv,sym,"5m",limit=3)
-
-        if not candles:
-            return False
-
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
         change=(candles[-2][4]-candles[-1][4])/candles[-2][4]
 
         return change > 0.02 and volume_spike(sym)
@@ -229,12 +195,9 @@ def long_squeeze(sym):
 
 
 def liquidation_hunt(sym):
+
     try:
-        candles = safe_api_call(exchange.fetch_ohlcv,sym,"1m",limit=6)
-
-        if not candles:
-            return False
-
+        candles = exchange.fetch_ohlcv(sym,"1m",limit=6)
         ranges=[c[2]-c[3] for c in candles]
         avg=sum(ranges[:-1])/5
 
@@ -245,12 +208,9 @@ def liquidation_hunt(sym):
 
 
 def early_pump(sym):
+
     try:
-        candles = safe_api_call(exchange.fetch_ohlcv,sym,"5m",limit=4)
-
-        if not candles:
-            return False
-
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
         high=max([c[2] for c in candles[:-1]])
 
         return candles[-1][4] > high and volume_spike(sym)
@@ -260,7 +220,9 @@ def early_pump(sym):
 
 
 def coinglass_whale():
+
     try:
+
         url="https://open-api.coinglass.com/api/pro/v1/futures/openInterest/ohlc"
 
         headers={
@@ -282,7 +244,9 @@ def coinglass_whale():
 
 
 def whale_signal(sym):
+
     try:
+
         coin=coinglass_whale()
 
         if not coin:
@@ -298,16 +262,10 @@ def open_trade(sym,direction,label):
 
     try:
 
-        if sym in BLACKLIST:
-            return
-
         if get_qty(sym) > 0:
             return
 
-        ticker=safe_api_call(exchange.fetch_ticker,sym)
-
-        if not ticker:
-            return
+        ticker=exchange.fetch_ticker(sym)
 
         if ticker["quoteVolume"] < MIN_VOLUME:
             return
@@ -350,11 +308,7 @@ def manage():
 
         try:
 
-            pos=safe_api_call(exchange.fetch_positions)
-
-            if not pos:
-                time.sleep(5)
-                continue
+            pos=exchange.fetch_positions()
 
             for p in pos:
 
@@ -370,12 +324,7 @@ def manage():
 
                 state=trade_state[sym]
 
-                ticker=safe_api_call(exchange.fetch_ticker,sym)
-
-                if not ticker:
-                    continue
-
-                price=ticker["last"]
+                price=exchange.fetch_ticker(sym)["last"]
 
                 entry=state["entry"]
 
@@ -430,6 +379,7 @@ def manage():
             time.sleep(4)
 
         except:
+
             time.sleep(6)
 
 
@@ -443,18 +393,15 @@ def scanner():
 
             btc=btc_trend()
 
-            positions=safe_api_call(exchange.fetch_positions)
+            positions=exchange.fetch_positions()
 
-            active=sum(1 for p in positions if safe(p.get("contracts"))>0) if positions else 0
+            active=sum(1 for p in positions if safe(p.get("contracts"))>0)
 
             if active >= MAX_POSITIONS:
                 time.sleep(SCAN_DELAY)
                 continue
 
             for sym in SYMBOLS:
-
-                if sym in BLACKLIST:
-                    continue
 
                 if sym in cooldown:
 
@@ -517,6 +464,7 @@ def scanner():
             time.sleep(SCAN_DELAY)
 
         except:
+
             time.sleep(15)
 
 
