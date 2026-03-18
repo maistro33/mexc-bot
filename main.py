@@ -115,17 +115,21 @@ def btc_trend():
         return "neutral"
 
 
-# BTC SHORT STRATEGY (EKLENEN)
+# BTC SHORT STRATEJİSİ (EKLENEN)
 def btc_short_breakdown(sym):
+
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=6)
+
         lows=[c[3] for c in candles[:-1]]
+
         last_close=candles[-1][4]
 
         if last_close < min(lows):
             return True
 
         return False
+
     except:
         return False
 
@@ -286,9 +290,141 @@ def whale_signal(sym):
         return False
 
 
-# ---- manage ve open_trade kısmı aynen kaldı ----
+def open_trade(sym,direction,label):
 
-# scanner içine BTC SHORT EKLENDİ
+    try:
+
+        if get_qty(sym) > 0:
+            return
+
+        ticker=exchange.fetch_ticker(sym)
+
+        if ticker["quoteVolume"] < MIN_VOLUME:
+            return
+
+        spread=(ticker["ask"]-ticker["bid"])/ticker["last"]
+
+        if spread > MAX_SPREAD:
+            return
+
+        price=ticker["last"]
+
+        qty=(MARGIN*LEV)/price
+        qty=float(exchange.amount_to_precision(sym,qty))
+
+        exchange.set_leverage(LEV,sym)
+
+        side="buy" if direction=="long" else "sell"
+
+        exchange.create_market_order(sym,side,qty)
+
+        trade_state[sym]={
+        "entry":price,
+        "direction":direction,
+        "tp1":False,
+        "step":0,
+        "start":time.time()
+        }
+
+        cooldown[sym]=time.time()
+
+        bot.send_message(CHAT_ID,f"🚀 {label.upper()} {sym} {direction}")
+
+    except:
+        pass
+
+
+def manage():
+
+    while True:
+
+        try:
+
+            pos=exchange.fetch_positions()
+
+            for p in pos:
+
+                qty=safe(p.get("contracts"))
+
+                if qty<=0:
+                    continue
+
+                sym=p["symbol"]
+
+                if sym not in trade_state:
+                    continue
+
+                state=trade_state[sym]
+
+                price=exchange.fetch_ticker(sym)["last"]
+
+                entry=state["entry"]
+
+                direction=state["direction"]
+
+                side="sell" if direction=="long" else "buy"
+
+                elapsed=time.time()-state["start"]
+
+                if elapsed > TIMEOUT:
+
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                    trade_state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"⏰ TIMEOUT {sym}")
+
+                    continue
+
+                if (direction=="long" and price <= entry*(1-SL_PCT)) or \
+                   (direction=="short" and price >= entry*(1+SL_PCT)):
+
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                    trade_state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
+
+                    continue
+
+                if not state["tp1"]:
+
+                    if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
+                       (direction=="short" and price<=entry*(1-TP1_PCT)):
+
+                        exchange.create_market_order(sym,side,get_qty(sym)*TP1_RATIO,params={"reduceOnly":True})
+
+                        state["tp1"]=True
+                        state["step"]=1
+
+                        bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
+
+                else:
+
+                    step_price = entry * (1 + STEP_PCT * state["step"]) if direction=="long" else entry * (1 - STEP_PCT * state["step"])
+
+                    if (direction=="long" and price>=step_price) or (direction=="short" and price<=step_price):
+
+                        state["step"] += 1
+
+                        bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} LOCKED {sym}")
+
+                    stop_price = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
+
+                    if (direction=="long" and price<=stop_price) or (direction=="short" and price>=stop_price):
+
+                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
+                        trade_state.pop(sym)
+
+                        bot.send_message(CHAT_ID,f"🏁 STEP TRAILING {sym}")
+
+            time.sleep(4)
+
+        except:
+
+            time.sleep(6)
+
 
 def scanner():
 
@@ -318,8 +454,7 @@ def scanner():
                 if get_qty(sym)>0:
                     continue
 
-
-                # BTC SHORT STRATEGY
+                # BTC SHORT STRATEJİSİ
                 if btc=="bear" and btc_short_breakdown(sym):
 
                     pressure=orderbook_pressure(sym)
@@ -329,7 +464,6 @@ def scanner():
                         open_trade(sym,"short","btc_short")
 
                         break
-
 
                 if not volatility_filter(sym):
                     continue
