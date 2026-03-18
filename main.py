@@ -140,7 +140,7 @@ def funding_filter(sym):
     try:
         fr = exchange.fetch_funding_rate(sym)
         rate = fr["fundingRate"]
-        if abs(rate) > 0.01:
+        if abs(rate) > 0.0005:
             return True
         return False
     except:
