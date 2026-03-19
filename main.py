@@ -456,9 +456,14 @@ def scanner():
 
                 if not pressure:
                     continue
-                if pressure=="long" and btc=="bear":
+
+                # 🔥 BTC IGNORE PUMP
+                pump = early_pump(sym) or volume_spike(sym)
+
+                if pressure=="long" and btc=="bear" and not pump:
                     continue
-                if pressure=="short" and btc=="bull":
+
+                if pressure=="short" and btc=="bull" and not pump:
                     continue
 
                 open_trade(sym,pressure,"normal")
