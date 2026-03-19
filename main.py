@@ -18,12 +18,12 @@ TP1_RATIO = 0.50
 
 MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 8
+SCAN_DELAY = 7
 
 TIMEOUT = 21600
 SL_PCT = 0.03
 
-API_DELAY = 0.25
+API_DELAY = 0.22
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -37,7 +37,7 @@ exchange = ccxt.bitget({
 })
 
 markets = exchange.load_markets()
-SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:150]
+SYMBOLS = [s for s in markets if markets[s]["swap"] and "USDT" in s][:180]
 
 trade_state = {}
 cooldown = {}
