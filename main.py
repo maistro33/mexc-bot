@@ -132,6 +132,25 @@ def btc_short_breakdown(sym):
         return False
 
 
+# 🔥 YENİ: TREND GÜCÜ
+def trend_strength(sym):
+    try:
+        candles = safe_api_call(exchange.fetch_ohlcv, sym, "5m", limit=5)
+        if not candles:
+            return "weak"
+
+        change = (candles[-1][4] - candles[0][4]) / candles[0][4]
+
+        if change > 0.015:
+            return "strong"
+        elif change > 0.007:
+            return "medium"
+        else:
+            return "weak"
+    except:
+        return "weak"
+
+
 def volatility_filter(sym):
     try:
         candles = safe_api_call(exchange.fetch_ohlcv,sym,"5m",limit=10)
@@ -160,7 +179,7 @@ def funding_filter(sym):
         fr = safe_api_call(exchange.fetch_funding_rate,sym)
         if not fr:
             return True
-        return abs(fr["fundingRate"]) > 0.001
+        return abs(fr["fundingRate"]) > 0.0007
     except:
         return True
 
@@ -356,13 +375,22 @@ def manage():
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
                 else:
-                    step_price = entry * (1 + STEP_PCT * state["step"]) if direction=="long" else entry * (1 - STEP_PCT * state["step"])
+                    strength = trend_strength(sym)
+
+                    if strength == "strong":
+                        dynamic_step = 0.007
+                    elif strength == "medium":
+                        dynamic_step = 0.010
+                    else:
+                        dynamic_step = 0.013
+
+                    step_price = entry * (1 + dynamic_step * state["step"]) if direction=="long" else entry * (1 - dynamic_step * state["step"])
 
                     if (direction=="long" and price>=step_price) or (direction=="short" and price<=step_price):
 
                         state["step"] += 1
 
-                        new_stop = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
+                        new_stop = entry * (1 + dynamic_step * (state["step"]-1)) if direction=="long" else entry * (1 - dynamic_step * (state["step"]-1))
 
                         if direction=="long" and new_stop > state["trail_stop"]:
                             state["trail_stop"] = new_stop
@@ -420,11 +448,7 @@ def scanner():
                         open_trade(sym,"short","btc_short")
                         break
 
-                if not volatility_filter(sym):
-                    continue
                 if not micro_momentum(sym):
-                    continue
-                if not funding_filter(sym):
                     continue
 
                 if short_squeeze(sym):
@@ -445,19 +469,11 @@ def scanner():
                     open_trade(sym,"long","pump")
                     break
 
-                if not volume_spike(sym):
-                    continue
-                if not liquidity_sweep(sym):
-                    continue
-                if not fake_breakout(sym):
-                    continue
-
                 pressure=orderbook_pressure(sym)
 
                 if not pressure:
                     continue
 
-                # 🔥 BTC IGNORE PUMP
                 pump = early_pump(sym) or volume_spike(sym)
 
                 if pressure=="long" and btc=="bear" and not pump:
