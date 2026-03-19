@@ -18,12 +18,12 @@ TP1_RATIO = 0.50
 
 MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 12
+SCAN_DELAY = 8
 
 TIMEOUT = 21600
 SL_PCT = 0.03
 
-API_DELAY = 0.35
+API_DELAY = 0.25
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -150,7 +150,7 @@ def micro_momentum(sym):
         if not candles:
             return False
         change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
-        return abs(change) > 0.002
+        return abs(change) > 0.0015
     except:
         return False
 
@@ -160,7 +160,7 @@ def funding_filter(sym):
         fr = safe_api_call(exchange.fetch_funding_rate,sym)
         if not fr:
             return True
-        return abs(fr["fundingRate"]) > 0.0005
+        return abs(fr["fundingRate"]) > 0.001
     except:
         return True
 
