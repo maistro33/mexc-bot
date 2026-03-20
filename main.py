@@ -46,7 +46,8 @@ def safe_api_call(func,*args,**kwargs):
     for _ in range(3):
         try:
             return func(*args,**kwargs)
-        except:
+        except Exception as e:
+            print("API ERROR:",e)
             time.sleep(2)
     return None
 
@@ -69,45 +70,57 @@ def get_qty(sym):
 
 
 def sync_positions():
-    positions = safe_api_call(exchange.fetch_positions)
-    if not positions:
-        return
+    try:
+        positions = safe_api_call(exchange.fetch_positions)
+        if not positions:
+            return
 
-    for p in positions:
-        qty = safe(p.get("contracts"))
-        if qty <= 0:
-            continue
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
 
-        sym = p["symbol"]
-        entry = safe(p["entryPrice"])
-        side = "long" if p["side"] == "long" else "short"
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+            side = "long" if p["side"] == "long" else "short"
 
-        trade_state[sym] = {
-            "entry": entry,
-            "direction": side,
-            "tp1": False,
-            "step": 0,
-            "start": time.time(),
-            "trail_stop": entry
-        }
+            trade_state[sym] = {
+                "entry": entry,
+                "direction": side,
+                "tp1": False,
+                "step": 0,
+                "start": time.time(),
+                "trail_stop": entry  # EKLENDİ
+            }
+
+    except:
+        pass
 
 
 def btc_trend():
-    candles = safe_api_call(exchange.fetch_ohlcv,"BTC/USDT:USDT","1h",limit=50)
-    if not candles:
+    try:
+        candles = safe_api_call(exchange.fetch_ohlcv,"BTC/USDT:USDT","1h",limit=50)
+        if not candles:
+            return "neutral"
+
+        closes=[c[4] for c in candles]
+        ema=sum(closes[-20:])/20
+
+        if closes[-1] > ema:
+            return "bull"
+
+        return "bear"
+
+    except:
         return "neutral"
-
-    closes=[c[4] for c in candles]
-    ema=sum(closes[-20:])/20
-
-    return "bull" if closes[-1] > ema else "bear"
 
 
 def btc_short_breakdown(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=6)
         lows=[c[3] for c in candles[:-1]]
-        return candles[-1][4] < min(lows)
+        last_close=candles[-1][4]
+        return last_close < min(lows)
     except:
         return False
 
@@ -221,6 +234,10 @@ def early_pump(sym):
         return False
 
 
+def whale_signal(sym):
+    return False
+
+
 def open_trade(sym,direction,label):
     try:
         if get_qty(sym) > 0:
@@ -278,12 +295,12 @@ def manage():
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
 
+                # HARD SL
                 if (direction=="long" and price <= entry*(1-SL_PCT)) or \
                    (direction=="short" and price >= entry*(1+SL_PCT)):
 
                     exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
                     trade_state.pop(sym)
-                    cooldown[sym]=time.time()
                     bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
                     continue
 
@@ -295,7 +312,7 @@ def manage():
 
                         state["tp1"]=True
                         state["step"]=1
-                        state["trail_stop"]=entry
+                        state["trail_stop"]=entry  # BREAK EVEN
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
@@ -306,6 +323,7 @@ def manage():
 
                         state["step"] += 1
 
+                        # STOP GÜNCELLE (AMA SATMA)
                         new_stop = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
 
                         if direction=="long" and new_stop > state["trail_stop"]:
@@ -316,13 +334,13 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} → STOP {state['trail_stop']:.5f}")
 
+                    # SADECE SON STOP KIRILIRSA SAT
                     if (direction=="long" and price <= state["trail_stop"]) or \
                        (direction=="short" and price >= state["trail_stop"]):
 
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
 
                         trade_state.pop(sym)
-                        cooldown[sym]=time.time()
 
                         bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
 
@@ -358,13 +376,6 @@ def scanner():
                     pressure=orderbook_pressure(sym)
                     if pressure=="short":
                         open_trade(sym,"short","btc_short")
-                        break
-
-                # 🔥 ERKEN GİRİŞ
-                if micro_momentum(sym) and volume_spike(sym):
-                    pressure = orderbook_pressure(sym)
-                    if pressure:
-                        open_trade(sym,pressure,"normal")
                         break
 
                 if not volatility_filter(sym):
