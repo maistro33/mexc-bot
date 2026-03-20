@@ -238,7 +238,7 @@ def whale_signal(sym):
     return False
 
 
-# 🔥 YENİ EKLENEN AKILLI GİRİŞ FİLTRESİ
+# 🔥 OPTİMUM GİRİŞ FİLTRESİ
 def smart_entry_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
@@ -270,10 +270,13 @@ def smart_entry_filter(sym):
 
         body_ratio = body / range_candle
 
-        if body_ratio < 0.5:
+        if body_ratio < 0.3:
             return False
 
-        return breakout_up or breakout_down
+        if breakout_up or breakout_down:
+            return True
+
+        return False
 
     except:
         return False
@@ -421,7 +424,7 @@ def scanner():
                 if not micro_momentum(sym):
                     continue
 
-                # 🔥 YENİ FİLTRE BURADA
+                # 🔥 YENİ FİLTRE
                 if not smart_entry_filter(sym):
                     continue
 
