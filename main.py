@@ -10,6 +10,8 @@ LEV = 10
 MARGIN = 3
 
 MAX_POSITIONS = 4
+BALINA_LIMIT = 1
+
 TP1_PCT = 0.012
 STEP_PCT = 0.010
 TP1_RATIO = 0.50
@@ -125,25 +127,6 @@ def micro_momentum(sym):
         candles = exchange.fetch_ohlcv(sym,"1m",limit=3)
         change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
         return abs(change) > 0.002
-    except:
-        return False
-
-
-def smart_momentum(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym,"1m",limit=4)
-
-        c1 = candles[-1][4]
-        c2 = candles[-2][4]
-        change = (c1 - c2) / c2
-
-        high = max([c[2] for c in candles[:-1]])
-
-        # TEPE ENGEL
-        if candles[-1][4] > high:
-            return False
-
-        return abs(change) > 0.002 and volume_spike(sym)
     except:
         return False
 
@@ -295,7 +278,6 @@ def manage():
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
 
-                # HARD SL
                 if (direction=="long" and price <= entry*(1-SL_PCT)) or \
                    (direction=="short" and price >= entry*(1+SL_PCT)):
 
@@ -321,6 +303,7 @@ def manage():
                     step_price = entry * (1 + STEP_PCT * state["step"]) if direction=="long" else entry * (1 - STEP_PCT * state["step"])
 
                     if (direction=="long" and price>=step_price) or (direction=="short" and price<=step_price):
+
                         state["step"] += 1
 
                         new_stop = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
@@ -331,11 +314,16 @@ def manage():
                         if direction=="short" and new_stop < state["trail_stop"]:
                             state["trail_stop"] = new_stop
 
+                        bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} → STOP {state['trail_stop']:.5f}")
+
                     if (direction=="long" and price <= state["trail_stop"]) or \
                        (direction=="short" and price >= state["trail_stop"]):
 
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                         trade_state.pop(sym)
+                        cooldown[sym]=time.time()
+
                         bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
 
             time.sleep(4)
@@ -366,17 +354,17 @@ def scanner():
                 if get_qty(sym)>0:
                     continue
 
-                # 🔥 AKILLI MOMENTUM
-                if smart_momentum(sym):
-                    pressure=orderbook_pressure(sym)
-                    if pressure:
-                        open_trade(sym,pressure,"momentum")
-                        break
-
                 if btc=="bear" and btc_short_breakdown(sym):
                     pressure=orderbook_pressure(sym)
                     if pressure=="short":
                         open_trade(sym,"short","btc_short")
+                        break
+
+                # 🔥 ERKEN GİRİŞ
+                if micro_momentum(sym) and volume_spike(sym):
+                    pressure = orderbook_pressure(sym)
+                    if pressure:
+                        open_trade(sym,pressure,"normal")
                         break
 
                 if not volatility_filter(sym):
