@@ -10,8 +10,6 @@ LEV = 10
 MARGIN = 3
 
 MAX_POSITIONS = 4
-BALINA_LIMIT = 1
-
 TP1_PCT = 0.012
 STEP_PCT = 0.010
 TP1_RATIO = 0.50
@@ -46,8 +44,7 @@ def safe_api_call(func,*args,**kwargs):
     for _ in range(3):
         try:
             return func(*args,**kwargs)
-        except Exception as e:
-            print("API ERROR:",e)
+        except:
             time.sleep(2)
     return None
 
@@ -70,55 +67,45 @@ def get_qty(sym):
 
 
 def sync_positions():
-    try:
-        positions = safe_api_call(exchange.fetch_positions)
-        if not positions:
-            return
+    positions = safe_api_call(exchange.fetch_positions)
+    if not positions:
+        return
 
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
+    for p in positions:
+        qty = safe(p.get("contracts"))
+        if qty <= 0:
+            continue
 
-            sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-            side = "long" if p["side"] == "long" else "short"
+        sym = p["symbol"]
+        entry = safe(p["entryPrice"])
+        side = "long" if p["side"] == "long" else "short"
 
-            trade_state[sym] = {
-                "entry": entry,
-                "direction": side,
-                "tp1": False,
-                "step": 0,
-                "start": time.time(),
-                "trail_stop": entry
-            }
-
-    except:
-        pass
+        trade_state[sym] = {
+            "entry": entry,
+            "direction": side,
+            "tp1": False,
+            "step": 0,
+            "start": time.time(),
+            "trail_stop": entry
+        }
 
 
 def btc_trend():
-    try:
-        candles = safe_api_call(exchange.fetch_ohlcv,"BTC/USDT:USDT","1h",limit=50)
-        if not candles:
-            return "neutral"
-
-        closes=[c[4] for c in candles]
-        ema=sum(closes[-20:])/20
-
-        if closes[-1] > ema:
-            return "bull"
-        return "bear"
-    except:
+    candles = safe_api_call(exchange.fetch_ohlcv,"BTC/USDT:USDT","1h",limit=50)
+    if not candles:
         return "neutral"
+
+    closes=[c[4] for c in candles]
+    ema=sum(closes[-20:])/20
+
+    return "bull" if closes[-1] > ema else "bear"
 
 
 def btc_short_breakdown(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=6)
         lows=[c[3] for c in candles[:-1]]
-        last_close=candles[-1][4]
-        return last_close < min(lows)
+        return candles[-1][4] < min(lows)
     except:
         return False
 
@@ -142,9 +129,21 @@ def micro_momentum(sym):
         return False
 
 
-def momentum_entry(sym):
+def smart_momentum(sym):
     try:
-        return micro_momentum(sym) and volume_spike(sym)
+        candles = exchange.fetch_ohlcv(sym,"1m",limit=4)
+
+        c1 = candles[-1][4]
+        c2 = candles[-2][4]
+        change = (c1 - c2) / c2
+
+        high = max([c[2] for c in candles[:-1]])
+
+        # TEPE ENGEL
+        if candles[-1][4] > high:
+            return False
+
+        return abs(change) > 0.002 and volume_spike(sym)
     except:
         return False
 
@@ -239,10 +238,6 @@ def early_pump(sym):
         return False
 
 
-def whale_signal(sym):
-    return False
-
-
 def open_trade(sym,direction,label):
     try:
         if get_qty(sym) > 0:
@@ -300,11 +295,13 @@ def manage():
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
 
+                # HARD SL
                 if (direction=="long" and price <= entry*(1-SL_PCT)) or \
                    (direction=="short" and price >= entry*(1+SL_PCT)):
 
                     exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
                     trade_state.pop(sym)
+                    cooldown[sym]=time.time()
                     bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
                     continue
 
@@ -369,8 +366,8 @@ def scanner():
                 if get_qty(sym)>0:
                     continue
 
-                # 🔥 EKLENDİ (erken giriş)
-                if momentum_entry(sym):
+                # 🔥 AKILLI MOMENTUM
+                if smart_momentum(sym):
                     pressure=orderbook_pressure(sym)
                     if pressure:
                         open_trade(sym,pressure,"momentum")
