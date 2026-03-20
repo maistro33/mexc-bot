@@ -90,7 +90,7 @@ def sync_positions():
                 "tp1": False,
                 "step": 0,
                 "start": time.time(),
-                "trail_stop": entry  # EKLENDİ
+                "trail_stop": entry
             }
 
     except:
@@ -238,6 +238,47 @@ def whale_signal(sym):
     return False
 
 
+# 🔥 YENİ EKLENEN AKILLI GİRİŞ FİLTRESİ
+def smart_entry_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
+
+        last = candles[-1]
+        prev = candles[-2]
+
+        last_close = last[4]
+        last_high = last[2]
+        last_low = last[3]
+
+        prev_high = prev[2]
+        prev_low = prev[3]
+
+        breakout_up = last_close > prev_high
+        breakout_down = last_close < prev_low
+
+        fake_up = last_high > prev_high and last_close < prev_high
+        fake_down = last_low < prev_low and last_close > prev_low
+
+        if fake_up or fake_down:
+            return False
+
+        body = abs(last[4] - last[1])
+        range_candle = last_high - last_low
+
+        if range_candle == 0:
+            return False
+
+        body_ratio = body / range_candle
+
+        if body_ratio < 0.5:
+            return False
+
+        return breakout_up or breakout_down
+
+    except:
+        return False
+
+
 def open_trade(sym,direction,label):
     try:
         if get_qty(sym) > 0:
@@ -295,7 +336,6 @@ def manage():
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
 
-                # HARD SL
                 if (direction=="long" and price <= entry*(1-SL_PCT)) or \
                    (direction=="short" and price >= entry*(1+SL_PCT)):
 
@@ -312,7 +352,7 @@ def manage():
 
                         state["tp1"]=True
                         state["step"]=1
-                        state["trail_stop"]=entry  # BREAK EVEN
+                        state["trail_stop"]=entry
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
 
@@ -323,7 +363,6 @@ def manage():
 
                         state["step"] += 1
 
-                        # STOP GÜNCELLE (AMA SATMA)
                         new_stop = entry * (1 + STEP_PCT * (state["step"]-1)) if direction=="long" else entry * (1 - STEP_PCT * (state["step"]-1))
 
                         if direction=="long" and new_stop > state["trail_stop"]:
@@ -334,7 +373,6 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} → STOP {state['trail_stop']:.5f}")
 
-                    # SADECE SON STOP KIRILIRSA SAT
                     if (direction=="long" and price <= state["trail_stop"]) or \
                        (direction=="short" and price >= state["trail_stop"]):
 
@@ -382,6 +420,11 @@ def scanner():
                     continue
                 if not micro_momentum(sym):
                     continue
+
+                # 🔥 YENİ FİLTRE BURADA
+                if not smart_entry_filter(sym):
+                    continue
+
                 if not funding_filter(sym):
                     continue
 
