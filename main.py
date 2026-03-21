@@ -238,28 +238,20 @@ def whale_signal(sym):
     return False
 
 
-# 🔥 ERKEN BREAKOUT EKLENDİ
 def early_breakout(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
-
         last = candles[-1]
         prev = candles[-2]
 
         near_break = last[4] > prev[2] * 0.998
-
-        vol = last[5]
-        prev_vol = candles[-2][5]
-
-        volume_push = vol > prev_vol * 1.2
+        volume_push = last[5] > candles[-2][5] * 1.2
 
         return near_break and volume_push
-
     except:
         return False
 
 
-# --- EKSTRA FİLTRELER (AYNI) ---
 def market_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
@@ -376,6 +368,7 @@ def manage():
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
 
+                # HARD SL
                 if (direction=="long" and price <= entry*(1-SL_PCT)) or \
                    (direction=="short" and price >= entry*(1+SL_PCT)):
 
@@ -384,6 +377,22 @@ def manage():
                     bot.send_message(CHAT_ID,f"🛑 HARD SL {sym}")
                     continue
 
+                # ERKEN BREAK EVEN
+                if not state["tp1"]:
+                    if (direction=="long" and price >= entry*(1+0.005)) or \
+                       (direction=="short" and price <= entry*(1-0.005)):
+                        state["trail_stop"] = entry
+
+                # STOP KONTROL (KRİTİK)
+                if (direction=="long" and price <= state["trail_stop"]) or \
+                   (direction=="short" and price >= state["trail_stop"]):
+
+                    exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
+                    continue
+
+                # TP1
                 if not state["tp1"]:
                     if (direction=="long" and price>=entry*(1+TP1_PCT)) or \
                        (direction=="short" and price<=entry*(1-TP1_PCT)):
@@ -395,6 +404,7 @@ def manage():
                         state["trail_stop"]=entry
 
                         bot.send_message(CHAT_ID,f"💰 TP1 {sym}")
+                        continue
 
                 else:
                     step_price = entry * (1 + STEP_PCT * state["step"]) if direction=="long" else entry * (1 - STEP_PCT * state["step"])
@@ -412,13 +422,6 @@ def manage():
                             state["trail_stop"] = new_stop
 
                         bot.send_message(CHAT_ID,f"🔒 STEP {state['step']} → STOP {state['trail_stop']:.5f}")
-
-                    if (direction=="long" and price <= state["trail_stop"]) or \
-                       (direction=="short" and price >= state["trail_stop"]):
-
-                        exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
 
             time.sleep(4)
 
@@ -454,7 +457,6 @@ def scanner():
                         open_trade(sym,"short","btc_short")
                         break
 
-                # 🔥 ERKEN GİRİŞ
                 if early_breakout(sym):
                     pressure = orderbook_pressure(sym)
                     if pressure:
