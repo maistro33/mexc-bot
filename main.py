@@ -238,21 +238,10 @@ def whale_signal(sym):
     return False
 
 
-# 🔥 YENİ EKLENEN FİLTRE
-def overextended_filter(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
-        closes = [c[4] for c in candles]
-        move = (closes[-1] - closes[0]) / closes[0]
-        return move > 0.025
-    except:
-        return False
-
-
+# 🔥 ENTRY FILTER
 def smart_entry_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
-
         last = candles[-1]
         prev = candles[-2]
 
@@ -283,7 +272,24 @@ def smart_entry_filter(sym):
         if body_ratio < 0.3:
             return False
 
-        return breakout_up or breakout_down
+        if breakout_up or breakout_down:
+            return True
+
+        return False
+
+    except:
+        return False
+
+
+# 🔥 MARKET FILTER (YENİ)
+def market_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
+        closes = [c[4] for c in candles]
+
+        move = abs(closes[-1] - closes[0]) / closes[0]
+
+        return move > 0.01  # %1 altı = işlem yok
 
     except:
         return False
@@ -341,10 +347,7 @@ def manage():
                     continue
 
                 state=trade_state[sym]
-
-                ticker = exchange.fetch_ticker(sym)
-                price = (ticker["bid"] + ticker["ask"]) / 2
-
+                price=exchange.fetch_ticker(sym)["last"]
                 entry=state["entry"]
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
@@ -390,7 +393,9 @@ def manage():
                        (direction=="short" and price >= state["trail_stop"]):
 
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
+
                         trade_state.pop(sym)
+
                         bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
 
             time.sleep(4)
@@ -432,8 +437,8 @@ def scanner():
                 if not micro_momentum(sym):
                     continue
 
-                # 🔥 YENİ FİLTRE
-                if overextended_filter(sym):
+                # 🔥 MARKET FILTER EKLENDİ
+                if not market_filter(sym):
                     continue
 
                 if not smart_entry_filter(sym):
