@@ -100,10 +100,38 @@ def active_positions():
     except:
         return 0
 
+def sync_positions():
+    try:
+        positions = safe_api_call(exchange.fetch_positions)
+        if not positions:
+            return
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p.get("entryPrice"))
+            side = "long" if p.get("side") == "long" else "short"
+
+            trade_state[sym] = {
+                "entry": entry,
+                "direction": side,
+                "tp1": False,
+                "step": 0,
+                "start": time.time(),
+                "trail_stop": entry
+            }
+
+    except Exception as e:
+        print("SYNC ERROR:", e)
+
 # ================= MARKET =================
 def btc_trend():
     try:
         candles = cached_ohlcv("BTC/USDT:USDT","1h",50)
+        if not candles: return "neutral"
         closes=[c[4] for c in candles]
         ema=sum(closes[-20:])/20
         return "bull" if closes[-1] > ema else "bear"
@@ -264,7 +292,9 @@ def manage():
                 if sym not in trade_state: continue
 
                 state=trade_state[sym]
-                price=safe_api_call(exchange.fetch_ticker,sym)["last"]
+                ticker=safe_api_call(exchange.fetch_ticker,sym)
+                if not ticker: continue
+                price=ticker["last"]
 
                 entry=state["entry"]
                 direction=state["direction"]
