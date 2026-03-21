@@ -238,7 +238,17 @@ def whale_signal(sym):
     return False
 
 
-# 🔥 OPTİMUM GİRİŞ FİLTRESİ
+# 🔥 YENİ EKLENEN FİLTRE
+def overextended_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
+        closes = [c[4] for c in candles]
+        move = (closes[-1] - closes[0]) / closes[0]
+        return move > 0.025
+    except:
+        return False
+
+
 def smart_entry_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
@@ -273,10 +283,7 @@ def smart_entry_filter(sym):
         if body_ratio < 0.3:
             return False
 
-        if breakout_up or breakout_down:
-            return True
-
-        return False
+        return breakout_up or breakout_down
 
     except:
         return False
@@ -334,7 +341,10 @@ def manage():
                     continue
 
                 state=trade_state[sym]
-                price=exchange.fetch_ticker(sym)["last"]
+
+                ticker = exchange.fetch_ticker(sym)
+                price = (ticker["bid"] + ticker["ask"]) / 2
+
                 entry=state["entry"]
                 direction=state["direction"]
                 side="sell" if direction=="long" else "buy"
@@ -380,9 +390,7 @@ def manage():
                        (direction=="short" and price >= state["trail_stop"]):
 
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
                         trade_state.pop(sym)
-
                         bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
 
             time.sleep(4)
@@ -425,6 +433,9 @@ def scanner():
                     continue
 
                 # 🔥 YENİ FİLTRE
+                if overextended_filter(sym):
+                    continue
+
                 if not smart_entry_filter(sym):
                     continue
 
