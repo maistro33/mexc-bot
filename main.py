@@ -225,11 +225,43 @@ def liquidation_hunt(sym):
         return False
 
 
+# ✅ FIXED EARLY PUMP
 def early_pump(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
-        high=max([c[2] for c in candles[:-1]])
-        return candles[-1][4] > high and volume_spike(sym)
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=6)
+
+        last = candles[-1]
+        prev_high = max([c[2] for c in candles[:-1]])
+
+        breakout = last[4] > prev_high
+
+        if fake_breakout(sym):
+            return False
+
+        body = abs(last[4] - last[1])
+        range_candle = last[2] - last[3]
+
+        if range_candle == 0:
+            return False
+
+        body_ratio = body / range_candle
+        if body_ratio < 0.6:
+            return False
+
+        vols = [c[5] for c in candles]
+        avg_vol = sum(vols[:-1]) / len(vols[:-1])
+
+        if vols[-1] < avg_vol * 1.8:
+            return False
+
+        closes = [c[4] for c in candles]
+        ema = sum(closes[-5:]) / 5
+
+        if closes[-1] < ema:
+            return False
+
+        return breakout
+
     except:
         return False
 
@@ -280,7 +312,6 @@ def smart_entry_filter(sym):
         return False
 
 
-# --- YENİ FİLTRELER ---
 def market_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
@@ -479,7 +510,10 @@ def scanner():
                         open_trade(sym,pressure,"liquidation")
                         break
 
+                # ✅ BTC FİLTRELİ PUMP
                 if early_pump(sym):
+                    if btc == "bear":
+                        continue
                     open_trade(sym,"long","pump")
                     break
 
