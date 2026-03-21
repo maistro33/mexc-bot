@@ -13,7 +13,7 @@ MAX_POSITIONS = 4
 BALINA_LIMIT = 1
 
 TP1_PCT = 0.008
-STEP_PCT = 0.007
+STEP_PCT = 0.006
 TP1_RATIO = 0.50
 
 MIN_VOLUME = 2000000
@@ -238,7 +238,6 @@ def whale_signal(sym):
     return False
 
 
-# 🔥 ENTRY FILTER
 def smart_entry_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
@@ -281,16 +280,32 @@ def smart_entry_filter(sym):
         return False
 
 
-# 🔥 MARKET FILTER (YENİ)
+# --- YENİ FİLTRELER ---
 def market_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
         closes = [c[4] for c in candles]
-
         move = abs(closes[-1] - closes[0]) / closes[0]
+        return move > 0.01
+    except:
+        return False
 
-        return move > 0.01  # %1 altı = işlem yok
 
+def overextended_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
+        move = (candles[-1][4] - candles[-3][4]) / candles[-3][4]
+        return abs(move) < 0.025
+    except:
+        return False
+
+
+def late_entry_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym,"1m",limit=3)
+        c1 = (candles[-1][4] - candles[-2][4]) / candles[-2][4]
+        c2 = (candles[-2][4] - candles[-3][4]) / candles[-3][4]
+        return abs(c1) < 0.006 and abs(c2) < 0.006
     except:
         return False
 
@@ -393,9 +408,7 @@ def manage():
                        (direction=="short" and price >= state["trail_stop"]):
 
                         exchange.create_market_order(sym,side,get_qty(sym),params={"reduceOnly":True})
-
                         trade_state.pop(sym)
-
                         bot.send_message(CHAT_ID,f"🏁 TRAIL EXIT {sym}")
 
             time.sleep(4)
@@ -437,8 +450,13 @@ def scanner():
                 if not micro_momentum(sym):
                     continue
 
-                # 🔥 MARKET FILTER EKLENDİ
                 if not market_filter(sym):
+                    continue
+
+                if not overextended_filter(sym):
+                    continue
+
+                if not late_entry_filter(sym):
                     continue
 
                 if not smart_entry_filter(sym):
