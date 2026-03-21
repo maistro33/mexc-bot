@@ -12,7 +12,7 @@ MARGIN = 3
 MAX_POSITIONS = 4
 BALINA_LIMIT = 1
 
-TP1_PCT = 0.008
+TP1_PCT = 0.007
 STEP_PCT = 0.006
 TP1_RATIO = 0.50
 
@@ -21,7 +21,7 @@ MAX_SPREAD = 0.003
 SCAN_DELAY = 6
 
 TIMEOUT = 21600
-SL_PCT = 0.03
+SL_PCT = 0.02
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -225,43 +225,11 @@ def liquidation_hunt(sym):
         return False
 
 
-# ✅ FIXED EARLY PUMP
 def early_pump(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym,"5m",limit=6)
-
-        last = candles[-1]
-        prev_high = max([c[2] for c in candles[:-1]])
-
-        breakout = last[4] > prev_high
-
-        if fake_breakout(sym):
-            return False
-
-        body = abs(last[4] - last[1])
-        range_candle = last[2] - last[3]
-
-        if range_candle == 0:
-            return False
-
-        body_ratio = body / range_candle
-        if body_ratio < 0.6:
-            return False
-
-        vols = [c[5] for c in candles]
-        avg_vol = sum(vols[:-1]) / len(vols[:-1])
-
-        if vols[-1] < avg_vol * 1.8:
-            return False
-
-        closes = [c[4] for c in candles]
-        ema = sum(closes[-5:]) / 5
-
-        if closes[-1] < ema:
-            return False
-
-        return breakout
-
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=4)
+        high=max([c[2] for c in candles[:-1]])
+        return candles[-1][4] > high and volume_spike(sym)
     except:
         return False
 
@@ -270,48 +238,28 @@ def whale_signal(sym):
     return False
 
 
-def smart_entry_filter(sym):
+# 🔥 ERKEN BREAKOUT EKLENDİ
+def early_breakout(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
+        candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
+
         last = candles[-1]
         prev = candles[-2]
 
-        last_close = last[4]
-        last_high = last[2]
-        last_low = last[3]
+        near_break = last[4] > prev[2] * 0.998
 
-        prev_high = prev[2]
-        prev_low = prev[3]
+        vol = last[5]
+        prev_vol = candles[-2][5]
 
-        breakout_up = last_close > prev_high
-        breakout_down = last_close < prev_low
+        volume_push = vol > prev_vol * 1.2
 
-        fake_up = last_high > prev_high and last_close < prev_high
-        fake_down = last_low < prev_low and last_close > prev_low
-
-        if fake_up or fake_down:
-            return False
-
-        body = abs(last[4] - last[1])
-        range_candle = last_high - last_low
-
-        if range_candle == 0:
-            return False
-
-        body_ratio = body / range_candle
-
-        if body_ratio < 0.3:
-            return False
-
-        if breakout_up or breakout_down:
-            return True
-
-        return False
+        return near_break and volume_push
 
     except:
         return False
 
 
+# --- EKSTRA FİLTRELER (AYNI) ---
 def market_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
@@ -337,6 +285,36 @@ def late_entry_filter(sym):
         c1 = (candles[-1][4] - candles[-2][4]) / candles[-2][4]
         c2 = (candles[-2][4] - candles[-3][4]) / candles[-3][4]
         return abs(c1) < 0.006 and abs(c2) < 0.006
+    except:
+        return False
+
+
+def smart_entry_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
+        last = candles[-1]
+        prev = candles[-2]
+
+        breakout_up = last[4] > prev[2]
+        breakout_down = last[4] < prev[3]
+
+        fake_up = last[2] > prev[2] and last[4] < prev[2]
+        fake_down = last[3] < prev[3] and last[4] > prev[3]
+
+        if fake_up or fake_down:
+            return False
+
+        body = abs(last[4] - last[1])
+        rng = last[2] - last[3]
+
+        if rng == 0:
+            return False
+
+        if body / rng < 0.3:
+            return False
+
+        return breakout_up or breakout_down
+
     except:
         return False
 
@@ -476,23 +454,25 @@ def scanner():
                         open_trade(sym,"short","btc_short")
                         break
 
+                # 🔥 ERKEN GİRİŞ
+                if early_breakout(sym):
+                    pressure = orderbook_pressure(sym)
+                    if pressure:
+                        open_trade(sym,pressure,"early")
+                        break
+
                 if not volatility_filter(sym):
                     continue
                 if not micro_momentum(sym):
                     continue
-
                 if not market_filter(sym):
                     continue
-
                 if not overextended_filter(sym):
                     continue
-
                 if not late_entry_filter(sym):
                     continue
-
                 if not smart_entry_filter(sym):
                     continue
-
                 if not funding_filter(sym):
                     continue
 
@@ -510,10 +490,7 @@ def scanner():
                         open_trade(sym,pressure,"liquidation")
                         break
 
-                # ✅ BTC FİLTRELİ PUMP
                 if early_pump(sym):
-                    if btc == "bear":
-                        continue
                     open_trade(sym,"long","pump")
                     break
 
