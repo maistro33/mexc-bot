@@ -157,10 +157,15 @@ def signal(sym):
     except:
         return None, 0
 
-# ===== QTY FIX =====
-def format_qty(sym, qty):
+# ===== QTY FIX + MARGIN FIX =====
+def format_qty(sym, price, size):
     try:
-        qty = float(exchange.amount_to_precision(sym, qty))
+        # 🔥 hedef: minimum 1 USDT margin
+        target_value = max(size * LEV, 10)  # 10 USDT pozisyon
+
+        raw_qty = target_value / price
+
+        qty = float(exchange.amount_to_precision(sym, raw_qty))
         market = exchange.market(sym)
 
         if market["precision"]["amount"] == 0:
@@ -170,6 +175,7 @@ def format_qty(sym, qty):
             return 0
 
         return qty
+
     except:
         return 0
 
@@ -202,9 +208,8 @@ def open_trade(sym, direction, score):
             return
 
         price = ticker["last"]
-        raw_qty = (size * LEV) / price
 
-        qty = format_qty(sym, raw_qty)
+        qty = format_qty(sym, price, size)
 
         if qty <= 0:
             return
@@ -268,15 +273,14 @@ def manage():
                 # ROE
                 roe = ((price - entry) / entry * 100) * LEV if direction=="long" else ((entry - price) / entry * 100) * LEV
 
-                # 🔥 BREAK EVEN
+                # BREAK EVEN
                 if roe > 5:
                     state["trail"] = entry
 
-                # PROFIT ONLY
                 if roe <= 0:
                     continue
 
-                # 🔥 TRAIL BOOST
+                # TRAIL BOOST
                 if roe > 10:
                     trail_pct = 0.01
                 else:
@@ -326,7 +330,7 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("ULTIMATE PROFIT BOT STARTED")
+print("ULTIMATE BOT STARTED")
 
 sync_positions()
 
@@ -334,7 +338,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🧠 ULTIMATE PROFIT BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 ULTIMATE BOT AKTİF")
 
 while True:
     time.sleep(60)
