@@ -10,12 +10,10 @@ LEV = 10
 BASE_MARGIN = 2
 MAX_POSITIONS = 2
 
-SCAN_DELAY = 12
+SCAN_DELAY = 10
 MIN_VOLUME = 1000000
 
-STEP_SIZE = 1.2       # %1.2 step
-SL_PERCENT = 0.012    # 🔥 %1.2 HARD SL
-MIN_HOLD = 60         # 🔥 erken kapanmayı engeller
+SL_PERCENT = 0.01  # %1 hard SL
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -31,14 +29,12 @@ exchange = ccxt.bitget({
 trade_state = {}
 cooldown = {}
 
-# ===== UTILS =====
+# ===== SAFE =====
 def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0
+    try: return float(x)
+    except: return 0
 
-# ===== POSITION COUNT =====
+# ===== POS =====
 def current_positions():
     try:
         pos = exchange.fetch_positions()
@@ -46,7 +42,7 @@ def current_positions():
     except:
         return 0
 
-# ===== SYMBOL SCAN =====
+# ===== SYMBOLS =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -56,12 +52,12 @@ def get_symbols():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            vol = d.get("quoteVolume", 0)
+            vol = safe(d.get("quoteVolume"))
             if vol < MIN_VOLUME:
                 continue
 
-            change = abs(d.get("percentage", 0))
-            score = change * 2 + (vol / 1_000_000)
+            change = abs(safe(d.get("percentage")))
+            score = change + (vol / 1_000_000)
 
             arr.append((sym, score))
 
@@ -74,29 +70,24 @@ def get_symbols():
     except:
         return []
 
-# ===== SIGNAL (RETEST ENTRY) =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
+        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
+        m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
 
-        c1 = m5[-1][4]
-        c2 = m5[-2][4]
-        c3 = m5[-3][4]
+        h1c = [c[4] for c in h1]
+        m5c = [c[4] for c in m5]
 
-        # LONG
-        pump = (c2 - c3) / c3 > 0.005
-        pullback = c1 < c2
-        confirm = c1 > c3
+        trend = h1c[-1] > sum(h1c[-10:]) / 10
+        mom = (m5c[-1] - m5c[-3]) / m5c[-3]
 
-        if pump and pullback and confirm:
+        if abs(mom) < 0.004:
+            return None
+
+        if trend and mom > 0:
             return "long"
-
-        # SHORT
-        pump_down = (c3 - c2) / c3 > 0.005
-        pullback_up = c1 > c2
-        confirm_down = c1 < c3
-
-        if pump_down and pullback_up and confirm_down:
+        if not trend and mom < 0:
             return "short"
 
         return None
@@ -108,85 +99,81 @@ def signal(sym):
 def format_qty(sym, price):
     try:
         market = exchange.market(sym)
-        min_qty = market['limits']['amount']['min']
 
-        target_usdt = BASE_MARGIN * LEV
-        raw_qty = target_usdt / price
+        min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
+        precision = market.get("precision", {}).get("amount", 3)
 
-        qty = float(exchange.amount_to_precision(sym, raw_qty))
+        target = BASE_MARGIN * LEV
+        raw = target / price
+
+        qty = round(raw, precision)
 
         if qty < min_qty:
-            return 0
+            qty = min_qty
 
-        return qty
+        return float(qty)
 
-    except:
+    except Exception as e:
+        print("QTY FIX ERROR:", e)
         return 0
 
-# ===== TRAILING =====
-def update_trailing(sym, price):
+# ===== STEP SYSTEM =====
+def update_step(sym, roe):
+    state = trade_state[sym]
+
+    if roe > state["max_roe"]:
+        state["max_roe"] = roe
+
+# ===== EXIT LOGIC (PRO) =====
+def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
     direction = state["direction"]
+    max_roe = state["max_roe"]
 
-    profit = (price - entry) / entry if direction == "long" else (entry - price) / entry
+    # ⏳ MIN HOLD
+    if time.time() - state["time"] < 20:
+        return False
 
-    # 🔥 %1 kâr olmadan trailing yok
-    if profit < 0.01:
-        return
-
-    step = int(profit / (STEP_SIZE / 100))
-
-    if step > state["step"]:
-        state["step"] = step
-
-        if direction == "long":
-            new_stop = entry * (1 + (step - 1) * (STEP_SIZE / 100))
-        else:
-            new_stop = entry * (1 - (step - 1) * (STEP_SIZE / 100))
-
-        if state["trail_price"] is None:
-            state["trail_price"] = new_stop
-        else:
-            if direction == "long" and new_stop > state["trail_price"]:
-                state["trail_price"] = new_stop
-            if direction == "short" and new_stop < state["trail_price"]:
-                state["trail_price"] = new_stop
-
-# ===== EXIT =====
-def should_exit(sym, price):
-    state = trade_state[sym]
-
-    entry = state["entry"]
-    direction = state["direction"]
-
-    # HARD SL
+    # 🔴 HARD SL
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    # MIN HOLD
-    if time.time() - state["time"] < MIN_HOLD:
-        return False
+    # 🧠 STEP PRO SYSTEM
 
-    # TRAILING (hafif toleranslı)
-    if state["trail_price"] is not None:
-        if direction == "long" and price <= state["trail_price"] * 0.998:
+    # Step 1
+    if max_roe > 10:
+        if roe < 0:
             return True
-        if direction == "short" and price >= state["trail_price"] * 1.002:
+
+    # Step 2
+    if max_roe > 20:
+        if roe < 10:
+            return True
+
+    # Step 3
+    if max_roe > 30:
+        if roe < 20:
+            return True
+
+    # Step 4
+    if max_roe > 40:
+        if roe < 30:
             return True
 
     return False
 
-# ===== OPEN TRADE =====
+# ===== OPEN =====
 def open_trade(sym, direction):
     try:
         if current_positions() >= MAX_POSITIONS:
             return
 
-        if sym in cooldown and time.time() - cooldown[sym] < 300:
+        now = time.time()
+        if sym in cooldown and now - cooldown[sym] < 300:
             return
 
         ticker = exchange.fetch_ticker(sym)
@@ -194,6 +181,7 @@ def open_trade(sym, direction):
 
         qty = format_qty(sym, price)
         if qty <= 0:
+            print("QTY ERROR:", sym)
             return
 
         exchange.set_leverage(LEV, sym)
@@ -205,8 +193,7 @@ def open_trade(sym, direction):
             "entry": price,
             "direction": direction,
             "time": time.time(),
-            "step": 0,
-            "trail_price": None  # 🔥 BAŞTA YOK
+            "max_roe": 0
         }
 
         cooldown[sym] = time.time()
@@ -228,21 +215,24 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-
                 if sym not in trade_state:
                     continue
 
                 price = exchange.fetch_ticker(sym)["last"]
+                entry = trade_state[sym]["entry"]
                 direction = trade_state[sym]["direction"]
 
                 side = "sell" if direction == "long" else "buy"
 
-                update_trailing(sym, price)
+                roe = ((price - entry) / entry * 100) * LEV if direction == "long" \
+                    else ((entry - price) / entry * 100) * LEV
 
-                if should_exit(sym, price):
+                update_step(sym, roe)
+
+                if should_exit(sym, price, roe):
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"❌ CLOSE {sym}")
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} ROE {roe:.2f}%")
 
             time.sleep(2)
 
@@ -266,13 +256,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL NO EARLY STOP BOT STARTED")
+print("🔥 FINAL PRO STEP BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (EARLY STOP FIXED)")
+bot.send_message(CHAT_ID, "🔥 PRO STEP BOT AKTİF")
 
 while True:
     time.sleep(60)
