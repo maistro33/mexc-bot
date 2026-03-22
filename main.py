@@ -13,8 +13,8 @@ MAX_POSITIONS = 2
 SCAN_DELAY = 15
 MIN_VOLUME = 800000
 
-STEP_SIZE = 1.0     # 🔥 step %1
-HARD_SL = -2        # 🔥 -2% stop
+STEP_SIZE = 1.0
+HARD_SL = -2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -129,12 +129,13 @@ def should_exit(sym, roe):
     if time.time() - state["time"] < 30:
         return False
 
-    # HARD STOP
+    # HARD STOP (DAHA HIZLI)
     if roe <= HARD_SL:
         return True
 
     current_step = int(roe / STEP_SIZE)
 
+    # STEP TRAILING
     if "max_step" in state:
         if current_step <= state["max_step"] - 1:
             return True
@@ -157,6 +158,7 @@ def open_trade(sym, direction):
 
         qty = format_qty(sym, price)
         if qty <= 0:
+            print("QTY ERROR:", sym)
             return
 
         exchange.set_leverage(LEV, sym)
@@ -208,11 +210,11 @@ def manage():
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"✅ CLOSE {sym} ROE {roe:.2f}%")
 
-            time.sleep(5)
+            time.sleep(2)  # 🔥 hızlandırıldı
 
         except Exception as e:
             print("MANAGE:", e)
-            time.sleep(6)
+            time.sleep(3)
 
 # ===== SCANNER =====
 def scanner():
@@ -230,13 +232,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL STEP TRAILING BOT STARTED")
+print("FINAL FIXED BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 STEP TRAILING BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL FIXED BOT AKTİF")
 
 while True:
     time.sleep(60)
