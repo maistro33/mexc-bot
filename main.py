@@ -14,6 +14,7 @@ MAX_POSITIONS = 2
 SCAN_DELAY = 15
 MIN_VOLUME = 800000
 MAX_SPREAD = 0.003
+MIN_NOTIONAL = 5
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -33,7 +34,7 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== AI MEMORY =====
+# ===== MEMORY =====
 def load_stats():
     try:
         with open("stats.json", "r") as f:
@@ -47,18 +48,19 @@ def save_stats(stats):
 
 def update_stats(sym, profit):
     stats = load_stats()
-
     if sym not in stats:
-        stats[sym] = {"win": 0, "loss": 0}
+        stats[sym] = {"win": 0, "loss": 0, "streak": 0}
 
     if profit > 0:
         stats[sym]["win"] += 1
+        stats[sym]["streak"] += 1
     else:
         stats[sym]["loss"] += 1
+        stats[sym]["streak"] = 0
 
     save_stats(stats)
 
-# ===== AI RISK =====
+# ===== PROFIT AI =====
 def ai_risk_size(sym, score):
     try:
         stats = load_stats()
@@ -67,14 +69,22 @@ def ai_risk_size(sym, score):
         if sym in stats:
             w = stats[sym]["win"]
             l = stats[sym]["loss"]
+            streak = stats[sym].get("streak", 0)
             t = w + l
 
             if t > 5:
                 wr = w / t
+
                 if wr > 0.7:
                     mult = 1.3
                 elif wr < 0.4:
                     mult = 0.5
+
+            # 🔥 streak boost
+            if streak >= 3:
+                mult += 0.3
+            if streak >= 5:
+                mult += 0.5
 
         if score >= 4:
             mult += 0.2
@@ -87,7 +97,6 @@ def ai_risk_size(sym, score):
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
-
         for p in positions:
             qty = safe(p.get("contracts"))
             if qty <= 0:
@@ -95,7 +104,6 @@ def sync_positions():
 
             sym = p["symbol"]
 
-            # 🔥 eski trade = güvenli mod
             trade_state[sym] = {
                 "entry": safe(p["entryPrice"]),
                 "direction": "long" if p["side"] == "long" else "short",
@@ -103,7 +111,6 @@ def sync_positions():
                 "partial_done": True,
                 "adds": 1
             }
-
         print("SYNC DONE")
     except:
         pass
@@ -113,17 +120,15 @@ def blacklist(sym):
     bad = ["1000","UP","DOWN","BULL","BEAR"]
     return not any(b in sym.upper() for b in bad)
 
-# ===== FULL MARKET SCAN =====
+# ===== SCAN =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
         candidates = []
 
         for sym, data in tickers.items():
-
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
-
             if not blacklist(sym):
                 continue
 
@@ -141,17 +146,13 @@ def get_symbols():
 
         candidates.sort(key=lambda x: x[1], reverse=True)
 
-        # 🔥 120 havuz
         pool = candidates[:120]
-
-        # 🔥 20 aktif
         top = [x[0] for x in pool[:20]]
 
         random.shuffle(top)
         return top
 
-    except Exception as e:
-        print("SCAN ERROR:", e)
+    except:
         return []
 
 # ===== SIGNAL =====
@@ -180,7 +181,6 @@ def signal(sym):
         if abs(mom) > 0.008: score += 1
         if vol > 0.01: score += 1
 
-        # AI FILTER
         stats = load_stats()
         if sym in stats:
             t = stats[sym]["win"] + stats[sym]["loss"]
@@ -210,7 +210,7 @@ def format_qty(sym, price, size):
     except:
         return 0
 
-# ===== AI DECISION =====
+# ===== AI =====
 def ai_manage(sym, price, entry, direction):
     try:
         m1 = exchange.fetch_ohlcv(sym, "1m", limit=10)
@@ -267,8 +267,6 @@ def open_trade(sym, direction, score):
             return
 
         size = ai_risk_size(sym, score)
-        if len(trade_state) == 1:
-            size *= 0.7
 
         ticker = exchange.fetch_ticker(sym)
         spread = (ticker["ask"]-ticker["bid"]) / ticker["last"]
@@ -315,26 +313,34 @@ def manage():
                 if sym not in trade_state:
                     continue
 
-                state = trade_state[sym]
                 price = exchange.fetch_ticker(sym)["last"]
-
-                entry = state["entry"]
-                direction = state["direction"]
+                entry = trade_state[sym]["entry"]
+                direction = trade_state[sym]["direction"]
                 side = "sell" if direction=="long" else "buy"
 
                 roe = ((price-entry)/entry*100)*LEV if direction=="long" else ((entry-price)/entry*100)*LEV
 
+                # ===== MIN CHECK =====
+                if qty * price < MIN_NOTIONAL:
+                    continue
+
                 # ===== PARTIAL =====
-                if not state["partial_done"] and roe > 10:
-                    exchange.create_market_order(sym, side, qty*0.5, params={"reduceOnly": True})
-                    state["partial_done"] = True
+                if not trade_state[sym]["partial_done"] and roe > 10:
+                    close_qty = qty * 0.5
+                    if close_qty * price < MIN_NOTIONAL:
+                        close_qty = qty
+
+                    exchange.create_market_order(sym, side, close_qty, params={"reduceOnly": True})
+                    trade_state[sym]["partial_done"] = True
                     bot.send_message(CHAT_ID, f"💰 PARTIAL {sym}")
 
                 # ===== PYRAMID =====
-                if state["adds"] < 2 and roe > 8:
-                    exchange.create_market_order(sym, "buy" if direction=="long" else "sell", qty*0.5)
-                    state["adds"] += 1
-                    bot.send_message(CHAT_ID, f"📈 ADD {sym}")
+                if trade_state[sym]["adds"] < 2 and roe > 8:
+                    add_qty = qty * 0.5
+                    if add_qty * price >= MIN_NOTIONAL:
+                        exchange.create_market_order(sym, "buy" if direction=="long" else "sell", add_qty)
+                        trade_state[sym]["adds"] += 1
+                        bot.send_message(CHAT_ID, f"📈 ADD {sym}")
 
                 # ===== AI EXIT =====
                 decision = ai_manage(sym, price, entry, direction)
@@ -365,7 +371,7 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("ULTIMATE AI BOT STARTED")
+print("TRUE FINAL AI BOT STARTED")
 
 sync_positions()
 
@@ -373,7 +379,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 TRUE FINAL AI BOT AKTİF")
 
 while True:
     time.sleep(60)
