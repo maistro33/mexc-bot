@@ -7,7 +7,7 @@ import random
 
 # ===== SAFE CONFIG =====
 LEV = 10
-MARGIN = 3
+MARGIN = 1
 MAX_POSITIONS = 2
 
 SL_PCT = 0.02
