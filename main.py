@@ -12,13 +12,11 @@ MAX_POSITIONS = 4
 SL_PCT = 0.025
 TP_TRAIL = 0.005
 
-MIN_VOLUME = 1_000_000
+MIN_VOLUME = 1000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 5
 
 loss_streak = 0
-trade_state = {}
-cooldown = {}
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -26,15 +24,21 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",  # 🔥 ORİJİNAL HALİ GERİ
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
+trade_state = {}
+cooldown = {}
+
 # ===== UTILS =====
 def safe(x):
-    try: return float(x)
-    except: return 0
+    try:
+        return float(x)
+    except:
+        return 0
+
 
 def get_qty(sym):
     try:
@@ -45,7 +49,8 @@ def get_qty(sym):
     except:
         return 0
 
-# ===== AI SCANNER =====
+
+# ===== SCANNER AI =====
 def get_hot_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -64,7 +69,7 @@ def get_hot_symbols():
             if vol < MIN_VOLUME:
                 continue
 
-            score = change * 2 + (vol / 1_000_000)
+            score = change * 2 + (vol / 1000000)
 
             candidates.append((sym, score))
 
@@ -77,6 +82,7 @@ def get_hot_symbols():
 
     except:
         return []
+
 
 # ===== ANALYSIS =====
 def multi_tf_signal(sym):
@@ -97,6 +103,7 @@ def multi_tf_signal(sym):
     except:
         return None
 
+
 def orderbook_pressure(sym):
     try:
         ob = exchange.fetch_order_book(sym, limit=20)
@@ -111,6 +118,7 @@ def orderbook_pressure(sym):
     except:
         return None
 
+
 def ai_confidence(sym, direction):
     score = 0
 
@@ -121,8 +129,8 @@ def ai_confidence(sym, direction):
         score += 1
 
     try:
-        candles = exchange.fetch_ohlcv(sym,"1m",limit=3)
-        change = (candles[-1][4]-candles[-2][4])/candles[-2][4]
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
+        change = (candles[-1][4] - candles[-2][4]) / candles[-2][4]
         if abs(change) > 0.002:
             score += 1
     except:
@@ -130,13 +138,19 @@ def ai_confidence(sym, direction):
 
     return score
 
+
 # ===== RISK =====
 def update_loss(pnl):
     global loss_streak
-    loss_streak = loss_streak+1 if pnl < 0 else 0
+    if pnl < 0:
+        loss_streak += 1
+    else:
+        loss_streak = 0
+
 
 def should_stop():
     return loss_streak >= 6
+
 
 def get_size(score):
     size = MARGIN
@@ -151,6 +165,7 @@ def get_size(score):
 
     return size
 
+
 # ===== TRADE =====
 def open_trade(sym, direction):
     try:
@@ -161,6 +176,9 @@ def open_trade(sym, direction):
             return
 
         ticker = exchange.fetch_ticker(sym)
+
+        if ticker["quoteVolume"] < MIN_VOLUME:
+            return
 
         spread = (ticker["ask"] - ticker["bid"]) / ticker["last"]
         if spread > MAX_SPREAD:
@@ -177,6 +195,9 @@ def open_trade(sym, direction):
         qty = (size * LEV) / price
         qty = float(exchange.amount_to_precision(sym, qty))
 
+        if qty <= 0:
+            return
+
         exchange.set_leverage(LEV, sym)
 
         side = "buy" if direction == "long" else "sell"
@@ -191,7 +212,8 @@ def open_trade(sym, direction):
         bot.send_message(CHAT_ID, f"🚀 AI {sym} {direction} score:{score}")
 
     except Exception as e:
-        print("OPEN:", e)
+        print("OPEN ERROR:", e)
+
 
 # ===== MANAGER =====
 def manage():
@@ -215,16 +237,16 @@ def manage():
                 entry = state["entry"]
                 direction = state["direction"]
 
-                side = "sell" if direction=="long" else "buy"
+                side = "sell" if direction == "long" else "buy"
 
                 # SL
-                if (direction=="long" and price <= entry*(1-SL_PCT)) or \
-                   (direction=="short" and price >= entry*(1+SL_PCT)):
+                if (direction == "long" and price <= entry * (1 - SL_PCT)) or \
+                   (direction == "short" and price >= entry * (1 + SL_PCT)):
 
-                    exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     update_loss(-1)
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID,f"🛑 SL {sym}")
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
 
                 # TRAILING
@@ -237,19 +259,21 @@ def manage():
                     if new_trail < state["trail"]:
                         state["trail"] = new_trail
 
-                if (direction=="long" and price <= state["trail"]) or \
-                   (direction=="short" and price >= state["trail"]):
+                # EXIT
+                if (direction == "long" and price <= state["trail"]) or \
+                   (direction == "short" and price >= state["trail"]):
 
-                    exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
-                    update_loss(1 if price>entry else -1)
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    update_loss(1 if price > entry else -1)
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID,f"🏁 EXIT {sym}")
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym}")
 
             time.sleep(4)
 
         except Exception as e:
-            print("MANAGE:", e)
+            print("MANAGE ERROR:", e)
             time.sleep(6)
+
 
 # ===== SCANNER =====
 def scanner():
@@ -261,8 +285,8 @@ def scanner():
 
             symbols = get_hot_symbols()
 
-            positions = exchange.fetch_positions()
-            active = sum(1 for p in positions if safe(p.get("contracts")) > 0)
+            pos = exchange.fetch_positions()
+            active = sum(1 for p in pos if safe(p.get("contracts")) > 0)
 
             if active >= MAX_POSITIONS:
                 time.sleep(SCAN_DELAY)
@@ -284,8 +308,9 @@ def scanner():
             time.sleep(SCAN_DELAY)
 
         except Exception as e:
-            print("SCAN:", e)
+            print("SCAN ERROR:", e)
             time.sleep(10)
+
 
 # ===== START =====
 print("SCANNER AI BOT STARTED")
