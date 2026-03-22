@@ -11,9 +11,9 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
-MIN_VOLUME = 2000000
+SCAN_DELAY = 15
+MIN_VOLUME = 800000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 8
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -27,7 +27,6 @@ exchange = ccxt.bitget({
 })
 
 trade_state = {}
-cooldown = {}
 
 # ===== UTILS =====
 def safe(x):
@@ -81,7 +80,6 @@ def ai_risk_size(sym, score):
             mult += 0.2
 
         return BASE_MARGIN * mult
-
     except:
         return BASE_MARGIN
 
@@ -97,12 +95,13 @@ def sync_positions():
 
             sym = p["symbol"]
 
+            # 🔥 eski trade = güvenli mod
             trade_state[sym] = {
                 "entry": safe(p["entryPrice"]),
                 "direction": "long" if p["side"] == "long" else "short",
                 "time": time.time(),
-                "partial_done": False,
-                "adds": 0
+                "partial_done": True,
+                "adds": 1
             }
 
         print("SYNC DONE")
@@ -114,13 +113,14 @@ def blacklist(sym):
     bad = ["1000","UP","DOWN","BULL","BEAR"]
     return not any(b in sym.upper() for b in bad)
 
-# ===== SCANNER =====
+# ===== FULL MARKET SCAN =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
-        arr = []
+        candidates = []
 
         for sym, data in tickers.items():
+
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
@@ -128,21 +128,30 @@ def get_symbols():
                 continue
 
             vol = data.get("quoteVolume", 0)
-            change = abs(data.get("percentage", 0))
-
-            if vol < MIN_VOLUME or change > 12:
+            if vol < MIN_VOLUME:
                 continue
 
-            score = change * 2 + (vol / 1000000)
-            arr.append((sym, score))
+            change = abs(data.get("percentage", 0))
+            price = data.get("last", 0)
+            if price <= 0:
+                continue
 
-        arr.sort(key=lambda x: x[1], reverse=True)
-        top = [x[0] for x in arr[:15]]
+            score = change * 2 + (vol / 1_000_000)
+            candidates.append((sym, score))
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # 🔥 120 havuz
+        pool = candidates[:120]
+
+        # 🔥 20 aktif
+        top = [x[0] for x in pool[:20]]
+
         random.shuffle(top)
+        return top
 
-        return top[:6]
-
-    except:
+    except Exception as e:
+        print("SCAN ERROR:", e)
         return []
 
 # ===== SIGNAL =====
@@ -171,11 +180,12 @@ def signal(sym):
         if abs(mom) > 0.008: score += 1
         if vol > 0.01: score += 1
 
+        # AI FILTER
         stats = load_stats()
         if sym in stats:
-            total = stats[sym]["win"] + stats[sym]["loss"]
-            if total > 5:
-                wr = stats[sym]["win"] / total
+            t = stats[sym]["win"] + stats[sym]["loss"]
+            if t > 5:
+                wr = stats[sym]["win"] / t
                 if wr < 0.4:
                     return None, 0
 
@@ -230,7 +240,6 @@ def ai_manage(sym, price, entry, direction):
         if vol > 0.003:
             score += 1
 
-        # ===== KARAR =====
         if roe < 0 and score >= 2:
             return "hold"
 
@@ -317,22 +326,15 @@ def manage():
 
                 # ===== PARTIAL =====
                 if not state["partial_done"] and roe > 10:
-                    close_qty = qty * 0.5
-                    exchange.create_market_order(sym, side, close_qty, params={"reduceOnly": True})
+                    exchange.create_market_order(sym, side, qty*0.5, params={"reduceOnly": True})
                     state["partial_done"] = True
                     bot.send_message(CHAT_ID, f"💰 PARTIAL {sym}")
 
                 # ===== PYRAMID =====
-                if state["adds"] < 2:
-                    if roe > 10 and state["adds"] == 0:
-                        exchange.create_market_order(sym, "buy" if direction=="long" else "sell", qty * 0.5)
-                        state["adds"] += 1
-                        bot.send_message(CHAT_ID, f"📈 ADD {sym}")
-
-                    elif roe > 20 and state["adds"] == 1:
-                        exchange.create_market_order(sym, "buy" if direction=="long" else "sell", qty * 0.5)
-                        state["adds"] += 1
-                        bot.send_message(CHAT_ID, f"🚀 ADD2 {sym}")
+                if state["adds"] < 2 and roe > 8:
+                    exchange.create_market_order(sym, "buy" if direction=="long" else "sell", qty*0.5)
+                    state["adds"] += 1
+                    bot.send_message(CHAT_ID, f"📈 ADD {sym}")
 
                 # ===== AI EXIT =====
                 decision = ai_manage(sym, price, entry, direction)
@@ -342,7 +344,6 @@ def manage():
                     update_stats(sym, roe)
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🧠 AI CLOSE {sym}")
-                    continue
 
             time.sleep(5)
 
@@ -372,7 +373,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL AI BOT AKTİF")
 
 while True:
     time.sleep(60)
