@@ -11,7 +11,7 @@ BASE_MARGIN = 1
 
 MAX_POSITIONS = 2
 
-SL_PCT = 0.02
+SL_PCT = 0.025
 TP_TRAIL = 0.008
 
 MIN_VOLUME = 2000000
@@ -48,7 +48,7 @@ def get_qty(sym):
     except:
         return 0
 
-# ===== 🔥 SYNC (CRITICAL) =====
+# ===== SYNC =====
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
@@ -265,18 +265,29 @@ def manage():
                 if time.time() - state["time"] < 20:
                     continue
 
+                # ROE
+                roe = ((price - entry) / entry * 100) * LEV if direction=="long" else ((entry - price) / entry * 100) * LEV
+
+                # 🔥 BREAK EVEN
+                if roe > 5:
+                    state["trail"] = entry
+
                 # PROFIT ONLY
-                in_profit = (price > entry) if direction=="long" else (price < entry)
-                if not in_profit:
+                if roe <= 0:
                     continue
 
-                # TRAILING
+                # 🔥 TRAIL BOOST
+                if roe > 10:
+                    trail_pct = 0.01
+                else:
+                    trail_pct = TP_TRAIL
+
                 if direction == "long":
-                    new_trail = price * (1 - TP_TRAIL)
+                    new_trail = price * (1 - trail_pct)
                     if new_trail > state["trail"]:
                         state["trail"] = new_trail
                 else:
-                    new_trail = price * (1 + TP_TRAIL)
+                    new_trail = price * (1 + trail_pct)
                     if new_trail < state["trail"]:
                         state["trail"] = new_trail
 
@@ -315,15 +326,15 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("ULTIMATE BOT STARTED")
+print("ULTIMATE PROFIT BOT STARTED")
 
-sync_positions()  # 🔥 restart sonrası pozisyonları geri alır
+sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🧠 ULTIMATE BOT AKTİF")
+bot.send_message(CHAT_ID, "🧠 ULTIMATE PROFIT BOT AKTİF")
 
 while True:
     time.sleep(60)
