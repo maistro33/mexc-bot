@@ -7,15 +7,15 @@ import random
 
 # ===== CONFIG =====
 LEV = 10
-BASE_MARGIN = 1
+BASE_MARGIN = 2   # 🔥 artırdım (QTY fix)
 MAX_POSITIONS = 2
 
 SCAN_DELAY = 12
-MIN_VOLUME = 800000
+MIN_VOLUME = 1000000
 
-STEP_SIZE = 1.0
-SL_PERCENT = 0.0035
-MIN_HOLD = 8
+STEP_SIZE = 1.2        # 🔥 daha geniş step
+SL_PERCENT = 0.005     # 🔥 %0.5 gerçek stop
+MIN_HOLD = 15          # 🔥 erken çıkmayı engeller
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -86,14 +86,7 @@ def signal(sym):
         trend = h1c[-1] > sum(h1c[-10:]) / 10
         mom = (m5c[-1] - m5c[-3]) / m5c[-3]
 
-        high = max(c[2] for c in m5)
-        low = min(c[3] for c in m5)
-        vol = (high - low) / low
-
-        if abs(mom) < 0.006:
-            return None
-
-        if vol < 0.006:
+        if abs(mom) < 0.007:
             return None
 
         if trend and mom > 0:
@@ -107,25 +100,28 @@ def signal(sym):
     except:
         return None
 
-# ===== QTY FIX (EN ÖNEMLİ) =====
+# ===== QTY FIX (KESİN ÇÖZÜM) =====
 def format_qty(sym, price):
     try:
         market = exchange.market(sym)
 
-        min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
+        min_qty = market['limits']['amount']['min']
+        precision = market['precision']['amount']
 
-        target = max(BASE_MARGIN * LEV, 5)
-        raw_qty = target / price
+        target_usdt = BASE_MARGIN * LEV
+        raw_qty = target_usdt / price
 
-        qty = float(exchange.amount_to_precision(sym, raw_qty))
+        # precision'a göre yuvarla
+        qty = round(raw_qty, precision)
 
-        if min_qty and qty < min_qty:
-            qty = min_qty
+        # minimumdan küçükse SKIP
+        if qty < min_qty:
+            return 0
 
         return qty
 
     except Exception as e:
-        print("QTY FIX ERROR:", e)
+        print("QTY ERROR:", sym, e)
         return 0
 
 # ===== TRAILING =====
@@ -136,8 +132,6 @@ def update_trailing(sym, roe):
 
     if step > state["max_step"]:
         state["max_step"] = step
-
-    state["trail_level"] = state["max_step"] - 1
 
 # ===== EXIT =====
 def should_exit(sym, price, roe):
@@ -159,15 +153,16 @@ def should_exit(sym, price, roe):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # TRAILING
+    # TRAILING (DAHA GEÇ ÇIK)
     current_step = int(roe / STEP_SIZE)
 
-    if current_step < state["trail_level"]:
-        return True
+    if "max_step" in state:
+        if current_step < state["max_step"] - 2:  # 🔥 BURASI KRİTİK
+            return True
 
     return False
 
-# ===== OPEN TRADE =====
+# ===== OPEN =====
 def open_trade(sym, direction):
     try:
         if current_positions() >= MAX_POSITIONS:
@@ -181,8 +176,7 @@ def open_trade(sym, direction):
 
         qty = format_qty(sym, price)
         if qty <= 0:
-            print("QTY ERROR:", sym)
-            return
+            return  # 🔥 artık spam hata yok
 
         exchange.set_leverage(LEV, sym)
 
@@ -193,8 +187,7 @@ def open_trade(sym, direction):
             "entry": price,
             "direction": direction,
             "time": time.time(),
-            "max_step": 0,
-            "trail_level": 0
+            "max_step": 0
         }
 
         cooldown[sym] = time.time()
@@ -204,7 +197,7 @@ def open_trade(sym, direction):
     except Exception as e:
         print("OPEN ERROR:", e)
 
-# ===== MANAGER =====
+# ===== MANAGE =====
 def manage():
     while True:
         try:
@@ -257,13 +250,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL PRO BOT STARTED")
+print("FINAL STABLE BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 STABLE BOT AKTİF")
 
 while True:
     time.sleep(60)
