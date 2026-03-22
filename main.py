@@ -14,8 +14,8 @@ SCAN_DELAY = 12
 MIN_VOLUME = 1000000
 
 STEP_SIZE = 1.2       # %1.2 step
-SL_PERCENT = 0.008    # %0.8 hard stop
-MIN_HOLD = 30         # minimum bekleme
+SL_PERCENT = 0.012    # 🔥 %1.2 HARD SL
+MIN_HOLD = 60         # 🔥 erken kapanmayı engeller
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -108,7 +108,6 @@ def signal(sym):
 def format_qty(sym, price):
     try:
         market = exchange.market(sym)
-
         min_qty = market['limits']['amount']['min']
 
         target_usdt = BASE_MARGIN * LEV
@@ -124,13 +123,18 @@ def format_qty(sym, price):
     except:
         return 0
 
-# ===== TRAILING UPDATE =====
+# ===== TRAILING =====
 def update_trailing(sym, price):
     state = trade_state[sym]
     entry = state["entry"]
     direction = state["direction"]
 
     profit = (price - entry) / entry if direction == "long" else (entry - price) / entry
+
+    # 🔥 %1 kâr olmadan trailing yok
+    if profit < 0.01:
+        return
+
     step = int(profit / (STEP_SIZE / 100))
 
     if step > state["step"]:
@@ -138,12 +142,15 @@ def update_trailing(sym, price):
 
         if direction == "long":
             new_stop = entry * (1 + (step - 1) * (STEP_SIZE / 100))
-            if new_stop > state["trail_price"]:
-                state["trail_price"] = new_stop
-
         else:
             new_stop = entry * (1 - (step - 1) * (STEP_SIZE / 100))
-            if new_stop < state["trail_price"]:
+
+        if state["trail_price"] is None:
+            state["trail_price"] = new_stop
+        else:
+            if direction == "long" and new_stop > state["trail_price"]:
+                state["trail_price"] = new_stop
+            if direction == "short" and new_stop < state["trail_price"]:
                 state["trail_price"] = new_stop
 
 # ===== EXIT =====
@@ -164,12 +171,12 @@ def should_exit(sym, price):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # TRAILING STOP
-    if direction == "long" and price <= state["trail_price"]:
-        return True
-
-    if direction == "short" and price >= state["trail_price"]:
-        return True
+    # TRAILING (hafif toleranslı)
+    if state["trail_price"] is not None:
+        if direction == "long" and price <= state["trail_price"] * 0.998:
+            return True
+        if direction == "short" and price >= state["trail_price"] * 1.002:
+            return True
 
     return False
 
@@ -199,7 +206,7 @@ def open_trade(sym, direction):
             "direction": direction,
             "time": time.time(),
             "step": 0,
-            "trail_price": price
+            "trail_price": None  # 🔥 BAŞTA YOK
         }
 
         cooldown[sym] = time.time()
@@ -259,13 +266,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL STABLE BOT STARTED")
+print("FINAL NO EARLY STOP BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (EARLY STOP FIXED)")
 
 while True:
     time.sleep(60)
