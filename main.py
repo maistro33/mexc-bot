@@ -28,6 +28,7 @@ exchange = ccxt.bitget({
 })
 
 trade_state = {}
+cooldown = {}
 last_trade_time = time.time()
 
 # ===== UTILS =====
@@ -61,76 +62,37 @@ def update_stats(sym, profit):
 
     save_stats(stats)
 
-# ===== GLOBAL PERFORMANCE =====
+# ===== GLOBAL PERF =====
 def global_performance():
     stats = load_stats()
     wins = sum(v["win"] for v in stats.values())
     loss = sum(v["loss"] for v in stats.values())
-
     total = wins + loss
-    if total == 0:
-        return 0.5
+    return (wins / total) if total > 0 else 0.5
 
-    return wins / total
-
-# ===== ADAPTIVE SIGNAL =====
+# ===== ADAPTIVE =====
 def adaptive_thresholds():
     global last_trade_time
 
     perf = global_performance()
-    no_trade_time = time.time() - last_trade_time
+    no_trade = time.time() - last_trade_time
 
-    # default
-    mom = 0.005
-    vol = 0.007
+    mom = 0.004
+    vol = 0.006
 
-    # 🔥 işlem yoksa gevşet
-    if no_trade_time > 300:
-        mom = 0.003
-        vol = 0.005
+    if no_trade > 300:
+        mom -= 0.001
+        vol -= 0.001
 
-    # 🔥 iyi gidiyorsa sıkılaştır
     if perf > 0.65:
         mom += 0.002
         vol += 0.002
 
-    # 🔥 kötü gidiyorsa gevşet
     if perf < 0.4:
         mom -= 0.001
         vol -= 0.001
 
     return mom, vol
-
-# ===== RISK =====
-def ai_risk_size(sym, score):
-    try:
-        stats = load_stats()
-        mult = 1
-
-        if sym in stats:
-            w = stats[sym]["win"]
-            l = stats[sym]["loss"]
-            streak = stats[sym].get("streak", 0)
-            t = w + l
-
-            if t > 5:
-                wr = w / t
-                if wr > 0.7:
-                    mult = 1.3
-                elif wr < 0.4:
-                    mult = 0.5
-
-            if streak >= 3:
-                mult += 0.3
-            if streak >= 5:
-                mult += 0.5
-
-        if score >= 4:
-            mult += 0.2
-
-        return BASE_MARGIN * mult
-    except:
-        return BASE_MARGIN
 
 # ===== POSITIONS =====
 def current_positions():
@@ -197,13 +159,13 @@ def signal(sym):
         low = min(c[3] for c in m5)
         vol = (high - low) / low
 
-        if abs(mom) < mom_thr or vol < vol_thr:
+        # 🔥 güçlü sinyal şartı
+        if abs(mom) < mom_thr * 1.2 or vol < vol_thr:
             return None, 0
 
         direction = "long" if trend and mom > 0 else "short" if not trend and mom < 0 else None
 
-        score = 0
-        if direction: score += 2
+        score = 2
         if abs(mom) > mom_thr * 1.5: score += 1
         if vol > vol_thr * 1.5: score += 1
 
@@ -217,7 +179,6 @@ def format_qty(sym, price, size):
     try:
         target = max(size * LEV, 10)
         raw = target / price
-
         qty = float(exchange.amount_to_precision(sym, raw))
         return qty if qty >= 1 else 0
     except:
@@ -226,6 +187,12 @@ def format_qty(sym, price, size):
 # ===== AI EXIT =====
 def ai_manage(sym, price, entry, direction):
     try:
+        state = trade_state[sym]
+
+        # 🔥 min hold
+        if time.time() - state["time"] < 60:
+            return "hold"
+
         m1 = exchange.fetch_ohlcv(sym, "1m", limit=10)
         closes = [c[4] for c in m1]
 
@@ -233,19 +200,22 @@ def ai_manage(sym, price, entry, direction):
 
         roe = ((price-entry)/entry*100)*LEV if direction=="long" else ((entry-price)/entry*100)*LEV
 
+        # 🔥 kâr koruma
+        if roe > 2:
+            return "hold"
+
+        # 🔥 exit daha akıllı
+        if direction=="long" and momentum < -0.004 and roe < -3:
+            return "exit"
+
+        if direction=="short" and momentum > 0.004 and roe < -3:
+            return "exit"
+
         if roe > 25:
             return "exit"
 
-        if roe > 10 and abs(momentum) < 0.001:
-            return "exit"
-
-        if direction=="long" and momentum < -0.002:
-            return "exit"
-
-        if direction=="short" and momentum > 0.002:
-            return "exit"
-
         return "hold"
+
     except:
         return "hold"
 
@@ -257,7 +227,13 @@ def open_trade(sym, direction, score):
         if current_positions() >= MAX_POSITIONS:
             return
 
-        size = ai_risk_size(sym, score)
+        now = time.time()
+
+        # 🔥 cooldown
+        if sym in cooldown and now - cooldown[sym] < 300:
+            return
+
+        size = BASE_MARGIN
 
         ticker = exchange.fetch_ticker(sym)
         price = ticker["last"]
@@ -276,9 +252,11 @@ def open_trade(sym, direction, score):
             "entry": price,
             "direction": direction,
             "partial_done": False,
-            "adds": 0
+            "adds": 0,
+            "time": time.time()
         }
 
+        cooldown[sym] = time.time()
         last_trade_time = time.time()
 
         bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
@@ -347,13 +325,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("ADAPTIVE AI BOT STARTED")
+print("ULTIMATE ADAPTIVE BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🧠 ADAPTIVE AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL BOT AKTİF")
 
 while True:
     time.sleep(60)
