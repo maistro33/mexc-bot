@@ -13,7 +13,7 @@ MAX_POSITIONS = 2
 SCAN_DELAY = 10
 MIN_VOLUME = 1000000
 
-SL_PERCENT = 0.01  # %1 hard SL
+SL_PERCENT = 0.01  # %1 hard stop
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -31,8 +31,10 @@ cooldown = {}
 
 # ===== SAFE =====
 def safe(x):
-    try: return float(x)
-    except: return 0
+    try:
+        return float(x)
+    except:
+        return 0
 
 # ===== POS =====
 def current_positions():
@@ -54,6 +56,10 @@ def get_symbols():
 
             vol = safe(d.get("quoteVolume"))
             if vol < MIN_VOLUME:
+                continue
+
+            price = safe(d.get("last"))
+            if price < 0.001:  # çöp coin filtresi
                 continue
 
             change = abs(safe(d.get("percentage")))
@@ -95,13 +101,21 @@ def signal(sym):
     except:
         return None
 
-# ===== QTY FIX =====
+# ===== QTY FIX (FULL) =====
 def format_qty(sym, price):
     try:
-        market = exchange.market(sym)
+        markets = exchange.load_markets()
 
-        min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
-        precision = market.get("precision", {}).get("amount", 3)
+        if sym not in markets:
+            return 0
+
+        market = markets[sym]
+
+        min_qty = market.get('limits', {}).get('amount', {}).get('min', 0)
+
+        precision = market.get('precision', {}).get('amount', 3)
+        if precision is None:
+            precision = 3
 
         target = BASE_MARGIN * LEV
         raw = target / price
@@ -114,17 +128,16 @@ def format_qty(sym, price):
         return float(qty)
 
     except Exception as e:
-        print("QTY FIX ERROR:", e)
+        print("QTY ERROR:", sym, e)
         return 0
 
-# ===== STEP SYSTEM =====
+# ===== STEP UPDATE =====
 def update_step(sym, roe):
     state = trade_state[sym]
-
     if roe > state["max_roe"]:
         state["max_roe"] = roe
 
-# ===== EXIT LOGIC (PRO) =====
+# ===== EXIT (SINIRSIZ STEP) =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
@@ -132,7 +145,7 @@ def should_exit(sym, price, roe):
     max_roe = state["max_roe"]
 
     # ⏳ MIN HOLD
-    if time.time() - state["time"] < 20:
+    if time.time() - state["time"] < 25:
         return False
 
     # 🔴 HARD SL
@@ -142,27 +155,12 @@ def should_exit(sym, price, roe):
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    # 🧠 STEP PRO SYSTEM
+    # 🚀 SINIRSIZ STEP
+    step = int(max_roe / 10)
+    locked_profit = (step - 1) * 10
 
-    # Step 1
-    if max_roe > 10:
-        if roe < 0:
-            return True
-
-    # Step 2
-    if max_roe > 20:
-        if roe < 10:
-            return True
-
-    # Step 3
-    if max_roe > 30:
-        if roe < 20:
-            return True
-
-    # Step 4
-    if max_roe > 40:
-        if roe < 30:
-            return True
+    if step > 1 and roe < locked_profit:
+        return True
 
     return False
 
@@ -181,7 +179,6 @@ def open_trade(sym, direction):
 
         qty = format_qty(sym, price)
         if qty <= 0:
-            print("QTY ERROR:", sym)
             return
 
         exchange.set_leverage(LEV, sym)
@@ -256,13 +253,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 FINAL PRO STEP BOT STARTED")
+print("🔥 FINAL ULTIMATE BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO STEP BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 ULTIMATE BOT AKTİF")
 
 while True:
     time.sleep(60)
