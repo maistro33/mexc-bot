@@ -13,8 +13,8 @@ MAX_POSITIONS = 2
 SCAN_DELAY = 10
 MIN_VOLUME = 1000000
 
-SL_PERCENT = 0.012   # %1.2 hard stop (daha stabil)
-MIN_HOLD = 40        # erken kapanmayı engeller
+SL_PERCENT = 0.012
+MIN_HOLD = 40
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -30,14 +30,12 @@ exchange = ccxt.bitget({
 trade_state = {}
 cooldown = {}
 
-# ===== SAFE =====
 def safe(x):
     try:
         return float(x)
     except:
         return 0
 
-# ===== POS =====
 def current_positions():
     try:
         pos = exchange.fetch_positions()
@@ -61,7 +59,7 @@ def get_symbols():
             if vol < MIN_VOLUME:
                 continue
 
-            if price < 0.01:  # çöp coin kes
+            if price < 0.01:
                 continue
 
             change = abs(safe(d.get("percentage")))
@@ -78,24 +76,26 @@ def get_symbols():
     except:
         return []
 
-# ===== SIGNAL =====
+# ===== 🔥 SNIPER SIGNAL =====
 def signal(sym):
     try:
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
+        m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
 
         h1c = [c[4] for c in h1]
-        m5c = [c[4] for c in m5]
+        closes = [c[4] for c in m5]
 
         trend = h1c[-1] > sum(h1c[-10:]) / 10
-        mom = (m5c[-1] - m5c[-3]) / m5c[-3]
 
-        if abs(mom) < 0.004:
-            return None
+        # 🧠 SNIPER mantığı
+        pump = closes[-3] < closes[-2]   # yükseliş
+        pullback = closes[-2] > closes[-1]  # geri çekilme
+        breakout = closes[-1] > closes[-2]  # tekrar yukarı
 
-        if trend and mom > 0:
+        if trend and pump and pullback and breakout:
             return "long"
-        if not trend and mom < 0:
+
+        if (not trend) and (closes[-3] > closes[-2]) and (closes[-2] < closes[-1]) and (closes[-1] < closes[-2]):
             return "short"
 
         return None
@@ -103,7 +103,7 @@ def signal(sym):
     except:
         return None
 
-# ===== 🔥 QTY FULL FIX =====
+# ===== QTY FIX =====
 def format_qty(sym, price):
     try:
         markets = exchange.load_markets()
@@ -113,9 +113,7 @@ def format_qty(sym, price):
 
         market = markets[sym]
 
-        min_qty = market.get('limits', {}).get('amount', {}).get('min')
-        if min_qty is None:
-            min_qty = 0
+        min_qty = market.get('limits', {}).get('amount', {}).get('min') or 0
         min_qty = float(min_qty)
 
         precision = market.get('precision', {}).get('amount')
@@ -132,47 +130,52 @@ def format_qty(sym, price):
         if qty < min_qty:
             qty = min_qty
 
-        if qty <= 0:
-            return 0
-
         return float(qty)
 
-    except Exception as e:
-        print("QTY FIX ERROR:", sym, e)
+    except:
         return 0
 
-# ===== STEP UPDATE =====
+# ===== STEP + MESSAGE =====
 def update_step(sym, roe):
-    state = trade_state[sym]
+    try:
+        state = trade_state[sym]
 
-    if roe > state["max_roe"]:
-        state["max_roe"] = roe
+        if roe > state["max_roe"]:
+            state["max_roe"] = roe
 
-# ===== EXIT (AKILLI STEP) =====
+        step = int(state["max_roe"] / 10)
+
+        if step > state.get("last_step", -1):
+            state["last_step"] = step
+
+            bot.send_message(
+                CHAT_ID,
+                f"🔒 {sym}\nSTEP {step}\nROE: {roe:.2f}%"
+            )
+
+    except:
+        pass
+
+# ===== EXIT =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
     direction = state["direction"]
     max_roe = state["max_roe"]
 
-    # ⏳ erken kapanmayı engelle
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # 🔴 HARD STOP
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    # 🚀 STEP SİSTEMİ (GELİŞMİŞ)
     step = int(max_roe / 10)
 
     if step >= 1:
         locked = (step - 1) * 10
-
-        # daha yumuşak exit (erken kapatmaz)
         if roe < locked - 3:
             return True
 
@@ -184,15 +187,12 @@ def open_trade(sym, direction):
         if current_positions() >= MAX_POSITIONS:
             return
 
-        now = time.time()
-
-        if sym in cooldown and now - cooldown[sym] < 300:
+        if sym in cooldown and time.time() - cooldown[sym] < 300:
             return
 
-        ticker = exchange.fetch_ticker(sym)
-        price = ticker["last"]
-
+        price = exchange.fetch_ticker(sym)["last"]
         qty = format_qty(sym, price)
+
         if qty <= 0:
             return
 
@@ -205,15 +205,16 @@ def open_trade(sym, direction):
             "entry": price,
             "direction": direction,
             "time": time.time(),
-            "max_roe": 0
+            "max_roe": 0,
+            "last_step": -1
         }
 
         cooldown[sym] = time.time()
 
-        bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
+        bot.send_message(CHAT_ID, f"🎯 SNIPER {sym} {direction}")
 
-    except Exception as e:
-        print("OPEN ERROR:", e)
+    except:
+        pass
 
 # ===== MANAGE =====
 def manage():
@@ -227,7 +228,6 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-
                 if sym not in trade_state:
                     continue
 
@@ -249,8 +249,7 @@ def manage():
 
             time.sleep(2)
 
-        except Exception as e:
-            print("MANAGE ERROR:", e)
+        except:
             time.sleep(3)
 
 # ===== SCANNER =====
@@ -269,13 +268,16 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 FINAL STABLE BOT STARTED")
+print("🔥 SNIPER BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (STABLE FINAL)")
+bot.send_message(CHAT_ID, "🔥 SNIPER BOT AKTİF")
 
 while True:
-    time.sleep(60)
+    try:
+        time.sleep(60)
+    except:
+        pass
