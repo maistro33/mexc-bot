@@ -13,7 +13,6 @@ MAX_POSITIONS = 2
 
 SCAN_DELAY = 15
 MIN_VOLUME = 800000
-MAX_SPREAD = 0.005
 MIN_NOTIONAL = 5
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -36,45 +35,16 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== MEMORY =====
-def load_stats():
+# ===== POSITIONS =====
+def current_positions():
     try:
-        with open("stats.json", "r") as f:
-            return json.load(f)
+        pos = exchange.fetch_positions()
+        return sum(1 for p in pos if safe(p.get("contracts")) > 0)
     except:
-        return {}
-
-def save_stats(stats):
-    with open("stats.json", "w") as f:
-        json.dump(stats, f)
-
-def update_stats(sym, profit):
-    stats = load_stats()
-    if sym not in stats:
-        stats[sym] = {"win": 0, "loss": 0, "streak": 0}
-
-    if profit > 0:
-        stats[sym]["win"] += 1
-        stats[sym]["streak"] += 1
-    else:
-        stats[sym]["loss"] += 1
-        stats[sym]["streak"] = 0
-
-    save_stats(stats)
-
-# ===== GLOBAL PERF =====
-def global_performance():
-    stats = load_stats()
-    wins = sum(v["win"] for v in stats.values())
-    loss = sum(v["loss"] for v in stats.values())
-    total = wins + loss
-    return (wins / total) if total > 0 else 0.5
+        return 0
 
 # ===== ADAPTIVE =====
 def adaptive_thresholds():
-    global last_trade_time
-
-    perf = global_performance()
     no_trade = time.time() - last_trade_time
 
     mom = 0.004
@@ -84,56 +54,29 @@ def adaptive_thresholds():
         mom -= 0.001
         vol -= 0.001
 
-    if perf > 0.65:
-        mom += 0.002
-        vol += 0.002
-
-    if perf < 0.4:
-        mom -= 0.001
-        vol -= 0.001
-
     return mom, vol
-
-# ===== POSITIONS =====
-def current_positions():
-    try:
-        positions = exchange.fetch_positions()
-        return sum(1 for p in positions if safe(p.get("contracts")) > 0)
-    except:
-        return 0
-
-# ===== FILTER =====
-def blacklist(sym):
-    bad = ["1000","UP","DOWN","BULL","BEAR"]
-    return not any(b in sym.upper() for b in bad)
 
 # ===== SCAN =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
-        candidates = []
+        coins = []
 
-        for sym, data in tickers.items():
+        for sym, d in tickers.items():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
-            if not blacklist(sym):
-                continue
 
-            vol = data.get("quoteVolume", 0)
+            vol = d.get("quoteVolume", 0)
             if vol < MIN_VOLUME:
                 continue
 
-            change = abs(data.get("percentage", 0))
-            price = data.get("last", 0)
-            if price <= 0:
-                continue
-
+            change = abs(d.get("percentage", 0))
             score = change * 2 + (vol / 1_000_000)
-            candidates.append((sym, score))
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        pool = candidates[:120]
-        top = [x[0] for x in pool[:20]]
+            coins.append((sym, score))
+
+        coins.sort(key=lambda x: x[1], reverse=True)
+        top = [x[0] for x in coins[:20]]
 
         random.shuffle(top)
         return top
@@ -159,68 +102,71 @@ def signal(sym):
         low = min(c[3] for c in m5)
         vol = (high - low) / low
 
-        # 🔥 güçlü sinyal şartı
         if abs(mom) < mom_thr * 1.2 or vol < vol_thr:
-            return None, 0
+            return None
 
-        direction = "long" if trend and mom > 0 else "short" if not trend and mom < 0 else None
+        if trend and mom > 0:
+            return "long"
+        if not trend and mom < 0:
+            return "short"
 
-        score = 2
-        if abs(mom) > mom_thr * 1.5: score += 1
-        if vol > vol_thr * 1.5: score += 1
-
-        return direction, score
+        return None
 
     except:
-        return None, 0
+        return None
 
 # ===== QTY =====
-def format_qty(sym, price, size):
+def format_qty(sym, price):
     try:
-        target = max(size * LEV, 10)
+        target = max(BASE_MARGIN * LEV, 10)
         raw = target / price
         qty = float(exchange.amount_to_precision(sym, raw))
         return qty if qty >= 1 else 0
     except:
         return 0
 
+# ===== TRAILING LOGIC =====
+def update_trailing(sym, roe):
+    state = trade_state[sym]
+
+    # en yüksek roe sakla
+    if "peak" not in state or roe > state["peak"]:
+        state["peak"] = roe
+
+    peak = state["peak"]
+
+    # trailing seviyeleri
+    if peak > 30:
+        state["trail"] = peak - 10
+    elif peak > 20:
+        state["trail"] = peak - 8
+    elif peak > 10:
+        state["trail"] = peak - 5
+    elif peak > 5:
+        state["trail"] = 0
+    else:
+        state["trail"] = -100  # aktif değil
+
 # ===== AI EXIT =====
-def ai_manage(sym, price, entry, direction):
-    try:
-        state = trade_state[sym]
+def should_exit(sym, roe):
+    state = trade_state[sym]
 
-        # 🔥 min hold
-        if time.time() - state["time"] < 60:
-            return "hold"
+    # min hold
+    if time.time() - state["time"] < 60:
+        return False
 
-        m1 = exchange.fetch_ohlcv(sym, "1m", limit=10)
-        closes = [c[4] for c in m1]
+    # trailing
+    if "trail" in state and roe < state["trail"]:
+        return True
 
-        momentum = (closes[-1] - closes[-3]) / closes[-3]
+    # zarar kes
+    if roe < -6:
+        return True
 
-        roe = ((price-entry)/entry*100)*LEV if direction=="long" else ((entry-price)/entry*100)*LEV
-
-        # 🔥 kâr koruma
-        if roe > 2:
-            return "hold"
-
-        # 🔥 exit daha akıllı
-        if direction=="long" and momentum < -0.004 and roe < -3:
-            return "exit"
-
-        if direction=="short" and momentum > 0.004 and roe < -3:
-            return "exit"
-
-        if roe > 25:
-            return "exit"
-
-        return "hold"
-
-    except:
-        return "hold"
+    return False
 
 # ===== TRADE =====
-def open_trade(sym, direction, score):
+def open_trade(sym, direction):
     global last_trade_time
 
     try:
@@ -229,18 +175,14 @@ def open_trade(sym, direction, score):
 
         now = time.time()
 
-        # 🔥 cooldown
         if sym in cooldown and now - cooldown[sym] < 300:
             return
-
-        size = BASE_MARGIN
 
         ticker = exchange.fetch_ticker(sym)
         price = ticker["last"]
 
-        qty = format_qty(sym, price, size)
+        qty = format_qty(sym, price)
         if qty <= 0:
-            print("QTY ERROR:", sym)
             return
 
         exchange.set_leverage(LEV, sym)
@@ -251,9 +193,9 @@ def open_trade(sym, direction, score):
         trade_state[sym] = {
             "entry": price,
             "direction": direction,
-            "partial_done": False,
-            "adds": 0,
-            "time": time.time()
+            "time": time.time(),
+            "peak": 0,
+            "trail": -100
         }
 
         cooldown[sym] = time.time()
@@ -286,28 +228,17 @@ def manage():
 
                 roe = ((price-entry)/entry*100)*LEV if direction=="long" else ((entry-price)/entry*100)*LEV
 
-                if qty * price < MIN_NOTIONAL:
-                    continue
+                update_trailing(sym, roe)
 
-                # PARTIAL
-                if not trade_state[sym]["partial_done"] and roe > 10:
-                    exchange.create_market_order(sym, side, qty*0.5, params={"reduceOnly": True})
-                    trade_state[sym]["partial_done"] = True
-
-                # ADD
-                if trade_state[sym]["adds"] < 2 and roe > 8:
-                    exchange.create_market_order(sym, "buy" if direction=="long" else "sell", qty*0.5)
-                    trade_state[sym]["adds"] += 1
-
-                # EXIT
-                if ai_manage(sym, price, entry, direction) == "exit":
+                if should_exit(sym, roe):
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                    update_stats(sym, roe)
                     trade_state.pop(sym)
+                    bot.send_message(CHAT_ID, f"✅ CLOSE {sym} | ROE {roe:.2f}%")
 
             time.sleep(5)
 
-        except:
+        except Exception as e:
+            print("MANAGE:", e)
             time.sleep(6)
 
 # ===== SCANNER =====
@@ -315,23 +246,24 @@ def scanner():
     while True:
         try:
             for sym in get_symbols():
-                d, s = signal(sym)
+                d = signal(sym)
                 if d:
-                    open_trade(sym, d, s)
+                    open_trade(sym, d)
                 time.sleep(0.3)
 
             time.sleep(SCAN_DELAY)
+
         except:
             time.sleep(10)
 
 # ===== START =====
-print("ULTIMATE ADAPTIVE BOT STARTED")
+print("TRAILING AI BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 TRAILING AI BOT AKTİF")
 
 while True:
     time.sleep(60)
