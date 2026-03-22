@@ -7,14 +7,13 @@ import random
 
 # ===== SAFE CONFIG =====
 LEV = 10
-MARGIN = 1  # 🔥 düşük risk
-
-MAX_POSITIONS = 1  # 🔥 tek işlem
+MARGIN = 3
+MAX_POSITIONS = 2
 
 SL_PCT = 0.02
-TP_TRAIL = 0.01  # 🔥 daha geniş
+TP_TRAIL = 0.01
 
-MIN_VOLUME = 1500000
+MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 8
 
@@ -48,6 +47,19 @@ def get_qty(sym):
     except:
         return 0
 
+# ===== 🚫 BAD COIN FILTER =====
+def blacklist_filter(sym):
+    bad_words = [
+        "1000", "UP", "DOWN", "BULL", "BEAR",
+        "RDNT", "LEVER", "ETF"
+    ]
+
+    for w in bad_words:
+        if w in sym.upper():
+            return False
+
+    return True
+
 # ===== SMART SCANNER =====
 def get_hot_symbols():
     try:
@@ -55,10 +67,14 @@ def get_hot_symbols():
         candidates = []
 
         for sym, data in tickers.items():
+
             if "USDT" not in sym:
                 continue
             if ":USDT" not in sym:
                 continue
+
+            if not blacklist_filter(sym):
+                continue  # 🔥 BURASI ÖNEMLİ
 
             vol = data.get("quoteVolume", 0)
             change = abs(data.get("percentage", 0))
@@ -74,7 +90,7 @@ def get_hot_symbols():
         top = [c[0] for c in candidates[:15]]
         random.shuffle(top)
 
-        return top[:5]  # 🔥 az coin
+        return top[:5]
 
     except:
         return []
@@ -95,7 +111,7 @@ def should_trade(sym):
         low = min([c[3] for c in m5])
         vol = (high - low) / low
 
-        # 🔥 sıkı filtre
+        # 🔥 STRONG FILTER
         if abs(momentum) < 0.005:
             return None
 
@@ -119,7 +135,7 @@ def update_loss(pnl):
     loss_streak = loss_streak+1 if pnl < 0 else 0
 
 def should_stop():
-    return loss_streak >= 4  # 🔥 erken dur
+    return loss_streak >= 4
 
 # ===== TRADE =====
 def open_trade(sym, direction):
@@ -131,7 +147,7 @@ def open_trade(sym, direction):
             return
 
         if sym in cooldown:
-            if time.time() - cooldown[sym] < 600:  # 🔥 10 dk
+            if time.time() - cooldown[sym] < 600:
                 return
 
         ticker = exchange.fetch_ticker(sym)
@@ -161,7 +177,7 @@ def open_trade(sym, direction):
 
         cooldown[sym] = time.time()
 
-        bot.send_message(CHAT_ID, f"🧠 SAFE {sym} {direction}")
+        bot.send_message(CHAT_ID, f"🧠 CLEAN {sym} {direction}")
 
     except Exception as e:
         print("OPEN:", e)
@@ -200,11 +216,11 @@ def manage():
                     bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
 
-                # MIN HOLD (20s)
+                # MIN HOLD
                 if time.time() - state["time"] < 20:
                     continue
 
-                # PROFIT ONLY TRAIL
+                # PROFIT ONLY
                 in_profit = (price > entry) if direction=="long" else (price < entry)
 
                 if not in_profit:
@@ -272,13 +288,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("SAFE BOT STARTED")
+print("CLEAN SAFE BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🛡 SAFE BOT AKTİF")
+bot.send_message(CHAT_ID, "🧠 CLEAN SAFE BOT AKTİF")
 
 while True:
     time.sleep(60)
