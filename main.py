@@ -10,9 +10,8 @@ LEV = 10
 MARGIN = 3
 
 MAX_POSITIONS = 4
-BALINA_LIMIT = 1
 
-TP1_PCT = 0.007
+TP1_PCT = 0.010
 STEP_PCT = 0.006
 TP1_RATIO = 0.50
 
@@ -21,7 +20,7 @@ MAX_SPREAD = 0.003
 SCAN_DELAY = 6
 
 TIMEOUT = 21600
-SL_PCT = 0.02
+SL_PCT = 0.012
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -100,17 +99,9 @@ def sync_positions():
 def btc_trend():
     try:
         candles = safe_api_call(exchange.fetch_ohlcv,"BTC/USDT:USDT","1h",limit=50)
-        if not candles:
-            return "neutral"
-
         closes=[c[4] for c in candles]
         ema=sum(closes[-20:])/20
-
-        if closes[-1] > ema:
-            return "bull"
-
-        return "bear"
-
+        return "bull" if closes[-1] > ema else "bear"
     except:
         return "neutral"
 
@@ -119,8 +110,7 @@ def btc_short_breakdown(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=6)
         lows=[c[3] for c in candles[:-1]]
-        last_close=candles[-1][4]
-        return last_close < min(lows)
+        return candles[-1][4] < min(lows)
     except:
         return False
 
@@ -234,47 +224,6 @@ def early_pump(sym):
         return False
 
 
-# 🐋 EKLENDİ
-def whale_signal(sym):
-    try:
-        trades = safe_api_call(exchange.fetch_trades, sym, limit=50)
-        if not trades:
-            return False
-
-        sizes = [t["amount"] for t in trades]
-        avg = sum(sizes)/len(sizes)
-
-        big_orders = [s for s in sizes if s > avg * 3]
-
-        return len(big_orders) >= 2
-    except:
-        return False
-
-
-# 🚀 EKLENDİ
-def strong_pump(sym):
-    try:
-        candles = safe_api_call(exchange.fetch_ohlcv, sym, "5m", limit=4)
-        if not candles:
-            return False
-
-        prev_high = max([c[2] for c in candles[:-1]])
-        last = candles[-1]
-
-        breakout = last[4] > prev_high
-        volume_ok = volume_spike(sym)
-
-        body = abs(last[4] - last[1])
-        rng = last[2] - last[3]
-
-        if rng == 0:
-            return False
-
-        return breakout and volume_ok and (body/rng > 0.5)
-    except:
-        return False
-
-
 def early_breakout(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"5m",limit=3)
@@ -289,8 +238,7 @@ def market_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
         closes = [c[4] for c in candles]
-        move = abs(closes[-1] - closes[0]) / closes[0]
-        return move > 0.01
+        return abs(closes[-1] - closes[0]) / closes[0] > 0.01
     except:
         return False
 
@@ -319,19 +267,24 @@ def smart_entry_filter(sym):
         candles = exchange.fetch_ohlcv(sym, "5m", limit=4)
         last = candles[-1]
         prev = candles[-2]
+
         breakout_up = last[4] > prev[2]
         breakout_down = last[4] < prev[3]
+
         fake_up = last[2] > prev[2] and last[4] < prev[2]
         fake_down = last[3] < prev[3] and last[4] > prev[3]
+
         if fake_up or fake_down:
             return False
+
         body = abs(last[4] - last[1])
         rng = last[2] - last[3]
+
         if rng == 0:
             return False
-        if body / rng < 0.3:
-            return False
-        return breakout_up or breakout_down
+
+        return body / rng > 0.3 and (breakout_up or breakout_down)
+
     except:
         return False
 
@@ -465,18 +418,6 @@ def scanner():
                 if get_qty(sym)>0:
                     continue
 
-                # 🐋 YENİ
-                if whale_signal(sym):
-                    pressure = orderbook_pressure(sym)
-                    if pressure:
-                        open_trade(sym, pressure, "whale")
-                        break
-
-                # 🚀 YENİ
-                if strong_pump(sym):
-                    open_trade(sym,"long","strong_pump")
-                    break
-
                 if btc=="bear" and btc_short_breakdown(sym):
                     pressure=orderbook_pressure(sym)
                     if pressure=="short":
@@ -554,6 +495,6 @@ sync_positions()
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🤖 BOT AKTİF + BALİNA + PUMP")
+bot.send_message(CHAT_ID,"🤖 FINAL BOT AKTİF")
 
 bot.infinity_polling()
