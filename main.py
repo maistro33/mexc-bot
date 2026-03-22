@@ -4,7 +4,6 @@ import ccxt
 import telebot
 import threading
 import random
-import json
 
 # ===== CONFIG =====
 LEV = 10
@@ -13,7 +12,9 @@ MAX_POSITIONS = 2
 
 SCAN_DELAY = 15
 MIN_VOLUME = 800000
-MIN_NOTIONAL = 5
+
+STEP_SIZE = 1.0     # 🔥 step %1
+HARD_SL = -2        # 🔥 -2% stop
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -28,7 +29,6 @@ exchange = ccxt.bitget({
 
 trade_state = {}
 cooldown = {}
-last_trade_time = time.time()
 
 # ===== UTILS =====
 def safe(x):
@@ -43,24 +43,11 @@ def current_positions():
     except:
         return 0
 
-# ===== ADAPTIVE =====
-def adaptive_thresholds():
-    no_trade = time.time() - last_trade_time
-
-    mom = 0.004
-    vol = 0.006
-
-    if no_trade > 300:
-        mom -= 0.001
-        vol -= 0.001
-
-    return mom, vol
-
 # ===== SCAN =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
-        coins = []
+        arr = []
 
         for sym, d in tickers.items():
             if "USDT" not in sym or ":USDT" not in sym:
@@ -73,10 +60,10 @@ def get_symbols():
             change = abs(d.get("percentage", 0))
             score = change * 2 + (vol / 1_000_000)
 
-            coins.append((sym, score))
+            arr.append((sym, score))
 
-        coins.sort(key=lambda x: x[1], reverse=True)
-        top = [x[0] for x in coins[:20]]
+        arr.sort(key=lambda x: x[1], reverse=True)
+        top = [x[0] for x in arr[:20]]
 
         random.shuffle(top)
         return top
@@ -87,8 +74,6 @@ def get_symbols():
 # ===== SIGNAL =====
 def signal(sym):
     try:
-        mom_thr, vol_thr = adaptive_thresholds()
-
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
         m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
 
@@ -102,7 +87,7 @@ def signal(sym):
         low = min(c[3] for c in m5)
         vol = (high - low) / low
 
-        if abs(mom) < mom_thr * 1.2 or vol < vol_thr:
+        if abs(mom) < 0.004 or vol < 0.006:
             return None
 
         if trend and mom > 0:
@@ -125,50 +110,39 @@ def format_qty(sym, price):
     except:
         return 0
 
-# ===== TRAILING LOGIC =====
+# ===== STEP TRAILING =====
 def update_trailing(sym, roe):
     state = trade_state[sym]
 
-    # en yüksek roe sakla
-    if "peak" not in state or roe > state["peak"]:
-        state["peak"] = roe
+    current_step = int(roe / STEP_SIZE)
 
-    peak = state["peak"]
+    if "max_step" not in state or current_step > state["max_step"]:
+        state["max_step"] = current_step
 
-    # trailing seviyeleri
-    if peak > 30:
-        state["trail"] = peak - 10
-    elif peak > 20:
-        state["trail"] = peak - 8
-    elif peak > 10:
-        state["trail"] = peak - 5
-    elif peak > 5:
-        state["trail"] = 0
-    else:
-        state["trail"] = -100  # aktif değil
+    state["trail_step"] = state["max_step"] - 1
 
-# ===== AI EXIT =====
+# ===== EXIT =====
 def should_exit(sym, roe):
     state = trade_state[sym]
 
     # min hold
-    if time.time() - state["time"] < 60:
+    if time.time() - state["time"] < 30:
         return False
 
-    # trailing
-    if "trail" in state and roe < state["trail"]:
+    # HARD STOP
+    if roe <= HARD_SL:
         return True
 
-    # zarar kes
-    if roe < -6:
-        return True
+    current_step = int(roe / STEP_SIZE)
+
+    if "max_step" in state:
+        if current_step <= state["max_step"] - 1:
+            return True
 
     return False
 
 # ===== TRADE =====
 def open_trade(sym, direction):
-    global last_trade_time
-
     try:
         if current_positions() >= MAX_POSITIONS:
             return
@@ -186,20 +160,18 @@ def open_trade(sym, direction):
             return
 
         exchange.set_leverage(LEV, sym)
-        side = "buy" if direction=="long" else "sell"
 
+        side = "buy" if direction=="long" else "sell"
         exchange.create_market_order(sym, side, qty)
 
         trade_state[sym] = {
             "entry": price,
             "direction": direction,
             "time": time.time(),
-            "peak": 0,
-            "trail": -100
+            "max_step": 0
         }
 
         cooldown[sym] = time.time()
-        last_trade_time = time.time()
 
         bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
 
@@ -224,6 +196,7 @@ def manage():
                 price = exchange.fetch_ticker(sym)["last"]
                 entry = trade_state[sym]["entry"]
                 direction = trade_state[sym]["direction"]
+
                 side = "sell" if direction=="long" else "buy"
 
                 roe = ((price-entry)/entry*100)*LEV if direction=="long" else ((entry-price)/entry*100)*LEV
@@ -233,7 +206,7 @@ def manage():
                 if should_exit(sym, roe):
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"✅ CLOSE {sym} | ROE {roe:.2f}%")
+                    bot.send_message(CHAT_ID, f"✅ CLOSE {sym} ROE {roe:.2f}%")
 
             time.sleep(5)
 
@@ -257,13 +230,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("TRAILING AI BOT STARTED")
+print("FINAL STEP TRAILING BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 TRAILING AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 STEP TRAILING BOT AKTİF")
 
 while True:
     time.sleep(60)
