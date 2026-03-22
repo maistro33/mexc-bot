@@ -5,16 +5,18 @@ import telebot
 import threading
 import random
 
+# ===== SAFE CONFIG =====
 LEV = 10
-MARGIN = 3
+MARGIN = 1  # 🔥 düşük risk
 
-MAX_POSITIONS = 4
-SL_PCT = 0.025
-TP_TRAIL = 0.005
+MAX_POSITIONS = 1  # 🔥 tek işlem
 
-MIN_VOLUME = 1000000
+SL_PCT = 0.02
+TP_TRAIL = 0.01  # 🔥 daha geniş
+
+MIN_VOLUME = 1500000
 MAX_SPREAD = 0.003
-SCAN_DELAY = 5
+SCAN_DELAY = 8
 
 loss_streak = 0
 
@@ -24,7 +26,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",  # 🔥 ORİJİNAL HALİ GERİ
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -34,11 +36,8 @@ cooldown = {}
 
 # ===== UTILS =====
 def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0
-
+    try: return float(x)
+    except: return 0
 
 def get_qty(sym):
     try:
@@ -49,8 +48,7 @@ def get_qty(sym):
     except:
         return 0
 
-
-# ===== SCANNER AI =====
+# ===== SMART SCANNER =====
 def get_hot_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -59,7 +57,6 @@ def get_hot_symbols():
         for sym, data in tickers.items():
             if "USDT" not in sym:
                 continue
-
             if ":USDT" not in sym:
                 continue
 
@@ -70,101 +67,59 @@ def get_hot_symbols():
                 continue
 
             score = change * 2 + (vol / 1000000)
-
             candidates.append((sym, score))
 
         candidates.sort(key=lambda x: x[1], reverse=True)
 
-        top = [c[0] for c in candidates[:20]]
+        top = [c[0] for c in candidates[:15]]
         random.shuffle(top)
 
-        return top[:10]
+        return top[:5]  # 🔥 az coin
 
     except:
         return []
 
-
 # ===== ANALYSIS =====
-def multi_tf_signal(sym):
+def should_trade(sym):
     try:
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=20)
+        m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
 
         h1_close = [c[4] for c in h1]
         m5_close = [c[4] for c in m5]
 
-        trend = "long" if h1_close[-1] > sum(h1_close[-10:])/10 else "short"
-        momentum = "long" if m5_close[-1] > m5_close[-3] else "short"
+        trend_up = h1_close[-1] > sum(h1_close[-10:]) / 10
+        momentum = (m5_close[-1] - m5_close[-3]) / m5_close[-3]
 
-        if trend == momentum:
-            return trend
+        high = max([c[2] for c in m5])
+        low = min([c[3] for c in m5])
+        vol = (high - low) / low
 
-        return None
-    except:
-        return None
+        # 🔥 sıkı filtre
+        if abs(momentum) < 0.005:
+            return None
 
+        if vol < 0.007:
+            return None
 
-def orderbook_pressure(sym):
-    try:
-        ob = exchange.fetch_order_book(sym, limit=20)
-        bid = sum([b[1] for b in ob["bids"]])
-        ask = sum([a[1] for a in ob["asks"]])
-
-        if bid > ask * 1.5:
+        if trend_up and momentum > 0:
             return "long"
-        if ask > bid * 1.5:
+
+        if not trend_up and momentum < 0:
             return "short"
+
         return None
+
     except:
         return None
-
-
-def ai_confidence(sym, direction):
-    score = 0
-
-    if multi_tf_signal(sym) == direction:
-        score += 2
-
-    if orderbook_pressure(sym) == direction:
-        score += 1
-
-    try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
-        change = (candles[-1][4] - candles[-2][4]) / candles[-2][4]
-        if abs(change) > 0.002:
-            score += 1
-    except:
-        pass
-
-    return score
-
 
 # ===== RISK =====
 def update_loss(pnl):
     global loss_streak
-    if pnl < 0:
-        loss_streak += 1
-    else:
-        loss_streak = 0
-
+    loss_streak = loss_streak+1 if pnl < 0 else 0
 
 def should_stop():
-    return loss_streak >= 6
-
-
-def get_size(score):
-    size = MARGIN
-
-    if loss_streak >= 3:
-        size *= 0.5
-
-    if score >= 4:
-        size *= 1.3
-    elif score <= 2:
-        size *= 0.7
-
-    return size
-
+    return loss_streak >= 4  # 🔥 erken dur
 
 # ===== TRADE =====
 def open_trade(sym, direction):
@@ -175,24 +130,18 @@ def open_trade(sym, direction):
         if get_qty(sym) > 0:
             return
 
-        ticker = exchange.fetch_ticker(sym)
+        if sym in cooldown:
+            if time.time() - cooldown[sym] < 600:  # 🔥 10 dk
+                return
 
-        if ticker["quoteVolume"] < MIN_VOLUME:
-            return
+        ticker = exchange.fetch_ticker(sym)
 
         spread = (ticker["ask"] - ticker["bid"]) / ticker["last"]
         if spread > MAX_SPREAD:
             return
 
-        score = ai_confidence(sym, direction)
-
-        if score < 2:
-            return
-
-        size = get_size(score)
-
         price = ticker["last"]
-        qty = (size * LEV) / price
+        qty = (MARGIN * LEV) / price
         qty = float(exchange.amount_to_precision(sym, qty))
 
         if qty <= 0:
@@ -206,14 +155,16 @@ def open_trade(sym, direction):
         trade_state[sym] = {
             "entry": price,
             "direction": direction,
-            "trail": price
+            "trail": price,
+            "time": time.time()
         }
 
-        bot.send_message(CHAT_ID, f"🚀 AI {sym} {direction} score:{score}")
+        cooldown[sym] = time.time()
+
+        bot.send_message(CHAT_ID, f"🧠 SAFE {sym} {direction}")
 
     except Exception as e:
-        print("OPEN ERROR:", e)
-
+        print("OPEN:", e)
 
 # ===== MANAGER =====
 def manage():
@@ -240,13 +191,23 @@ def manage():
                 side = "sell" if direction == "long" else "buy"
 
                 # SL
-                if (direction == "long" and price <= entry * (1 - SL_PCT)) or \
-                   (direction == "short" and price >= entry * (1 + SL_PCT)):
+                if (direction == "long" and price <= entry*(1-SL_PCT)) or \
+                   (direction == "short" and price >= entry*(1+SL_PCT)):
 
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     update_loss(-1)
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🛑 SL {sym}")
+                    continue
+
+                # MIN HOLD (20s)
+                if time.time() - state["time"] < 20:
+                    continue
+
+                # PROFIT ONLY TRAIL
+                in_profit = (price > entry) if direction=="long" else (price < entry)
+
+                if not in_profit:
                     continue
 
                 # TRAILING
@@ -268,19 +229,18 @@ def manage():
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🏁 EXIT {sym}")
 
-            time.sleep(4)
+            time.sleep(5)
 
         except Exception as e:
-            print("MANAGE ERROR:", e)
+            print("MANAGE:", e)
             time.sleep(6)
-
 
 # ===== SCANNER =====
 def scanner():
     while True:
         try:
             if should_stop():
-                time.sleep(30)
+                time.sleep(60)
                 continue
 
             symbols = get_hot_symbols()
@@ -297,7 +257,7 @@ def scanner():
                 if get_qty(sym) > 0:
                     continue
 
-                signal = multi_tf_signal(sym)
+                signal = should_trade(sym)
 
                 if not signal:
                     continue
@@ -308,18 +268,17 @@ def scanner():
             time.sleep(SCAN_DELAY)
 
         except Exception as e:
-            print("SCAN ERROR:", e)
+            print("SCAN:", e)
             time.sleep(10)
 
-
 # ===== START =====
-print("SCANNER AI BOT STARTED")
+print("SAFE BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 SCANNER AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🛡 SAFE BOT AKTİF")
 
 while True:
     time.sleep(60)
