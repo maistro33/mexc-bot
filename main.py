@@ -14,7 +14,7 @@ SCAN_DELAY = 15
 MIN_VOLUME = 800000
 
 STEP_SIZE = 1.0
-HARD_SL = -2
+SL_PERCENT = 0.002  # 🔥 %0.2 gerçek stop
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -121,21 +121,29 @@ def update_trailing(sym, roe):
 
     state["trail_step"] = state["max_step"] - 1
 
-# ===== EXIT =====
-def should_exit(sym, roe):
+# ===== EXIT (FIXED) =====
+def should_exit(sym, price, roe):
     state = trade_state[sym]
 
-    # min hold
-    if time.time() - state["time"] < 30:
+    entry = state["entry"]
+    direction = state["direction"]
+
+    # 🔥 MIN HOLD
+    if time.time() - state["time"] < 10:
         return False
 
-    # HARD STOP (DAHA HIZLI)
-    if roe <= HARD_SL:
-        return True
+    # ===== HARD STOP (FİYAT BAZLI) =====
+    if direction == "long":
+        if price <= entry * (1 - SL_PERCENT):
+            return True
 
+    if direction == "short":
+        if price >= entry * (1 + SL_PERCENT):
+            return True
+
+    # ===== STEP TRAILING =====
     current_step = int(roe / STEP_SIZE)
 
-    # STEP TRAILING
     if "max_step" in state:
         if current_step <= state["max_step"] - 1:
             return True
@@ -205,12 +213,12 @@ def manage():
 
                 update_trailing(sym, roe)
 
-                if should_exit(sym, roe):
+                if should_exit(sym, price, roe):
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"✅ CLOSE {sym} ROE {roe:.2f}%")
+                    bot.send_message(CHAT_ID, f"❌ CLOSE {sym} ROE {roe:.2f}%")
 
-            time.sleep(2)  # 🔥 hızlandırıldı
+            time.sleep(2)
 
         except Exception as e:
             print("MANAGE:", e)
@@ -232,13 +240,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL FIXED BOT STARTED")
+print("FINAL HARD SL + TRAILING BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL FIXED BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL BOT AKTİF (HARD SL FIXED)")
 
 while True:
     time.sleep(60)
