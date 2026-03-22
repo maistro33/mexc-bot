@@ -36,6 +36,35 @@ def safe(x):
     except:
         return 0
 
+# ===== 🔥 SYNC POSITIONS =====
+def sync_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p.get("entryPrice"))
+            side = p.get("side")
+
+            direction = "long" if side == "long" else "short"
+
+            trade_state[sym] = {
+                "entry": entry,
+                "direction": direction,
+                "time": time.time(),
+                "max_roe": 0,
+                "last_step": -1
+            }
+
+            print(f"SYNCED: {sym}")
+
+    except Exception as e:
+        print("SYNC ERROR:", e)
+
 def current_positions():
     try:
         pos = exchange.fetch_positions()
@@ -76,7 +105,7 @@ def get_symbols():
     except:
         return []
 
-# ===== 🔥 SNIPER (YUMUŞATILMIŞ) =====
+# ===== SNIPER =====
 def signal(sym):
     try:
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
@@ -87,7 +116,6 @@ def signal(sym):
 
         trend = h1c[-1] > sum(h1c[-10:]) / 10
 
-        # 🔥 daha erken giriş
         pump = closes[-3] < closes[-2] * 1.001
         pullback = closes[-2] > closes[-1]
         breakout = closes[-1] > closes[-2] * 0.999
@@ -95,7 +123,6 @@ def signal(sym):
         if trend and pump and pullback and breakout:
             return "long"
 
-        # short tarafı
         pump_s = closes[-3] > closes[-2] * 0.999
         pullback_s = closes[-2] < closes[-1]
         breakout_s = closes[-1] < closes[-2] * 1.001
@@ -108,58 +135,31 @@ def signal(sym):
     except:
         return None
 
-# ===== QTY FIX =====
+# ===== QTY =====
 def format_qty(sym, price):
     try:
-        markets = exchange.load_markets()
-
-        if sym not in markets:
-            return 0
-
-        market = markets[sym]
-
-        min_qty = market.get('limits', {}).get('amount', {}).get('min') or 0
-        min_qty = float(min_qty)
-
-        precision = market.get('precision', {}).get('amount')
-        if precision is None:
-            precision = 3
-
-        precision = int(float(precision))
-
         target = BASE_MARGIN * LEV
-        raw_qty = target / float(price)
-
-        qty = round(raw_qty, precision)
-
-        if qty < min_qty:
-            qty = min_qty
-
-        return float(qty)
-
+        raw = target / price
+        return float(exchange.amount_to_precision(sym, raw))
     except:
         return 0
 
-# ===== STEP + MESSAGE =====
+# ===== STEP =====
 def update_step(sym, roe):
-    try:
-        state = trade_state[sym]
+    state = trade_state[sym]
 
-        if roe > state["max_roe"]:
-            state["max_roe"] = roe
+    if roe > state["max_roe"]:
+        state["max_roe"] = roe
 
-        step = int(state["max_roe"] / 10)
+    step = int(state["max_roe"] / 10)
 
-        if step > state.get("last_step", -1):
-            state["last_step"] = step
+    if step > state.get("last_step", -1):
+        state["last_step"] = step
 
-            bot.send_message(
-                CHAT_ID,
-                f"🔒 {sym}\nSTEP {step}\nROE: {roe:.2f}%"
-            )
-
-    except:
-        pass
+        bot.send_message(
+            CHAT_ID,
+            f"🔒 {sym}\nSTEP {step}\nROE: {roe:.2f}%"
+        )
 
 # ===== EXIT =====
 def should_exit(sym, price, roe):
@@ -171,6 +171,7 @@ def should_exit(sym, price, roe):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
+    # HARD STOP
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
@@ -179,10 +180,16 @@ def should_exit(sym, price, roe):
 
     step = int(max_roe / 10)
 
-    if step >= 1:
+    # 🔥 KAR KORUMA
+    if step == 1:
+        locked = 5
+    elif step == 2:
+        locked = 10
+    else:
         locked = (step - 1) * 10
-        if roe < locked - 3:
-            return True
+
+    if roe < locked:
+        return True
 
     return False
 
@@ -218,8 +225,8 @@ def open_trade(sym, direction):
 
         bot.send_message(CHAT_ID, f"🎯 SNIPER {sym} {direction}")
 
-    except:
-        pass
+    except Exception as e:
+        print("OPEN ERROR:", e)
 
 # ===== MANAGE =====
 def manage():
@@ -254,7 +261,8 @@ def manage():
 
             time.sleep(2)
 
-        except:
+        except Exception as e:
+            print("MANAGE ERROR:", e)
             time.sleep(3)
 
 # ===== SCANNER =====
@@ -273,16 +281,15 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 SNIPER BOT STARTED (ADJUSTED)")
+print("🔥 FINAL PRO BOT STARTED (SYNC ENABLED)")
+
+sync_positions()  # 🔥 EN KRİTİK SATIR
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SNIPER BOT AKTİF (AYARLANMIŞ)")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (SYNC + STEP + SNIPER)")
 
 while True:
-    try:
-        time.sleep(60)
-    except:
-        pass
+    time.sleep(60)
