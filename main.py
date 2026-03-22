@@ -7,15 +7,15 @@ import random
 
 # ===== CONFIG =====
 LEV = 10
-BASE_MARGIN = 2   # 🔥 artırdım (QTY fix)
+BASE_MARGIN = 2
 MAX_POSITIONS = 2
 
 SCAN_DELAY = 12
 MIN_VOLUME = 1000000
 
-STEP_SIZE = 1.2        # 🔥 daha geniş step
-SL_PERCENT = 0.005     # 🔥 %0.5 gerçek stop
-MIN_HOLD = 15          # 🔥 erken çıkmayı engeller
+STEP_SIZE = 1.2
+SL_PERCENT = 0.005
+MIN_HOLD = 15
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -100,21 +100,19 @@ def signal(sym):
     except:
         return None
 
-# ===== QTY FIX (KESİN ÇÖZÜM) =====
+# ===== QTY FIX (FINAL) =====
 def format_qty(sym, price):
     try:
         market = exchange.market(sym)
 
         min_qty = market['limits']['amount']['min']
-        precision = market['precision']['amount']
 
         target_usdt = BASE_MARGIN * LEV
         raw_qty = target_usdt / price
 
-        # precision'a göre yuvarla
-        qty = round(raw_qty, precision)
+        # 🔥 CCXT precision fix
+        qty = float(exchange.amount_to_precision(sym, raw_qty))
 
-        # minimumdan küçükse SKIP
         if qty < min_qty:
             return 0
 
@@ -153,11 +151,10 @@ def should_exit(sym, price, roe):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # TRAILING (DAHA GEÇ ÇIK)
     current_step = int(roe / STEP_SIZE)
 
     if "max_step" in state:
-        if current_step < state["max_step"] - 2:  # 🔥 BURASI KRİTİK
+        if current_step < state["max_step"] - 2:
             return True
 
     return False
@@ -176,7 +173,7 @@ def open_trade(sym, direction):
 
         qty = format_qty(sym, price)
         if qty <= 0:
-            return  # 🔥 artık spam hata yok
+            return
 
         exchange.set_leverage(LEV, sym)
 
@@ -250,13 +247,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL STABLE BOT STARTED")
+print("FINAL FIXED BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 STABLE BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (QTY FIX + STABLE)")
 
 while True:
     time.sleep(60)
