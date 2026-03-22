@@ -10,11 +10,12 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
-SCAN_DELAY = 15
+SCAN_DELAY = 12
 MIN_VOLUME = 800000
 
 STEP_SIZE = 1.0
-SL_PERCENT = 0.002  # 🔥 %0.2 gerçek stop
+SL_PERCENT = 0.0035
+MIN_HOLD = 8
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -32,10 +33,12 @@ cooldown = {}
 
 # ===== UTILS =====
 def safe(x):
-    try: return float(x)
-    except: return 0
+    try:
+        return float(x)
+    except:
+        return 0
 
-# ===== POSITIONS =====
+# ===== POSITION COUNT =====
 def current_positions():
     try:
         pos = exchange.fetch_positions()
@@ -43,7 +46,7 @@ def current_positions():
     except:
         return 0
 
-# ===== SCAN =====
+# ===== SYMBOL SCAN =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -80,18 +83,22 @@ def signal(sym):
         h1c = [c[4] for c in h1]
         m5c = [c[4] for c in m5]
 
-        trend = h1c[-1] > sum(h1c[-10:])/10
+        trend = h1c[-1] > sum(h1c[-10:]) / 10
         mom = (m5c[-1] - m5c[-3]) / m5c[-3]
 
         high = max(c[2] for c in m5)
         low = min(c[3] for c in m5)
         vol = (high - low) / low
 
-        if abs(mom) < 0.004 or vol < 0.006:
+        if abs(mom) < 0.006:
+            return None
+
+        if vol < 0.006:
             return None
 
         if trend and mom > 0:
             return "long"
+
         if not trend and mom < 0:
             return "short"
 
@@ -100,39 +107,46 @@ def signal(sym):
     except:
         return None
 
-# ===== QTY =====
+# ===== QTY FIX (EN ÖNEMLİ) =====
 def format_qty(sym, price):
     try:
-        target = max(BASE_MARGIN * LEV, 10)
-        raw = target / price
-        qty = float(exchange.amount_to_precision(sym, raw))
-        return qty if qty >= 1 else 0
-    except:
+        market = exchange.market(sym)
+
+        min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
+
+        target = max(BASE_MARGIN * LEV, 5)
+        raw_qty = target / price
+
+        qty = float(exchange.amount_to_precision(sym, raw_qty))
+
+        if min_qty and qty < min_qty:
+            qty = min_qty
+
+        return qty
+
+    except Exception as e:
+        print("QTY FIX ERROR:", e)
         return 0
 
-# ===== STEP TRAILING =====
+# ===== TRAILING =====
 def update_trailing(sym, roe):
     state = trade_state[sym]
 
-    current_step = int(roe / STEP_SIZE)
+    step = int(roe / STEP_SIZE)
 
-    if "max_step" not in state or current_step > state["max_step"]:
-        state["max_step"] = current_step
+    if step > state["max_step"]:
+        state["max_step"] = step
 
-    state["trail_step"] = state["max_step"] - 1
+    state["trail_level"] = state["max_step"] - 1
 
-# ===== EXIT (FIXED) =====
+# ===== EXIT =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
 
     entry = state["entry"]
     direction = state["direction"]
 
-    # 🔥 MIN HOLD
-    if time.time() - state["time"] < 10:
-        return False
-
-    # ===== HARD STOP (FİYAT BAZLI) =====
+    # HARD SL
     if direction == "long":
         if price <= entry * (1 - SL_PERCENT):
             return True
@@ -141,24 +155,25 @@ def should_exit(sym, price, roe):
         if price >= entry * (1 + SL_PERCENT):
             return True
 
-    # ===== STEP TRAILING =====
+    # MIN HOLD
+    if time.time() - state["time"] < MIN_HOLD:
+        return False
+
+    # TRAILING
     current_step = int(roe / STEP_SIZE)
 
-    if "max_step" in state:
-        if current_step <= state["max_step"] - 1:
-            return True
+    if current_step < state["trail_level"]:
+        return True
 
     return False
 
-# ===== TRADE =====
+# ===== OPEN TRADE =====
 def open_trade(sym, direction):
     try:
         if current_positions() >= MAX_POSITIONS:
             return
 
-        now = time.time()
-
-        if sym in cooldown and now - cooldown[sym] < 300:
+        if sym in cooldown and time.time() - cooldown[sym] < 300:
             return
 
         ticker = exchange.fetch_ticker(sym)
@@ -171,14 +186,15 @@ def open_trade(sym, direction):
 
         exchange.set_leverage(LEV, sym)
 
-        side = "buy" if direction=="long" else "sell"
+        side = "buy" if direction == "long" else "sell"
         exchange.create_market_order(sym, side, qty)
 
         trade_state[sym] = {
             "entry": price,
             "direction": direction,
             "time": time.time(),
-            "max_step": 0
+            "max_step": 0,
+            "trail_level": 0
         }
 
         cooldown[sym] = time.time()
@@ -186,9 +202,9 @@ def open_trade(sym, direction):
         bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
 
     except Exception as e:
-        print("OPEN:", e)
+        print("OPEN ERROR:", e)
 
-# ===== MANAGE =====
+# ===== MANAGER =====
 def manage():
     while True:
         try:
@@ -200,6 +216,7 @@ def manage():
                     continue
 
                 sym = p["symbol"]
+
                 if sym not in trade_state:
                     continue
 
@@ -207,9 +224,9 @@ def manage():
                 entry = trade_state[sym]["entry"]
                 direction = trade_state[sym]["direction"]
 
-                side = "sell" if direction=="long" else "buy"
+                side = "sell" if direction == "long" else "buy"
 
-                roe = ((price-entry)/entry*100)*LEV if direction=="long" else ((entry-price)/entry*100)*LEV
+                roe = ((price - entry) / entry * 100) * LEV if direction == "long" else ((entry - price) / entry * 100) * LEV
 
                 update_trailing(sym, roe)
 
@@ -221,7 +238,7 @@ def manage():
             time.sleep(2)
 
         except Exception as e:
-            print("MANAGE:", e)
+            print("MANAGE ERROR:", e)
             time.sleep(3)
 
 # ===== SCANNER =====
@@ -240,13 +257,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("FINAL HARD SL + TRAILING BOT STARTED")
+print("FINAL PRO BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL BOT AKTİF (HARD SL FIXED)")
+bot.send_message(CHAT_ID, "🔥 FINAL PRO BOT AKTİF")
 
 while True:
     time.sleep(60)
