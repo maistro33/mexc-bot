@@ -76,7 +76,7 @@ def get_symbols():
     except:
         return []
 
-# ===== 🔥 SNIPER SIGNAL =====
+# ===== 🔥 SNIPER (YUMUŞATILMIŞ) =====
 def signal(sym):
     try:
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
@@ -87,15 +87,20 @@ def signal(sym):
 
         trend = h1c[-1] > sum(h1c[-10:]) / 10
 
-        # 🧠 SNIPER mantığı
-        pump = closes[-3] < closes[-2]   # yükseliş
-        pullback = closes[-2] > closes[-1]  # geri çekilme
-        breakout = closes[-1] > closes[-2]  # tekrar yukarı
+        # 🔥 daha erken giriş
+        pump = closes[-3] < closes[-2] * 1.001
+        pullback = closes[-2] > closes[-1]
+        breakout = closes[-1] > closes[-2] * 0.999
 
         if trend and pump and pullback and breakout:
             return "long"
 
-        if (not trend) and (closes[-3] > closes[-2]) and (closes[-2] < closes[-1]) and (closes[-1] < closes[-2]):
+        # short tarafı
+        pump_s = closes[-3] > closes[-2] * 0.999
+        pullback_s = closes[-2] < closes[-1]
+        breakout_s = closes[-1] < closes[-2] * 1.001
+
+        if (not trend) and pump_s and pullback_s and breakout_s:
             return "short"
 
         return None
@@ -268,13 +273,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 SNIPER BOT STARTED")
+print("🔥 SNIPER BOT STARTED (ADJUSTED)")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SNIPER BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 SNIPER BOT AKTİF (AYARLANMIŞ)")
 
 while True:
     try:
