@@ -34,8 +34,10 @@ cooldown = {}
 
 # ===== UTILS =====
 def safe(x):
-    try: return float(x)
-    except: return 0
+    try:
+        return float(x)
+    except:
+        return 0
 
 def get_qty(sym):
     try:
@@ -45,6 +47,30 @@ def get_qty(sym):
         return safe(pos[0]["contracts"])
     except:
         return 0
+
+# ===== 🔥 SYNC (CRITICAL) =====
+def sync_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+
+            trade_state[sym] = {
+                "entry": safe(p["entryPrice"]),
+                "direction": "long" if p["side"] == "long" else "short",
+                "trail": safe(p["entryPrice"]),
+                "time": time.time()
+            }
+
+        print("SYNC DONE")
+
+    except Exception as e:
+        print("SYNC ERROR:", e)
 
 # ===== FILTER =====
 def blacklist(sym):
@@ -74,7 +100,7 @@ def get_symbols():
             if vol < MIN_VOLUME:
                 continue
 
-            if change > 12:  # pump kaç
+            if change > 12:
                 continue
 
             score = change * 2 + (vol / 1000000)
@@ -131,6 +157,22 @@ def signal(sym):
     except:
         return None, 0
 
+# ===== QTY FIX =====
+def format_qty(sym, qty):
+    try:
+        qty = float(exchange.amount_to_precision(sym, qty))
+        market = exchange.market(sym)
+
+        if market["precision"]["amount"] == 0:
+            qty = int(qty)
+
+        if qty < 1:
+            return 0
+
+        return qty
+    except:
+        return 0
+
 # ===== TRADE =====
 def open_trade(sym, direction, score):
     try:
@@ -143,15 +185,15 @@ def open_trade(sym, direction, score):
 
         active = len(trade_state)
 
-        # 🔥 SLOT LOGIC
+        if active >= MAX_POSITIONS:
+            return
+
         if active == 0:
-            size = BASE_MARGIN  # ANA TRADE
+            size = BASE_MARGIN
         elif active == 1:
             if score < 3:
                 return
-            size = BASE_MARGIN * 0.7  # DESTEK TRADE
-        else:
-            return
+            size = BASE_MARGIN * 0.7
 
         ticker = exchange.fetch_ticker(sym)
 
@@ -160,8 +202,12 @@ def open_trade(sym, direction, score):
             return
 
         price = ticker["last"]
-        qty = (size * LEV) / price
-        qty = float(exchange.amount_to_precision(sym, qty))
+        raw_qty = (size * LEV) / price
+
+        qty = format_qty(sym, raw_qty)
+
+        if qty <= 0:
+            return
 
         exchange.set_leverage(LEV, sym)
 
@@ -177,7 +223,7 @@ def open_trade(sym, direction, score):
 
         cooldown[sym] = time.time()
 
-        bot.send_message(CHAT_ID, f"🚀 PRO {sym} {direction} score:{score}")
+        bot.send_message(CHAT_ID, f"🚀 {sym} {direction} score:{score}")
 
     except Exception as e:
         print("OPEN:", e)
@@ -219,7 +265,7 @@ def manage():
                 if time.time() - state["time"] < 20:
                     continue
 
-                # PROFIT ONLY TRAIL
+                # PROFIT ONLY
                 in_profit = (price > entry) if direction=="long" else (price < entry)
                 if not in_profit:
                     continue
@@ -269,13 +315,15 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("PRO BOT STARTED")
+print("ULTIMATE BOT STARTED")
+
+sync_positions()  # 🔥 restart sonrası pozisyonları geri alır
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO 2 POSITION BOT AKTİF")
+bot.send_message(CHAT_ID, "🧠 ULTIMATE BOT AKTİF")
 
 while True:
     time.sleep(60)
