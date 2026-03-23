@@ -10,11 +10,10 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
-SCAN_DELAY = 10
-MIN_VOLUME = 1000000
-
-SL_PERCENT = 0.025
-MIN_HOLD = 40
+SCAN_DELAY = 8
+SL_PERCENT = 0.012
+MIN_HOLD = 25
+FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -55,89 +54,72 @@ def sync_positions():
             trade_state[sym] = {
                 "entry": entry,
                 "direction": direction,
-                "time": time.time(),
-                "max_roe": 0,
-                "last_step": -1
+                "time": time.time() - 60,
+                "max_roe": 0
             }
-
-            print(f"SYNCED: {sym}")
 
     except Exception as e:
         print("SYNC ERROR:", e)
 
-def current_positions():
-    try:
-        pos = exchange.fetch_positions()
-        return sum(1 for p in pos if safe(p.get("contracts")) > 0)
-    except:
-        return 0
-
-# ===== SYMBOL FILTER (NO OLD COINS) =====
+# ===== SYMBOL FILTER (MEME ONLY) =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
         arr = []
 
         for sym, d in tickers.items():
+
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            # 🚫 MAJOR COINS ENGELLE
-            if any(x in sym for x in ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"]):
+            # ❌ büyük coinleri tamamen sil
+            if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA","DOGE","TRX","AVAX","LINK","DOT"]):
                 continue
 
-            vol = safe(d.get("quoteVolume"))
             price = safe(d.get("last"))
-            change = abs(safe(d.get("percentage")))
+            vol = safe(d.get("quoteVolume"))
+            change = safe(d.get("percentage"))
 
-            # sadece güçlü hareket
-            if change < 4:
+            # 🔥 meme coin
+            if price > 5:
                 continue
 
-            # hacim filtresi
-            if vol < MIN_VOLUME or vol > 15000000:
+            # 🔥 hacim şart
+            if vol < 300000:
                 continue
 
-            if price < 0.01:
+            # 🔥 pump şart
+            if abs(change) < 2:
                 continue
 
-            score = change + (vol / 1_000_000)
+            score = abs(change) + (vol / 1_000_000)
 
             arr.append((sym, score))
 
         arr.sort(key=lambda x: x[1], reverse=True)
-        top = [x[0] for x in arr[:15]]
 
-        random.shuffle(top)
-        return top
+        return [x[0] for x in arr[:15]]
 
     except:
         return []
 
-# ===== SIGNAL =====
+# ===== REVERSAL SNIPER =====
 def signal(sym):
     try:
-        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
         m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
-
-        h1c = [c[4] for c in h1]
         closes = [c[4] for c in m5]
 
-        trend = h1c[-1] > sum(h1c[-10:]) / 10
+        move = (closes[-1] - closes[-4]) / closes[-4]
 
-        pump = closes[-3] < closes[-2] * 1.001
-        pullback = closes[-2] > closes[-1]
-        breakout = closes[-1] > closes[-2] * 0.999
+        # 🔥 pump → short
+        if move > 0.03:
+            if closes[-1] < closes[-2]:
+                return "short"
 
-        if trend and pump and pullback and breakout:
-            return "long"
-
-        pump_s = closes[-3] > closes[-2] * 0.999
-        pullback_s = closes[-2] < closes[-1]
-        breakout_s = closes[-1] < closes[-2] * 1.001
-
-        if (not trend) and pump_s and pullback_s and breakout_s:
-            return "short"
+        # 🔥 dump → long
+        if move < -0.03:
+            if closes[-1] > closes[-2]:
+                return "long"
 
         return None
 
@@ -153,58 +135,43 @@ def format_qty(sym, price):
     except:
         return 0
 
-# ===== STEP =====
-def update_step(sym, roe):
-    state = trade_state[sym]
-
-    if roe > state["max_roe"]:
-        state["max_roe"] = roe
-
-    step = int(state["max_roe"] / 10)
-
-    if step > state.get("last_step", -1):
-        state["last_step"] = step
-
-        bot.send_message(
-            CHAT_ID,
-            f"🔒 {sym}\nSTEP {step}\nROE: {roe:.2f}%\nMAX: {state['max_roe']:.2f}%"
-        )
-
-# ===== EXIT (REAL TRAILING) =====
+# ===== EXIT (SCALP PRO) =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
     direction = state["direction"]
-    max_roe = state["max_roe"]
 
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # HARD STOP
+    # HARD SL
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    # BREAK EVEN
-    if max_roe > 6:
-        if direction == "long" and price <= entry:
-            return True
-        if direction == "short" and price >= entry:
+    # MAX UPDATE
+    if roe > state["max_roe"]:
+        state["max_roe"] = roe
+
+    maxr = state["max_roe"]
+
+    # 🔥 micro trailing
+    if maxr > 2:
+        if roe < maxr - 1.2:
             return True
 
-    # TRAILING
-    if max_roe < 10:
-        trail = 4
-    elif max_roe < 20:
-        trail = 6
-    elif max_roe < 30:
-        trail = 8
-    else:
-        trail = 12
+    if maxr > 4:
+        if roe < maxr - 1.8:
+            return True
 
-    if roe < (max_roe - trail):
+    if maxr > 7:
+        if roe < maxr - 2.5:
+            return True
+
+    # küçük kâr kaçırma
+    if roe > 1 and roe < maxr - 0.8:
         return True
 
     return False
@@ -212,10 +179,7 @@ def should_exit(sym, price, roe):
 # ===== OPEN =====
 def open_trade(sym, direction):
     try:
-        if current_positions() >= MAX_POSITIONS:
-            return
-
-        if sym in cooldown and time.time() - cooldown[sym] < 300:
+        if sym in cooldown and time.time() - cooldown[sym] < 180:
             return
 
         price = exchange.fetch_ticker(sym)["last"]
@@ -233,16 +197,12 @@ def open_trade(sym, direction):
             "entry": price,
             "direction": direction,
             "time": time.time(),
-            "max_roe": 0,
-            "last_step": -1
+            "max_roe": 0
         }
 
         cooldown[sym] = time.time()
 
-        bot.send_message(
-            CHAT_ID,
-            f"🚀 ENTRY {sym}\nTYPE: {direction.upper()}\nPRICE: {price}"
-        )
+        bot.send_message(CHAT_ID, f"🎯 SNIPER {sym} {direction}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -259,6 +219,7 @@ def manage():
                     continue
 
                 sym = p["symbol"]
+
                 if sym not in trade_state:
                     continue
 
@@ -268,19 +229,15 @@ def manage():
 
                 side = "sell" if direction == "long" else "buy"
 
-                roe = ((price - entry) / entry * 100) * LEV if direction == "long" \
+                raw = ((price - entry) / entry * 100) * LEV if direction == "long" \
                     else ((entry - price) / entry * 100) * LEV
 
-                update_step(sym, roe)
+                roe = raw - FEE
 
                 if should_exit(sym, price, roe):
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-
-                    bot.send_message(
-                        CHAT_ID,
-                        f"🏁 EXIT {sym}\nPROFIT: {roe:.2f}%"
-                    )
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {roe:.2f}%")
 
             time.sleep(2)
 
@@ -293,9 +250,13 @@ def scanner():
     while True:
         try:
             for sym in get_symbols():
+                if len(trade_state) >= MAX_POSITIONS:
+                    break
+
                 d = signal(sym)
                 if d:
                     open_trade(sym, d)
+
                 time.sleep(0.3)
 
             time.sleep(SCAN_DELAY)
@@ -304,7 +265,7 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 FINAL BOT STARTED")
+print("🔥 MEME SNIPER STARTED")
 
 sync_positions()
 
@@ -312,7 +273,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (FINAL SNIPER)")
+bot.send_message(CHAT_ID, "🔥 MEME SNIPER AKTİF")
 
 while True:
     time.sleep(60)
