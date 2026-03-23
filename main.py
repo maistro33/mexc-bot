@@ -8,7 +8,7 @@ import random
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 2
+MAX_POSITIONS = 1
 
 SCAN_DELAY = 10
 MIN_VOLUME = 1000000
