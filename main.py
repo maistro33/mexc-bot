@@ -10,7 +10,7 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 1
 
-SCAN_DELAY = 6
+SCAN_DELAY = 2
 MIN_VOLUME = 200000
 
 SL_PERCENT = 0.012
@@ -105,29 +105,37 @@ def get_symbols():
     except:
         return []
 
-# ===== SNIPER =====
+# ===== 🔥 ULTRA SNIPER SIGNAL =====
 def signal(sym):
     try:
-        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
+        m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
 
-        h1c = [c[4] for c in h1]
         closes = [c[4] for c in m5]
+        vols = [c[5] for c in m5]
 
-        trend = h1c[-1] > sum(h1c[-10:]) / 10
+        avg_vol = sum(vols[:-1]) / len(vols[:-1])
+        vol_spike = vols[-1] > avg_vol * 1.5
 
-        pump = closes[-3] < closes[-2] * 1.001
-        pullback = closes[-2] > closes[-1]
-        breakout = closes[-1] > closes[-2] * 0.999
+        price_jump = closes[-1] > closes[-2] * 1.002
+        price_drop = closes[-1] < closes[-2] * 0.998
 
-        if trend and pump and pullback and breakout:
+        early_long = vol_spike and price_jump
+        early_short = vol_spike and price_drop
+
+        recent_high = max(closes[-5:])
+        recent_low = min(closes[-5:])
+
+        too_late_long = closes[-1] > recent_high * 0.995
+        too_late_short = closes[-1] < recent_low * 1.005
+
+        # aşırı pump yakalama engeli
+        if closes[-1] > closes[-3] * 1.01:
+            return None
+
+        if early_long and not too_late_long:
             return "long"
 
-        pump_s = closes[-3] > closes[-2] * 0.999
-        pullback_s = closes[-2] < closes[-1]
-        breakout_s = closes[-1] < closes[-2] * 1.001
-
-        if (not trend) and pump_s and pullback_s and breakout_s:
+        if early_short and not too_late_short:
             return "short"
 
         return None
@@ -151,7 +159,7 @@ def update_step(sym, roe):
     if roe > state["max_roe"]:
         state["max_roe"] = roe
 
-    step = int(state["max_roe"] / 10)
+    step = int(state["max_roe"] / 5)
 
     if step > state.get("last_step", -1):
         state["last_step"] = step
@@ -171,22 +179,20 @@ def should_exit(sym, price, roe):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # HARD STOP
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    step = int(max_roe / 10)
+    step = int(max_roe / 5)
 
-    # 🔥 KAR KORUMA
     if step == 1:
-        locked = 5
+        locked = 2
     elif step == 2:
-        locked = 10
+        locked = 5
     else:
-        locked = (step - 1) * 10
+        locked = (step - 1) * 5
 
     if roe < locked:
         return True
@@ -273,23 +279,23 @@ def scanner():
                 d = signal(sym)
                 if d:
                     open_trade(sym, d)
-                time.sleep(0.3)
+                time.sleep(0.05)
 
             time.sleep(SCAN_DELAY)
 
         except:
-            time.sleep(0.05)
+            time.sleep(10)
 
 # ===== START =====
 print("🔥 FINAL PRO BOT STARTED (SYNC ENABLED)")
 
-sync_positions()  # 🔥 EN KRİTİK SATIR
+sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (SYNC + STEP + SNIPER)")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (ULTRA SNIPER MODE)")
 
 while True:
     time.sleep(60)
