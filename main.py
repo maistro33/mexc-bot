@@ -10,7 +10,8 @@ SL_PERCENT = 0.012
 MIN_HOLD = 40
 FEE = 0.08
 
-# ===== AI SETTINGS =====
+PRO_MODE = True
+
 AI_SETTINGS = {
     "min_score": 6,
     "aggression": 1.0
@@ -29,39 +30,54 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
+# ===== DATA =====
 trade_state = {}
 stats = {"total":0,"win":0,"loss":0,"profit":0}
-trade_memory=[]
+
+DATA_FILE="memory.json"
+
+def load_memory():
+    try:
+        with open(DATA_FILE,"r") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_memory(d):
+    with open(DATA_FILE,"w") as f:
+        json.dump(d,f)
+
+trade_memory = load_memory()
 
 def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== AUTO OPTIMIZE =====
-def auto_optimize():
-    if len(trade_memory) < 20:
-        return
+# ===== LOAD POSITIONS =====
+def load_positions():
+    try:
+        pos = exchange.fetch_positions()
+        count=0
 
-    last = trade_memory[-20:]
-    wins = [t for t in last if t["roe"] > 0]
-    winrate = len(wins)/len(last)
+        for p in pos:
+            if safe(p.get("contracts"))<=0:
+                continue
 
-    if winrate < 0.4:
-        AI_SETTINGS["min_score"] += 1
-        AI_SETTINGS["aggression"] *= 0.8
+            sym=p["symbol"]
 
-    elif winrate > 0.6:
-        AI_SETTINGS["min_score"] -= 1
-        AI_SETTINGS["aggression"] *= 1.1
+            trade_state[sym]={
+                "entry":safe(p["entryPrice"]),
+                "dir":"long" if p["side"]=="long" else "short",
+                "time":time.time()-60,
+                "max":0
+            }
+            count+=1
 
-    AI_SETTINGS["min_score"] = max(4, min(8, AI_SETTINGS["min_score"]))
-    AI_SETTINGS["aggression"] = max(0.5, min(1.5, AI_SETTINGS["aggression"]))
+        print(f"{count} pozisyon yüklendi")
+        bot.send_message(CHAT_ID,f"♻️ {count} pozisyon yüklendi")
 
-# ===== KILL SWITCH =====
-def kill_switch():
-    if stats["profit"] < -10:
-        return True
-    return False
+    except Exception as e:
+        print("LOAD ERROR:", e)
 
 # ===== ANALYSIS =====
 def trend(sym):
@@ -75,6 +91,13 @@ def momentum(sym):
     if ch>0.002: return 1
     if ch<-0.002: return -1
     return 0
+
+def candle(sym):
+    c=exchange.fetch_ohlcv(sym,"5m",limit=1)[0]
+    body=abs(c[4]-c[1])
+    rng=c[2]-c[3]
+    if rng==0: return 0
+    return 1 if body/rng>0.6 else 0
 
 def whale(sym):
     ob=exchange.fetch_order_book(sym,10)
@@ -91,19 +114,57 @@ def squeeze(sym):
     if move<-0.02: return -1
     return 0
 
+# ===== LEARNING =====
+def coin_score(sym):
+    data=[t for t in trade_memory if t["symbol"]==sym]
+    if len(data)<5: return 0
+    return sum(t["roe"] for t in data)/len(data)
+
+def hour_score():
+    h=time.localtime().tm_hour
+    data=[t for t in trade_memory if t["hour"]==h]
+    if len(data)<5: return 0
+    return sum(t["roe"] for t in data)/len(data)
+
 # ===== AI DECISION =====
 def ai_decision(sym):
-    score = trend(sym)*2 + momentum(sym) + whale(sym)*2 + squeeze(sym)*2
+    score = trend(sym)*2 + momentum(sym) + candle(sym)*2 + whale(sym)*2 + squeeze(sym)*2
+    score += coin_score(sym)
+    score += hour_score()
 
-    if score >= AI_SETTINGS["min_score"]:
-        return "long"
-    if score <= -AI_SETTINGS["min_score"]:
-        return "short"
+    threshold = AI_SETTINGS["min_score"]
+
+    if score >= threshold: return "long"
+    if score <= -threshold: return "short"
     return None
+
+# ===== AUTO OPTIMIZE =====
+def auto_optimize():
+    if len(trade_memory) < 20:
+        return
+
+    last = trade_memory[-20:]
+    wins = [t for t in last if t["roe"] > 0]
+    winrate = len(wins)/len(last)
+
+    if winrate < 0.4:
+        AI_SETTINGS["min_score"] += 1
+    elif winrate > 0.6:
+        AI_SETTINGS["min_score"] -= 1
+
+    AI_SETTINGS["min_score"] = max(4, min(8, AI_SETTINGS["min_score"]))
+
+# ===== KILL SWITCH =====
+def kill_switch():
+    return stats["profit"] < -10
 
 # ===== QTY =====
 def qty(sym,price):
-    return (BASE_MARGIN * AI_SETTINGS["aggression"] * LEV) / price
+    m=exchange.load_markets()[sym]
+    min_qty=float(m.get('limits',{}).get('amount',{}).get('min',0))
+    prec=int(m.get('precision',{}).get('amount',3))
+    q=round((BASE_MARGIN*LEV)/price,prec)
+    return max(q,min_qty)
 
 # ===== OPEN =====
 def open_trade(sym,dir):
@@ -120,7 +181,7 @@ def open_trade(sym,dir):
         bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
 
     except Exception as e:
-        print(e)
+        print("OPEN:", e)
 
 # ===== EXIT =====
 def should_exit(sym,price,roe):
@@ -140,11 +201,22 @@ def should_exit(sym,price,roe):
     if roe < st["max"]-10:
         return True
 
+    if roe < 0.1:
+        return False
+
     return False
 
 # ===== LOG =====
 def log(sym,roe):
-    trade_memory.append({"symbol":sym,"roe":roe})
+    global trade_memory
+
+    trade_memory.append({
+        "symbol":sym,
+        "roe":roe,
+        "hour":time.localtime().tm_hour
+    })
+
+    save_memory(trade_memory)
 
     stats["total"]+=1
     stats["profit"]+=roe
@@ -190,7 +262,7 @@ def manage():
             time.sleep(2)
 
         except Exception as e:
-            print(e)
+            print("MANAGE:", e)
             time.sleep(3)
 
 # ===== SCANNER =====
@@ -222,17 +294,19 @@ def scanner():
             time.sleep(SCAN_DELAY)
 
         except Exception as e:
-            print(e)
+            print("SCAN:", e)
             time.sleep(5)
 
 # ===== START =====
-print("🔥 FULL OTONOM AI START")
+print("🔥 FINAL AI START")
+
+load_positions()
 
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FULL OTONOM AI AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL AI AKTİF")
 
 while True:
     time.sleep(60)
