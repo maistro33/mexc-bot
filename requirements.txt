@@ -1,3 +1,5 @@
 ccxt
 pyTelegramBotAPI
 websocket-client
+numpy
+scikit-learn
