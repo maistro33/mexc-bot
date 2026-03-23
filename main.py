@@ -1,17 +1,21 @@
-import os, time, ccxt, telebot, threading
+import os, time, ccxt, telebot, threading, json
 import numpy as np
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense
+from sklearn.ensemble import RandomForestClassifier
 
+# ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
-SCAN_DELAY = 15
-MODEL_FILE = "ai_model.h5"
+SCAN_DELAY = 10
 
+MIN_VOLUME = 100000
+MIN_CONF = 0.65
+
+# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -20,173 +24,249 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
+# ===== DATA =====
 trade_state = {}
-model = None
+stats = {"total":0,"win":0,"loss":0,"profit":0}
 
-# ===== MODEL =====
-def create_model():
-    m = Sequential()
-    m.add(LSTM(64, return_sequences=True, input_shape=(20,1)))
-    m.add(LSTM(64))
-    m.add(Dense(1, activation="sigmoid"))
-    m.compile(loss="binary_crossentropy", optimizer="adam")
-    return m
+DATA_FILE="memory.json"
 
-def get_prices(sym):
+def load_memory():
     try:
-        data = exchange.fetch_ohlcv(sym, "5m", limit=100)
-        if not data or len(data) < 50:
-            return None
-        return [x[4] for x in data]
+        return json.load(open(DATA_FILE))
+    except:
+        return []
+
+def save_memory(d):
+    json.dump(d, open(DATA_FILE,"w"))
+
+trade_memory = load_memory()
+
+def safe(x):
+    try: return float(x)
+    except: return 0
+
+# ===== 🧠 FEATURE ENGINEERING (ADVANCED) =====
+def get_features(sym):
+    try:
+        c5 = exchange.fetch_ohlcv(sym,"5m",limit=30)
+        c1h = exchange.fetch_ohlcv(sym,"1h",limit=20)
+
+        closes5 = np.array([x[4] for x in c5])
+        highs5 = np.array([x[2] for x in c5])
+        lows5 = np.array([x[3] for x in c5])
+        vol5 = np.array([x[5] for x in c5])
+
+        closes1h = np.array([x[4] for x in c1h])
+
+        # volatility
+        volatility = (highs5.max()-lows5.min())/lows5.min()
+
+        # short momentum
+        mom = (closes5[-1]-closes5[-5])/closes5[-5]
+
+        # higher timeframe trend
+        trend1h = 1 if closes1h[-1]>closes1h.mean() else -1
+
+        # volume spike
+        vol_spike = vol5[-1]/vol5.mean()
+
+        # candle strength
+        body = abs(c5[-1][4]-c5[-1][1])
+        rng = c5[-1][2]-c5[-1][3]
+        candle = body/rng if rng else 0
+
+        return [volatility, mom, trend1h, vol_spike, candle]
+
     except:
         return None
 
-def prepare(prices):
-    X,y = [],[]
-    for i in range(20,len(prices)-1):
-        X.append(prices[i-20:i])
-        y.append(1 if prices[i+1]>prices[i] else 0)
-    X = np.array(X).reshape(-1,20,1)
-    y = np.array(y)
-    return X,y
+# ===== AI =====
+ml_model = None
 
 def train_model():
-    global model
-    prices = get_prices("BTC/USDT:USDT")
-    if prices is None:
+    global ml_model
+    X,y = [],[]
+
+    for t in trade_memory:
+        if "features" not in t:
+            continue
+        X.append(t["features"])
+        y.append(1 if t["roe"]>0 else 0)
+
+    if len(X)<40:
         return
 
-    X,y = prepare(prices)
-    if len(X) < 50:
-        return
+    ml_model = RandomForestClassifier(n_estimators=200)
+    ml_model.fit(X,y)
 
-    model = create_model()
-    model.fit(X,y,epochs=3,batch_size=16,verbose=0)
-    model.save(MODEL_FILE)
+    print("🤖 AI TRAINED")
 
-    bot.send_message(CHAT_ID,"🤖 AI eğitildi")
-
-def load_ai():
-    global model
-    try:
-        model = load_model(MODEL_FILE)
-    except:
-        model = None
-
-# ===== AI =====
 def ai_decision(sym):
-    global model
+    f = get_features(sym)
 
+    if ml_model and f:
+        try:
+            p = ml_model.predict_proba([f])[0][1]
+
+            print(f"🧠 {sym} {p:.2f}")
+
+            if p > MIN_CONF:
+                return "long", p
+            elif p < (1-MIN_CONF):
+                return "short", p
+
+        except:
+            pass
+
+    return None, 0
+
+def ai_exit(sym,dir):
+    f = get_features(sym)
+
+    if ml_model and f:
+        try:
+            p = ml_model.predict_proba([f])[0][1]
+
+            if dir=="long" and p<0.45:
+                return True
+            if dir=="short" and p>0.55:
+                return True
+        except:
+            pass
+
+    return False
+
+# ===== RISK FILTER =====
+def allow_trade(sym):
     try:
-        prices = get_prices(sym)
-        if prices is None:
-            return None, 0
+        ticker = exchange.fetch_ticker(sym)
 
-        if model is None:
-            train_model()
-            return None, 0
+        # volume filter
+        if ticker["quoteVolume"] < MIN_VOLUME:
+            return False
 
-        seq = np.array(prices[-20:]).reshape(1,20,1)
-        p = model.predict(seq,verbose=0)[0][0]
+        # spread filter
+        if ticker["ask"] - ticker["bid"] > ticker["last"]*0.002:
+            return False
 
-        if p > 0.6:
-            return "long", p
-        elif p < 0.4:
-            return "short", p
-        else:
-            return None, p
+    except:
+        return False
 
-    except Exception as e:
-        print("AI ERROR:", e)
-        return None, 0
+    return True
 
 # ===== TRADE =====
 def qty(sym,price):
     return round((BASE_MARGIN*LEV)/price,3)
 
-def open_trade(sym,dir,conf):
+def open_trade(sym,dir,p):
     try:
         price = exchange.fetch_ticker(sym)["last"]
         q = qty(sym,price)
 
         exchange.set_leverage(LEV,sym)
-        side = "buy" if dir=="long" else "sell"
+        side="buy" if dir=="long" else "sell"
 
         exchange.create_market_order(sym,side,q)
 
-        trade_state[sym] = {"dir":dir}
+        trade_state[sym]={"dir":dir}
 
-        bot.send_message(CHAT_ID,f"🚀 {sym} {dir} | AI:{conf:.2f}")
+        bot.send_message(CHAT_ID,f"🚀 {sym} {dir}\nAI:{p:.2f}")
 
     except Exception as e:
-        print("OPEN ERROR:", e)
+        print("OPEN:",e)
 
-def close_trade(sym,conf):
-    try:
-        pos = exchange.fetch_positions()
-        for p in pos:
-            if p["symbol"]==sym and float(p["contracts"])>0:
+def close_trade(sym):
+    pos = exchange.fetch_positions()
 
-                side = "sell" if trade_state[sym]["dir"]=="long" else "buy"
+    for p in pos:
+        if p["symbol"]==sym and safe(p["contracts"])>0:
 
-                exchange.create_market_order(
-                    sym, side, float(p["contracts"]),
-                    params={"reduceOnly":True}
-                )
+            side="sell" if trade_state[sym]["dir"]=="long" else "buy"
 
-                bot.send_message(CHAT_ID,f"🏁 {sym} kapandı | AI:{conf:.2f}")
+            exchange.create_market_order(sym,side,safe(p["contracts"]),params={"reduceOnly":True})
 
-                trade_state.pop(sym)
-                break
-    except Exception as e:
-        print("CLOSE ERROR:", e)
+            trade_state.pop(sym)
+            bot.send_message(CHAT_ID,f"🏁 {sym} kapandı")
+            break
+
+# ===== LOG =====
+def log(sym,roe):
+    trade_memory.append({
+        "symbol":sym,
+        "roe":roe,
+        "features":get_features(sym)
+    })
+
+    save_memory(trade_memory)
+
+    stats["total"]+=1
+    stats["profit"]+=roe
+    stats["win"]+=1 if roe>0 else 0
+    stats["loss"]+=1 if roe<=0 else 0
+
+    if stats["total"]%10==0:
+        train_model()
 
 # ===== MANAGE =====
 def manage():
     while True:
         try:
-            for sym in list(trade_state.keys()):
-                current_dir = trade_state[sym]["dir"]
+            pos = exchange.fetch_positions()
 
-                d,conf = ai_decision(sym)
+            for p in pos:
+                if safe(p.get("contracts"))<=0:
+                    continue
 
-                if d and d != current_dir:
-                    close_trade(sym,conf)
+                sym = p["symbol"]
+                dir = "long" if p["side"]=="long" else "short"
 
+                if ai_exit(sym,dir):
+                    close_trade(sym)
+
+            time.sleep(3)
+
+        except:
             time.sleep(5)
-        except Exception as e:
-            print("MANAGE ERROR:", e)
-            time.sleep(5)
 
-# ===== SCAN =====
+# ===== SCANNER =====
 def scanner():
-    symbols = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT"]
-
     while True:
         try:
             if len(trade_state)>=MAX_POSITIONS:
                 time.sleep(SCAN_DELAY)
                 continue
 
+            symbols = list(exchange.fetch_tickers().keys())
+
             for sym in symbols:
-                d,conf = ai_decision(sym)
+
+                if "USDT" not in sym or ":USDT" not in sym:
+                    continue
+
+                if not allow_trade(sym):
+                    continue
+
+                d,p = ai_decision(sym)
 
                 if d:
-                    open_trade(sym,d,conf)
+                    open_trade(sym,d,p)
                     break
 
             time.sleep(SCAN_DELAY)
 
-        except Exception as e:
-            print("SCAN ERROR:", e)
+        except:
             time.sleep(5)
 
 # ===== START =====
-load_ai()
-bot.send_message(CHAT_ID,"🤖 AI stabil başlatıldı")
+print("🔥 %90 AI START")
+
+train_model()
 
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
+threading.Thread(target=bot.infinity_polling,daemon=True).start()
+
+bot.send_message(CHAT_ID,"🤖 %90 AI AKTİF")
 
 while True:
     time.sleep(60)
