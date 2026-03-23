@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 ULTRA SAFE BOT STARTING...")
+print("🔥 FINAL BOT STARTING...")
 
 # ===== ENV CHECK =====
 if not os.getenv("TELE_TOKEN") or not os.getenv("MY_CHAT_ID"):
@@ -26,19 +26,13 @@ FEE = 0.08
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
 
-# ===== EXCHANGE =====
-try:
-    exchange = ccxt.bitget({
-        "apiKey": os.getenv("BITGET_API"),
-        "secret": os.getenv("BITGET_SEC"),
-        "password": "Berfin33",
-        "options": {"defaultType": "swap"},
-        "enableRateLimit": True
-    })
-    print("✅ EXCHANGE OK")
-except Exception as e:
-    print("❌ EXCHANGE ERROR:", e)
-    exit()
+exchange = ccxt.bitget({
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": "Berfin33",
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True
+})
 
 trade_state = {}
 cooldown = {}
@@ -59,9 +53,9 @@ def sync_positions():
                 "entry": safe(p["entryPrice"]),
                 "direction": "long" if p["side"]=="long" else "short",
                 "time": time.time(),
-                "max_roe": 0
+                "max_roe": 0,
+                "last_lock": 0
             }
-        print("♻️ SYNC OK")
     except Exception as e:
         print("SYNC ERROR:", e)
 
@@ -98,7 +92,7 @@ def get_symbols():
         print("SYMBOL ERROR:", e)
         return []
 
-# ===== SIGNAL =====
+# ===== SIGNAL (PUMP + FAKE FILTER) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
@@ -113,6 +107,10 @@ def signal(sym):
 
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
         volume_spike = volumes[-1] > avg_vol * 2
+
+        # fake pump filtre (çok dik spike engelle)
+        if abs(move) > 0.08:
+            return None
 
         if move > 0.02 and volume_spike:
             return "long"
@@ -141,6 +139,7 @@ def should_exit(sym, price, roe):
 
     pnl_usdt = (roe / 100) * BASE_MARGIN
 
+    # 🔴 HARD STOP
     if pnl_usdt < -0.5:
         return True
 
@@ -150,14 +149,25 @@ def should_exit(sym, price, roe):
     maxr = st["max_roe"]
     max_usdt = (maxr / 100) * BASE_MARGIN
 
+    lock = 0
+
     if max_usdt >= 1.0:
-        return pnl_usdt < 0.7
+        lock = 0.7
     elif max_usdt >= 0.6:
-        return pnl_usdt < 0.4
+        lock = 0.4
     elif max_usdt >= 0.3:
-        return pnl_usdt < 0.15
-    elif max_usdt >= 0.15:
-        return pnl_usdt < 0
+        lock = 0.15
+
+    # 🔒 KİLİT MESAJ
+    if lock > st["last_lock"]:
+        st["last_lock"] = lock
+        try:
+            bot.send_message(CHAT_ID, f"🔒 {sym} profit lock {lock}$")
+        except:
+            pass
+
+    if lock > 0 and pnl_usdt < lock:
+        return True
 
     return False
 
@@ -192,7 +202,8 @@ def open_trade(sym,dir):
             "entry":price,
             "direction":dir,
             "time":time.time(),
-            "max_roe":0
+            "max_roe":0,
+            "last_lock":0
         }
 
         cooldown[sym]=time.time()
@@ -265,7 +276,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 ULTRA SAFE BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL BOT AKTİF")
 
 while True:
     time.sleep(60)
