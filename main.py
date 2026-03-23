@@ -8,7 +8,7 @@ import json
 
 # ===== CONFIG =====
 LEV = 10
-BASE_MARGIN = 2
+BASE_MARGIN = 0.50
 MAX_POSITIONS = 2
 
 SCAN_DELAY = 10
