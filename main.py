@@ -4,22 +4,17 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL BOT STARTING...")
+print("🔥 V10 BOT STARTING...")
 
-# ===== ENV CHECK =====
+# ===== ENV =====
 if not os.getenv("TELE_TOKEN") or not os.getenv("MY_CHAT_ID"):
-    print("❌ TELEGRAM ENV HATALI")
-    exit()
-
-if not os.getenv("BITGET_API") or not os.getenv("BITGET_SEC"):
-    print("❌ API ENV HATALI")
+    print("ENV ERROR")
     exit()
 
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 3
-
 SCAN_DELAY = 3
 FEE = 0.08
 
@@ -36,6 +31,7 @@ exchange = ccxt.bitget({
 
 trade_state = {}
 cooldown = {}
+active_symbols = set()
 
 def safe(x):
     try: return float(x)
@@ -49,6 +45,7 @@ def sync_positions():
                 continue
 
             sym = p["symbol"]
+
             trade_state[sym] = {
                 "entry": safe(p["entryPrice"]),
                 "direction": "long" if p["side"]=="long" else "short",
@@ -56,6 +53,9 @@ def sync_positions():
                 "max_roe": 0,
                 "last_lock": 0
             }
+
+            active_symbols.add(sym)
+
     except Exception as e:
         print("SYNC ERROR:", e)
 
@@ -88,11 +88,10 @@ def get_symbols():
 
         return arr[:25]
 
-    except Exception as e:
-        print("SYMBOL ERROR:", e)
+    except:
         return []
 
-# ===== SIGNAL (PUMP + FAKE FILTER) =====
+# ===== SIGNAL (ULTRA SMART) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
@@ -108,20 +107,25 @@ def signal(sym):
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
         volume_spike = volumes[-1] > avg_vol * 2
 
-        # fake pump filtre (çok dik spike engelle)
+        # 🔥 trend devam filtresi
+        trend_up = closes[-1] > closes[-2] > closes[-3]
+        trend_down = closes[-1] < closes[-2] < closes[-3]
+
+        # fake pump filtre
         if abs(move) > 0.08:
             return None
 
-        if move > 0.02 and volume_spike:
+        # 🚀 LONG
+        if move > 0.02 and volume_spike and not trend_down:
             return "long"
 
-        if move < -0.02 and volume_spike:
+        # 🔻 SHORT
+        if move < -0.02 and volume_spike and not trend_up:
             return "short"
 
         return None
 
-    except Exception as e:
-        print("SIGNAL ERROR:", e)
+    except:
         return None
 
 # ===== QTY =====
@@ -129,25 +133,23 @@ def format_qty(sym,price):
     try:
         raw=(BASE_MARGIN*LEV)/price
         return float(exchange.amount_to_precision(sym,raw))
-    except Exception as e:
-        print("QTY ERROR:", e)
+    except:
         return 0
 
 # ===== EXIT =====
 def should_exit(sym, price, roe):
     st = trade_state[sym]
 
-    pnl_usdt = (roe / 100) * BASE_MARGIN
+    pnl = (roe/100)*BASE_MARGIN
 
-    # 🔴 HARD STOP
-    if pnl_usdt < -0.5:
+    # HARD STOP
+    if pnl < -0.5:
         return True
 
     if roe > st["max_roe"]:
         st["max_roe"] = roe
 
-    maxr = st["max_roe"]
-    max_usdt = (maxr / 100) * BASE_MARGIN
+    max_usdt = (st["max_roe"]/100)*BASE_MARGIN
 
     lock = 0
 
@@ -158,15 +160,14 @@ def should_exit(sym, price, roe):
     elif max_usdt >= 0.3:
         lock = 0.15
 
-    # 🔒 KİLİT MESAJ
     if lock > st["last_lock"]:
         st["last_lock"] = lock
         try:
-            bot.send_message(CHAT_ID, f"🔒 {sym} profit lock {lock}$")
+            bot.send_message(CHAT_ID, f"🔒 {sym} lock {lock}$")
         except:
             pass
 
-    if lock > 0 and pnl_usdt < lock:
+    if lock > 0 and pnl < lock:
         return True
 
     return False
@@ -174,16 +175,16 @@ def should_exit(sym, price, roe):
 # ===== OPEN =====
 def open_trade(sym,dir):
     try:
-        # STATE kontrol
+        if sym in active_symbols:
+            return
+
         if sym in trade_state:
             return
 
-        # GERÇEK pozisyon kontrol
         for p in exchange.fetch_positions():
             if p["symbol"] == sym and safe(p.get("contracts")) > 0:
                 return
 
-        # cooldown
         if sym in cooldown and time.time()-cooldown[sym] < 120:
             return
 
@@ -206,6 +207,7 @@ def open_trade(sym,dir):
             "last_lock":0
         }
 
+        active_symbols.add(sym)
         cooldown[sym]=time.time()
 
         bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
@@ -238,7 +240,9 @@ def manage():
                     side="sell" if d=="long" else "buy"
                     exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
 
-                    trade_state.pop(sym)
+                    trade_state.pop(sym, None)
+                    active_symbols.discard(sym)
+
                     bot.send_message(CHAT_ID,f"🏁 EXIT {sym} {roe:.2f}%")
 
             time.sleep(2)
@@ -265,8 +269,7 @@ def scanner():
 
             time.sleep(SCAN_DELAY)
 
-        except Exception as e:
-            print("SCAN ERROR:", e)
+        except:
             time.sleep(5)
 
 # ===== START =====
@@ -276,7 +279,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 V10 AKTİF")
 
 while True:
     time.sleep(60)
