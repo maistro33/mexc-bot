@@ -4,7 +4,16 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 BOT STARTING...")
+print("🔥 ULTRA SAFE BOT STARTING...")
+
+# ===== ENV CHECK =====
+if not os.getenv("TELE_TOKEN") or not os.getenv("MY_CHAT_ID"):
+    print("❌ TELEGRAM ENV HATALI")
+    exit()
+
+if not os.getenv("BITGET_API") or not os.getenv("BITGET_SEC"):
+    print("❌ API ENV HATALI")
+    exit()
 
 # ===== CONFIG =====
 LEV = 10
@@ -17,13 +26,19 @@ FEE = 0.08
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
 
-exchange = ccxt.bitget({
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",  # 🔥 geri koyduk
-    "options": {"defaultType": "swap"},
-    "enableRateLimit": True
-})
+# ===== EXCHANGE =====
+try:
+    exchange = ccxt.bitget({
+        "apiKey": os.getenv("BITGET_API"),
+        "secret": os.getenv("BITGET_SEC"),
+        "password": "Berfin33",
+        "options": {"defaultType": "swap"},
+        "enableRateLimit": True
+    })
+    print("✅ EXCHANGE OK")
+except Exception as e:
+    print("❌ EXCHANGE ERROR:", e)
+    exit()
 
 trade_state = {}
 cooldown = {}
@@ -35,8 +50,7 @@ def safe(x):
 # ===== SYNC =====
 def sync_positions():
     try:
-        positions = exchange.fetch_positions()
-        for p in positions:
+        for p in exchange.fetch_positions():
             if safe(p.get("contracts")) <= 0:
                 continue
 
@@ -44,41 +58,41 @@ def sync_positions():
             trade_state[sym] = {
                 "entry": safe(p["entryPrice"]),
                 "direction": "long" if p["side"]=="long" else "short",
-                "time": time.time()-60,
+                "time": time.time(),
                 "max_roe": 0
             }
-
-        print(f"♻️ {len(trade_state)} pozisyon yüklendi")
-
+        print("♻️ SYNC OK")
     except Exception as e:
         print("SYNC ERROR:", e)
 
 # ===== SYMBOLS =====
 def get_symbols():
     try:
-        tickers = exchange.fetch_tickers()
-        arr = []
-
-        for sym, d in tickers.items():
+        arr=[]
+        for sym,d in exchange.fetch_tickers().items():
 
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP"]):
+            if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA"]):
                 continue
 
-            price = safe(d.get("last"))
-            vol = safe(d.get("quoteVolume"))
-            ch = safe(d.get("percentage"))
+            price=safe(d.get("last"))
+            vol=safe(d.get("quoteVolume"))
+            ch=safe(d.get("percentage"))
 
-            if price > 5 or vol < 150000 or abs(ch) < 1.5:
+            if price > 1.5:
                 continue
 
-            score = abs(ch) + (vol / 1_000_000)
-            arr.append((sym, score))
+            if vol < 120000 or vol > 5000000:
+                continue
 
-        arr.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in arr[:20]]
+            if abs(ch) < 1:
+                continue
+
+            arr.append(sym)
+
+        return arr[:25]
 
     except Exception as e:
         print("SYMBOL ERROR:", e)
@@ -87,28 +101,24 @@ def get_symbols():
 # ===== SIGNAL =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=5)
-        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
+        m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
 
-        closes = [c[4] for c in m5]
-        h1c = [c[4] for c in h1]
+        if not m5 or len(m5) < 6:
+            return None
 
-        move = (closes[-1] - closes[-4]) / closes[-4]
+        closes=[c[4] for c in m5]
+        volumes=[c[5] for c in m5]
 
-        trend_up = h1c[-1] > sum(h1c[-10:]) / 10
-        trend_down = h1c[-1] < sum(h1c[-10:]) / 10
+        move = (closes[-1]-closes[-2]) / closes[-2]
 
-        recent_low = min(closes[-5:])
-        recent_high = max(closes[-5:])
+        avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+        volume_spike = volumes[-1] > avg_vol * 2
 
-        near_bottom = closes[-1] <= recent_low * 1.005
-        near_top = closes[-1] >= recent_high * 0.995
-
-        if move > 0.015 and closes[-1] < closes[-2] and trend_down and not near_bottom:
-            return "short"
-
-        if move < -0.015 and closes[-1] > closes[-2] and trend_up and not near_top:
+        if move > 0.02 and volume_spike:
             return "long"
+
+        if move < -0.02 and volume_spike:
+            return "short"
 
         return None
 
@@ -117,21 +127,20 @@ def signal(sym):
         return None
 
 # ===== QTY =====
-def format_qty(sym, price):
+def format_qty(sym,price):
     try:
-        raw = (BASE_MARGIN * LEV) / price
-        return float(exchange.amount_to_precision(sym, raw))
+        raw=(BASE_MARGIN*LEV)/price
+        return float(exchange.amount_to_precision(sym,raw))
     except Exception as e:
         print("QTY ERROR:", e)
         return 0
 
-# ===== EXIT (USD SYSTEM) =====
+# ===== EXIT =====
 def should_exit(sym, price, roe):
     st = trade_state[sym]
 
     pnl_usdt = (roe / 100) * BASE_MARGIN
 
-    # 🔴 HARD STOP
     if pnl_usdt < -0.5:
         return True
 
@@ -141,52 +150,54 @@ def should_exit(sym, price, roe):
     maxr = st["max_roe"]
     max_usdt = (maxr / 100) * BASE_MARGIN
 
-    # 🔥 PROFIT LOCK
     if max_usdt >= 1.0:
-        if pnl_usdt < 0.7:
-            return True
-
+        return pnl_usdt < 0.7
     elif max_usdt >= 0.6:
-        if pnl_usdt < 0.4:
-            return True
-
+        return pnl_usdt < 0.4
     elif max_usdt >= 0.3:
-        if pnl_usdt < 0.15:
-            return True
-
+        return pnl_usdt < 0.15
     elif max_usdt >= 0.15:
-        if pnl_usdt < 0:
-            return True
+        return pnl_usdt < 0
 
     return False
 
 # ===== OPEN =====
-def open_trade(sym, direction):
+def open_trade(sym,dir):
     try:
-        if sym in cooldown and time.time() - cooldown[sym] < 60:
+        # STATE kontrol
+        if sym in trade_state:
             return
 
-        price = exchange.fetch_ticker(sym)["last"]
-        qty = format_qty(sym, price)
+        # GERÇEK pozisyon kontrol
+        for p in exchange.fetch_positions():
+            if p["symbol"] == sym and safe(p.get("contracts")) > 0:
+                return
+
+        # cooldown
+        if sym in cooldown and time.time()-cooldown[sym] < 120:
+            return
+
+        price=exchange.fetch_ticker(sym)["last"]
+        qty=format_qty(sym,price)
 
         if qty <= 0:
             return
 
-        exchange.set_leverage(LEV, sym)
+        exchange.set_leverage(LEV,sym)
 
-        side = "buy" if direction == "long" else "sell"
-        exchange.create_market_order(sym, side, qty)
+        side="buy" if dir=="long" else "sell"
+        exchange.create_market_order(sym,side,qty)
 
-        trade_state[sym] = {
-            "entry": price,
-            "direction": direction,
-            "time": time.time(),
-            "max_roe": 0
+        trade_state[sym]={
+            "entry":price,
+            "direction":dir,
+            "time":time.time(),
+            "max_roe":0
         }
 
-        cooldown[sym] = time.time()
+        cooldown[sym]=time.time()
 
-        bot.send_message(CHAT_ID, f"🎯 {sym} {direction}")
+        bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -195,33 +206,29 @@ def open_trade(sym, direction):
 def manage():
     while True:
         try:
-            positions = exchange.fetch_positions()
-
-            for p in positions:
-                qty = safe(p.get("contracts"))
-                if qty <= 0:
+            for p in exchange.fetch_positions():
+                qty=safe(p.get("contracts"))
+                if qty<=0:
                     continue
 
-                sym = p["symbol"]
+                sym=p["symbol"]
 
                 if sym not in trade_state:
                     continue
 
-                price = exchange.fetch_ticker(sym)["last"]
-                entry = trade_state[sym]["entry"]
-                direction = trade_state[sym]["direction"]
+                price=exchange.fetch_ticker(sym)["last"]
+                entry=trade_state[sym]["entry"]
+                d=trade_state[sym]["direction"]
 
-                raw = ((price - entry) / entry * 100) * LEV if direction == "long" \
-                    else ((entry - price) / entry * 100) * LEV
+                raw=((price-entry)/entry*100)*LEV if d=="long" else ((entry-price)/entry*100)*LEV
+                roe=raw-FEE
 
-                roe = raw - FEE
-
-                if should_exit(sym, price, roe):
-                    side = "sell" if direction == "long" else "buy"
-                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                if should_exit(sym,price,roe):
+                    side="sell" if d=="long" else "buy"
+                    exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
 
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {roe:.2f}%")
+                    bot.send_message(CHAT_ID,f"🏁 EXIT {sym} {roe:.2f}%")
 
             time.sleep(2)
 
@@ -234,14 +241,16 @@ def scanner():
     while True:
         try:
             for sym in get_symbols():
+
                 if len(trade_state) >= MAX_POSITIONS:
                     break
 
-                d = signal(sym)
-                if d:
-                    open_trade(sym, d)
+                d=signal(sym)
 
-                time.sleep(0.15)
+                if d:
+                    open_trade(sym,d)
+
+                time.sleep(0.1)
 
             time.sleep(SCAN_DELAY)
 
@@ -252,11 +261,11 @@ def scanner():
 # ===== START =====
 sync_positions()
 
-threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=scanner, daemon=True).start()
-threading.Thread(target=bot.infinity_polling, daemon=True).start()
+threading.Thread(target=manage,daemon=True).start()
+threading.Thread(target=scanner,daemon=True).start()
+threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 ULTRA SAFE BOT AKTİF")
 
 while True:
     time.sleep(60)
