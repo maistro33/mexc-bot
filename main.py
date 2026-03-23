@@ -13,7 +13,7 @@ MAX_POSITIONS = 2
 SCAN_DELAY = 10
 MIN_VOLUME = 1000000
 
-SL_PERCENT = 0.025   # 🔥 GENİŞLETİLDİ
+SL_PERCENT = 0.025
 MIN_HOLD = 40
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -36,7 +36,7 @@ def safe(x):
     except:
         return 0
 
-# ===== 🔥 SYNC POSITIONS =====
+# ===== SYNC =====
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
@@ -72,7 +72,7 @@ def current_positions():
     except:
         return 0
 
-# ===== SYMBOLS =====
+# ===== SYMBOL FILTER (NO OLD COINS) =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -82,22 +82,31 @@ def get_symbols():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
+            # 🚫 MAJOR COINS ENGELLE
+            if any(x in sym for x in ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE"]):
+                continue
+
             vol = safe(d.get("quoteVolume"))
             price = safe(d.get("last"))
+            change = abs(safe(d.get("percentage")))
 
-            if vol < MIN_VOLUME:
+            # sadece güçlü hareket
+            if change < 4:
+                continue
+
+            # hacim filtresi
+            if vol < MIN_VOLUME or vol > 15000000:
                 continue
 
             if price < 0.01:
                 continue
 
-            change = abs(safe(d.get("percentage")))
             score = change + (vol / 1_000_000)
 
             arr.append((sym, score))
 
         arr.sort(key=lambda x: x[1], reverse=True)
-        top = [x[0] for x in arr[:20]]
+        top = [x[0] for x in arr[:15]]
 
         random.shuffle(top)
         return top
@@ -105,7 +114,7 @@ def get_symbols():
     except:
         return []
 
-# ===== SNIPER =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
         h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
@@ -144,7 +153,7 @@ def format_qty(sym, price):
     except:
         return 0
 
-# ===== STEP (SADECE BİLGİ) =====
+# ===== STEP =====
 def update_step(sym, roe):
     state = trade_state[sym]
 
@@ -161,7 +170,7 @@ def update_step(sym, roe):
             f"🔒 {sym}\nSTEP {step}\nROE: {roe:.2f}%\nMAX: {state['max_roe']:.2f}%"
         )
 
-# ===== EXIT (GERÇEK TRAILING) =====
+# ===== EXIT (REAL TRAILING) =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
@@ -185,7 +194,7 @@ def should_exit(sym, price, roe):
         if direction == "short" and price >= entry:
             return True
 
-    # TRAILING STOP
+    # TRAILING
     if max_roe < 10:
         trail = 4
     elif max_roe < 20:
@@ -295,7 +304,7 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 FINAL PRO BOT STARTED (TRAILING ACTIVE)")
+print("🔥 FINAL BOT STARTED")
 
 sync_positions()
 
@@ -303,7 +312,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (SNIPER + TRAILING FINAL)")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (FINAL SNIPER)")
 
 while True:
     time.sleep(60)
