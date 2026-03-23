@@ -61,7 +61,7 @@ def sync_positions():
     except Exception as e:
         print("SYNC ERROR:", e)
 
-# ===== SYMBOL FILTER (MEME ONLY) =====
+# ===== MEME FILTER =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -72,7 +72,6 @@ def get_symbols():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            # ❌ büyük coinleri tamamen sil
             if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA","DOGE","TRX","AVAX","LINK","DOT"]):
                 continue
 
@@ -80,15 +79,12 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             change = safe(d.get("percentage"))
 
-            # 🔥 meme coin
             if price > 5:
                 continue
 
-            # 🔥 hacim şart
             if vol < 300000:
                 continue
 
-            # 🔥 pump şart
             if abs(change) < 2:
                 continue
 
@@ -103,23 +99,27 @@ def get_symbols():
     except:
         return []
 
-# ===== REVERSAL SNIPER =====
+# ===== SIGNAL (TREND FIX) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
+        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
+
         closes = [c[4] for c in m5]
+        h1c = [c[4] for c in h1]
 
         move = (closes[-1] - closes[-4]) / closes[-4]
 
-        # 🔥 pump → short
-        if move > 0.03:
-            if closes[-1] < closes[-2]:
-                return "short"
+        trend_up = h1c[-1] > sum(h1c[-10:]) / 10
+        trend_down = h1c[-1] < sum(h1c[-10:]) / 10
 
-        # 🔥 dump → long
-        if move < -0.03:
-            if closes[-1] > closes[-2]:
-                return "long"
+        # 🔥 PUMP → SHORT
+        if move > 0.03 and closes[-1] < closes[-2] and trend_down:
+            return "short"
+
+        # 🔥 DUMP → LONG
+        if move < -0.03 and closes[-1] > closes[-2] and trend_up:
+            return "long"
 
         return None
 
@@ -135,7 +135,7 @@ def format_qty(sym, price):
     except:
         return 0
 
-# ===== EXIT (SCALP PRO) =====
+# ===== EXIT =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
@@ -157,7 +157,7 @@ def should_exit(sym, price, roe):
 
     maxr = state["max_roe"]
 
-    # 🔥 micro trailing
+    # 🔥 trailing
     if maxr > 2:
         if roe < maxr - 1.2:
             return True
@@ -170,7 +170,6 @@ def should_exit(sym, price, roe):
         if roe < maxr - 2.5:
             return True
 
-    # küçük kâr kaçırma
     if roe > 1 and roe < maxr - 0.8:
         return True
 
@@ -265,7 +264,7 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 MEME SNIPER STARTED")
+print("🔥 FINAL SNIPER (TREND SAFE)")
 
 sync_positions()
 
@@ -273,7 +272,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 MEME SNIPER AKTİF")
+bot.send_message(CHAT_ID, "🔥 SNIPER TREND SAFE AKTİF")
 
 while True:
     time.sleep(60)
