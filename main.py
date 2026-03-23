@@ -10,7 +10,7 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
-SCAN_DELAY = 2
+SCAN_DELAY = 10
 MIN_VOLUME = 1000000
 
 SL_PERCENT = 0.012
@@ -72,7 +72,7 @@ def current_positions():
     except:
         return 0
 
-# ===== SYMBOLS =====
+# ===== SYMBOLS (PUMP ODAKLI) =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -84,6 +84,7 @@ def get_symbols():
 
             vol = safe(d.get("quoteVolume"))
             price = safe(d.get("last"))
+            change = safe(d.get("percentage"))
 
             if vol < MIN_VOLUME:
                 continue
@@ -91,8 +92,11 @@ def get_symbols():
             if price < 0.01:
                 continue
 
-            change = abs(safe(d.get("percentage")))
-            score = change + (vol / 1_000_000)
+            # 🔥 SADECE HAREKETLİ COINLER
+            if abs(change) < 2:
+                continue
+
+            score = abs(change) + (vol / 1_000_000)
 
             arr.append((sym, score))
 
@@ -105,35 +109,54 @@ def get_symbols():
     except:
         return []
 
-# ===== 🔥 GELİŞMİŞ SIGNAL =====
+# ===== SNIPER =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
+        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
+        m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
 
+        h1c = [c[4] for c in h1]
         closes = [c[4] for c in m5]
         vols = [c[5] for c in m5]
 
         avg_vol = sum(vols[:-1]) / len(vols[:-1])
 
+        # ===== GEÇ KALMA FİLTRESİ =====
         move = (closes[-1] - closes[-3]) / closes[-3]
         move_down = (closes[-3] - closes[-1]) / closes[-3]
 
-        # erken giriş
-        early_long = vols[-1] > avg_vol * 1.3 and closes[-1] > closes[-2] * 1.001
-        early_short = vols[-1] > avg_vol * 1.3 and closes[-1] < closes[-2] * 0.999
+        if move > 0.008:
+            return None
 
-        # devam (kaçırmamak için)
-        continuation_long = closes[-1] > closes[-2] and move < 0.01
-        continuation_short = closes[-1] < closes[-2] and move_down < 0.01
+        if move_down > 0.008:
+            return None
 
-        # geç kalma filtresi
-        too_late_long = move > 0.012
-        too_late_short = move_down > 0.012
+        # ===== ERKEN PUMP =====
+        early_pump = vols[-1] > avg_vol * 1.3 and closes[-1] > closes[-2] * 1.001
 
-        if (early_long or continuation_long) and not too_late_long:
+        # ===== ERKEN DUMP =====
+        early_dump = vols[-1] > avg_vol * 1.3 and closes[-1] < closes[-2] * 0.999
+
+        trend = h1c[-1] > sum(h1c[-10:]) / 10
+
+        pump = closes[-3] < closes[-2] * 1.001
+        pullback = closes[-2] > closes[-1]
+        breakout = closes[-1] > closes[-2] * 0.999
+
+        if early_pump:
             return "long"
 
-        if (early_short or continuation_short) and not too_late_short:
+        if early_dump:
+            return "short"
+
+        if trend and pump and pullback and breakout:
+            return "long"
+
+        pump_s = closes[-3] > closes[-2] * 0.999
+        pullback_s = closes[-2] < closes[-1]
+        breakout_s = closes[-1] < closes[-2] * 1.001
+
+        if (not trend) and pump_s and pullback_s and breakout_s:
             return "short"
 
         return None
@@ -177,7 +200,6 @@ def should_exit(sym, price, roe):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
-    # HARD STOP
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
@@ -186,7 +208,6 @@ def should_exit(sym, price, roe):
 
     step = int(max_roe / 10)
 
-    # 🔥 KAR KORUMA (AYNEN)
     if step == 1:
         locked = 5
     elif step == 2:
@@ -279,7 +300,7 @@ def scanner():
                 d = signal(sym)
                 if d:
                     open_trade(sym, d)
-                time.sleep(0.1)
+                time.sleep(0.3)
 
             time.sleep(SCAN_DELAY)
 
@@ -295,7 +316,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (SMART SNIPER MODE)")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (PUMP SNIPER MODE)")
 
 while True:
     time.sleep(60)
