@@ -11,7 +11,7 @@ BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
 SCAN_DELAY = 2
-MIN_VOLUME = 1000000
+MIN_VOLUME = 200000
 
 SL_PERCENT = 0.012
 MIN_HOLD = 40
@@ -72,7 +72,7 @@ def current_positions():
     except:
         return 0
 
-# ===== SYMBOLS (PUMP ODAKLI) =====
+# ===== 🔥 SYMBOLS (SADECE PUMP / MEME / YENİ COIN) =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -86,24 +86,33 @@ def get_symbols():
             price = safe(d.get("last"))
             change = safe(d.get("percentage"))
 
+            # ❌ çok ucuz scam coinleri kes
+            if price < 0.001:
+                continue
+
+            # ❌ pahalı eski coinleri kes
+            if price > 3:
+                continue
+
+            # ❌ aşırı büyük hacimli (BTC gibi) kes
+            if vol > 5000000:
+                continue
+
+            # ❌ düşük hacim (ölü coin)
             if vol < MIN_VOLUME:
                 continue
 
-            if price < 0.01:
+            # 🔥 SADECE PUMP COIN (%3 üstü hareket)
+            if abs(change) < 3:
                 continue
 
-            # 🔥 SADECE HAREKETLİ COINLER
-            if abs(change) < 2:
-                continue
-
-            score = abs(change) + (vol / 1_000_000)
+            score = abs(change)
 
             arr.append((sym, score))
 
         arr.sort(key=lambda x: x[1], reverse=True)
         top = [x[0] for x in arr[:20]]
 
-        random.shuffle(top)
         return top
 
     except:
@@ -121,7 +130,7 @@ def signal(sym):
 
         avg_vol = sum(vols[:-1]) / len(vols[:-1])
 
-        # ===== GEÇ KALMA FİLTRESİ =====
+        # 🚫 GEÇ KALMA
         move = (closes[-1] - closes[-3]) / closes[-3]
         move_down = (closes[-3] - closes[-1]) / closes[-3]
 
@@ -131,10 +140,10 @@ def signal(sym):
         if move_down > 0.008:
             return None
 
-        # ===== ERKEN PUMP =====
+        # 🚀 ERKEN PUMP
         early_pump = vols[-1] > avg_vol * 1.3 and closes[-1] > closes[-2] * 1.001
 
-        # ===== ERKEN DUMP =====
+        # 💣 ERKEN DUMP
         early_dump = vols[-1] > avg_vol * 1.3 and closes[-1] < closes[-2] * 0.999
 
         trend = h1c[-1] > sum(h1c[-10:]) / 10
@@ -300,7 +309,7 @@ def scanner():
                 d = signal(sym)
                 if d:
                     open_trade(sym, d)
-                time.sleep(0.3)
+                time.sleep(0.1)
 
             time.sleep(SCAN_DELAY)
 
@@ -316,7 +325,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (PUMP SNIPER MODE)")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (PUMP MEME SNIPER MODE)")
 
 while True:
     time.sleep(60)
