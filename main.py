@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 V10 DENGE STARTING...")
+print("🔥 V11 STARTING...")
 
 # ===== ENV =====
 if not os.getenv("TELE_TOKEN") or not os.getenv("MY_CHAT_ID"):
@@ -82,7 +82,7 @@ def get_symbols():
             if vol < 100000 or vol > 6000000:
                 continue
 
-            if abs(ch) < 1:
+            if abs(ch) < 0.8:
                 continue
 
             arr.append(sym)
@@ -92,7 +92,7 @@ def get_symbols():
     except:
         return []
 
-# ===== SIGNAL (DENGE) =====
+# ===== SIGNAL V11 =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
@@ -106,18 +106,18 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
 
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        volume_spike = volumes[-1] > avg_vol * 1.4
+        volume_spike = volumes[-1] > avg_vol * 1.25
 
         trend_up = closes[-1] > closes[-2] > closes[-3]
         trend_down = closes[-1] < closes[-2] < closes[-3]
 
-        if abs(move) > 0.1:
+        if abs(move) > 0.12:
             return None
 
-        if move > 0.012 and volume_spike and not trend_down:
+        if move > 0.007 and volume_spike and not trend_down:
             return "long"
 
-        if move < -0.012 and volume_spike and not trend_up:
+        if move < -0.007 and volume_spike and not trend_up:
             return "short"
 
         return None
@@ -206,7 +206,7 @@ def open_trade(sym,dir):
         active_symbols.add(sym)
         cooldown[sym]=time.time()
 
-        bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
+        bot.send_message(CHAT_ID,f"🚀 V11 {sym} {dir}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -275,7 +275,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 DENGE MOD AKTİF")
+bot.send_message(CHAT_ID,"🔥 V11 AKTİF")
 
 while True:
     time.sleep(60)
