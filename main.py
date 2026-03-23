@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 V10 BOT STARTING...")
+print("🔥 V10 TURBO STARTING...")
 
 # ===== ENV =====
 if not os.getenv("TELE_TOKEN") or not os.getenv("MY_CHAT_ID"):
@@ -14,8 +14,9 @@ if not os.getenv("TELE_TOKEN") or not os.getenv("MY_CHAT_ID"):
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 3
-SCAN_DELAY = 3
+MAX_POSITIONS = 4
+
+SCAN_DELAY = 2
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -75,23 +76,23 @@ def get_symbols():
             vol=safe(d.get("quoteVolume"))
             ch=safe(d.get("percentage"))
 
-            if price > 1.5:
+            if price > 2:
                 continue
 
-            if vol < 120000 or vol > 5000000:
+            if vol < 80000 or vol > 7000000:
                 continue
 
-            if abs(ch) < 1:
+            if abs(ch) < 0.8:
                 continue
 
             arr.append(sym)
 
-        return arr[:25]
+        return arr[:30]
 
     except:
         return []
 
-# ===== SIGNAL (ULTRA SMART) =====
+# ===== SIGNAL (TURBO) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
@@ -105,22 +106,18 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
 
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        volume_spike = volumes[-1] > avg_vol * 2
+        volume_spike = volumes[-1] > avg_vol * 1.5
 
-        # 🔥 trend devam filtresi
         trend_up = closes[-1] > closes[-2] > closes[-3]
         trend_down = closes[-1] < closes[-2] < closes[-3]
 
-        # fake pump filtre
-        if abs(move) > 0.08:
+        if abs(move) > 0.12:
             return None
 
-        # 🚀 LONG
-        if move > 0.02 and volume_spike and not trend_down:
+        if move > 0.015 and volume_spike and not trend_down:
             return "long"
 
-        # 🔻 SHORT
-        if move < -0.02 and volume_spike and not trend_up:
+        if move < -0.015 and volume_spike and not trend_up:
             return "short"
 
         return None
@@ -142,7 +139,6 @@ def should_exit(sym, price, roe):
 
     pnl = (roe/100)*BASE_MARGIN
 
-    # HARD STOP
     if pnl < -0.5:
         return True
 
@@ -185,7 +181,7 @@ def open_trade(sym,dir):
             if p["symbol"] == sym and safe(p.get("contracts")) > 0:
                 return
 
-        if sym in cooldown and time.time()-cooldown[sym] < 120:
+        if sym in cooldown and time.time()-cooldown[sym] < 60:
             return
 
         price=exchange.fetch_ticker(sym)["last"]
@@ -210,7 +206,7 @@ def open_trade(sym,dir):
         active_symbols.add(sym)
         cooldown[sym]=time.time()
 
-        bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
+        bot.send_message(CHAT_ID,f"🚀 TURBO {sym} {dir}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -265,7 +261,7 @@ def scanner():
                 if d:
                     open_trade(sym,d)
 
-                time.sleep(0.1)
+                time.sleep(0.05)
 
             time.sleep(SCAN_DELAY)
 
@@ -279,7 +275,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 V10 AKTİF")
+bot.send_message(CHAT_ID,"🔥 V10 TURBO AKTİF")
 
 while True:
     time.sleep(60)
