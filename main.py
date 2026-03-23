@@ -10,7 +10,7 @@ BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
 SCAN_DELAY = 2
-MIN_VOLUME = 200000
+MIN_VOLUME = 300000
 
 SL_PERCENT = 0.012
 MIN_HOLD = 20
@@ -35,7 +35,7 @@ def safe(x):
     except:
         return 0
 
-# ===== SYMBOL FILTER (PRO) =====
+# ===== SYMBOL FILTER (PUMP COINS ONLY) =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -49,25 +49,28 @@ def get_symbols():
             price = safe(d.get("last"))
             change = safe(d.get("percentage"))
 
-            if price < 0.001 or price > 3:
+            # sadece ucuz hızlı coinler
+            if price < 0.001 or price > 5:
                 continue
 
-            if vol < MIN_VOLUME or vol > 5000000:
+            # sadece yüksek hacim
+            if vol < MIN_VOLUME or vol > 20000000:
                 continue
 
-            if abs(change) < 3:
+            # sadece güçlü pump/dump
+            if abs(change) < 5:
                 continue
 
             score = abs(change)
             arr.append((sym, score))
 
         arr.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in arr[:20]]
+        return [x[0] for x in arr[:15]]
 
     except:
         return []
 
-# ===== PRO SIGNAL =====
+# ===== SIGNAL (PUMP ENTRY) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
@@ -78,49 +81,24 @@ def signal(sym):
 
         avg_vol = sum(vols[:-1]) / len(vols[:-1])
 
-        # ===== MOVE =====
-        move = (closes[-1] - closes[-3]) / closes[-3]
-        move_down = (closes[-3] - closes[-1]) / closes[-3]
-
-        # 🚫 GEÇ
-        if move > 0.008 or move_down > 0.008:
-            return None
-
-        # ===== DİP / TEPE =====
-        recent_low = min(closes[-5:])
-        recent_high = max(closes[-5:])
-
-        if closes[-1] <= recent_low * 1.002:
-            return None
-
-        if closes[-1] >= recent_high * 0.998:
-            return None
-
-        # ===== GÜÇ =====
+        # güçlü mum
         body = abs(closes[-1] - closes[-2])
         candle_range = abs(highs[-1] - lows[-1])
 
-        if candle_range == 0 or body < candle_range * 0.4:
+        if candle_range == 0 or body < candle_range * 0.5:
             return None
 
-        # ===== FAKE BREAKOUT =====
-        prev_high = max(closes[-4:-1])
-        prev_low = min(closes[-4:-1])
+        # volume spike
+        vol_spike = vols[-1] > avg_vol * 1.5
 
-        if closes[-1] > prev_high and closes[-2] > closes[-1]:
+        if not vol_spike:
             return None
 
-        if closes[-1] < prev_low and closes[-2] < closes[-1]:
-            return None
-
-        # ===== VOLUME SPIKE =====
-        vol_spike = vols[-1] > avg_vol * 1.3
-
-        # ===== ENTRY =====
-        if vol_spike and closes[-1] > closes[-2]:
+        # yön belirleme
+        if closes[-1] > closes[-2]:
             return "long"
 
-        if vol_spike and closes[-1] < closes[-2]:
+        if closes[-1] < closes[-2]:
             return "short"
 
         return None
@@ -148,9 +126,15 @@ def update_step(sym, roe):
 
     if step > state.get("last_step", -1):
         state["last_step"] = step
-        bot.send_message(CHAT_ID, f"🔒 {sym} STEP {step} ROE {roe:.2f}%")
 
-# ===== EXIT =====
+        bot.send_message(
+            CHAT_ID,
+            f"🔒 {sym} STEP {step}\n"
+            f"ROE: {roe:.2f}%\n"
+            f"MAX: {state['max_roe']:.2f}%"
+        )
+
+# ===== EXIT (SMART TRAILING) =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
@@ -160,22 +144,31 @@ def should_exit(sym, price, roe):
     if time.time() - state["time"] < MIN_HOLD:
         return False
 
+    # HARD STOP
     if direction == "long" and price <= entry * (1 - SL_PERCENT):
         return True
 
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    step = int(max_roe / 10)
+    # BREAK EVEN
+    if max_roe > 5:
+        if direction == "long" and price <= entry:
+            return True
+        if direction == "short" and price >= entry:
+            return True
 
-    if step == 1:
-        locked = 5
-    elif step == 2:
-        locked = 10
+    # TRAILING
+    if max_roe < 5:
+        trail = 2
+    elif max_roe < 10:
+        trail = 3
+    elif max_roe < 20:
+        trail = 5
     else:
-        locked = (step - 1) * 10
+        trail = 8
 
-    return roe < locked
+    return roe < (max_roe - trail)
 
 # ===== OPEN =====
 def open_trade(sym, direction):
@@ -183,7 +176,7 @@ def open_trade(sym, direction):
         if current_positions() >= MAX_POSITIONS:
             return
 
-        if sym in cooldown and time.time() - cooldown[sym] < 300:
+        if sym in cooldown and time.time() - cooldown[sym] < 180:
             return
 
         price = exchange.fetch_ticker(sym)["last"]
@@ -206,7 +199,13 @@ def open_trade(sym, direction):
         }
 
         cooldown[sym] = time.time()
-        bot.send_message(CHAT_ID, f"🎯 {sym} {direction}")
+
+        bot.send_message(
+            CHAT_ID,
+            f"🚀 ENTRY {sym}\n"
+            f"Type: {direction.upper()}\n"
+            f"Price: {price}"
+        )
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -247,7 +246,12 @@ def manage():
                 if should_exit(sym, price, roe):
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {roe:.2f}%")
+
+                    bot.send_message(
+                        CHAT_ID,
+                        f"🏁 EXIT {sym}\n"
+                        f"Profit: {roe:.2f}%"
+                    )
 
             time.sleep(2)
 
@@ -271,13 +275,13 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 PRO BOT STARTED")
+print("🔥 PRO SNIPER BOT STARTED")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 SNIPER BOT AKTİF")
 
 while True:
     time.sleep(60)
