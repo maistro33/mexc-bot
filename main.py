@@ -3,17 +3,18 @@ import time
 import ccxt
 import telebot
 import threading
+import random
 
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
 
-SCAN_DELAY = 2
-MIN_VOLUME = 300000
+SCAN_DELAY = 10
+MIN_VOLUME = 1000000
 
-SL_PERCENT = 0.012
-MIN_HOLD = 20
+SL_PERCENT = 0.025   # 🔥 GENİŞLETİLDİ
+MIN_HOLD = 40
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -35,7 +36,43 @@ def safe(x):
     except:
         return 0
 
-# ===== SYMBOL FILTER (PUMP COINS ONLY) =====
+# ===== 🔥 SYNC POSITIONS =====
+def sync_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p.get("entryPrice"))
+            side = p.get("side")
+
+            direction = "long" if side == "long" else "short"
+
+            trade_state[sym] = {
+                "entry": entry,
+                "direction": direction,
+                "time": time.time(),
+                "max_roe": 0,
+                "last_step": -1
+            }
+
+            print(f"SYNCED: {sym}")
+
+    except Exception as e:
+        print("SYNC ERROR:", e)
+
+def current_positions():
+    try:
+        pos = exchange.fetch_positions()
+        return sum(1 for p in pos if safe(p.get("contracts")) > 0)
+    except:
+        return 0
+
+# ===== SYMBOLS =====
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -47,58 +84,50 @@ def get_symbols():
 
             vol = safe(d.get("quoteVolume"))
             price = safe(d.get("last"))
-            change = safe(d.get("percentage"))
 
-            # sadece ucuz hızlı coinler
-            if price < 0.001 or price > 5:
+            if vol < MIN_VOLUME:
                 continue
 
-            # sadece yüksek hacim
-            if vol < MIN_VOLUME or vol > 20000000:
+            if price < 0.01:
                 continue
 
-            # sadece güçlü pump/dump
-            if abs(change) < 5:
-                continue
+            change = abs(safe(d.get("percentage")))
+            score = change + (vol / 1_000_000)
 
-            score = abs(change)
             arr.append((sym, score))
 
         arr.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in arr[:15]]
+        top = [x[0] for x in arr[:20]]
+
+        random.shuffle(top)
+        return top
 
     except:
         return []
 
-# ===== SIGNAL (PUMP ENTRY) =====
+# ===== SNIPER =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
+        h1 = exchange.fetch_ohlcv(sym, "1h", limit=20)
+        m5 = exchange.fetch_ohlcv(sym, "5m", limit=6)
+
+        h1c = [c[4] for c in h1]
         closes = [c[4] for c in m5]
-        highs = [c[2] for c in m5]
-        lows = [c[3] for c in m5]
-        vols = [c[5] for c in m5]
 
-        avg_vol = sum(vols[:-1]) / len(vols[:-1])
+        trend = h1c[-1] > sum(h1c[-10:]) / 10
 
-        # güçlü mum
-        body = abs(closes[-1] - closes[-2])
-        candle_range = abs(highs[-1] - lows[-1])
+        pump = closes[-3] < closes[-2] * 1.001
+        pullback = closes[-2] > closes[-1]
+        breakout = closes[-1] > closes[-2] * 0.999
 
-        if candle_range == 0 or body < candle_range * 0.5:
-            return None
-
-        # volume spike
-        vol_spike = vols[-1] > avg_vol * 1.5
-
-        if not vol_spike:
-            return None
-
-        # yön belirleme
-        if closes[-1] > closes[-2]:
+        if trend and pump and pullback and breakout:
             return "long"
 
-        if closes[-1] < closes[-2]:
+        pump_s = closes[-3] > closes[-2] * 0.999
+        pullback_s = closes[-2] < closes[-1]
+        breakout_s = closes[-1] < closes[-2] * 1.001
+
+        if (not trend) and pump_s and pullback_s and breakout_s:
             return "short"
 
         return None
@@ -115,7 +144,7 @@ def format_qty(sym, price):
     except:
         return 0
 
-# ===== STEP =====
+# ===== STEP (SADECE BİLGİ) =====
 def update_step(sym, roe):
     state = trade_state[sym]
 
@@ -129,12 +158,10 @@ def update_step(sym, roe):
 
         bot.send_message(
             CHAT_ID,
-            f"🔒 {sym} STEP {step}\n"
-            f"ROE: {roe:.2f}%\n"
-            f"MAX: {state['max_roe']:.2f}%"
+            f"🔒 {sym}\nSTEP {step}\nROE: {roe:.2f}%\nMAX: {state['max_roe']:.2f}%"
         )
 
-# ===== EXIT (SMART TRAILING) =====
+# ===== EXIT (GERÇEK TRAILING) =====
 def should_exit(sym, price, roe):
     state = trade_state[sym]
     entry = state["entry"]
@@ -152,23 +179,26 @@ def should_exit(sym, price, roe):
         return True
 
     # BREAK EVEN
-    if max_roe > 5:
+    if max_roe > 6:
         if direction == "long" and price <= entry:
             return True
         if direction == "short" and price >= entry:
             return True
 
-    # TRAILING
-    if max_roe < 5:
-        trail = 2
-    elif max_roe < 10:
-        trail = 3
+    # TRAILING STOP
+    if max_roe < 10:
+        trail = 4
     elif max_roe < 20:
-        trail = 5
-    else:
+        trail = 6
+    elif max_roe < 30:
         trail = 8
+    else:
+        trail = 12
 
-    return roe < (max_roe - trail)
+    if roe < (max_roe - trail):
+        return True
+
+    return False
 
 # ===== OPEN =====
 def open_trade(sym, direction):
@@ -176,7 +206,7 @@ def open_trade(sym, direction):
         if current_positions() >= MAX_POSITIONS:
             return
 
-        if sym in cooldown and time.time() - cooldown[sym] < 180:
+        if sym in cooldown and time.time() - cooldown[sym] < 300:
             return
 
         price = exchange.fetch_ticker(sym)["last"]
@@ -202,21 +232,11 @@ def open_trade(sym, direction):
 
         bot.send_message(
             CHAT_ID,
-            f"🚀 ENTRY {sym}\n"
-            f"Type: {direction.upper()}\n"
-            f"Price: {price}"
+            f"🚀 ENTRY {sym}\nTYPE: {direction.upper()}\nPRICE: {price}"
         )
 
     except Exception as e:
         print("OPEN ERROR:", e)
-
-# ===== POSITIONS =====
-def current_positions():
-    try:
-        pos = exchange.fetch_positions()
-        return sum(1 for p in pos if safe(p.get("contracts")) > 0)
-    except:
-        return 0
 
 # ===== MANAGE =====
 def manage():
@@ -239,7 +259,8 @@ def manage():
 
                 side = "sell" if direction == "long" else "buy"
 
-                roe = ((price - entry) / entry * 100) * LEV if direction == "long" else ((entry - price) / entry * 100) * LEV
+                roe = ((price - entry) / entry * 100) * LEV if direction == "long" \
+                    else ((entry - price) / entry * 100) * LEV
 
                 update_step(sym, roe)
 
@@ -249,8 +270,7 @@ def manage():
 
                     bot.send_message(
                         CHAT_ID,
-                        f"🏁 EXIT {sym}\n"
-                        f"Profit: {roe:.2f}%"
+                        f"🏁 EXIT {sym}\nPROFIT: {roe:.2f}%"
                     )
 
             time.sleep(2)
@@ -267,7 +287,7 @@ def scanner():
                 d = signal(sym)
                 if d:
                     open_trade(sym, d)
-                time.sleep(0.1)
+                time.sleep(0.3)
 
             time.sleep(SCAN_DELAY)
 
@@ -275,13 +295,15 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 PRO SNIPER BOT STARTED")
+print("🔥 FINAL PRO BOT STARTED (TRAILING ACTIVE)")
+
+sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SNIPER BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (SNIPER + TRAILING FINAL)")
 
 while True:
     time.sleep(60)
