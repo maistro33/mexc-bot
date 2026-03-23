@@ -8,10 +8,10 @@ import random
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 3   # 🔥 arttı
+MAX_POSITIONS = 3
 
-SCAN_DELAY = 3      # 🔥 hızlandı
-MIN_HOLD = 20
+SCAN_DELAY = 3
+MIN_HOLD = 15
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -49,7 +49,7 @@ def sync_positions():
     except Exception as e:
         print("SYNC:", e)
 
-# ===== MEME FILTER =====
+# ===== MEME FILTER (AGRESİF) =====
 def get_symbols():
     try:
         arr=[]
@@ -58,27 +58,28 @@ def get_symbols():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA","DOGE","TRX","AVAX","DOT","LINK"]):
+            if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA"]):
                 continue
 
             price=safe(d.get("last"))
             vol=safe(d.get("quoteVolume"))
             ch=safe(d.get("percentage"))
 
-            if price>5 or vol<300000 or abs(ch)<2:
+            # 🔥 gevşetildi
+            if price>5 or vol<150000 or abs(ch)<1.5:
                 continue
 
             arr.append((sym,abs(ch)+vol/1_000_000))
 
         arr.sort(key=lambda x:x[1],reverse=True)
-        return [x[0] for x in arr[:15]]
+        return [x[0] for x in arr[:20]]
     except:
         return []
 
-# ===== SIGNAL (YARIM AGRESİF) =====
+# ===== SIGNAL (AGRESİF) =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym,"5m",limit=6)
+        m5 = exchange.fetch_ohlcv(sym,"5m",limit=5)
         h1 = exchange.fetch_ohlcv(sym,"1h",limit=20)
 
         closes=[c[4] for c in m5]
@@ -92,14 +93,15 @@ def signal(sym):
         recent_low = min(closes[-5:])
         recent_high = max(closes[-5:])
 
-        near_bottom = closes[-1] <= recent_low * 1.01
-        near_top = closes[-1] >= recent_high * 0.99
+        # 🔥 gevşek filtre
+        near_bottom = closes[-1] <= recent_low * 1.005
+        near_top = closes[-1] >= recent_high * 0.995
 
-        # 🔥 daha erken giriş (0.02)
-        if move > 0.02 and closes[-1] < closes[-2] and trend_down and not near_bottom:
+        # 🔥 daha erken giriş
+        if move > 0.015 and closes[-1] < closes[-2] and trend_down and not near_bottom:
             return "short"
 
-        if move < -0.02 and closes[-1] > closes[-2] and trend_up and not near_top:
+        if move < -0.015 and closes[-1] > closes[-2] and trend_up and not near_top:
             return "long"
 
         return None
@@ -115,7 +117,7 @@ def format_qty(sym,price):
     except:
         return 0
 
-# ===== EXIT (USD RISK SYSTEM) =====
+# ===== EXIT (USD PRO SYSTEM) =====
 def should_exit(sym, price, roe):
     st = trade_state[sym]
 
@@ -153,7 +155,7 @@ def should_exit(sym, price, roe):
 # ===== OPEN =====
 def open_trade(sym,dir):
     try:
-        if sym in cooldown and time.time()-cooldown[sym]<120:
+        if sym in cooldown and time.time()-cooldown[sym]<60:
             return
 
         price=exchange.fetch_ticker(sym)["last"]
@@ -223,7 +225,7 @@ def scanner():
                 if d:
                     open_trade(sym,d)
 
-                time.sleep(0.2)
+                time.sleep(0.15)
 
             time.sleep(SCAN_DELAY)
 
@@ -231,7 +233,7 @@ def scanner():
             time.sleep(10)
 
 # ===== START =====
-print("🔥 HALF AGGRESSIVE SNIPER")
+print("🔥 AGGRESSIVE SNIPER FINAL")
 
 sync_positions()
 
@@ -239,7 +241,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 YARIM AGRESİF AKTİF")
+bot.send_message(CHAT_ID,"🔥 AGRESİF MOD AKTİF")
 
 while True:
     time.sleep(60)
