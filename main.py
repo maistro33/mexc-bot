@@ -10,11 +10,11 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 1
 
-SCAN_DELAY = 2
+SCAN_DELAY = 1
 MIN_VOLUME = 200000
 
 SL_PERCENT = 0.012
-MIN_HOLD = 5
+MIN_HOLD = 3
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -105,7 +105,7 @@ def get_symbols():
     except:
         return []
 
-# ===== 🔥 ULTRA SNIPER SIGNAL =====
+# ===== 🔥 GELİŞMİŞ SIGNAL (KAÇIRMAZ + GEÇ GİRMEZ) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym, "5m", limit=10)
@@ -114,28 +114,29 @@ def signal(sym):
         vols = [c[5] for c in m5]
 
         avg_vol = sum(vols[:-1]) / len(vols[:-1])
-        vol_spike = vols[-1] > avg_vol * 1.5
 
-        price_jump = closes[-1] > closes[-2] * 1.002
-        price_drop = closes[-1] < closes[-2] * 0.998
+        # ===== HAREKET ÖLÇ =====
+        move = (closes[-1] - closes[-3]) / closes[-3]
+        move_down = (closes[-3] - closes[-1]) / closes[-3]
 
-        early_long = vol_spike and price_jump
-        early_short = vol_spike and price_drop
+        # ===== ERKEN GİRİŞ =====
+        early_long = vols[-1] > avg_vol * 1.2 and closes[-1] > closes[-2] * 1.001
+        early_short = vols[-1] > avg_vol * 1.2 and closes[-1] < closes[-2] * 0.999
 
-        recent_high = max(closes[-5:])
-        recent_low = min(closes[-5:])
+        # ===== DEVAM (KAÇIRMAMAK İÇİN) =====
+        continuation_long = closes[-1] > closes[-2] and move < 0.01
+        continuation_short = closes[-1] < closes[-2] and move_down < 0.01
 
-        too_late_long = closes[-1] > recent_high * 0.995
-        too_late_short = closes[-1] < recent_low * 1.005
+        # ===== GEÇ KALMA BLOK =====
+        too_late_long = move > 0.012
+        too_late_short = move_down > 0.012
 
-        # aşırı pump yakalama engeli
-        if closes[-1] > closes[-3] * 1.01:
-            return None
-
-        if early_long and not too_late_long:
+        # ===== LONG =====
+        if (early_long or continuation_long) and not too_late_long:
             return "long"
 
-        if early_short and not too_late_short:
+        # ===== SHORT =====
+        if (early_short or continuation_short) and not too_late_short:
             return "short"
 
         return None
@@ -159,7 +160,7 @@ def update_step(sym, roe):
     if roe > state["max_roe"]:
         state["max_roe"] = roe
 
-    step = int(state["max_roe"] / 5)
+    step = int(state["max_roe"] / 2)
 
     if step > state.get("last_step", -1):
         state["last_step"] = step
@@ -185,14 +186,14 @@ def should_exit(sym, price, roe):
     if direction == "short" and price >= entry * (1 + SL_PERCENT):
         return True
 
-    step = int(max_roe / 5)
+    step = int(max_roe / 2)
 
     if step == 1:
-        locked = 2
+        locked = 1
     elif step == 2:
-        locked = 5
+        locked = 3
     else:
-        locked = (step - 1) * 5
+        locked = (step - 1) * 2
 
     if roe < locked:
         return True
@@ -279,7 +280,7 @@ def scanner():
                 d = signal(sym)
                 if d:
                     open_trade(sym, d)
-                time.sleep(0.05)
+                time.sleep(0.02)
 
             time.sleep(SCAN_DELAY)
 
@@ -295,7 +296,7 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF (ULTRA SNIPER MODE)")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF (SMART SCALP MODE)")
 
 while True:
     time.sleep(60)
