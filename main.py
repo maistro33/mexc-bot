@@ -10,11 +10,11 @@ LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 1
 
-SCAN_DELAY = 10
-MIN_VOLUME = 1000000
+SCAN_DELAY = 6
+MIN_VOLUME = 200000
 
 SL_PERCENT = 0.012
-MIN_HOLD = 40
+MIN_HOLD = 5
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -278,7 +278,7 @@ def scanner():
             time.sleep(SCAN_DELAY)
 
         except:
-            time.sleep(10)
+            time.sleep(0.05)
 
 # ===== START =====
 print("🔥 FINAL PRO BOT STARTED (SYNC ENABLED)")
