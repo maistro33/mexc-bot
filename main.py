@@ -4,13 +4,12 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 SMART BOT STARTING...")
+print("🔥 FINAL SCALP BOT STARTING...")
 
-# ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 8
-SCAN_DELAY = 0.5
+MAX_POSITIONS = 4
+SCAN_DELAY = 0.3
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -26,140 +25,69 @@ exchange = ccxt.bitget({
 
 trade_state = {}
 cooldown = {}
-active_symbols = set()
 
 def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== MARKET MODE (AKILLI) =====
-def get_market_mode():
-    try:
-        tickers = exchange.fetch_tickers()
-        count = 0
-        total = 0
-
-        for sym, d in tickers.items():
-            if "USDT" not in sym:
-                continue
-            ch = abs(safe(d.get("percentage")))
-            total += ch
-            count += 1
-
-        avg_move = total / max(count,1)
-
-        if avg_move > 3:
-            return "hot"   # 🔥 market hareketli
-        else:
-            return "calm"  # 😴 market sakin
-
-    except:
-        return "calm"
-
-# ===== LOAD OPEN POSITIONS =====
-def load_open_positions():
-    try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            entry = safe(p.get("entryPrice"))
-
-            direction = "long" if "long" in str(p).lower() else "short"
-
-            trade_state[sym] = {
-                "entry": entry,
-                "direction": direction,
-                "time": time.time(),
-                "lock": 0
-            }
-
-            active_symbols.add(sym)
-
-        print("✅ Açık işlemler yüklendi")
-
-    except Exception as e:
-        print("LOAD ERROR:", e)
-
-# ===== SYMBOL FILTER (SMART) =====
+# ===== COIN FILTER (BÜYÜKLER YOK) =====
 def get_symbols():
     try:
         arr=[]
         tickers = exchange.fetch_tickers()
 
-        mode = get_market_mode()
-        print("MARKET MODE:", mode)
-
         for sym,d in tickers.items():
 
-            if "USDT" not in sym or ":USDT" not in sym:
+            if "USDT" not in sym:
                 continue
 
             price = safe(d.get("last"))
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 AKILLI FİLTRE
-            if mode == "hot":
-                cond = (
-                    price < 0.5 and
-                    vol > 80000 and
-                    vol < 4000000 and
-                    ch > 3
-                )
-            else:
-                cond = (
-                    price < 0.8 and
-                    vol > 50000 and
-                    ch > 2
-                )
-
-            if not cond:
+            # 🔥 SADECE SCALP COIN
+            if not (
+                price < 1.0 and
+                vol > 80000 and
+                vol < 4000000 and
+                ch > 1.5
+            ):
                 continue
 
             arr.append(sym)
 
-        print("COIN SAYISI:", len(arr))
-        return arr[:50]
+        return arr[:60]
 
     except:
         return []
 
-# ===== SIGNAL =====
+# ===== SCALP SIGNAL =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym,"5m",limit=12)
+        m1 = exchange.fetch_ohlcv(sym,"1m",limit=10)
 
-        if not m5 or len(m5) < 10:
+        if not m1 or len(m1) < 5:
             return None
 
-        closes=[c[4] for c in m5]
-        volumes=[c[5] for c in m5]
+        closes=[c[4] for c in m1]
+        volumes=[c[5] for c in m1]
 
         move = (closes[-1]-closes[-2]) / closes[-2]
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
 
-        volume_spike = volumes[-1] > avg_vol * 1.3
-
-        strong_up = closes[-1] > closes[-2] > closes[-3]
-        strong_down = closes[-1] < closes[-2] < closes[-3]
-
-        early_up = closes[-1] > closes[-3]
-        early_down = closes[-1] < closes[-3]
+        volume_spike = volumes[-1] > avg_vol * 1.2
 
         momentum = closes[-1] - closes[-3]
 
-        if abs(momentum) < closes[-3] * 0.001:
+        # ❌ büyük mum engel
+        body = abs(closes[-1] - closes[-2])
+        if body > closes[-2] * 0.04:
             return None
 
-        if move > 0.0015 and volume_spike and (early_up or strong_up):
+        if move > 0.001 and volume_spike and momentum > 0:
             return "long"
 
-        if move < -0.0015 and volume_spike and (early_down or strong_down):
+        if move < -0.001 and volume_spike and momentum < 0:
             return "short"
 
         return None
@@ -167,37 +95,30 @@ def signal(sym):
     except:
         return None
 
-# ===== QTY =====
-def format_qty(sym,price):
-    try:
-        raw=(BASE_MARGIN*LEV)/price
-        return float(exchange.amount_to_precision(sym,raw))
-    except:
-        return 0
-
-# ===== EXIT (STEP TRAILING) =====
+# ===== EXIT (USDT SCALP) =====
 def should_exit(sym, price, roe):
     st = trade_state[sym]
-
     pnl = (roe/100)*BASE_MARGIN
 
-    if pnl < -0.5:
+    # 🔴 HARD STOP
+    if pnl <= -0.50:
         return True
 
-    if pnl < 0.20:
-        return False
+    # 🔒 KAR GARANTİ
+    if pnl >= 0.25 and st.get("lock",0) < 0.20:
+        st["lock"] = 0.20
 
-    start = 0.25
-    step = 0.05
+    # 🔥 MAX TAKİP
+    if pnl > st.get("max_pnl",0):
+        st["max_pnl"] = pnl
 
-    if pnl >= start:
-        level = int((pnl - start) / step)
-        new_lock = start + (level * step) - step
+    # 🔁 TRAILING
+    if pnl >= 0.25:
+        if pnl < st.get("max_pnl",0) - 0.10:
+            return True
 
-        if new_lock > st.get("lock", 0):
-            st["lock"] = new_lock
-
-    if pnl < st.get("lock", 0):
+    # 🔒 LOCK
+    if pnl < st.get("lock",0):
         return True
 
     return False
@@ -205,26 +126,14 @@ def should_exit(sym, price, roe):
 # ===== OPEN =====
 def open_trade(sym,dir):
     try:
-        if sym in active_symbols:
-            return
-
         if sym in trade_state:
             return
-
-        for p in exchange.fetch_positions():
-            if p["symbol"] == sym and safe(p.get("contracts")) > 0:
-                return
 
         if sym in cooldown and time.time()-cooldown[sym] < 5:
             return
 
         price=exchange.fetch_ticker(sym)["last"]
-        qty=format_qty(sym,price)
-
-        if qty <= 0:
-            return
-
-        exchange.set_leverage(LEV,sym)
+        qty=(BASE_MARGIN*LEV)/price
 
         side="buy" if dir=="long" else "sell"
         exchange.create_market_order(sym,side,qty)
@@ -232,11 +141,10 @@ def open_trade(sym,dir):
         trade_state[sym]={
             "entry":price,
             "direction":dir,
-            "time":time.time(),
-            "lock":0
+            "lock":0,
+            "max_pnl":0
         }
 
-        active_symbols.add(sym)
         cooldown[sym]=time.time()
 
         bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
@@ -248,9 +156,7 @@ def open_trade(sym,dir):
 def manage():
     while True:
         try:
-            positions = exchange.fetch_positions()
-
-            for p in positions:
+            for p in exchange.fetch_positions():
                 qty=safe(p.get("contracts"))
                 if qty<=0:
                     continue
@@ -272,15 +178,13 @@ def manage():
                     exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
 
                     trade_state.pop(sym, None)
-                    active_symbols.discard(sym)
 
                     bot.send_message(CHAT_ID,f"🏁 EXIT {sym} {roe:.2f}%")
 
-            time.sleep(2)
+            time.sleep(1)
 
-        except Exception as e:
-            print("MANAGE ERROR:", e)
-            time.sleep(3)
+        except:
+            time.sleep(2)
 
 # ===== SCANNER =====
 def scanner():
@@ -292,26 +196,23 @@ def scanner():
                     break
 
                 d=signal(sym)
-                print("SİNYAL:", sym, d)
 
                 if d:
                     open_trade(sym,d)
 
-                time.sleep(0.02)
+                time.sleep(0.01)
 
             time.sleep(SCAN_DELAY)
 
         except:
-            time.sleep(5)
+            time.sleep(2)
 
 # ===== START =====
-load_open_positions()
-
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 SMART BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL SCALP BOT AKTİF")
 
 while True:
     time.sleep(60)
