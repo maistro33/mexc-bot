@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL OPTIMIZED SCALP BOT STARTING...")
+print("🔥 FINAL SCALP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
@@ -31,7 +31,7 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== AÇIK POZİSYON YÜKLE =====
+# ===== LOAD OPEN POSITIONS =====
 def load_open_positions():
     try:
         positions = exchange.fetch_positions()
@@ -48,7 +48,6 @@ def load_open_positions():
             trade_state[sym] = {
                 "entry": entry,
                 "direction": direction,
-                "lock": 0,
                 "max_pnl": 0,
                 "time": time.time()
             }
@@ -60,7 +59,7 @@ def load_open_positions():
     except Exception as e:
         print("LOAD ERROR:", e)
 
-# ===== COIN FILTER =====
+# ===== FILTER =====
 def get_symbols():
     try:
         arr=[]
@@ -75,16 +74,17 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
+            # 🔥 DENGELİ FİLTRE
             if not (
-                price < 1.0 and
-                vol > 80000 and
-                vol < 4000000 and
-                ch > 1.5
+                price < 2.0 and
+                vol > 30000 and
+                ch > 1.0
             ):
                 continue
 
             arr.append(sym)
 
+        print("COINS:", len(arr))
         return arr[:60]
 
     except:
@@ -104,17 +104,17 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
 
-        volume_spike = volumes[-1] > avg_vol * 1.5
+        volume_spike = volumes[-1] > avg_vol * 1.2
         momentum = closes[-1] - closes[-3]
 
         body = abs(closes[-1] - closes[-2])
-        if body > closes[-2] * 0.04:
+        if body > closes[-2] * 0.05:
             return None
 
-        if move > 0.001 and volume_spike and momentum > 0:
+        if move > 0.0008 and volume_spike and momentum > 0:
             return "long"
 
-        if move < -0.001 and volume_spike and momentum < 0:
+        if move < -0.0008 and volume_spike and momentum < 0:
             return "short"
 
         return None
@@ -128,33 +128,25 @@ def should_exit(sym, price, roe):
     pnl = (roe/100)*BASE_MARGIN
     age = time.time() - st["time"]
 
-    # ⏱️ HOLD (20 sn)
+    # ⏱️ HOLD
     if age < 20:
         return False
 
-    # 🔴 STOP LOSS
+    # 🔴 SL
     if pnl <= -0.35:
         return True
 
-    # 💰 TAKE PROFIT
-    if pnl >= 0.10:
-        return True
-
-    # 🔒 LOCK
-    if pnl >= 0.10 and st.get("lock",0) < 0.05:
-        st["lock"] = 0.05
-
-    # 🔥 MAX
+    # 💰 TP başlangıcı
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
-    # 🔁 TRAILING
-    if pnl >= 0.10:
-        if pnl < st["max_pnl"] - 0.07:
+    # 🔁 TRAILING (HER ZAMAN AKTİF)
+    if st.get("max_pnl",0) > 0.05:
+        if pnl < st["max_pnl"] - 0.05:
             return True
 
-    # 🔒 LOCK ALTINA DÜŞERSE
-    if st.get("lock",0) > 0 and pnl < st["lock"]:
+    # 🎯 minimum scalp çıkış
+    if pnl >= 0.10:
         return True
 
     return False
@@ -171,7 +163,6 @@ def open_trade(sym,dir):
         price=exchange.fetch_ticker(sym)["last"]
         qty=(BASE_MARGIN*LEV)/price
 
-        # 💣 LEVERAGE SABİT
         exchange.set_leverage(LEV, sym)
 
         side="buy" if dir=="long" else "sell"
@@ -180,7 +171,6 @@ def open_trade(sym,dir):
         trade_state[sym]={
             "entry":price,
             "direction":dir,
-            "lock":0,
             "max_pnl":0,
             "time":time.time()
         }
@@ -259,7 +249,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL OPTIMIZED SCALP BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL SCALP BOT AKTİF")
 
 while True:
     time.sleep(60)
