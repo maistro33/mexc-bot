@@ -4,13 +4,13 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 CLEAN FINAL BOT STARTING...")
+print("🔥 PRO BOT STARTING...")
 
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 2
-SCAN_DELAY = 1
+MAX_POSITIONS = 8
+SCAN_DELAY = 0.5
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -32,7 +32,7 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== SYMBOL FILTER (DAVRANIŞ BAZLI) =====
+# ===== SYMBOL FILTER (NO BIG COIN - ONLY PUMP) =====
 def get_symbols():
     try:
         arr=[]
@@ -47,31 +47,26 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 MEME + PUMP FİLTRE
-
-            # ucuz coin
-            if price > 1.2:
-                continue
-
-            # orta hacim
-            if vol < 50000 or vol > 3000000:
-                continue
-
-            # volatilite şart
-            if ch < 2:
+            # 🔥 TAM PROFESYONEL FİLTRE
+            if not (
+                price < 0.3 and      # küçük / yeni coin
+                vol > 80000 and      # hacim var
+                vol < 5000000 and    # büyük coin değil
+                ch > 3               # pump var
+            ):
                 continue
 
             arr.append(sym)
 
-        return arr[:30]
+        return arr[:50]
 
     except:
         return []
 
-# ===== SIGNAL =====
+# ===== SIGNAL (PRO PUMP ENGINE) =====
 def signal(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym,"5m",limit=10)
+        m5 = exchange.fetch_ohlcv(sym,"5m",limit=12)
 
         if not m5 or len(m5) < 10:
             return None
@@ -82,21 +77,37 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
 
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        volume_spike = volumes[-1] > avg_vol * 1.1
 
-        trend_up = closes[-1] > closes[-2] > closes[-3]
-        trend_down = closes[-1] < closes[-2] < closes[-3]
+        # 🔥 güçlü hacim (whale)
+        volume_spike = volumes[-1] > avg_vol * 1.8
 
-        breakout_up = closes[-1] > max(closes[-5:-1])
-        breakout_down = closes[-1] < min(closes[-5:-1])
+        # 🔥 trend
+        strong_up = closes[-1] > closes[-2] > closes[-3]
+        strong_down = closes[-1] < closes[-2] < closes[-3]
 
-        if abs(move) > 0.15:
+        # 🔥 breakout
+        breakout_up = closes[-1] > max(closes[-6:-1])
+        breakout_down = closes[-1] < min(closes[-6:-1])
+
+        # 🔥 fake breakout koruma
+        body = abs(closes[-1] - closes[-2])
+        if body / closes[-2] > 0.035:
             return None
 
-        if move > 0.004 and volume_spike and (not trend_down or breakout_up):
+        # 🔥 erken pump yakalama
+        early_pump = closes[-1] > closes[-4]
+
+        # 🔥 momentum filtresi
+        momentum = closes[-1] - closes[-3]
+        if abs(momentum) < closes[-3] * 0.002:
+            return None
+
+        # LONG
+        if move > 0.0025 and volume_spike and (strong_up or breakout_up or early_pump):
             return "long"
 
-        if move < -0.004 and volume_spike and (not trend_up or breakout_down):
+        # SHORT
+        if move < -0.0025 and volume_spike and (strong_down or breakout_down):
             return "short"
 
         return None
@@ -118,7 +129,7 @@ def should_exit(sym, price, roe):
 
     pnl = (roe/100)*BASE_MARGIN
 
-    # hard stop
+    # 🔥 hard stop
     if pnl < -0.5:
         return True
 
@@ -129,7 +140,6 @@ def should_exit(sym, price, roe):
 
     lock = 0
 
-    # 🔥 minimum 0.30 garanti
     if max_usdt >= 1.0:
         lock = 0.8
     elif max_usdt >= 0.6:
@@ -162,7 +172,8 @@ def open_trade(sym,dir):
             if p["symbol"] == sym and safe(p.get("contracts")) > 0:
                 return
 
-        if sym in cooldown and time.time()-cooldown[sym] < 30:
+        # 🔥 daha sık işlem
+        if sym in cooldown and time.time()-cooldown[sym] < 5:
             return
 
         price=exchange.fetch_ticker(sym)["last"]
@@ -244,7 +255,7 @@ def scanner():
                 if d:
                     open_trade(sym,d)
 
-                time.sleep(0.03)
+                time.sleep(0.02)
 
             time.sleep(SCAN_DELAY)
 
@@ -256,7 +267,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 CLEAN BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 PRO BOT AKTİF")
 
 while True:
     time.sleep(60)
