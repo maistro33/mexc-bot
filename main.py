@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL ULTRA BOT STARTING...")
+print("🔥 CLEAN FINAL BOT STARTING...")
 
 # ===== CONFIG =====
 LEV = 10
@@ -32,7 +32,7 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== SYMBOL FILTER =====
+# ===== SYMBOL FILTER (DAVRANIŞ BAZLI) =====
 def get_symbols():
     try:
         arr=[]
@@ -43,20 +43,22 @@ def get_symbols():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA"]):
+            price = safe(d.get("last"))
+            vol = safe(d.get("quoteVolume"))
+            ch = abs(safe(d.get("percentage")))
+
+            # 🔥 MEME + PUMP FİLTRE
+
+            # ucuz coin
+            if price > 1.2:
                 continue
 
-            price=safe(d.get("last"))
-            vol=safe(d.get("quoteVolume"))
-            ch=safe(d.get("percentage"))
-
-            if price > 3:
+            # orta hacim
+            if vol < 50000 or vol > 3000000:
                 continue
 
-            if vol < 50000 or vol > 10000000:
-                continue
-
-            if abs(ch) < 0.5:
+            # volatilite şart
+            if ch < 2:
                 continue
 
             arr.append(sym)
@@ -66,7 +68,7 @@ def get_symbols():
     except:
         return []
 
-# ===== SIGNAL (GEVŞETİLDİ) =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=10)
@@ -80,7 +82,7 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
 
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        volume_spike = volumes[-1] > avg_vol * 1.1   # 🔥 gevşetildi
+        volume_spike = volumes[-1] > avg_vol * 1.1
 
         trend_up = closes[-1] > closes[-2] > closes[-3]
         trend_down = closes[-1] < closes[-2] < closes[-3]
@@ -91,7 +93,6 @@ def signal(sym):
         if abs(move) > 0.15:
             return None
 
-        # 🔥 move gevşetildi
         if move > 0.004 and volume_spike and (not trend_down or breakout_up):
             return "long"
 
@@ -117,6 +118,7 @@ def should_exit(sym, price, roe):
 
     pnl = (roe/100)*BASE_MARGIN
 
+    # hard stop
     if pnl < -0.5:
         return True
 
@@ -127,7 +129,7 @@ def should_exit(sym, price, roe):
 
     lock = 0
 
-    # 🔥 0.30 garanti sistem
+    # 🔥 minimum 0.30 garanti
     if max_usdt >= 1.0:
         lock = 0.8
     elif max_usdt >= 0.6:
@@ -160,7 +162,6 @@ def open_trade(sym,dir):
             if p["symbol"] == sym and safe(p.get("contracts")) > 0:
                 return
 
-        # 🔥 cooldown azaltıldı
         if sym in cooldown and time.time()-cooldown[sym] < 30:
             return
 
@@ -255,7 +256,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 ULTRA AKTİF BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 CLEAN BOT AKTİF")
 
 while True:
     time.sleep(60)
