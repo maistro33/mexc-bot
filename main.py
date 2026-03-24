@@ -4,13 +4,13 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 V12 FINAL STARTING...")
+print("🔥 FINAL BOT STARTING...")
 
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
-SCAN_DELAY = 2
+SCAN_DELAY = 1   # 🔥 hızlı scan
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -43,7 +43,6 @@ def get_symbols():
             if "USDT" not in sym or ":USDT" not in sym:
                 continue
 
-            # büyük coinleri alma
             if any(x in sym for x in ["BTC","ETH","SOL","BNB","XRP","ADA"]):
                 continue
 
@@ -54,7 +53,8 @@ def get_symbols():
             if price > 3:
                 continue
 
-            if vol < 80000 or vol > 8000000:
+            # 🔥 DAHA FAZLA İŞLEM
+            if vol < 50000 or vol > 10000000:
                 continue
 
             if abs(ch) < 0.5:
@@ -67,7 +67,7 @@ def get_symbols():
     except:
         return []
 
-# ===== SIGNAL (V12 ULTRA) =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=10)
@@ -83,32 +83,19 @@ def signal(sym):
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
         volume_spike = volumes[-1] > avg_vol * 1.2
 
-        # trend yönü
         trend_up = closes[-1] > closes[-2] > closes[-3]
         trend_down = closes[-1] < closes[-2] < closes[-3]
 
-        # 🔥 TREND KIRILIMI (YENİ)
         breakout_up = closes[-1] > max(closes[-5:-1])
         breakout_down = closes[-1] < min(closes[-5:-1])
 
-        # fake spike engelle
         if abs(move) > 0.15:
             return None
 
-        # ===== LONG =====
-        if (
-            move > 0.006 and
-            volume_spike and
-            (not trend_down or breakout_up)
-        ):
+        if move > 0.006 and volume_spike and (not trend_down or breakout_up):
             return "long"
 
-        # ===== SHORT =====
-        if (
-            move < -0.006 and
-            volume_spike and
-            (not trend_up or breakout_down)
-        ):
+        if move < -0.006 and volume_spike and (not trend_up or breakout_down):
             return "short"
 
         return None
@@ -130,7 +117,7 @@ def should_exit(sym, price, roe):
 
     pnl = (roe/100)*BASE_MARGIN
 
-    # HARD STOP
+    # ❗ HARD STOP
     if pnl < -0.5:
         return True
 
@@ -141,12 +128,13 @@ def should_exit(sym, price, roe):
 
     lock = 0
 
+    # 🔥 SENİN STRATEJİ (0.30 garanti)
     if max_usdt >= 1.0:
-        lock = 0.7
+        lock = 0.8
     elif max_usdt >= 0.6:
-        lock = 0.4
+        lock = 0.5
     elif max_usdt >= 0.3:
-        lock = 0.15
+        lock = 0.3
 
     if lock > st["last_lock"]:
         st["last_lock"] = lock
@@ -198,7 +186,7 @@ def open_trade(sym,dir):
         active_symbols.add(sym)
         cooldown[sym]=time.time()
 
-        bot.send_message(CHAT_ID,f"🚀 V12 {sym} {dir}")
+        bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -267,7 +255,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 V12 FINAL AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL AKTİF")
 
 while True:
     time.sleep(60)
