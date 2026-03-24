@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL SCALP BOT STARTING...")
+print("🔥 FINAL OPTIMIZED SCALP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
@@ -43,7 +43,6 @@ def load_open_positions():
 
             sym = p["symbol"]
             entry = safe(p.get("entryPrice"))
-
             direction = "long" if "long" in str(p).lower() else "short"
 
             trade_state[sym] = {
@@ -129,49 +128,29 @@ def should_exit(sym, price, roe):
     pnl = (roe/100)*BASE_MARGIN
     age = time.time() - st["time"]
 
-    # 🔴 HARD STOP
-    if pnl <= -0.50:
+    # ⏱️ HOLD (20 sn)
+    if age < 20:
+        return False
+
+    # 🔴 STOP LOSS
+    if pnl <= -0.35:
         return True
 
-    # 🧠 İLK 30 SN ANALİZ
-    if age < 30:
-        try:
-            m1 = exchange.fetch_ohlcv(sym, "1m", limit=4)
-            closes = [c[4] for c in m1]
-            volumes = [c[5] for c in m1]
+    # 💰 TAKE PROFIT
+    if pnl >= 0.10:
+        return True
 
-            trend_up = closes[-1] > closes[-2] > closes[-3]
-            trend_down = closes[-1] < closes[-2] < closes[-3]
-
-            avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-            vol_ok = volumes[-1] > avg_vol * 1.1
-
-            entry = st["entry"]
-
-            if st["direction"] == "long":
-                if price < entry * 0.998 or not (trend_up or vol_ok):
-                    return True
-
-            if st["direction"] == "short":
-                if price > entry * 1.002 or not (trend_down or vol_ok):
-                    return True
-
-            return False
-
-        except:
-            return False
-
-    # 🔒 KAR LOCK
-    if pnl >= 0.25 and st.get("lock",0) < 0.20:
-        st["lock"] = 0.20
+    # 🔒 LOCK
+    if pnl >= 0.10 and st.get("lock",0) < 0.05:
+        st["lock"] = 0.05
 
     # 🔥 MAX
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
     # 🔁 TRAILING
-    if pnl >= 0.25:
-        if pnl < st.get("max_pnl",0) - 0.10:
+    if pnl >= 0.10:
+        if pnl < st["max_pnl"] - 0.07:
             return True
 
     # 🔒 LOCK ALTINA DÜŞERSE
@@ -280,7 +259,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL SCALP BOT AKTİF (FIXED)")
+bot.send_message(CHAT_ID,"🔥 FINAL OPTIMIZED SCALP BOT AKTİF")
 
 while True:
     time.sleep(60)
