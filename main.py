@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 SMART SCALP BOT STARTING...")
+print("🔥 FINAL SCALP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
@@ -25,10 +25,41 @@ exchange = ccxt.bitget({
 
 trade_state = {}
 cooldown = {}
+active_symbols = set()
 
 def safe(x):
     try: return float(x)
     except: return 0
+
+# ===== AÇIK POZİSYON YÜKLE =====
+def load_open_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p.get("entryPrice"))
+
+            direction = "long" if "long" in str(p).lower() else "short"
+
+            trade_state[sym] = {
+                "entry": entry,
+                "direction": direction,
+                "lock": 0,
+                "max_pnl": 0,
+                "time": time.time()
+            }
+
+            active_symbols.add(sym)
+
+        print("✅ Açık işlemler yüklendi")
+
+    except Exception as e:
+        print("LOAD ERROR:", e)
 
 # ===== COIN FILTER =====
 def get_symbols():
@@ -102,7 +133,7 @@ def should_exit(sym, price, roe):
     if pnl <= -0.50:
         return True
 
-    # 🧠 AKILLI YÖN ANALİZİ (ilk 30 sn)
+    # 🧠 İLK 30 SN ANALİZ
     if age < 30:
         try:
             m1 = exchange.fetch_ohlcv(sym, "1m", limit=4)
@@ -130,11 +161,11 @@ def should_exit(sym, price, roe):
         except:
             return False
 
-    # 🔒 KAR GARANTİ
+    # 🔒 KAR LOCK
     if pnl >= 0.25 and st.get("lock",0) < 0.20:
         st["lock"] = 0.20
 
-    # 🔥 MAX TAKİP
+    # 🔥 MAX
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
@@ -143,7 +174,7 @@ def should_exit(sym, price, roe):
         if pnl < st.get("max_pnl",0) - 0.10:
             return True
 
-    # 🔒 LOCK
+    # 🔒 LOCK ALTINA DÜŞERSE
     if st.get("lock",0) > 0 and pnl < st["lock"]:
         return True
 
@@ -152,7 +183,7 @@ def should_exit(sym, price, roe):
 # ===== OPEN =====
 def open_trade(sym,dir):
     try:
-        if sym in trade_state:
+        if sym in active_symbols:
             return
 
         if sym in cooldown and time.time()-cooldown[sym] < 5:
@@ -160,6 +191,9 @@ def open_trade(sym,dir):
 
         price=exchange.fetch_ticker(sym)["last"]
         qty=(BASE_MARGIN*LEV)/price
+
+        # 💣 LEVERAGE SABİT
+        exchange.set_leverage(LEV, sym)
 
         side="buy" if dir=="long" else "sell"
         exchange.create_market_order(sym,side,qty)
@@ -172,6 +206,7 @@ def open_trade(sym,dir):
             "time":time.time()
         }
 
+        active_symbols.add(sym)
         cooldown[sym]=time.time()
 
         bot.send_message(CHAT_ID,f"🚀 {sym} {dir}")
@@ -183,7 +218,9 @@ def open_trade(sym,dir):
 def manage():
     while True:
         try:
-            for p in exchange.fetch_positions():
+            positions = exchange.fetch_positions()
+
+            for p in positions:
                 qty=safe(p.get("contracts"))
                 if qty<=0:
                     continue
@@ -205,12 +242,14 @@ def manage():
                     exchange.create_market_order(sym,side,qty,params={"reduceOnly":True})
 
                     trade_state.pop(sym, None)
+                    active_symbols.discard(sym)
 
                     bot.send_message(CHAT_ID,f"🏁 EXIT {sym} {roe:.2f}%")
 
             time.sleep(1)
 
-        except:
+        except Exception as e:
+            print("MANAGE ERROR:", e)
             time.sleep(2)
 
 # ===== SCANNER =====
@@ -235,11 +274,13 @@ def scanner():
             time.sleep(2)
 
 # ===== START =====
+load_open_positions()
+
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 SMART SCALP BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL SCALP BOT AKTİF (FIXED)")
 
 while True:
     time.sleep(60)
