@@ -4,12 +4,12 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL SCALP BOT STARTING...")
+print("🔥 SMART SCALP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 4
-SCAN_DELAY = 0.3
+SCAN_DELAY = 0.8
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -30,7 +30,7 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== COIN FILTER (BÜYÜKLER YOK) =====
+# ===== COIN FILTER =====
 def get_symbols():
     try:
         arr=[]
@@ -45,7 +45,6 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 SADECE SCALP COIN
             if not (
                 price < 1.0 and
                 vol > 80000 and
@@ -61,7 +60,7 @@ def get_symbols():
     except:
         return []
 
-# ===== SCALP SIGNAL =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
         m1 = exchange.fetch_ohlcv(sym,"1m",limit=10)
@@ -75,11 +74,9 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
 
-        volume_spike = volumes[-1] > avg_vol * 1.2
-
+        volume_spike = volumes[-1] > avg_vol * 1.5
         momentum = closes[-1] - closes[-3]
 
-        # ❌ büyük mum engel
         body = abs(closes[-1] - closes[-2])
         if body > closes[-2] * 0.04:
             return None
@@ -95,14 +92,43 @@ def signal(sym):
     except:
         return None
 
-# ===== EXIT (USDT SCALP) =====
+# ===== EXIT =====
 def should_exit(sym, price, roe):
     st = trade_state[sym]
     pnl = (roe/100)*BASE_MARGIN
+    age = time.time() - st["time"]
 
     # 🔴 HARD STOP
     if pnl <= -0.50:
         return True
+
+    # 🧠 AKILLI YÖN ANALİZİ (ilk 30 sn)
+    if age < 30:
+        try:
+            m1 = exchange.fetch_ohlcv(sym, "1m", limit=4)
+            closes = [c[4] for c in m1]
+            volumes = [c[5] for c in m1]
+
+            trend_up = closes[-1] > closes[-2] > closes[-3]
+            trend_down = closes[-1] < closes[-2] < closes[-3]
+
+            avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
+            vol_ok = volumes[-1] > avg_vol * 1.1
+
+            entry = st["entry"]
+
+            if st["direction"] == "long":
+                if price < entry * 0.998 or not (trend_up or vol_ok):
+                    return True
+
+            if st["direction"] == "short":
+                if price > entry * 1.002 or not (trend_down or vol_ok):
+                    return True
+
+            return False
+
+        except:
+            return False
 
     # 🔒 KAR GARANTİ
     if pnl >= 0.25 and st.get("lock",0) < 0.20:
@@ -118,7 +144,7 @@ def should_exit(sym, price, roe):
             return True
 
     # 🔒 LOCK
-    if pnl < st.get("lock",0):
+    if st.get("lock",0) > 0 and pnl < st["lock"]:
         return True
 
     return False
@@ -142,7 +168,8 @@ def open_trade(sym,dir):
             "entry":price,
             "direction":dir,
             "lock":0,
-            "max_pnl":0
+            "max_pnl":0,
+            "time":time.time()
         }
 
         cooldown[sym]=time.time()
@@ -200,7 +227,7 @@ def scanner():
                 if d:
                     open_trade(sym,d)
 
-                time.sleep(0.01)
+                time.sleep(0.02)
 
             time.sleep(SCAN_DELAY)
 
@@ -212,7 +239,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL SCALP BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 SMART SCALP BOT AKTİF")
 
 while True:
     time.sleep(60)
