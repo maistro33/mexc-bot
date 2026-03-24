@@ -4,13 +4,13 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL STABLE SCALP BOT STARTING...")
+print("🔥 PROFIT OPTIMIZED BOT STARTING...")
 
 LEV = 10
-BASE_MARGIN = 1
+BASE_MARGIN = 3
 MAX_POSITIONS = 4
 SCAN_DELAY = 0.6
-FEE = 0.08
+FEE = 0.12
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
@@ -69,7 +69,6 @@ def get_symbols():
 
             s = sym.upper()
 
-            # büyük coinleri kes
             if any(x in s for x in [
                 "BTC","ETH","BNB","SOL","XRP","ADA","DOGE","DOT",
                 "LTC","TRX","AVAX","MATIC","LINK","ATOM"
@@ -83,7 +82,6 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 DENGELİ FİLTRE
             if not (
                 price < 1.2 and
                 vol > 20000 and
@@ -141,25 +139,22 @@ def should_exit(sym, price, roe):
     pnl = (roe/100)*BASE_MARGIN
     age = time.time() - st["time"]
 
-    # HOLD
     if age < 20:
         return False
 
-    # STOP
     if pnl <= -0.35:
         return True
 
-    # MAX
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
-    # TRAILING
-    if st.get("max_pnl",0) > 0.05:
-        if pnl < st["max_pnl"] - 0.05:
+    # 🔁 güçlü trailing
+    if st.get("max_pnl",0) > 0.07:
+        if pnl < st["max_pnl"] - 0.04:
             return True
 
-    # TP
-    if pnl >= 0.10:
+    # 💰 gerçek TP
+    if pnl >= 0.15:
         return True
 
     return False
@@ -260,7 +255,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL STABLE BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 PROFIT BOT AKTİF")
 
 while True:
     time.sleep(60)
