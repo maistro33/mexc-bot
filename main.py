@@ -9,7 +9,7 @@ print("🔥 PRO BOT STARTING...")
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 8
+MAX_POSITIONS = 3
 SCAN_DELAY = 0.5
 FEE = 0.08
 
