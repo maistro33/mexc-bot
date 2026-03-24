@@ -4,12 +4,12 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 ULTIMATE BOT STARTING...")
+print("🔥 SMART BOT STARTING...")
 
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
-MAX_POSITIONS = 3
+MAX_POSITIONS = 8
 SCAN_DELAY = 0.5
 FEE = 0.08
 
@@ -32,6 +32,30 @@ def safe(x):
     try: return float(x)
     except: return 0
 
+# ===== MARKET MODE (AKILLI) =====
+def get_market_mode():
+    try:
+        tickers = exchange.fetch_tickers()
+        count = 0
+        total = 0
+
+        for sym, d in tickers.items():
+            if "USDT" not in sym:
+                continue
+            ch = abs(safe(d.get("percentage")))
+            total += ch
+            count += 1
+
+        avg_move = total / max(count,1)
+
+        if avg_move > 3:
+            return "hot"   # 🔥 market hareketli
+        else:
+            return "calm"  # 😴 market sakin
+
+    except:
+        return "calm"
+
 # ===== LOAD OPEN POSITIONS =====
 def load_open_positions():
     try:
@@ -45,8 +69,7 @@ def load_open_positions():
             sym = p["symbol"]
             entry = safe(p.get("entryPrice"))
 
-            side = p.get("side")
-            direction = "long" if str(side).lower() in ["long","buy","1"] else "short"
+            direction = "long" if "long" in str(p).lower() else "short"
 
             trade_state[sym] = {
                 "entry": entry,
@@ -62,11 +85,14 @@ def load_open_positions():
     except Exception as e:
         print("LOAD ERROR:", e)
 
-# ===== SYMBOL FILTER =====
+# ===== SYMBOL FILTER (SMART) =====
 def get_symbols():
     try:
         arr=[]
         tickers = exchange.fetch_tickers()
+
+        mode = get_market_mode()
+        print("MARKET MODE:", mode)
 
         for sym,d in tickers.items():
 
@@ -77,23 +103,33 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 büyük coinleri otomatik ele
-            if not (
-                price < 0.3 and
-                vol > 80000 and
-                vol < 5000000 and
-                ch > 3
-            ):
+            # 🔥 AKILLI FİLTRE
+            if mode == "hot":
+                cond = (
+                    price < 0.5 and
+                    vol > 80000 and
+                    vol < 4000000 and
+                    ch > 3
+                )
+            else:
+                cond = (
+                    price < 0.8 and
+                    vol > 50000 and
+                    ch > 2
+                )
+
+            if not cond:
                 continue
 
             arr.append(sym)
 
+        print("COIN SAYISI:", len(arr))
         return arr[:50]
 
     except:
         return []
 
-# ===== SIGNAL (ULTIMATE) =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=12)
@@ -107,34 +143,23 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
 
-        volume_spike = volumes[-1] > avg_vol * 1.5
+        volume_spike = volumes[-1] > avg_vol * 1.3
 
         strong_up = closes[-1] > closes[-2] > closes[-3]
         strong_down = closes[-1] < closes[-2] < closes[-3]
 
-        breakout_up = closes[-1] > max(closes[-6:-1])
-        breakout_down = closes[-1] < min(closes[-6:-1])
-
-        # ⚠️ fake pump yumuşak filtre
-        body = abs(closes[-1] - closes[-2])
-        if body / closes[-2] > 0.05:
-            return None
-
-        # 🔥 erken giriş (kaçırmamak için)
         early_up = closes[-1] > closes[-3]
         early_down = closes[-1] < closes[-3]
 
-        # 🔥 momentum
         momentum = closes[-1] - closes[-3]
-        if abs(momentum) < closes[-3] * 0.0015:
+
+        if abs(momentum) < closes[-3] * 0.001:
             return None
 
-        # LONG
-        if move > 0.002 and volume_spike and (early_up or strong_up or breakout_up):
+        if move > 0.0015 and volume_spike and (early_up or strong_up):
             return "long"
 
-        # SHORT
-        if move < -0.002 and volume_spike and (early_down or strong_down or breakout_down):
+        if move < -0.0015 and volume_spike and (early_down or strong_down):
             return "short"
 
         return None
@@ -150,17 +175,15 @@ def format_qty(sym,price):
     except:
         return 0
 
-# ===== EXIT (STEP TRAILING SENİN SİSTEM) =====
+# ===== EXIT (STEP TRAILING) =====
 def should_exit(sym, price, roe):
     st = trade_state[sym]
 
     pnl = (roe/100)*BASE_MARGIN
 
-    # 🔴 HARD STOP
     if pnl < -0.5:
         return True
 
-    # küçük kârda çıkma
     if pnl < 0.20:
         return False
 
@@ -269,6 +292,7 @@ def scanner():
                     break
 
                 d=signal(sym)
+                print("SİNYAL:", sym, d)
 
                 if d:
                     open_trade(sym,d)
@@ -287,7 +311,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 ULTIMATE BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 SMART BOT AKTİF")
 
 while True:
     time.sleep(60)
