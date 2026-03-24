@@ -34,7 +34,6 @@ exchange = ccxt.bitget({
 trade_state = {}
 cooldown = {}
 LAST_RESULT = {}
-trade_log = []
 
 CURRENT_MODE = "SAFE"
 LAST_MODE_UPDATE = 0
@@ -167,9 +166,9 @@ def rsi_signal(sym):
         rs = avg_gain / avg_loss if avg_loss != 0 else 0
         rsi = 100 - (100 / (1 + rs))
 
-        if rsi < 30:
+        if rsi < 28:
             return "long"
-        if rsi > 70:
+        if rsi > 72:
             return "short"
 
         return None
@@ -301,10 +300,15 @@ def scanner():
 
     while True:
         try:
+            # AUTO MODE FIX (SPAM YOK)
             if MODE == "AUTO" and time.time() - LAST_MODE_UPDATE > 60:
-                CURRENT_MODE = detect_market_mode()
-                set_mode_values()
-                bot.send_message(CHAT_ID, f"🤖 AUTO → {CURRENT_MODE}")
+                new_mode = detect_market_mode()
+
+                if new_mode != CURRENT_MODE:
+                    CURRENT_MODE = new_mode
+                    set_mode_values()
+                    bot.send_message(CHAT_ID, f"🤖 AUTO → {CURRENT_MODE}")
+
                 LAST_MODE_UPDATE = time.time()
 
             symbols = get_symbols()
@@ -333,7 +337,6 @@ def scanner():
                         continue
 
                 open_trade(sym, direction, strategy)
-
                 break
 
             time.sleep(SCAN_DELAY)
@@ -347,6 +350,6 @@ print("🔥 BOT STARTING")
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF (FIXED & ACTIVE)")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF (FINAL FIXED)")
 
 bot.infinity_polling()
