@@ -4,12 +4,12 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL SCALP BOT STARTING...")
+print("🔥 PRO PUMP SCALP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 4
-SCAN_DELAY = 0.8
+SCAN_DELAY = 0.7
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -31,14 +31,11 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== LOAD OPEN POSITIONS =====
+# ===== LOAD POSITIONS =====
 def load_open_positions():
     try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
+        for p in exchange.fetch_positions():
+            if safe(p.get("contracts")) <= 0:
                 continue
 
             sym = p["symbol"]
@@ -59,7 +56,7 @@ def load_open_positions():
     except Exception as e:
         print("LOAD ERROR:", e)
 
-# ===== FILTER =====
+# ===== MEME + YENİ =====
 def get_symbols():
     try:
         arr=[]
@@ -70,32 +67,34 @@ def get_symbols():
             if "USDT" not in sym:
                 continue
 
+            if "1000" in sym:
+                continue
+
             price = safe(d.get("last"))
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 DENGELİ FİLTRE
             if not (
-                price < 2.0 and
-                vol > 30000 and
-                ch > 1.0
+                price < 0.3 and
+                vol > 50000 and
+                vol < 1500000 and
+                ch > 3.0
             ):
                 continue
 
             arr.append(sym)
 
-        print("COINS:", len(arr))
-        return arr[:60]
+        return arr[:50]
 
     except:
         return []
 
-# ===== SIGNAL =====
+# ===== PUMP + SCALP SIGNAL =====
 def signal(sym):
     try:
-        m1 = exchange.fetch_ohlcv(sym,"1m",limit=10)
+        m1 = exchange.fetch_ohlcv(sym,"1m",limit=12)
 
-        if not m1 or len(m1) < 5:
+        if not m1 or len(m1) < 6:
             return None
 
         closes=[c[4] for c in m1]
@@ -104,17 +103,25 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
 
-        volume_spike = volumes[-1] > avg_vol * 1.2
-        momentum = closes[-1] - closes[-3]
+        # 🔥 PUMP TESPİTİ
+        volume_spike = volumes[-1] > avg_vol * 1.8
 
+        momentum = closes[-1] - closes[-4]
+
+        breakout_up = closes[-1] > max(closes[-6:-1])
+        breakout_down = closes[-1] < min(closes[-6:-1])
+
+        # ❌ fake pump engel
         body = abs(closes[-1] - closes[-2])
-        if body > closes[-2] * 0.05:
+        if body > closes[-2] * 0.07:
             return None
 
-        if move > 0.0008 and volume_spike and momentum > 0:
+        # 🚀 EARLY PUMP LONG
+        if move > 0.001 and volume_spike and breakout_up and momentum > 0:
             return "long"
 
-        if move < -0.0008 and volume_spike and momentum < 0:
+        # 🔻 EARLY DUMP SHORT
+        if move < -0.001 and volume_spike and breakout_down and momentum < 0:
             return "short"
 
         return None
@@ -128,24 +135,24 @@ def should_exit(sym, price, roe):
     pnl = (roe/100)*BASE_MARGIN
     age = time.time() - st["time"]
 
-    # ⏱️ HOLD
+    # HOLD
     if age < 20:
         return False
 
-    # 🔴 SL
+    # STOP
     if pnl <= -0.35:
         return True
 
-    # 💰 TP başlangıcı
+    # MAX
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
-    # 🔁 TRAILING (HER ZAMAN AKTİF)
+    # TRAILING
     if st.get("max_pnl",0) > 0.05:
         if pnl < st["max_pnl"] - 0.05:
             return True
 
-    # 🎯 minimum scalp çıkış
+    # TP
     if pnl >= 0.10:
         return True
 
@@ -187,9 +194,7 @@ def open_trade(sym,dir):
 def manage():
     while True:
         try:
-            positions = exchange.fetch_positions()
-
-            for p in positions:
+            for p in exchange.fetch_positions():
                 qty=safe(p.get("contracts"))
                 if qty<=0:
                     continue
@@ -249,7 +254,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL SCALP BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 PRO PUMP SCALP BOT AKTİF")
 
 while True:
     time.sleep(60)
