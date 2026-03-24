@@ -5,6 +5,8 @@ import telebot
 import threading
 import random
 
+# ================= CONFIG =================
+
 LEV = 10
 MARGIN = 3
 
@@ -20,6 +22,10 @@ MAX_SPREAD = 0.003
 SCAN_DELAY = 1.5
 
 COOLDOWN_TIME = 600
+
+MODE = "AUTO"
+
+# ================= API =================
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -40,6 +46,10 @@ trade_log = []
 START_BALANCE = None
 DAILY_LOSS_LIMIT = 0.05
 
+CURRENT_MODE = "SAFE"
+LAST_MODE_UPDATE = 0
+
+# ================= UTILS =================
 
 def safe(x):
     try:
@@ -47,14 +57,65 @@ def safe(x):
     except:
         return 0
 
+# ================= MODE =================
 
-# ================= COIN FILTER =================
+def set_mode_values():
+    global VOL_THRESHOLD, MOMENTUM_THRESHOLD, VOLUME_MULT
+
+    active = CURRENT_MODE if MODE == "AUTO" else MODE
+
+    if active == "SAFE":
+        VOL_THRESHOLD = 0.008
+        MOMENTUM_THRESHOLD = 0.0015
+        VOLUME_MULT = 1.1
+
+    elif active == "AGGRESSIVE":
+        VOL_THRESHOLD = 0.005
+        MOMENTUM_THRESHOLD = 0.0008
+        VOLUME_MULT = 1.03
+
+set_mode_values()
+
+def detect_market_mode():
+    try:
+        candles = exchange.fetch_ohlcv("BTC/USDT:USDT", "5m", limit=20)
+        ranges = [(c[2] - c[3]) / c[4] for c in candles]
+        avg_range = sum(ranges) / len(ranges)
+
+        volumes = [c[5] for c in candles]
+        avg_vol = sum(volumes[:-1]) / (len(volumes) - 1)
+
+        if avg_range > 0.006 or volumes[-1] > avg_vol * 1.3:
+            return "AGGRESSIVE"
+        else:
+            return "SAFE"
+    except:
+        return "SAFE"
+
+# ================= TELEGRAM =================
+
+@bot.message_handler(commands=['mode'])
+def change_mode(message):
+    global MODE
+    text = message.text.lower()
+
+    if "safe" in text:
+        MODE = "SAFE"
+    elif "aggressive" in text:
+        MODE = "AGGRESSIVE"
+    elif "auto" in text:
+        MODE = "AUTO"
+
+    set_mode_values()
+    bot.send_message(CHAT_ID, f"⚙️ MODE → {MODE}")
+
+# ================= MARKET =================
+
 def get_symbols():
     arr = []
     tickers = exchange.fetch_tickers()
 
     for sym, d in tickers.items():
-
         if "USDT" not in sym:
             continue
 
@@ -78,29 +139,23 @@ def get_symbols():
 
     return arr[:80]
 
-
-# ================= EXTRA FILTERS =================
+# ================= FILTERS =================
 
 def volatility_strength(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
         ranges = [(c[2] - c[3]) / c[4] for c in candles]
         avg = sum(ranges) / len(ranges)
-        return avg > 0.008
+        return avg > VOL_THRESHOLD
     except:
         return False
-
 
 def fake_breakout_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=3)
-        high = candles[-2][2]
-        low = candles[-2][3]
-        close = candles[-1][4]
-        return close < high and close > low
+        return candles[-1][4] < candles[-2][2] and candles[-1][4] > candles[-2][3]
     except:
         return False
-
 
 def btc_trend():
     try:
@@ -111,35 +166,22 @@ def btc_trend():
     except:
         return "neutral"
 
-
-def volatility_filter(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym,"5m",limit=10)
-        ranges=[c[2]-c[3] for c in candles]
-        avg=sum(ranges[:-1])/9
-        return ranges[-1] > avg*1.1
-    except:
-        return False
-
-
 def micro_momentum(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"1m",limit=3)
         change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
-        return abs(change) > 0.0015
+        return abs(change) > MOMENTUM_THRESHOLD
     except:
         return False
-
 
 def volume_spike(sym):
     try:
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
-        return vols[-1] > avg*1.1
+        return vols[-1] > avg * VOLUME_MULT
     except:
         return False
-
 
 def orderbook_pressure(sym):
     try:
@@ -154,16 +196,64 @@ def orderbook_pressure(sym):
     except:
         return None
 
+# ================= STRATEGY =================
+
+def rsi_vwap_signal(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
+        closes = [c[4] for c in candles]
+
+        gains, losses = [], []
+        for i in range(1, len(closes)):
+            diff = closes[i] - closes[i-1]
+            if diff > 0:
+                gains.append(diff)
+            else:
+                losses.append(abs(diff))
+
+        avg_gain = sum(gains[-14:]) / 14 if gains else 0
+        avg_loss = sum(losses[-14:]) / 14 if losses else 1
+
+        rs = avg_gain / avg_loss if avg_loss != 0 else 0
+        rsi = 100 - (100 / (1 + rs))
+
+        vwap = sum([c[4]*c[5] for c in candles]) / sum([c[5] for c in candles])
+        price = closes[-1]
+
+        if rsi < 30 and price < vwap:
+            return "long"
+        if rsi > 70 and price > vwap:
+            return "short"
+
+        return None
+    except:
+        return None
+
+def squeeze_signal(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
+        vols = [c[5] for c in candles]
+        avg = sum(vols[:-1]) / 4
+        return vols[-1] > avg * 1.8
+    except:
+        return False
+
+def choose_strategy(sym):
+    if squeeze_signal(sym):
+        return "momentum"
+
+    if rsi_vwap_signal(sym):
+        return "reversal"
+
+    return "momentum"
 
 # ================= RISK =================
 
 def get_balance():
     try:
-        bal = exchange.fetch_balance()
-        return bal["total"]["USDT"]
+        return exchange.fetch_balance()["total"]["USDT"]
     except:
         return 0
-
 
 def get_qty(sym):
     try:
@@ -174,37 +264,28 @@ def get_qty(sym):
     except:
         return 0
 
-
 def get_pnl(entry, price, direction, qty):
     if direction == "long":
         return (price - entry) * qty * LEV
     else:
         return (entry - price) * qty * LEV
 
-
 def current_direction_count(direction):
     count = 0
     positions = exchange.fetch_positions()
 
     for p in positions:
-        qty = safe(p.get("contracts"))
-        if qty <= 0:
-            continue
-
-        side = "long" if p["side"] == "long" else "short"
-
-        if side == direction:
-            count += 1
+        if safe(p.get("contracts")) > 0:
+            side = "long" if p["side"] == "long" else "short"
+            if side == direction:
+                count += 1
 
     return count
 
-
 # ================= TRADE =================
 
-def open_trade(sym, direction):
+def open_trade(sym, direction, strategy):
     try:
-        global trade_log
-
         if get_qty(sym) > 0:
             return
 
@@ -239,11 +320,10 @@ def open_trade(sym, direction):
 
         trade_log.append(time.time())
 
-        bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
+        bot.send_message(CHAT_ID, f"🚀 {sym} {direction} | {strategy}")
 
     except:
         pass
-
 
 # ================= MANAGE =================
 
@@ -258,7 +338,6 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-
                 if sym not in trade_state:
                     continue
 
@@ -267,21 +346,18 @@ def manage():
 
                 entry = state["entry"]
                 direction = state["direction"]
-
                 side = "sell" if direction == "long" else "buy"
 
                 pnl = get_pnl(entry, price, direction, qty)
 
-                # SL
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     LAST_RESULT[sym] = "loss"
                     cooldown[sym] = time.time()
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
 
-                # TP1
                 if not state["tp1"] and pnl >= TP1_USDT:
                     exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
@@ -294,7 +370,6 @@ def manage():
                     if pnl >= TP1_USDT + STEP_USDT * state["step"]:
                         state["step"] += 1
                         state["trail_stop"] = pnl - STEP_USDT
-                        bot.send_message(CHAT_ID, f"🔒 STEP {state['step']}")
 
                     if pnl <= state["trail_stop"]:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
@@ -306,11 +381,10 @@ def manage():
         except:
             time.sleep(5)
 
-
 # ================= SCANNER =================
 
 def scanner():
-    global START_BALANCE
+    global START_BALANCE, LAST_MODE_UPDATE, CURRENT_MODE
 
     while True:
         try:
@@ -320,6 +394,14 @@ def scanner():
             if get_balance() < START_BALANCE * (1 - DAILY_LOSS_LIMIT):
                 time.sleep(60)
                 continue
+
+            if MODE == "AUTO" and time.time() - LAST_MODE_UPDATE > 60:
+                new_mode = detect_market_mode()
+                if new_mode != CURRENT_MODE:
+                    CURRENT_MODE = new_mode
+                    set_mode_values()
+                    bot.send_message(CHAT_ID, f"🤖 AUTO → {CURRENT_MODE}")
+                LAST_MODE_UPDATE = time.time()
 
             symbols = get_symbols()
             random.shuffle(symbols)
@@ -353,39 +435,45 @@ def scanner():
                 if fake_breakout_filter(sym):
                     continue
 
-                if not volatility_filter(sym):
-                    continue
-
                 if not micro_momentum(sym):
                     continue
 
                 if not volume_spike(sym):
                     continue
 
-                pressure = orderbook_pressure(sym)
+                strategy = choose_strategy(sym)
 
-                if not pressure:
+                if strategy == "momentum":
+                    pressure = orderbook_pressure(sym)
+                    if not pressure:
+                        continue
+                    direction = pressure
+
+                else:
+                    direction = rsi_vwap_signal(sym)
+                    if not direction:
+                        continue
+
+                if direction == "long" and btc == "bear":
                     continue
 
-                if pressure == "long" and btc == "bear":
+                if direction == "short" and btc == "bull":
                     continue
 
-                if pressure == "short" and btc == "bull":
-                    continue
-
-                open_trade(sym, pressure)
+                open_trade(sym, direction, strategy)
 
             time.sleep(SCAN_DELAY)
 
         except:
             time.sleep(5)
 
+# ================= START =================
 
-print("🔥 BOT STARTING")
+print("🔥 PRO BOT STARTING")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF (UPGRADE)")
+bot.send_message(CHAT_ID, "🤖 PRO BOT AKTİF")
 
 bot.infinity_polling()
