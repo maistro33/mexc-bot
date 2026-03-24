@@ -4,12 +4,12 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 ULTRA MEME PUMP BOT STARTING...")
+print("🔥 FINAL STABLE SCALP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 4
-SCAN_DELAY = 0.7
+SCAN_DELAY = 0.6
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -56,7 +56,7 @@ def load_open_positions():
     except Exception as e:
         print("LOAD ERROR:", e)
 
-# ===== ULTRA FILTER =====
+# ===== FILTER =====
 def get_symbols():
     try:
         arr=[]
@@ -69,15 +69,13 @@ def get_symbols():
 
             s = sym.upper()
 
-            # 🔴 büyük & eski coinleri kes
+            # büyük coinleri kes
             if any(x in s for x in [
                 "BTC","ETH","BNB","SOL","XRP","ADA","DOGE","DOT",
-                "LTC","TRX","AVAX","MATIC","LINK","ATOM","ETC",
-                "BCH","FIL","APT","ARB","OP","NEAR","ICP"
+                "LTC","TRX","AVAX","MATIC","LINK","ATOM"
             ]):
                 continue
 
-            # 🔴 eski meme
             if "1000" in s:
                 continue
 
@@ -85,24 +83,24 @@ def get_symbols():
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
-            # 🔥 meme + yeni davranış
+            # 🔥 DENGELİ FİLTRE
             if not (
-                price < 0.5 and
+                price < 1.2 and
                 vol > 20000 and
-                vol < 2000000 and
-                ch > 2.5
+                vol < 5000000 and
+                ch > 2.0
             ):
                 continue
 
             arr.append(sym)
 
-        print("ULTRA COINS:", len(arr))
-        return arr[:40]
+        print("COINS:", len(arr))
+        return arr[:50]
 
     except:
         return []
 
-# ===== SIGNAL (PUMP DETECTION) =====
+# ===== SIGNAL =====
 def signal(sym):
     try:
         m1 = exchange.fetch_ohlcv(sym,"1m",limit=12)
@@ -143,24 +141,24 @@ def should_exit(sym, price, roe):
     pnl = (roe/100)*BASE_MARGIN
     age = time.time() - st["time"]
 
-    # ⏱️ HOLD
+    # HOLD
     if age < 20:
         return False
 
-    # 🔴 STOP
+    # STOP
     if pnl <= -0.35:
         return True
 
-    # 🔥 MAX
+    # MAX
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
-    # 🔁 TRAILING
+    # TRAILING
     if st.get("max_pnl",0) > 0.05:
         if pnl < st["max_pnl"] - 0.05:
             return True
 
-    # 💰 TP
+    # TP
     if pnl >= 0.10:
         return True
 
@@ -262,7 +260,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 ULTRA MEME PUMP BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 FINAL STABLE BOT AKTİF")
 
 while True:
     time.sleep(60)
