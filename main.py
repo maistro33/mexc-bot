@@ -8,16 +8,12 @@ import random
 LEV = 10
 MARGIN = 3
 
-MAX_POSITIONS = 3
-
-TP1_USDT = 0.25
+TP1_USDT = 0.20
 STEP_USDT = 0.25
 SL_USDT = 0.40
 TP1_RATIO = 0.70
 
 SCAN_DELAY = 1.5
-COOLDOWN_TIME = 600
-
 MODE = "AUTO"
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -32,8 +28,6 @@ exchange = ccxt.bitget({
 })
 
 trade_state = {}
-cooldown = {}
-LAST_RESULT = {}
 
 CURRENT_MODE = "SAFE"
 LAST_MODE_UPDATE = 0
@@ -57,8 +51,8 @@ def set_mode_values():
         MOMENTUM_THRESHOLD = 0.0015
         VOLUME_MULT = 1.1
     else:
-        MOMENTUM_THRESHOLD = 0.0008
-        VOLUME_MULT = 1.02
+        MOMENTUM_THRESHOLD = 0.0005
+        VOLUME_MULT = 1.01
 
 
 set_mode_values()
@@ -102,7 +96,6 @@ def get_symbols():
     for sym, d in tickers.items():
         if "USDT" not in sym:
             continue
-
         if safe(d.get("quoteVolume")) > 50000:
             arr.append(sym)
 
@@ -145,6 +138,17 @@ def orderbook_pressure(sym):
         return None
 
 
+def trend_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
+        closes = [c[4] for c in candles]
+        ema = sum(closes[-10:]) / 10
+
+        return "bull" if closes[-1] > ema else "bear"
+    except:
+        return "neutral"
+
+
 # ================= STRATEGY =================
 
 def rsi_signal(sym):
@@ -182,32 +186,10 @@ def choose_strategy(sym):
     return "momentum"
 
 
-# ================= RISK =================
-
-def get_qty(sym):
-    try:
-        pos = exchange.fetch_positions([sym])
-        if not pos:
-            return 0
-        return safe(pos[0]["contracts"])
-    except:
-        return 0
-
-
-def get_pnl(entry, price, direction, qty):
-    if direction == "long":
-        return (price - entry) * qty * LEV
-    else:
-        return (entry - price) * qty * LEV
-
-
 # ================= TRADE =================
 
 def open_trade(sym, direction, strategy):
     try:
-        if get_qty(sym) > 0:
-            return
-
         price = exchange.fetch_ticker(sym)["last"]
         qty = (MARGIN * LEV) / price
 
@@ -220,17 +202,14 @@ def open_trade(sym, direction, strategy):
             "entry": price,
             "direction": direction,
             "tp1": False,
-            "step": 0,
-            "trail_stop": -999
+            "max_pnl": 0,
+            "breakeven": False,
+            "tp1_time": 0
         }
 
         bot.send_message(
             CHAT_ID,
-            f"🚀 {sym}\n"
-            f"Direction: {direction}\n"
-            f"Strategy: {strategy}\n"
-            f"Entry: {round(price,4)}\n"
-            f"Qty: {round(qty,2)}"
+            f"🚀 {sym}\nDirection: {direction}\nStrategy: {strategy}\nEntry: {round(price,4)}"
         )
 
     except:
@@ -250,39 +229,59 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-
                 if sym not in trade_state:
                     continue
 
                 state = trade_state[sym]
-                price = exchange.fetch_ticker(sym)["last"]
+
+                ticker = exchange.fetch_ticker(sym)
+                price = ticker.get("markPrice", ticker["last"])
 
                 entry = state["entry"]
                 direction = state["direction"]
 
                 side = "sell" if direction == "long" else "buy"
 
-                pnl = get_pnl(entry, price, direction, qty)
+                pnl = (price - entry) * qty * LEV if direction == "long" else (entry - price) * qty * LEV
 
+                # max pnl
+                if pnl > state["max_pnl"]:
+                    state["max_pnl"] = pnl
+
+                # SL
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
                     continue
 
+                # TP1
                 if not state["tp1"] and pnl >= TP1_USDT:
                     exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
-                    state["step"] = 1
-                    state["trail_stop"] = pnl - STEP_USDT
+                    state["tp1_time"] = time.time()
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}$")
 
-                elif state["tp1"]:
-                    if pnl >= TP1_USDT + STEP_USDT * state["step"]:
-                        state["step"] += 1
-                        state["trail_stop"] = pnl - STEP_USDT
+                if state["tp1"]:
 
-                    if pnl <= state["trail_stop"]:
+                    # HOLD (erken çıkma)
+                    if time.time() - state["tp1_time"] < 20:
+                        continue
+
+                    # STEP → breakeven
+                    if not state["breakeven"] and pnl >= TP1_USDT + STEP_USDT:
+                        state["breakeven"] = True
+                        bot.send_message(CHAT_ID, f"🟢 BE ACTIVE {sym}")
+
+                    # BE exit
+                    if state["breakeven"] and pnl <= 0:
+                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                        trade_state.pop(sym)
+                        bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
+                        continue
+
+                    # TRAILING (max pnl)
+                    if state["max_pnl"] - pnl >= STEP_USDT * 1.5:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
                         bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}$")
@@ -300,7 +299,6 @@ def scanner():
 
     while True:
         try:
-            # AUTO MODE FIX (SPAM YOK)
             if MODE == "AUTO" and time.time() - LAST_MODE_UPDATE > 60:
                 new_mode = detect_market_mode()
 
@@ -315,9 +313,6 @@ def scanner():
             random.shuffle(symbols)
 
             for sym in symbols:
-
-                if get_qty(sym) > 0:
-                    continue
 
                 if not micro_momentum(sym):
                     continue
@@ -336,6 +331,14 @@ def scanner():
                     if not direction:
                         continue
 
+                    trend = trend_filter(sym)
+
+                    if direction == "short" and trend == "bull":
+                        continue
+
+                    if direction == "long" and trend == "bear":
+                        continue
+
                 open_trade(sym, direction, strategy)
                 break
 
@@ -345,11 +348,11 @@ def scanner():
             time.sleep(5)
 
 
-print("🔥 BOT STARTING")
+print("🔥 ULTIMATE BOT START")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF (FINAL FIXED)")
+bot.send_message(CHAT_ID, "🤖 ULTIMATE BOT AKTİF")
 
 bot.infinity_polling()
