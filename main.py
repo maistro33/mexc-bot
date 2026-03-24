@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 PRO PUMP SCALP BOT STARTING...")
+print("🔥 ULTRA MEME PUMP BOT STARTING...")
 
 LEV = 10
 BASE_MARGIN = 1
@@ -31,7 +31,7 @@ def safe(x):
     try: return float(x)
     except: return 0
 
-# ===== LOAD POSITIONS =====
+# ===== LOAD OPEN POSITIONS =====
 def load_open_positions():
     try:
         for p in exchange.fetch_positions():
@@ -56,7 +56,7 @@ def load_open_positions():
     except Exception as e:
         print("LOAD ERROR:", e)
 
-# ===== MEME + YENİ =====
+# ===== ULTRA FILTER =====
 def get_symbols():
     try:
         arr=[]
@@ -67,29 +67,42 @@ def get_symbols():
             if "USDT" not in sym:
                 continue
 
-            if "1000" in sym:
+            s = sym.upper()
+
+            # 🔴 büyük & eski coinleri kes
+            if any(x in s for x in [
+                "BTC","ETH","BNB","SOL","XRP","ADA","DOGE","DOT",
+                "LTC","TRX","AVAX","MATIC","LINK","ATOM","ETC",
+                "BCH","FIL","APT","ARB","OP","NEAR","ICP"
+            ]):
+                continue
+
+            # 🔴 eski meme
+            if "1000" in s:
                 continue
 
             price = safe(d.get("last"))
             vol = safe(d.get("quoteVolume"))
             ch = abs(safe(d.get("percentage")))
 
+            # 🔥 meme + yeni davranış
             if not (
-                price < 0.3 and
-                vol > 50000 and
-                vol < 1500000 and
-                ch > 3.0
+                price < 0.5 and
+                vol > 20000 and
+                vol < 2000000 and
+                ch > 2.5
             ):
                 continue
 
             arr.append(sym)
 
-        return arr[:50]
+        print("ULTRA COINS:", len(arr))
+        return arr[:40]
 
     except:
         return []
 
-# ===== PUMP + SCALP SIGNAL =====
+# ===== SIGNAL (PUMP DETECTION) =====
 def signal(sym):
     try:
         m1 = exchange.fetch_ohlcv(sym,"1m",limit=12)
@@ -103,25 +116,20 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
 
-        # 🔥 PUMP TESPİTİ
-        volume_spike = volumes[-1] > avg_vol * 1.8
-
+        volume_spike = volumes[-1] > avg_vol * 1.3
         momentum = closes[-1] - closes[-4]
 
-        breakout_up = closes[-1] > max(closes[-6:-1])
-        breakout_down = closes[-1] < min(closes[-6:-1])
+        breakout_up = closes[-1] > max(closes[-4:-1])
+        breakout_down = closes[-1] < min(closes[-4:-1])
 
-        # ❌ fake pump engel
         body = abs(closes[-1] - closes[-2])
-        if body > closes[-2] * 0.07:
+        if body > closes[-2] * 0.06:
             return None
 
-        # 🚀 EARLY PUMP LONG
-        if move > 0.001 and volume_spike and breakout_up and momentum > 0:
+        if move > 0.0008 and volume_spike and breakout_up and momentum > 0:
             return "long"
 
-        # 🔻 EARLY DUMP SHORT
-        if move < -0.001 and volume_spike and breakout_down and momentum < 0:
+        if move < -0.0008 and volume_spike and breakout_down and momentum < 0:
             return "short"
 
         return None
@@ -135,24 +143,24 @@ def should_exit(sym, price, roe):
     pnl = (roe/100)*BASE_MARGIN
     age = time.time() - st["time"]
 
-    # HOLD
+    # ⏱️ HOLD
     if age < 20:
         return False
 
-    # STOP
+    # 🔴 STOP
     if pnl <= -0.35:
         return True
 
-    # MAX
+    # 🔥 MAX
     if pnl > st.get("max_pnl",0):
         st["max_pnl"] = pnl
 
-    # TRAILING
+    # 🔁 TRAILING
     if st.get("max_pnl",0) > 0.05:
         if pnl < st["max_pnl"] - 0.05:
             return True
 
-    # TP
+    # 💰 TP
     if pnl >= 0.10:
         return True
 
@@ -254,7 +262,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 PRO PUMP SCALP BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 ULTRA MEME PUMP BOT AKTİF")
 
 while True:
     time.sleep(60)
