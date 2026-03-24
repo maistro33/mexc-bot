@@ -18,7 +18,6 @@ MIN_VOLUME = 2000000
 MAX_SPREAD = 0.003
 SCAN_DELAY = 3
 
-TIMEOUT = 21600
 SL_PCT = 0.025
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -44,7 +43,7 @@ def safe(x):
         return 0
 
 
-# ===== 🔥 YENİ COIN FİLTRE =====
+# ===== COIN FILTER =====
 def get_symbols():
     arr=[]
     tickers=exchange.fetch_tickers()
@@ -56,7 +55,6 @@ def get_symbols():
 
         s=sym.upper()
 
-        # büyük coinleri kes
         if any(x in s for x in [
             "BTC","ETH","BNB","SOL","XRP","ADA","DOGE","DOT",
             "LTC","TRX","AVAX","MATIC","LINK","ATOM"
@@ -126,7 +124,7 @@ def volatility_filter(sym):
         candles = exchange.fetch_ohlcv(sym,"5m",limit=10)
         ranges=[c[2]-c[3] for c in candles]
         avg=sum(ranges[:-1])/9
-        return ranges[-1] > avg*1.2
+        return ranges[-1] > avg*1.1   # 🔥 yumuşatıldı
     except:
         return False
 
@@ -135,7 +133,7 @@ def micro_momentum(sym):
     try:
         candles = exchange.fetch_ohlcv(sym,"1m",limit=3)
         change=(candles[-1][4]-candles[-2][4])/candles[-2][4]
-        return abs(change) > 0.002
+        return abs(change) > 0.0015   # 🔥 yumuşatıldı
     except:
         return False
 
@@ -145,7 +143,7 @@ def volume_spike(sym):
         candles=exchange.fetch_ohlcv(sym,"5m",limit=6)
         vols=[c[5] for c in candles]
         avg=sum(vols[:-1])/5
-        return vols[-1] > avg*1.3
+        return vols[-1] > avg*1.1   # 🔥 yumuşatıldı
     except:
         return False
 
@@ -155,23 +153,13 @@ def orderbook_pressure(sym):
         ob=exchange.fetch_order_book(sym,limit=20)
         bid=sum([b[1] for b in ob["bids"]])
         ask=sum([a[1] for a in ob["asks"]])
-        if bid > ask*1.5:
+        if bid > ask*1.4:
             return "long"
-        if ask > bid*1.5:
+        if ask > bid*1.4:
             return "short"
         return None
     except:
         return None
-
-
-def liquidity_sweep(sym):
-    try:
-        candles=exchange.fetch_ohlcv(sym,"15m",limit=10)
-        highs=[c[2] for c in candles]
-        lows=[c[3] for c in candles]
-        return highs[-1] > max(highs[:-1]) or lows[-1] < min(lows[:-1])
-    except:
-        return False
 
 
 def open_trade(sym,direction,label):
@@ -281,10 +269,10 @@ def manage():
 
                         bot.send_message(CHAT_ID,f"🏁 EXIT {sym}")
 
-            time.sleep(4)
+            time.sleep(3)
 
         except:
-            time.sleep(6)
+            time.sleep(5)
 
 
 def scanner():
@@ -320,9 +308,6 @@ def scanner():
                 if not volume_spike(sym):
                     continue
 
-                if not liquidity_sweep(sym):
-                    continue
-
                 pressure=orderbook_pressure(sym)
 
                 if not pressure:
@@ -341,7 +326,7 @@ def scanner():
             time.sleep(SCAN_DELAY)
 
         except:
-            time.sleep(15)
+            time.sleep(10)
 
 
 print("🔥 BOT STARTING")
@@ -351,6 +336,6 @@ sync_positions()
 threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🤖 FINAL BOT AKTİF")
+bot.send_message(CHAT_ID,"🤖 BOT AKTİF (FIXED)")
 
 bot.infinity_polling()
