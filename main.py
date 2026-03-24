@@ -4,13 +4,13 @@ import ccxt
 import telebot
 import threading
 
-print("🔥 FINAL BOT STARTING...")
+print("🔥 FINAL ULTRA BOT STARTING...")
 
 # ===== CONFIG =====
 LEV = 10
 BASE_MARGIN = 1
 MAX_POSITIONS = 2
-SCAN_DELAY = 1   # 🔥 hızlı scan
+SCAN_DELAY = 1
 FEE = 0.08
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -53,7 +53,6 @@ def get_symbols():
             if price > 3:
                 continue
 
-            # 🔥 DAHA FAZLA İŞLEM
             if vol < 50000 or vol > 10000000:
                 continue
 
@@ -67,7 +66,7 @@ def get_symbols():
     except:
         return []
 
-# ===== SIGNAL =====
+# ===== SIGNAL (GEVŞETİLDİ) =====
 def signal(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym,"5m",limit=10)
@@ -81,7 +80,7 @@ def signal(sym):
         move = (closes[-1]-closes[-2]) / closes[-2]
 
         avg_vol = sum(volumes[:-1]) / len(volumes[:-1])
-        volume_spike = volumes[-1] > avg_vol * 1.2
+        volume_spike = volumes[-1] > avg_vol * 1.1   # 🔥 gevşetildi
 
         trend_up = closes[-1] > closes[-2] > closes[-3]
         trend_down = closes[-1] < closes[-2] < closes[-3]
@@ -92,10 +91,11 @@ def signal(sym):
         if abs(move) > 0.15:
             return None
 
-        if move > 0.006 and volume_spike and (not trend_down or breakout_up):
+        # 🔥 move gevşetildi
+        if move > 0.004 and volume_spike and (not trend_down or breakout_up):
             return "long"
 
-        if move < -0.006 and volume_spike and (not trend_up or breakout_down):
+        if move < -0.004 and volume_spike and (not trend_up or breakout_down):
             return "short"
 
         return None
@@ -117,7 +117,6 @@ def should_exit(sym, price, roe):
 
     pnl = (roe/100)*BASE_MARGIN
 
-    # ❗ HARD STOP
     if pnl < -0.5:
         return True
 
@@ -128,7 +127,7 @@ def should_exit(sym, price, roe):
 
     lock = 0
 
-    # 🔥 SENİN STRATEJİ (0.30 garanti)
+    # 🔥 0.30 garanti sistem
     if max_usdt >= 1.0:
         lock = 0.8
     elif max_usdt >= 0.6:
@@ -161,7 +160,8 @@ def open_trade(sym,dir):
             if p["symbol"] == sym and safe(p.get("contracts")) > 0:
                 return
 
-        if sym in cooldown and time.time()-cooldown[sym] < 60:
+        # 🔥 cooldown azaltıldı
+        if sym in cooldown and time.time()-cooldown[sym] < 30:
             return
 
         price=exchange.fetch_ticker(sym)["last"]
@@ -243,7 +243,7 @@ def scanner():
                 if d:
                     open_trade(sym,d)
 
-                time.sleep(0.05)
+                time.sleep(0.03)
 
             time.sleep(SCAN_DELAY)
 
@@ -255,7 +255,7 @@ threading.Thread(target=manage,daemon=True).start()
 threading.Thread(target=scanner,daemon=True).start()
 threading.Thread(target=bot.infinity_polling,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL AKTİF")
+bot.send_message(CHAT_ID,"🔥 ULTRA AKTİF BOT AKTİF")
 
 while True:
     time.sleep(60)
