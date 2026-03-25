@@ -32,7 +32,7 @@ def safe(x):
     except:
         return 0
 
-# ================= 🔥 DYNAMIC STEP =================
+# ================= DYNAMIC STEP =================
 
 def dynamic_step(pnl):
     if pnl < 0.4:
@@ -42,7 +42,7 @@ def dynamic_step(pnl):
     else:
         return 0.20
 
-# ================= 🔥 PRO SYNC =================
+# ================= SYNC =================
 
 def sync_positions():
     try:
@@ -63,7 +63,9 @@ def sync_positions():
                 "max_pnl": pnl,
                 "breakeven": True,
                 "tp1_time": time.time(),
-                "last_report": pnl
+                "last_report": pnl,
+                "milestones": set(),
+                "warned": False
             }
 
             bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {round(pnl,2)}$")
@@ -175,7 +177,9 @@ def open_trade(sym, direction):
             "max_pnl": 0,
             "breakeven": False,
             "tp1_time": time.time(),
-            "last_report": 0
+            "last_report": 0,
+            "milestones": set(),
+            "warned": False
         }
 
         bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
@@ -203,13 +207,20 @@ def manage():
                 state = trade_state[sym]
                 pnl = safe(p.get("unrealizedPnl"))
 
-                # 🔥 canlı kâr
+                # MAX PNL + canlı mesaj
                 if pnl > state["max_pnl"]:
                     state["max_pnl"] = pnl
+                    state["warned"] = False
 
                     if state["max_pnl"] - state["last_report"] >= 0.20:
                         state["last_report"] = state["max_pnl"]
                         bot.send_message(CHAT_ID, f"📈 {sym} {round(pnl,2)}$")
+
+                # 📈 MILESTONES
+                for lvl in [0.40, 0.60, 1.00]:
+                    if pnl >= lvl and lvl not in state["milestones"]:
+                        state["milestones"].add(lvl)
+                        bot.send_message(CHAT_ID, f"🚀 {sym} {lvl}$ geçti | Şu an: {round(pnl,2)}$")
 
                 direction = state["direction"]
                 side = "sell" if direction == "long" else "buy"
@@ -233,7 +244,7 @@ def manage():
                     if time.time() - state["tp1_time"] < 30:
                         continue
 
-                    # 🔥 BE
+                    # BE
                     if not state["breakeven"] and pnl >= 0.65:
                         state["breakeven"] = True
                         bot.send_message(CHAT_ID, f"🟢 BE {sym}")
@@ -244,12 +255,19 @@ def manage():
                         bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
                         continue
 
-                    # 🔥 DYNAMIC STEP
                     step = dynamic_step(state["max_pnl"])
+                    exit_level = state["max_pnl"] - step
 
+                    # ⚠️ STEP yaklaşma
+                    if pnl <= exit_level + 0.05 and not state["warned"]:
+                        state["warned"] = True
+                        bot.send_message(CHAT_ID,
+                            f"⚠️ {sym} STEP yakın!\nExit: {round(exit_level,2)}$ | Şu an: {round(pnl,2)}$"
+                        )
+
+                    # STEP EXIT
                     if state["max_pnl"] - pnl >= step:
-                        bot.send_message(
-                            CHAT_ID,
+                        bot.send_message(CHAT_ID,
                             f"📉 STEP EXIT {sym} {round(pnl,2)}$"
                         )
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
@@ -280,11 +298,9 @@ def scanner():
                     t = trend(sym)
                     m = momentum(sym)
 
-                    # pump filtresi
                     if abs(m) > 0.004:
                         continue
 
-                    # geç giriş filtresi
                     if abs(m) < 0.001:
                         continue
 
@@ -308,7 +324,7 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 ULTIMATE FINAL BOT")
+print("🔥 ULTIMATE BOT START")
 
 sync_positions()
 
