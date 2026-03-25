@@ -33,11 +33,47 @@ def safe(x):
     except:
         return 0
 
-# ================= SYMBOL =================
+# ================= COIN SEÇİM =================
 
 def get_symbols():
+    arr = []
     tickers = exchange.fetch_tickers()
-    return [s for s in tickers if "USDT" in s][:30]
+
+    for sym, d in tickers.items():
+
+        if "USDT" not in sym:
+            continue
+
+        s = sym.upper()
+
+        # büyük coinleri çıkar
+        if any(x in s for x in [
+            "BTC","ETH","BNB","XRP","ADA","SOL","DOGE","DOT","TRX"
+        ]):
+            continue
+
+        vol = safe(d.get("quoteVolume"))
+
+        # hacim filtresi (en iyi aralık)
+        if vol < 1000000 or vol > 20000000:
+            continue
+
+        # spread filtresi
+        ask = safe(d.get("ask"))
+        bid = safe(d.get("bid"))
+        last = safe(d.get("last"))
+
+        if last == 0:
+            continue
+
+        spread = (ask - bid) / last
+
+        if spread > 0.004:
+            continue
+
+        arr.append(sym)
+
+    return arr[:40]
 
 # ================= TREND =================
 
@@ -154,7 +190,7 @@ def manage():
 
                 if state["tp1"]:
 
-                    # erken çıkmasın
+                    # erken çıkma engeli
                     if time.time() - state["tp1_time"] < 30:
                         continue
 
@@ -221,11 +257,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 PROFIT BOT START")
+print("🔥 SMART BOT START")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 PROFIT BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 SMART PROFIT BOT AKTİF")
 
 bot.infinity_polling()
