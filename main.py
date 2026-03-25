@@ -10,6 +10,7 @@ import random
 LEV = 10
 BASE_MARGIN = 3
 MAX_MARGIN = 5
+MIN_MARGIN = 2
 GROWTH_RATE = 0.3
 
 TP1_USDT = 0.25
@@ -43,37 +44,26 @@ def safe(x):
     except:
         return 0
 
-# ================= LOT =================
+# ================= LOT CONTROL =================
 
 def update_margin(pnl):
     global current_margin, win_streak
 
     if pnl > 0:
         win_streak += 1
-        current_margin = min(MAX_MARGIN, current_margin + current_margin * GROWTH_RATE)
+        growth = current_margin * GROWTH_RATE
+        current_margin = min(MAX_MARGIN, current_margin + growth)
 
-        bot.send_message(CHAT_ID, f"""
-📈 LOT ARTTI
-━━━━━━━━━━━━
-Yeni Lot: {round(current_margin,2)}$
-Win: {win_streak}
-━━━━━━━━━━━━
-""")
+        bot.send_message(CHAT_ID, f"📈 WIN {win_streak} | LOT → {round(current_margin,2)}$")
     else:
         win_streak = 0
         current_margin = BASE_MARGIN
 
-        bot.send_message(CHAT_ID, f"""
-📉 LOT RESET
-━━━━━━━━━━━━
-Lot: {round(current_margin,2)}$
-━━━━━━━━━━━━
-""")
+        bot.send_message(CHAT_ID, f"📉 RESET | LOT → {round(current_margin,2)}$")
 
-# ================= SMART STEP =================
+# ================= 🔥 SMART STEP =================
 
 def dynamic_step(sym, pnl):
-
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
         ranges = [(c[2] - c[3]) / c[4] for c in candles]
@@ -81,44 +71,49 @@ def dynamic_step(sym, pnl):
     except:
         vol = 0.01
 
-    base_step = pnl * 0.4
+    base = pnl * 0.35  # 🔥 daha az geri verir
 
     if vol > 0.02:
-        step = base_step * 1.2
+        step = base * 1.1
     elif vol < 0.01:
-        step = base_step * 0.8
+        step = base * 0.8
     else:
-        step = base_step
+        step = base
 
-    return max(step, 0.15)
+    return max(step, 0.12)
 
-# ================= SYNC =================
+# ================= PRO SYNC =================
 
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
 
         for p in positions:
-            if safe(p.get("contracts")) <= 0:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
                 continue
 
             sym = p["symbol"]
+            side = "long" if p["side"] == "long" else "short"
             pnl = safe(p.get("unrealizedPnl"))
 
             trade_state[sym] = {
-                "direction": "long" if p["side"] == "long" else "short",
+                "direction": side,
                 "tp1": True,
                 "max_pnl": pnl,
                 "breakeven": True,
                 "tp1_time": time.time(),
+                "last_report": pnl,
+                "milestones": set(),
+                "warned": False
             }
 
-            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} | {round(pnl,2)}$")
+            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {round(pnl,2)}$")
 
     except:
         pass
 
-# ================= FILTER =================
+# ================= COIN FILTER =================
 
 def get_symbols():
     arr = []
@@ -129,26 +124,40 @@ def get_symbols():
         if "USDT" not in sym:
             continue
 
-        if any(x in sym for x in ["BTC","ETH","BNB","XRP","ADA","SOL"]):
+        s = sym.upper()
+
+        if any(x in s for x in ["BTC","ETH","BNB","XRP","ADA","SOL","DOGE","DOT","TRX"]):
             continue
 
         vol = safe(d.get("quoteVolume"))
         if vol < 2000000 or vol > 20000000:
             continue
 
-        if abs(safe(d.get("percentage"))) < 2:
+        ask = safe(d.get("ask"))
+        bid = safe(d.get("bid"))
+        last = safe(d.get("last"))
+        if last == 0:
+            continue
+
+        spread = (ask - bid) / last
+        if spread > 0.004:
+            continue
+
+        change = abs(safe(d.get("percentage")))
+        if change < 2:
             continue
 
         arr.append(sym)
 
-    return arr[:30]
+    return arr[:40]
 
 # ================= INDICATORS =================
 
 def trend(sym):
     candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
     closes = [c[4] for c in candles]
-    return "long" if closes[-1] > sum(closes[-10:]) / 10 else "short"
+    ema = sum(closes[-10:]) / 10
+    return "long" if closes[-1] > ema else "short"
 
 def momentum(sym):
     candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
@@ -159,12 +168,39 @@ def volume(sym):
     avg = sum(c[5] for c in candles[:-1]) / 4
     return candles[-1][5] > avg
 
-# ================= OPEN =================
+# ================= RISK =================
+
+def get_qty(sym):
+    try:
+        pos = exchange.fetch_positions([sym])
+        if not pos:
+            return 0
+        return safe(pos[0]["contracts"])
+    except:
+        return 0
+
+def current_direction_count(direction):
+    count = 0
+    positions = exchange.fetch_positions()
+    for p in positions:
+        if safe(p.get("contracts")) > 0:
+            side = "long" if p["side"] == "long" else "short"
+            if side == direction:
+                count += 1
+    return count
+
+# ================= OPEN TRADE =================
 
 def open_trade(sym, direction):
     global current_margin
 
     try:
+        if get_qty(sym) > 0:
+            return
+
+        if current_direction_count(direction) >= 1:
+            return
+
         price = exchange.fetch_ticker(sym)["last"]
         qty = (current_margin * LEV) / price
 
@@ -179,6 +215,9 @@ def open_trade(sym, direction):
             "max_pnl": 0,
             "breakeven": False,
             "tp1_time": time.time(),
+            "last_report": 0,
+            "milestones": set(),
+            "warned": False
         }
 
         bot.send_message(CHAT_ID, f"""
@@ -200,7 +239,8 @@ def manage():
             positions = exchange.fetch_positions()
 
             for p in positions:
-                if safe(p.get("contracts")) <= 0:
+                qty = safe(p.get("contracts"))
+                if qty <= 0:
                     continue
 
                 sym = p["symbol"]
@@ -212,13 +252,14 @@ def manage():
 
                 if pnl > state["max_pnl"]:
                     state["max_pnl"] = pnl
+                    state["warned"] = False
 
                 direction = state["direction"]
                 side = "sell" if direction == "long" else "buy"
 
                 # SL
                 if pnl <= -SL_USDT:
-                    exchange.create_market_order(sym, side, p["contracts"], params={"reduceOnly": True})
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     update_margin(pnl)
                     trade_state.pop(sym)
 
@@ -233,7 +274,7 @@ def manage():
 
                 # TP1
                 if not state["tp1"] and pnl >= TP1_USDT:
-                    exchange.create_market_order(sym, side, p["contracts"] * TP1_RATIO, params={"reduceOnly": True})
+                    exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
                     state["tp1_time"] = time.time()
 
@@ -247,7 +288,7 @@ def manage():
 
                 if state["tp1"]:
 
-                    if time.time() - state["tp1_time"] < 20:
+                    if time.time() - state["tp1_time"] < 30:
                         continue
 
                     # BE
@@ -262,18 +303,18 @@ def manage():
 """)
 
                     if state["breakeven"] and pnl <= 0:
-                        exchange.create_market_order(sym, side, p["contracts"], params={"reduceOnly": True})
+                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         update_margin(pnl)
                         trade_state.pop(sym)
 
                         bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
                         continue
 
-                    # SMART STEP
+                    # 🔥 SMART STEP
                     step = dynamic_step(sym, state["max_pnl"])
 
                     if state["max_pnl"] - pnl >= step:
-                        exchange.create_market_order(sym, side, p["contracts"], params={"reduceOnly": True})
+                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         update_margin(pnl)
                         trade_state.pop(sym)
 
@@ -284,6 +325,7 @@ def manage():
 📊 {round(pnl,2)}$
 ━━━━━━━━━━━━
 """)
+                        continue
 
             time.sleep(2)
 
@@ -295,6 +337,13 @@ def manage():
 def scanner():
     while True:
         try:
+            positions = exchange.fetch_positions()
+            active = sum(1 for p in positions if safe(p.get("contracts")) > 0)
+
+            if active >= 2:
+                time.sleep(2)
+                continue
+
             symbols = get_symbols()
             random.shuffle(symbols)
 
@@ -329,13 +378,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 PRO BOT START")
+print("🔥 ULTIMATE FINAL BOT START")
 
 sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF")
 
 bot.infinity_polling()
