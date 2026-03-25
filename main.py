@@ -18,6 +18,7 @@ SL_USDT = 0.30
 TP1_RATIO = 0.6
 
 SCAN_DELAY = 2
+HARD_SL_PERCENT = 0.025  # %2.5
 
 # ================= GLOBAL =================
 
@@ -59,17 +60,20 @@ def update_margin(pnl):
         current_margin = BASE_MARGIN
         bot.send_message(CHAT_ID, f"📉 RESET | LOT → {round(current_margin,2)}$")
 
-# ================= STEP =================
+# ================= PROFIT LOCK =================
 
-def dynamic_step(pnl):
-    if pnl < 0.4:
-        return 0.38
-    elif pnl < 0.8:
-        return 0.28
-    else:
-        return 0.22
+def get_lock(max_pnl):
+    if max_pnl >= 3:
+        return 2.2
+    elif max_pnl >= 2:
+        return 1.4
+    elif max_pnl >= 1:
+        return 0.6
+    elif max_pnl >= 0.5:
+        return 0.2
+    return 0
 
-# ================= SYNC =================
+# ================= PRO SYNC =================
 
 def sync_positions():
     try:
@@ -81,22 +85,24 @@ def sync_positions():
                 continue
 
             sym = p["symbol"]
+            side = "long" if p["side"] == "long" else "short"
             pnl = safe(p.get("unrealizedPnl"))
 
             trade_state[sym] = {
-                "direction": "long" if p["side"] == "long" else "short",
+                "direction": side,
                 "tp1": True,
                 "max_pnl": pnl,
                 "breakeven": True,
                 "tp1_time": time.time(),
-                "steps": set()
+                "last_lock": 0
             }
 
             bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {round(pnl,2)}$")
+
     except:
         pass
 
-# ================= FILTER =================
+# ================= COIN FILTER =================
 
 def get_symbols():
     arr = []
@@ -172,7 +178,7 @@ def current_direction_count(direction):
                 count += 1
     return count
 
-# ================= OPEN =================
+# ================= OPEN TRADE =================
 
 def open_trade(sym, direction):
     global current_margin
@@ -198,7 +204,7 @@ def open_trade(sym, direction):
             "max_pnl": 0,
             "breakeven": False,
             "tp1_time": time.time(),
-            "steps": set()
+            "last_lock": 0
         }
 
         bot.send_message(CHAT_ID, f"""
@@ -231,26 +237,36 @@ def manage():
 
                 state = trade_state[sym]
                 pnl = safe(p.get("unrealizedPnl"))
-
-                # STEP MESAJ
-                levels = [0.2, 0.4, 0.6, 0.8, 1.0]
-                for lvl in levels:
-                    if pnl >= lvl and lvl not in state["steps"]:
-                        state["steps"].add(lvl)
-                        bot.send_message(CHAT_ID, f"🚀 STEP {lvl} → {sym} | {round(pnl,2)}$")
-
-                if pnl > state["max_pnl"]:
-                    state["max_pnl"] = pnl
+                entry = safe(p.get("entryPrice"))
+                price = exchange.fetch_ticker(sym)["last"]
 
                 direction = state["direction"]
                 side = "sell" if direction == "long" else "buy"
 
-                # SL
+                # HARD SL
+                if direction == "long" and price <= entry * (1 - HARD_SL_PERCENT):
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    update_margin(pnl)
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID, f"🛑 HARD SL {sym}")
+                    continue
+
+                if direction == "short" and price >= entry * (1 + HARD_SL_PERCENT):
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    update_margin(pnl)
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID, f"🛑 HARD SL {sym}")
+                    continue
+
+                if pnl > state["max_pnl"]:
+                    state["max_pnl"] = pnl
+
+                # NORMAL SL
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     update_margin(pnl)
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
 
                 # TP1
@@ -258,33 +274,21 @@ def manage():
                     exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
                     state["tp1_time"] = time.time()
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
+                # PROFIT LOCK
                 if state["tp1"]:
+                    lock = get_lock(state["max_pnl"])
 
-                    if time.time() - state["tp1_time"] < 30:
-                        continue
+                    if lock > state["last_lock"]:
+                        state["last_lock"] = lock
+                        bot.send_message(CHAT_ID, f"🔒 LOCK {sym} → {lock}$")
 
-                    # BE
-                    if not state["breakeven"] and pnl >= 0.65:
-                        state["breakeven"] = True
-                        bot.send_message(CHAT_ID, f"🟢 BE {sym}")
-
-                    if state["breakeven"] and pnl <= 0:
+                    if lock > 0 and pnl <= lock:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         update_margin(pnl)
                         trade_state.pop(sym)
-                        bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
-                        continue
-
-                    # STEP EXIT
-                    step = dynamic_step(state["max_pnl"])
-
-                    if state["max_pnl"] - pnl >= step:
-                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                        update_margin(pnl)
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID, f"🏆 KÂR KİLİTLENDİ {sym} {round(pnl,2)}$")
+                        bot.send_message(CHAT_ID, f"🏆 CLOSE {sym} {round(pnl,2)}$")
                         continue
 
             time.sleep(2)
@@ -312,10 +316,7 @@ def scanner():
                     t = trend(sym)
                     m = momentum(sym)
 
-                    if abs(m) > 0.004:
-                        continue
-
-                    if abs(m) < 0.001:
+                    if abs(m) > 0.004 or abs(m) < 0.001:
                         continue
 
                     if volume(sym):
@@ -346,4 +347,3 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
 bot.send_message(CHAT_ID, "🤖 BOT AKTİF")
-bot.infinity_polling()
