@@ -10,7 +10,6 @@ import random
 LEV = 10
 BASE_MARGIN = 3
 MAX_MARGIN = 5
-MIN_MARGIN = 2
 GROWTH_RATE = 0.3
 
 TP1_USDT = 0.25
@@ -18,7 +17,7 @@ SL_USDT = 0.30
 TP1_RATIO = 0.6
 
 SCAN_DELAY = 2
-HARD_SL_PERCENT = 0.025  # %2.5
+HARD_SL_PERCENT = 0.025
 
 # ================= GLOBAL =================
 
@@ -45,7 +44,7 @@ def safe(x):
     except:
         return 0
 
-# ================= LOT CONTROL =================
+# ================= LOT =================
 
 def update_margin(pnl):
     global current_margin, win_streak
@@ -60,20 +59,17 @@ def update_margin(pnl):
         current_margin = BASE_MARGIN
         bot.send_message(CHAT_ID, f"📉 RESET | LOT → {round(current_margin,2)}$")
 
-# ================= PROFIT LOCK =================
+# ================= STEP =================
 
-def get_lock(max_pnl):
-    if max_pnl >= 3:
-        return 2.2
-    elif max_pnl >= 2:
-        return 1.4
-    elif max_pnl >= 1:
-        return 0.6
-    elif max_pnl >= 0.5:
-        return 0.2
-    return 0
+def dynamic_step(pnl):
+    if pnl < 0.4:
+        return 0.25
+    elif pnl < 0.8:
+        return 0.20
+    else:
+        return 0.15
 
-# ================= PRO SYNC =================
+# ================= SYNC =================
 
 def sync_positions():
     try:
@@ -94,22 +90,18 @@ def sync_positions():
                 "max_pnl": pnl,
                 "breakeven": True,
                 "tp1_time": time.time(),
-                "last_lock": 0
             }
-
-            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {round(pnl,2)}$")
 
     except:
         pass
 
-# ================= COIN FILTER =================
+# ================= FILTER =================
 
 def get_symbols():
     arr = []
     tickers = exchange.fetch_tickers()
 
     for sym, d in tickers.items():
-
         if "USDT" not in sym:
             continue
 
@@ -133,7 +125,7 @@ def get_symbols():
             continue
 
         change = abs(safe(d.get("percentage")))
-        if change < 2:
+        if change < 1.5:
             continue
 
         arr.append(sym)
@@ -178,7 +170,7 @@ def current_direction_count(direction):
                 count += 1
     return count
 
-# ================= OPEN TRADE =================
+# ================= OPEN =================
 
 def open_trade(sym, direction):
     global current_margin
@@ -204,17 +196,9 @@ def open_trade(sym, direction):
             "max_pnl": 0,
             "breakeven": False,
             "tp1_time": time.time(),
-            "last_lock": 0
         }
 
-        bot.send_message(CHAT_ID, f"""
-🚀 YENİ TRADE
-━━━━━━━━━━━━
-💰 {sym}
-📊 {direction.upper()}
-💵 Lot: {round(current_margin,2)}$
-━━━━━━━━━━━━
-""")
+        bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
 
     except:
         pass
@@ -276,15 +260,23 @@ def manage():
                     state["tp1_time"] = time.time()
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # PROFIT LOCK
                 if state["tp1"]:
-                    lock = get_lock(state["max_pnl"])
 
-                    if lock > state["last_lock"]:
-                        state["last_lock"] = lock
-                        bot.send_message(CHAT_ID, f"🔒 LOCK {sym} → {lock}$")
+                    # BREAKEVEN
+                    if not state["breakeven"] and pnl >= 0.6:
+                        state["breakeven"] = True
 
-                    if lock > 0 and pnl <= lock:
+                    if state["breakeven"] and pnl <= 0:
+                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                        update_margin(pnl)
+                        trade_state.pop(sym)
+                        bot.send_message(CHAT_ID, f"⚖️ BE {sym}")
+                        continue
+
+                    # STEP
+                    step = dynamic_step(state["max_pnl"])
+
+                    if state["max_pnl"] - pnl >= step:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         update_margin(pnl)
                         trade_state.pop(sym)
@@ -316,7 +308,8 @@ def scanner():
                     t = trend(sym)
                     m = momentum(sym)
 
-                    if abs(m) > 0.004 or abs(m) < 0.001:
+                    # 🔥 GÜNCELLENMİŞ MOMENTUM
+                    if abs(m) > 0.006 or abs(m) < 0.0007:
                         continue
 
                     if volume(sym):
@@ -339,7 +332,7 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 BOT START")
+print("🔥 ACTIVE BOT START")
 
 sync_positions()
 
