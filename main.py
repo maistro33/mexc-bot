@@ -33,19 +33,37 @@ def safe(x):
     except:
         return 0
 
+# ================= NORMALIZE SYMBOL =================
+
+def norm(sym):
+    return sym.replace(":USDT","")
+
 # ================= SYNC =================
 
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
+
         for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
+
+            qty = safe(
+                p.get("contracts") or
+                p.get("positionAmt") or
+                p.get("size")
+            )
+
+            if abs(qty) <= 0:
                 continue
 
-            sym = p["symbol"]
-            side = "long" if p["side"] == "long" else "short"
-            entry = safe(p.get("entryPrice"))
+            sym = norm(p.get("symbol"))
+
+            side = "long" if p.get("side") == "long" else "short"
+
+            entry = safe(
+                p.get("entryPrice") or
+                p.get("avgPrice") or
+                p.get("markPrice")
+            )
 
             trade_state[sym] = {
                 "direction": side,
@@ -53,8 +71,11 @@ def sync_positions():
                 "max_pnl": 0,
                 "entry": entry
             }
-    except:
-        pass
+
+            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {side}")
+
+    except Exception as e:
+        print("SYNC ERROR:", e)
 
 # ================= BTC TREND =================
 
@@ -199,6 +220,8 @@ def current_direction_count(direction):
 
 def open_trade(sym, direction):
     try:
+        sym_n = norm(sym)
+
         if get_qty(sym) > 0:
             return
 
@@ -213,17 +236,17 @@ def open_trade(sym, direction):
         side = "buy" if direction == "long" else "sell"
         exchange.create_market_order(sym, side, qty)
 
-        trade_state[sym] = {
+        trade_state[sym_n] = {
             "direction": direction,
             "tp1": False,
             "max_pnl": 0,
             "entry": price
         }
 
-        bot.send_message(CHAT_ID, f"🚀 {sym} {direction} {round(price,5)}")
+        bot.send_message(CHAT_ID, f"🚀 {sym_n} {direction} {round(price,5)}")
 
-    except:
-        pass
+    except Exception as e:
+        print("TRADE ERROR:", e)
 
 # ================= MANAGE =================
 
@@ -233,11 +256,11 @@ def manage():
             positions = exchange.fetch_positions()
 
             for p in positions:
-                qty = safe(p.get("contracts"))
-                if qty <= 0:
+                qty = safe(p.get("contracts") or p.get("size"))
+                if abs(qty) <= 0:
                     continue
 
-                sym = p["symbol"]
+                sym = norm(p.get("symbol"))
 
                 if sym not in trade_state:
                     continue
@@ -245,20 +268,20 @@ def manage():
                 state = trade_state[sym]
                 pnl = safe(p.get("unrealizedPnl"))
                 entry = state["entry"]
-                price = exchange.fetch_ticker(sym)["last"]
+                price = exchange.fetch_ticker(p.get("symbol"))["last"]
 
                 direction = state["direction"]
                 side = "sell" if direction == "long" else "buy"
 
                 # HARD SL
                 if direction == "long" and price <= entry * (1 - HARD_SL_PCT):
-                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    exchange.create_market_order(p.get("symbol"), side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
 
                 if direction == "short" and price >= entry * (1 + HARD_SL_PCT):
-                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    exchange.create_market_order(p.get("symbol"), side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
@@ -267,18 +290,19 @@ def manage():
                     state["max_pnl"] = pnl
 
                 if not state["tp1"] and pnl >= TP1_USDT:
-                    exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
+                    exchange.create_market_order(p.get("symbol"), side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 if state["tp1"] and state["max_pnl"] - pnl >= STEP_USDT:
-                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    exchange.create_market_order(p.get("symbol"), side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
                     bot.send_message(CHAT_ID, f"🏁 EXIT {sym}")
 
             time.sleep(2)
 
-        except:
+        except Exception as e:
+            print("MANAGE ERROR:", e)
             time.sleep(5)
 
 # ================= SCANNER =================
@@ -334,18 +358,19 @@ def scanner():
 
             time.sleep(SCAN_DELAY)
 
-        except:
+        except Exception as e:
+            print("SCAN ERROR:", e)
             time.sleep(5)
 
 # ================= START =================
 
-print("🔥 V4 FINAL STABLE")
+print("🔥 FINAL STABLE BOT")
 
 sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V4")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL")
 
 bot.infinity_polling()
