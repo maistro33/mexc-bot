@@ -126,26 +126,29 @@ def trend(sym):
     ema = sum(closes[-10:]) / 10
     return "long" if closes[-1] > ema else "short"
 
+# 🔥 GEVŞETİLMİŞ PULLBACK
 def pullback_entry(sym, direction):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
-        c1, c2, c3 = candles[-3], candles[-2], candles[-1]
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
+        c2, c3 = candles[-2], candles[-1]
 
         if direction == "long":
-            return c1[4] < c2[4] and c3[4] < c2[4]
+            return c3[4] <= c2[4]
         else:
-            return c1[4] > c2[4] and c3[4] > c2[4]
+            return c3[4] >= c2[4]
     except:
         return False
 
+# 🔥 GEVŞETİLMİŞ MOMENTUM
 def momentum(sym):
     candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
     return (candles[-1][4] - candles[-2][4]) / candles[-2][4]
 
+# 🔥 GEVŞETİLMİŞ VOLUME
 def volume(sym):
     candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
     avg = sum(c[5] for c in candles[:-1]) / 4
-    return candles[-1][5] > avg * 1.3
+    return candles[-1][5] > avg * 1.1
 
 # ================= RISK =================
 
@@ -335,11 +338,11 @@ def scanner():
 
                     if volume(sym):
 
-                        if t == "long" and m > 0:
+                        if t == "long" and m > -0.0005:
                             open_trade(sym, "long")
                             break
 
-                        if t == "short" and m < 0:
+                        if t == "short" and m < 0.0005:
                             open_trade(sym, "short")
                             break
 
@@ -353,13 +356,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 SMART SNIPER BOT")
+print("🔥 SMART SNIPER BOT V2")
 
 sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V2")
 
 bot.infinity_polling()
