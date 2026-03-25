@@ -9,7 +9,6 @@ LEV = 10
 MARGIN = 3
 
 TP1_USDT = 0.25
-STEP_USDT = 0.30
 SL_USDT = 0.30
 TP1_RATIO = 0.6
 
@@ -33,7 +32,46 @@ def safe(x):
     except:
         return 0
 
-# ================= COIN SEÇİM =================
+# ================= 🔥 DYNAMIC STEP =================
+
+def dynamic_step(pnl):
+    if pnl < 0.4:
+        return 0.40
+    elif pnl < 0.8:
+        return 0.30
+    else:
+        return 0.20
+
+# ================= 🔥 PRO SYNC =================
+
+def sync_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            side = "long" if p["side"] == "long" else "short"
+            pnl = safe(p.get("unrealizedPnl"))
+
+            trade_state[sym] = {
+                "direction": side,
+                "tp1": True,
+                "max_pnl": pnl,
+                "breakeven": True,
+                "tp1_time": time.time(),
+                "last_report": pnl
+            }
+
+            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {round(pnl,2)}$")
+
+    except:
+        pass
+
+# ================= COINS =================
 
 def get_symbols():
     arr = []
@@ -46,7 +84,6 @@ def get_symbols():
 
         s = sym.upper()
 
-        # büyük coinleri çıkar
         if any(x in s for x in [
             "BTC","ETH","BNB","XRP","ADA","SOL","DOGE","DOT","TRX"
         ]):
@@ -54,11 +91,9 @@ def get_symbols():
 
         vol = safe(d.get("quoteVolume"))
 
-        # hacim filtresi (en iyi aralık)
-        if vol < 1000000 or vol > 20000000:
+        if vol < 2000000 or vol > 20000000:
             continue
 
-        # spread filtresi
         ask = safe(d.get("ask"))
         bid = safe(d.get("bid"))
         last = safe(d.get("last"))
@@ -67,15 +102,18 @@ def get_symbols():
             continue
 
         spread = (ask - bid) / last
-
         if spread > 0.004:
+            continue
+
+        change = abs(safe(d.get("percentage")))
+        if change < 2:
             continue
 
         arr.append(sym)
 
     return arr[:40]
 
-# ================= TREND =================
+# ================= INDICATORS =================
 
 def trend(sym):
     candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
@@ -83,13 +121,9 @@ def trend(sym):
     ema = sum(closes[-10:]) / 10
     return "long" if closes[-1] > ema else "short"
 
-# ================= MOMENTUM =================
-
 def momentum(sym):
     candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
     return (candles[-1][4] - candles[-2][4]) / candles[-2][4]
-
-# ================= VOLUME =================
 
 def volume(sym):
     candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
@@ -140,7 +174,8 @@ def open_trade(sym, direction):
             "tp1": False,
             "max_pnl": 0,
             "breakeven": False,
-            "tp1_time": 0
+            "tp1_time": time.time(),
+            "last_report": 0
         }
 
         bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
@@ -168,8 +203,13 @@ def manage():
                 state = trade_state[sym]
                 pnl = safe(p.get("unrealizedPnl"))
 
+                # 🔥 canlı kâr
                 if pnl > state["max_pnl"]:
                     state["max_pnl"] = pnl
+
+                    if state["max_pnl"] - state["last_report"] >= 0.20:
+                        state["last_report"] = state["max_pnl"]
+                        bot.send_message(CHAT_ID, f"📈 {sym} {round(pnl,2)}$")
 
                 direction = state["direction"]
                 side = "sell" if direction == "long" else "buy"
@@ -178,7 +218,7 @@ def manage():
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-                    bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
                     continue
 
                 # TP1
@@ -186,16 +226,15 @@ def manage():
                     exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
                     state["tp1_time"] = time.time()
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 if state["tp1"]:
 
-                    # erken çıkma engeli
                     if time.time() - state["tp1_time"] < 30:
                         continue
 
-                    # break even
-                    if not state["breakeven"] and pnl >= TP1_USDT + STEP_USDT:
+                    # 🔥 BE
+                    if not state["breakeven"] and pnl >= 0.65:
                         state["breakeven"] = True
                         bot.send_message(CHAT_ID, f"🟢 BE {sym}")
 
@@ -205,12 +244,16 @@ def manage():
                         bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
                         continue
 
-                    # trailing
-                    if state["max_pnl"] - pnl >= STEP_USDT:
+                    # 🔥 DYNAMIC STEP
+                    step = dynamic_step(state["max_pnl"])
+
+                    if state["max_pnl"] - pnl >= step:
+                        bot.send_message(
+                            CHAT_ID,
+                            f"📉 STEP EXIT {sym} {round(pnl,2)}$"
+                        )
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
-                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}$")
-                        continue
 
             time.sleep(2)
 
@@ -237,13 +280,21 @@ def scanner():
                     t = trend(sym)
                     m = momentum(sym)
 
+                    # pump filtresi
+                    if abs(m) > 0.004:
+                        continue
+
+                    # geç giriş filtresi
+                    if abs(m) < 0.001:
+                        continue
+
                     if volume(sym):
 
-                        if t == "long" and m > 0.001:
+                        if t == "long" and m > 0:
                             open_trade(sym, "long")
                             break
 
-                        if t == "short" and m < -0.001:
+                        if t == "short" and m < 0:
                             open_trade(sym, "short")
                             break
 
@@ -257,11 +308,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 SMART BOT START")
+print("🔥 ULTIMATE FINAL BOT")
+
+sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 SMART PROFIT BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 ULTIMATE BOT AKTİF")
 
 bot.infinity_polling()
