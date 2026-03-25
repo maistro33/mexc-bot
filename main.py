@@ -9,11 +9,10 @@ LEV = 10
 MARGIN = 3
 
 TP1_USDT = 0.20
-STEP_USDT = 0.12
+STEP_USDT = 0.10
 TP1_RATIO = 0.6
 
 HARD_SL_PCT = 0.025
-
 SCAN_DELAY = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -39,7 +38,6 @@ def safe(x):
 def sync_positions():
     try:
         positions = exchange.fetch_positions()
-
         for p in positions:
             qty = safe(p.get("contracts"))
             if qty <= 0:
@@ -53,13 +51,8 @@ def sync_positions():
                 "direction": side,
                 "tp1": False,
                 "max_pnl": 0,
-                "breakeven": False,
-                "tp1_time": time.time(),
                 "entry": entry
             }
-
-            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {side}")
-
     except:
         pass
 
@@ -89,16 +82,13 @@ def get_symbols():
 
         s = sym.upper()
 
-        if any(x in s for x in [
-            "BTC","ETH","BNB","XRP","ADA","SOL","DOT","TRX"
-        ]):
+        if any(x in s for x in ["BTC","ETH","BNB","XRP","ADA","SOL"]):
             continue
 
         if any(x in s for x in blacklist):
             continue
 
         vol = safe(d.get("quoteVolume"))
-
         if vol < 1000000 or vol > 20000000:
             continue
 
@@ -110,7 +100,6 @@ def get_symbols():
             continue
 
         spread = (ask - bid) / last
-
         if spread > 0.004:
             continue
 
@@ -118,26 +107,43 @@ def get_symbols():
 
     return arr[:40]
 
-# ================= INDICATORS =================
+# ================= STRUCTURE =================
 
-def trend(sym):
-    candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
-    closes = [c[4] for c in candles]
-    ema = sum(closes[-10:]) / 10
-    return "long" if closes[-1] > ema else "short"
+def structure(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=5)
+        highs = [c[2] for c in candles]
+        lows = [c[3] for c in candles]
 
-def valid_structure(sym, direction):
+        if highs[-1] > highs[-2] and lows[-1] > lows[-2]:
+            return "long"
+
+        if highs[-1] < highs[-2] and lows[-1] < lows[-2]:
+            return "short"
+
+        return None
+    except:
+        return None
+
+# ================= TREND STRENGTH =================
+
+def strong_trend(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "1m", limit=5)
         closes = [c[4] for c in candles]
+
         change = (closes[-1] - closes[0]) / closes[0]
 
-        if direction == "long":
-            return change > -0.003
-        else:
-            return change < 0.003
+        if change > 0.004:
+            return "long"
+        if change < -0.004:
+            return "short"
+
+        return None
     except:
-        return False
+        return None
+
+# ================= FILTERS =================
 
 def volatility(sym):
     try:
@@ -147,7 +153,7 @@ def volatility(sym):
     except:
         return False
 
-def pullback_entry(sym, direction):
+def pullback(sym, direction):
     try:
         candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
         c2, c3 = candles[-2], candles[-1]
@@ -211,15 +217,10 @@ def open_trade(sym, direction):
             "direction": direction,
             "tp1": False,
             "max_pnl": 0,
-            "breakeven": False,
-            "tp1_time": 0,
             "entry": price
         }
 
-        bot.send_message(
-            CHAT_ID,
-            f"🚀 {sym}\nYön: {direction}\nGiriş: {round(price,6)}\nMiktar: {round(qty,4)}"
-        )
+        bot.send_message(CHAT_ID, f"🚀 {sym} {direction} {round(price,5)}")
 
     except:
         pass
@@ -250,18 +251,17 @@ def manage():
                 side = "sell" if direction == "long" else "buy"
 
                 # HARD SL
-                if direction == "long":
-                    if price <= entry * (1 - HARD_SL_PCT):
-                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID, f"🛑 HARD SL {sym}")
-                        continue
-                else:
-                    if price >= entry * (1 + HARD_SL_PCT):
-                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID, f"🛑 HARD SL {sym}")
-                        continue
+                if direction == "long" and price <= entry * (1 - HARD_SL_PCT):
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
+                    continue
+
+                if direction == "short" and price >= entry * (1 + HARD_SL_PCT):
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
+                    continue
 
                 if pnl > state["max_pnl"]:
                     state["max_pnl"] = pnl
@@ -269,15 +269,12 @@ def manage():
                 if not state["tp1"] and pnl >= TP1_USDT:
                     exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
-                    state["tp1_time"] = time.time()
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                if state["tp1"]:
-                    if state["max_pnl"] - pnl >= STEP_USDT:
-                        exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
-                        trade_state.pop(sym)
-                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym}")
-                        continue
+                if state["tp1"] and state["max_pnl"] - pnl >= STEP_USDT:
+                    exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                    trade_state.pop(sym)
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym}")
 
             time.sleep(2)
 
@@ -303,28 +300,32 @@ def scanner():
 
             for sym in symbols:
                 try:
-                    t = trend(sym)
-                    m = momentum(sym)
+                    s = structure(sym)
+                    strong = strong_trend(sym)
 
-                    if market_dir and t != market_dir:
+                    if not s:
                         continue
 
-                    if not valid_structure(sym, t):
+                    if strong and s != strong:
+                        continue
+
+                    if market_dir and s != market_dir:
                         continue
 
                     if not volatility(sym):
                         continue
 
-                    if not pullback_entry(sym, t):
+                    if not pullback(sym, s):
                         continue
 
                     if volume(sym):
+                        m = momentum(sym)
 
-                        if t == "long" and m > -0.0005:
+                        if s == "long" and m > -0.0005:
                             open_trade(sym, "long")
                             break
 
-                        if t == "short" and m < 0.0005:
+                        if s == "short" and m < 0.0005:
                             open_trade(sym, "short")
                             break
 
@@ -338,13 +339,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 SMART SNIPER BOT V3 FIXED")
+print("🔥 V4 FINAL STABLE")
 
 sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V3")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V4")
 
 bot.infinity_polling()
