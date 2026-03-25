@@ -61,26 +61,15 @@ def update_margin(pnl):
 
         bot.send_message(CHAT_ID, f"📉 RESET | LOT → {round(current_margin,2)}$")
 
-# ================= 🔥 SMART STEP =================
+# ================= 🔥 DYNAMIC STEP (OPTIMIZED) =================
 
-def dynamic_step(sym, pnl):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
-        ranges = [(c[2] - c[3]) / c[4] for c in candles]
-        vol = sum(ranges) / len(ranges)
-    except:
-        vol = 0.01
-
-    base = pnl * 0.35  # 🔥 daha az geri verir
-
-    if vol > 0.02:
-        step = base * 1.1
-    elif vol < 0.01:
-        step = base * 0.8
+def dynamic_step(pnl):
+    if pnl < 0.4:
+        return 0.38
+    elif pnl < 0.8:
+        return 0.28
     else:
-        step = base
-
-    return max(step, 0.12)
+        return 0.22
 
 # ================= PRO SYNC =================
 
@@ -225,6 +214,7 @@ def open_trade(sym, direction):
 ━━━━━━━━━━━━
 💰 {sym}
 📊 {direction.upper()}
+💵 Lot: {round(current_margin,2)}$
 ━━━━━━━━━━━━
 """)
 
@@ -267,7 +257,7 @@ def manage():
 🛑 STOP LOSS
 ━━━━━━━━━━━━
 💰 {sym}
-📉 Küçük zarar
+📉 {round(pnl,2)}$
 ━━━━━━━━━━━━
 """)
                     continue
@@ -296,7 +286,7 @@ def manage():
                         state["breakeven"] = True
 
                         bot.send_message(CHAT_ID, f"""
-🟢 RİSK SIFIRLANDI
+🟢 RİSK SIFIR
 ━━━━━━━━━━━━
 💰 {sym}
 ━━━━━━━━━━━━
@@ -310,8 +300,8 @@ def manage():
                         bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
                         continue
 
-                    # 🔥 SMART STEP
-                    step = dynamic_step(sym, state["max_pnl"])
+                    # STEP
+                    step = dynamic_step(state["max_pnl"])
 
                     if state["max_pnl"] - pnl >= step:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
@@ -322,7 +312,7 @@ def manage():
 🏆 TRADE KAPANDI
 ━━━━━━━━━━━━
 💰 {sym}
-📊 {round(pnl,2)}$
+📈 {round(pnl,2)}$
 ━━━━━━━━━━━━
 """)
                         continue
