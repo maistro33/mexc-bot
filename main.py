@@ -45,42 +45,13 @@ def btc_trend():
     except:
         return None
 
-# ================= SYNC =================
-
-def sync_positions():
-    try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            side = "long" if p["side"] == "long" else "short"
-            entry = safe(p.get("entryPrice"))
-
-            trade_state[sym] = {
-                "direction": side,
-                "tp1": False,
-                "max_pnl": 0,
-                "breakeven": False,
-                "tp1_time": time.time(),
-                "entry": entry
-            }
-
-            bot.send_message(CHAT_ID, f"🔄 SYNC {sym} {side}")
-
-    except:
-        pass
-
 # ================= COINS =================
 
 def get_symbols():
     arr = []
     tickers = exchange.fetch_tickers()
 
-    blacklist = ["DOGE","PEPE","SHIB","FLOKI","BONK"]
+    blacklist = ["DOGE","PEPE","SHIB","FLOKI","BONK","AAVE","UNI","LINK"]
 
     for sym, d in tickers.items():
 
@@ -99,7 +70,7 @@ def get_symbols():
 
         vol = safe(d.get("quoteVolume"))
 
-        if vol < 1000000 or vol > 30000000:
+        if vol < 1500000 or vol > 25000000:
             continue
 
         ask = safe(d.get("ask"))
@@ -126,7 +97,31 @@ def trend(sym):
     ema = sum(closes[-10:]) / 10
     return "long" if closes[-1] > ema else "short"
 
-# 🔥 GEVŞETİLMİŞ PULLBACK
+# 🔥 STRUCTURE + DUMP FILTER
+def valid_structure(sym, direction):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=5)
+        closes = [c[4] for c in candles]
+
+        change = (closes[-1] - closes[0]) / closes[0]
+
+        if direction == "long":
+            return change > -0.003  # dump varsa girme
+        else:
+            return change < 0.003
+    except:
+        return False
+
+# 🔥 VOLATILITY FILTER
+def volatility(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=5)
+        ranges = [(c[2] - c[3]) / c[4] for c in candles]
+        return sum(ranges) / len(ranges) > 0.0015
+    except:
+        return False
+
+# 🔥 PULLBACK (denge)
 def pullback_entry(sym, direction):
     try:
         candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
@@ -139,12 +134,10 @@ def pullback_entry(sym, direction):
     except:
         return False
 
-# 🔥 GEVŞETİLMİŞ MOMENTUM
 def momentum(sym):
     candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
     return (candles[-1][4] - candles[-2][4]) / candles[-2][4]
 
-# 🔥 GEVŞETİLMİŞ VOLUME
 def volume(sym):
     candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
     avg = sum(c[5] for c in candles[:-1]) / 4
@@ -226,7 +219,6 @@ def manage():
                 state = trade_state[sym]
                 pnl = safe(p.get("unrealizedPnl"))
                 entry = state["entry"]
-
                 price = exchange.fetch_ticker(sym)["last"]
 
                 direction = state["direction"]
@@ -238,20 +230,14 @@ def manage():
                         pct = ((price - entry) / entry) * 100
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
-                        bot.send_message(
-                            CHAT_ID,
-                            f"🛑 HARD SL {sym}\nPnL: {round(pnl,2)}$\nDeğişim: {round(pct,2)}%"
-                        )
+                        bot.send_message(CHAT_ID, f"🛑 HARD SL {sym}\nPnL: {round(pnl,2)}$\n{round(pct,2)}%")
                         continue
                 else:
                     if price >= entry * (1 + HARD_SL_PCT):
                         pct = ((entry - price) / entry) * 100
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
-                        bot.send_message(
-                            CHAT_ID,
-                            f"🛑 HARD SL {sym}\nPnL: {round(pnl,2)}$\nDeğişim: {round(pct,2)}%"
-                        )
+                        bot.send_message(CHAT_ID, f"🛑 HARD SL {sym}\nPnL: {round(pnl,2)}$\n{round(pct,2)}%")
                         continue
 
                 if pnl > state["max_pnl"]:
@@ -262,10 +248,7 @@ def manage():
                     exchange.create_market_order(sym, side, qty * TP1_RATIO, params={"reduceOnly": True})
                     state["tp1"] = True
                     state["tp1_time"] = time.time()
-                    bot.send_message(
-                        CHAT_ID,
-                        f"💰 TP1 {sym}\nPnL: {round(pnl,2)}$"
-                    )
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}$")
 
                 if state["tp1"]:
 
@@ -279,28 +262,15 @@ def manage():
                     if state["breakeven"] and pnl <= 0:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
-                        bot.send_message(
-                            CHAT_ID,
-                            f"⚖️ BE EXIT {sym}\nPnL: {round(pnl,2)}$"
-                        )
+                        bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
                         continue
 
                     if state["max_pnl"] - pnl >= STEP_USDT:
-
-                        bot.send_message(
-                            CHAT_ID,
-                            f"📉 STEP {sym}\nMax: {round(state['max_pnl'],2)}$\nŞu an: {round(pnl,2)}$"
-                        )
-
+                        bot.send_message(CHAT_ID, f"📉 STEP {sym}")
                         pct = ((price - entry) / entry) * 100 if direction == "long" else ((entry - price) / entry) * 100
-
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
-
-                        bot.send_message(
-                            CHAT_ID,
-                            f"🏁 EXIT {sym}\nPnL: {round(pnl,2)}$\nDeğişim: {round(pct,2)}%"
-                        )
+                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym}\nPnL: {round(pnl,2)}$\n{round(pct,2)}%")
                         continue
 
             time.sleep(2)
@@ -333,6 +303,12 @@ def scanner():
                     if market_dir and t != market_dir:
                         continue
 
+                    if not valid_structure(sym, t):
+                        continue
+
+                    if not volatility(sym):
+                        continue
+
                     if not pullback_entry(sym, t):
                         continue
 
@@ -356,13 +332,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 SMART SNIPER BOT V2")
+print("🔥 SMART SNIPER BOT V3")
 
 sync_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V2")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V3")
 
 bot.infinity_polling()
