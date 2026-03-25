@@ -8,13 +8,12 @@ import random
 LEV = 10
 MARGIN = 3
 
-TP1_USDT = 0.35
-STEP_USDT = 0.40
-SL_USDT = 0.50
-TP1_RATIO = 0.70
+TP1_USDT = 0.25
+STEP_USDT = 0.30
+SL_USDT = 0.30
+TP1_RATIO = 0.6
 
 SCAN_DELAY = 2
-MODE = "AUTO"
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -24,15 +23,9 @@ exchange = ccxt.bitget({
     "secret": os.getenv("BITGET_SEC"),
     "password": "Berfin33",
     "options": {"defaultType": "swap"},
-    "enableRateLimit": True
 })
 
 trade_state = {}
-cooldown = {}
-
-CURRENT_MODE = "SAFE"
-LAST_MODE_UPDATE = 0
-
 
 def safe(x):
     try:
@@ -40,117 +33,32 @@ def safe(x):
     except:
         return 0
 
+# ================= SYMBOL =================
 
-# ================= MODE =================
+def get_symbols():
+    tickers = exchange.fetch_tickers()
+    return [s for s in tickers if "USDT" in s][:30]
 
-def set_mode_values():
-    global MOMENTUM_THRESHOLD, VOLUME_MULT
+# ================= TREND =================
 
-    active = CURRENT_MODE if MODE == "AUTO" else MODE
+def trend(sym):
+    candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
+    closes = [c[4] for c in candles]
+    ema = sum(closes[-10:]) / 10
+    return "long" if closes[-1] > ema else "short"
 
-    if active == "SAFE":
-        MOMENTUM_THRESHOLD = 0.0015
-        VOLUME_MULT = 1.1
-    else:
-        MOMENTUM_THRESHOLD = 0.0005
-        VOLUME_MULT = 1.01
+# ================= MOMENTUM =================
 
+def momentum(sym):
+    candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
+    return (candles[-1][4] - candles[-2][4]) / candles[-2][4]
 
-set_mode_values()
+# ================= VOLUME =================
 
-
-def detect_market_mode():
-    try:
-        candles = exchange.fetch_ohlcv("BTC/USDT:USDT", "5m", limit=20)
-        ranges = [(c[2] - c[3]) / c[4] for c in candles]
-        avg = sum(ranges) / len(ranges)
-
-        return "AGGRESSIVE" if avg > 0.005 else "SAFE"
-    except:
-        return "SAFE"
-
-
-# ================= FILTERS =================
-
-def micro_momentum(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
-        change = (candles[-1][4] - candles[-2][4]) / candles[-2][4]
-        return abs(change) > MOMENTUM_THRESHOLD
-    except:
-        return False
-
-
-def volume_spike(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=6)
-        vols = [c[5] for c in candles]
-        avg = sum(vols[:-1]) / 5
-        return vols[-1] > avg * VOLUME_MULT
-    except:
-        return False
-
-
-def orderbook_pressure(sym):
-    try:
-        ob = exchange.fetch_order_book(sym, limit=10)
-        bid = sum([b[1] for b in ob["bids"]])
-        ask = sum([a[1] for a in ob["asks"]])
-
-        if bid > ask * 1.2:
-            return "long"
-        if ask > bid * 1.2:
-            return "short"
-        return None
-    except:
-        return None
-
-
-def trend_filter(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
-        closes = [c[4] for c in candles]
-        ema = sum(closes[-10:]) / 10
-
-        return "bull" if closes[-1] > ema else "bear"
-    except:
-        return "neutral"
-
-
-def rsi_signal(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
-        closes = [c[4] for c in candles]
-
-        gains, losses = [], []
-        for i in range(1, len(closes)):
-            diff = closes[i] - closes[i - 1]
-            if diff > 0:
-                gains.append(diff)
-            else:
-                losses.append(abs(diff))
-
-        avg_gain = sum(gains[-14:]) / 14 if gains else 0
-        avg_loss = sum(losses[-14:]) / 14 if losses else 1
-
-        rs = avg_gain / avg_loss if avg_loss != 0 else 0
-        rsi = 100 - (100 / (1 + rs))
-
-        if rsi < 28:
-            return "long"
-        if rsi > 72:
-            return "short"
-
-        return None
-    except:
-        return None
-
-
-def choose_strategy(sym):
-    if rsi_signal(sym):
-        return "reversal"
-    return "momentum"
-
+def volume(sym):
+    candles = exchange.fetch_ohlcv(sym, "5m", limit=5)
+    avg = sum(c[5] for c in candles[:-1]) / 4
+    return candles[-1][5] > avg
 
 # ================= RISK =================
 
@@ -163,31 +71,24 @@ def get_qty(sym):
     except:
         return 0
 
-
 def current_direction_count(direction):
     count = 0
     positions = exchange.fetch_positions()
-
     for p in positions:
         if safe(p.get("contracts")) > 0:
             side = "long" if p["side"] == "long" else "short"
             if side == direction:
                 count += 1
-
     return count
-
 
 # ================= TRADE =================
 
-def open_trade(sym, direction, strategy):
+def open_trade(sym, direction):
     try:
         if get_qty(sym) > 0:
             return
 
         if current_direction_count(direction) >= 1:
-            return
-
-        if sym in cooldown and time.time() - cooldown[sym] < 300:
             return
 
         price = exchange.fetch_ticker(sym)["last"]
@@ -199,7 +100,6 @@ def open_trade(sym, direction, strategy):
         exchange.create_market_order(sym, side, qty)
 
         trade_state[sym] = {
-            "entry": price,
             "direction": direction,
             "tp1": False,
             "max_pnl": 0,
@@ -207,14 +107,10 @@ def open_trade(sym, direction, strategy):
             "tp1_time": 0
         }
 
-        bot.send_message(
-            CHAT_ID,
-            f"🚀 {sym}\nDirection: {direction}\nStrategy: {strategy}\nEntry: {round(price,4)}"
-        )
+        bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
 
     except:
         pass
-
 
 # ================= MANAGE =================
 
@@ -229,11 +125,11 @@ def manage():
                     continue
 
                 sym = p["symbol"]
+
                 if sym not in trade_state:
                     continue
 
                 state = trade_state[sym]
-
                 pnl = safe(p.get("unrealizedPnl"))
 
                 if pnl > state["max_pnl"]:
@@ -246,7 +142,6 @@ def manage():
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                     trade_state.pop(sym)
-                    cooldown[sym] = time.time()
                     bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
                     continue
 
@@ -259,12 +154,14 @@ def manage():
 
                 if state["tp1"]:
 
-                    if time.time() - state["tp1_time"] < 40:
+                    # erken çıkmasın
+                    if time.time() - state["tp1_time"] < 30:
                         continue
 
+                    # break even
                     if not state["breakeven"] and pnl >= TP1_USDT + STEP_USDT:
                         state["breakeven"] = True
-                        bot.send_message(CHAT_ID, f"🟢 BE ACTIVE {sym}")
+                        bot.send_message(CHAT_ID, f"🟢 BE {sym}")
 
                     if state["breakeven"] and pnl <= 0:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
@@ -272,7 +169,8 @@ def manage():
                         bot.send_message(CHAT_ID, f"⚖️ BE EXIT {sym}")
                         continue
 
-                    if state["max_pnl"] - pnl >= STEP_USDT * 2:
+                    # trailing
+                    if state["max_pnl"] - pnl >= STEP_USDT:
                         exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                         trade_state.pop(sym)
                         bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}$")
@@ -283,24 +181,11 @@ def manage():
         except:
             time.sleep(5)
 
-
 # ================= SCANNER =================
 
 def scanner():
-    global CURRENT_MODE, LAST_MODE_UPDATE
-
     while True:
         try:
-            if MODE == "AUTO" and time.time() - LAST_MODE_UPDATE > 60:
-                new_mode = detect_market_mode()
-
-                if new_mode != CURRENT_MODE:
-                    CURRENT_MODE = new_mode
-                    set_mode_values()
-                    bot.send_message(CHAT_ID, f"🤖 AUTO → {CURRENT_MODE}")
-
-                LAST_MODE_UPDATE = time.time()
-
             positions = exchange.fetch_positions()
             active = sum(1 for p in positions if safe(p.get("contracts")) > 0)
 
@@ -312,46 +197,35 @@ def scanner():
             random.shuffle(symbols)
 
             for sym in symbols:
+                try:
+                    t = trend(sym)
+                    m = momentum(sym)
 
-                if not micro_momentum(sym):
+                    if volume(sym):
+
+                        if t == "long" and m > 0.001:
+                            open_trade(sym, "long")
+                            break
+
+                        if t == "short" and m < -0.001:
+                            open_trade(sym, "short")
+                            break
+
+                except:
                     continue
-
-                if not volume_spike(sym):
-                    continue
-
-                strategy = choose_strategy(sym)
-
-                if strategy == "momentum":
-                    direction = orderbook_pressure(sym)
-                    if not direction:
-                        continue
-                else:
-                    direction = rsi_signal(sym)
-                    if not direction:
-                        continue
-
-                    trend = trend_filter(sym)
-
-                    if direction == "short" and trend == "bull":
-                        continue
-
-                    if direction == "long" and trend == "bear":
-                        continue
-
-                open_trade(sym, direction, strategy)
-                break
 
             time.sleep(SCAN_DELAY)
 
         except:
             time.sleep(5)
 
+# ================= START =================
 
-print("🔥 FINAL BOT START")
+print("🔥 PROFIT BOT START")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL STABİL BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 PROFIT BOT AKTİF")
 
 bot.infinity_polling()
