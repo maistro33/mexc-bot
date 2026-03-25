@@ -35,6 +35,14 @@ def safe(x):
     except:
         return 0
 
+# ================= 🔥 EKLENEN FONKSİYON =================
+
+def trend_power(sym):
+    candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
+    closes = [c[4] for c in candles]
+    change = (closes[-1] - closes[0]) / closes[0]
+    return change
+
 # ================= SYNC =================
 
 def sync_positions():
@@ -50,7 +58,6 @@ def sync_positions():
             side = "long" if p["side"] == "long" else "short"
             pnl = safe(p.get("unrealizedPnl"))
 
-            # 🔥 DÜZELTME BURADA
             trade_state[sym] = {
                 "direction": side,
                 "tp1": True,
@@ -277,6 +284,9 @@ def scanner():
                     t = trend(sym)
                     m = momentum(sym)
 
+                    # 🔥 EKLENDİ
+                    power = trend_power(sym)
+
                     if abs(m) > 0.004:
                         continue
 
@@ -287,6 +297,11 @@ def scanner():
                             break
 
                         if t == "short" and m < -0.001:
+
+                            # 🔥 EKLENDİ (SADECE BURASI)
+                            if power > 0.02:
+                                continue
+
                             open_trade(sym, "short")
                             break
 
