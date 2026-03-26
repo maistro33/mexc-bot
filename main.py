@@ -13,6 +13,8 @@ TRAIL_START = 0.70
 STEP = 0.35
 SL = 0.25
 
+SCAN_LIMIT = 50
+
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -35,10 +37,8 @@ def safe(x):
 
 def check_open_position():
     global active_trade
-
     try:
         positions = exchange.fetch_positions()
-
         for p in positions:
             qty = safe(p.get("contracts") or p.get("size"))
             if abs(qty) <= 0:
@@ -51,16 +51,15 @@ def check_open_position():
                 "symbol": sym,
                 "entry": entry,
                 "qty": qty,
-                "tp1": True,  # restart sonrası direkt trailing
+                "tp1": True,
                 "max_pnl": 0,
                 "remaining_qty": qty
             }
 
             bot.send_message(CHAT_ID, f"🔄 SYNC {sym}")
             return
-
-    except Exception as e:
-        print("SYNC ERROR:", e)
+    except:
+        pass
 
 # ================= TREND =================
 
@@ -73,9 +72,9 @@ def trend_ok(sym):
     except:
         return False
 
-# ================= COIN =================
+# ================= COINS =================
 
-def get_coin():
+def get_symbols():
     tickers = exchange.fetch_tickers()
     arr = []
 
@@ -111,7 +110,8 @@ def get_coin():
 
         arr.append(sym)
 
-    return random.choice(arr) if arr else None
+    random.shuffle(arr)
+    return arr[:SCAN_LIMIT]
 
 # ================= SETUP =================
 
@@ -122,6 +122,49 @@ def pullback(sym):
         return closes[-2] < closes[-3]
     except:
         return False
+
+# ================= ENTRY FILTER =================
+
+def entry_filter(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
+        closes = [c[4] for c in candles]
+
+        move = (closes[-1] - closes[-4]) / closes[-4]
+
+        if move > 0.01:
+            return False
+
+        return True
+    except:
+        return False
+
+# ================= FAKE BREAKOUT FILTER =================
+
+def strong_breakout(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
+
+        open_price = candles[-1][1]
+        close_price = candles[-1][4]
+        high = candles[-1][2]
+
+        body = close_price - open_price
+        wick = high - close_price
+
+        # mum yeşil olmalı ve gövde fitilden büyük olmalı
+        if body <= 0:
+            return False
+
+        if wick > body:
+            return False
+
+        return True
+
+    except:
+        return False
+
+# ================= BREAKOUT =================
 
 def breakout(sym):
     try:
@@ -136,10 +179,10 @@ def breakout(sym):
 def open_trade(sym):
     global active_trade
 
-    try:
-        if active_trade:
-            return
+    if active_trade:
+        return
 
+    try:
         price = exchange.fetch_ticker(sym)["last"]
         qty = (MARGIN * LEV) / price
 
@@ -237,19 +280,27 @@ def scanner():
                 time.sleep(1)
                 continue
 
-            sym = get_coin()
-            if not sym:
-                time.sleep(2)
-                continue
+            symbols = get_symbols()
 
-            if not trend_ok(sym):
-                continue
+            for sym in symbols:
 
-            if not pullback(sym):
-                continue
+                if not trend_ok(sym):
+                    continue
 
-            if breakout(sym):
+                if not pullback(sym):
+                    continue
+
+                if not entry_filter(sym):
+                    continue
+
+                if not breakout(sym):
+                    continue
+
+                if not strong_breakout(sym):
+                    continue
+
                 open_trade(sym)
+                break
 
             time.sleep(2)
 
@@ -259,13 +310,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL PRO BOT")
+print("🔥 FINAL V6 BOT")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL PRO")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V6")
 
 bot.infinity_polling()
