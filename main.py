@@ -29,6 +29,19 @@ def safe(x):
     except:
         return 0
 
+# ================= TREND =================
+
+def trend_ok(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=20)
+        closes = [c[4] for c in candles]
+
+        ema = sum(closes[-10:]) / 10
+
+        return closes[-1] > ema
+    except:
+        return False
+
 # ================= COIN =================
 
 def get_coin():
@@ -75,16 +88,11 @@ def dip_signal(sym):
         candles = exchange.fetch_ohlcv(sym, "1m", limit=7)
         closes = [c[4] for c in candles]
 
-        # düşüş
         falling = closes[-6] > closes[-5] > closes[-4] > closes[-3]
-
-        # 2 yeşil mum
         green1 = closes[-2] > closes[-3]
         green2 = closes[-1] > closes[-2]
 
-        # 🔥 YENİ: çok yükseldiyse girme
         move = (closes[-1] - closes[-6]) / closes[-6]
-
         if move > 0.015:
             return False
 
@@ -162,6 +170,9 @@ def scanner():
                 time.sleep(2)
                 continue
 
+            if not trend_ok(sym):
+                continue
+
             if dip_signal(sym):
                 open_trade(sym)
 
@@ -172,11 +183,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL FIX BOT")
+print("🔥 FINAL V5 BOT")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL FIX")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V5 FINAL")
 
 bot.infinity_polling()
