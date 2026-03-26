@@ -49,7 +49,7 @@ def get_coin():
 
         vol = safe(d.get("quoteVolume"))
 
-        if vol < 1000000 or vol > 20000000:
+        if vol < 1000000 or vol > 5000000:
             continue
 
         arr.append(sym)
