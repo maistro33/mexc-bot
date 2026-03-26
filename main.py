@@ -35,7 +35,10 @@ def get_coin():
     tickers = exchange.fetch_tickers()
     arr = []
 
-    blacklist = ["BTC","ETH","BNB","XRP","ADA","SOL","DOGE","PEPE","SHIB"]
+    blacklist = [
+        "BTC","ETH","BNB","XRP","ADA","SOL",
+        "DOGE","PEPE","SHIB","AVAX","LINK","UNI","LTC"
+    ]
 
     for sym, d in tickers.items():
 
@@ -48,8 +51,17 @@ def get_coin():
             continue
 
         vol = safe(d.get("quoteVolume"))
-
         if vol < 1000000 or vol > 5000000:
+            continue
+
+        high = safe(d.get("high"))
+        low = safe(d.get("low"))
+
+        if low == 0:
+            continue
+
+        volatility = (high - low) / low
+        if volatility < 0.025:
             continue
 
         arr.append(sym)
@@ -63,11 +75,21 @@ def dip_signal(sym):
         candles = exchange.fetch_ohlcv(sym, "1m", limit=7)
         closes = [c[4] for c in candles]
 
+        # düşüş
         falling = closes[-6] > closes[-5] > closes[-4] > closes[-3]
+
+        # 2 yeşil mum
         green1 = closes[-2] > closes[-3]
         green2 = closes[-1] > closes[-2]
 
+        # 🔥 YENİ: çok yükseldiyse girme
+        move = (closes[-1] - closes[-6]) / closes[-6]
+
+        if move > 0.015:
+            return False
+
         return falling and green1 and green2
+
     except:
         return False
 
@@ -150,11 +172,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 DIP BOT FINAL")
+print("🔥 FINAL FIX BOT")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL FIX")
 
 bot.infinity_polling()
