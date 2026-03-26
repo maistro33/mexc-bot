@@ -5,8 +5,8 @@ import telebot
 import threading
 import random
 
-LEV = 15
-MARGIN = 2
+LEV = 10
+MARGIN = 3
 
 TP = 0.35
 SL = 0.20
@@ -44,65 +44,49 @@ def get_coin():
         if vol < 1000000:
             continue
 
-        high = safe(d.get("high"))
-        low = safe(d.get("low"))
-
-        if low == 0:
-            continue
-
-        volat = (high - low) / low
-
-        if volat > 0.03:
-            arr.append(sym)
+        arr.append(sym)
 
     return random.choice(arr) if arr else None
 
-# ================= MOMENTUM =================
+# ================= DIP CONTROL =================
 
-def momentum(sym):
-    candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
+def dip_signal(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
 
-    last = candles[-1][4]
-    prev = candles[-2][4]
+        closes = [c[4] for c in candles]
 
-    return (last - prev) / prev
+        # son 4 mum düşüş
+        falling = closes[-5] > closes[-4] > closes[-3] > closes[-2]
 
-# ================= FAKE FILTER =================
+        # son mum yeşil ve yukarı
+        bounce = closes[-1] > closes[-2]
 
-def fake_move(sym):
-    candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
+        if falling and bounce:
+            return True
 
-    c1 = candles[-4][4]
-    c2 = candles[-3][4]
-    c3 = candles[-2][4]
-    c4 = candles[-1][4]
-
-    # ani spike varsa girme
-    move = abs(c4 - c1) / c1
-
-    return move > 0.01  # %1 üstü ani hareket
+        return False
+    except:
+        return False
 
 # ================= TRADE =================
 
-def open_trade(sym, direction):
+def open_trade(sym):
     global active_trade
 
     price = exchange.fetch_ticker(sym)["last"]
     qty = (MARGIN * LEV) / price
 
     exchange.set_leverage(LEV, sym)
-
-    side = "buy" if direction == "long" else "sell"
-    exchange.create_market_order(sym, side, qty)
+    exchange.create_market_order(sym, "buy", qty)
 
     active_trade = {
         "symbol": sym,
-        "direction": direction,
         "entry": price,
         "qty": qty
     }
 
-    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} {round(price,5)}")
+    bot.send_message(CHAT_ID, f"🚀 LONG {sym} {round(price,5)}")
 
 # ================= MANAGE =================
 
@@ -116,24 +100,22 @@ def manage():
                 continue
 
             sym = active_trade["symbol"]
-            direction = active_trade["direction"]
             entry = active_trade["entry"]
             qty = active_trade["qty"]
 
             price = exchange.fetch_ticker(sym)["last"]
 
-            pnl = (price - entry) if direction == "long" else (entry - price)
-            pnl = pnl * (MARGIN * LEV) / entry
+            pnl = (price - entry) * (MARGIN * LEV) / entry
 
-            side = "sell" if direction == "long" else "buy"
-
+            # TP
             if pnl >= TP:
-                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                 bot.send_message(CHAT_ID, f"💰 TP {sym} {round(pnl,2)}$")
                 active_trade = None
 
+            # SL
             elif pnl <= -SL:
-                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                 bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
                 active_trade = None
 
@@ -158,16 +140,8 @@ def scanner():
                 time.sleep(2)
                 continue
 
-            if fake_move(sym):
-                continue
-
-            m = momentum(sym)
-
-            if m > 0.002:
-                open_trade(sym, "long")
-
-            elif m < -0.002:
-                open_trade(sym, "short")
+            if dip_signal(sym):
+                open_trade(sym)
 
             time.sleep(2)
 
@@ -176,11 +150,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 OPTIMIZED SCALP BOT")
+print("🔥 DIP BOT")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 OPTIMIZED BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 DIP BOT AKTİF")
 
 bot.infinity_polling()
