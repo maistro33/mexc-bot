@@ -31,6 +31,37 @@ def safe(x):
     except:
         return 0
 
+# ================= SYNC =================
+
+def check_open_position():
+    global active_trade
+
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts") or p.get("size"))
+            if abs(qty) <= 0:
+                continue
+
+            sym = p.get("symbol")
+            entry = safe(p.get("entryPrice") or p.get("avgPrice"))
+
+            active_trade = {
+                "symbol": sym,
+                "entry": entry,
+                "qty": qty,
+                "tp1": True,  # restart sonrası direkt trailing
+                "max_pnl": 0,
+                "remaining_qty": qty
+            }
+
+            bot.send_message(CHAT_ID, f"🔄 SYNC {sym}")
+            return
+
+    except Exception as e:
+        print("SYNC ERROR:", e)
+
 # ================= TREND =================
 
 def trend_ok(sym):
@@ -50,7 +81,8 @@ def get_coin():
 
     blacklist = [
         "BTC","ETH","BNB","XRP","ADA","SOL",
-        "DOGE","PEPE","SHIB","AVAX","LINK","UNI","LTC"
+        "DOGE","PEPE","SHIB",
+        "AVAX","LINK","UNI","LTC","ATOM","ETC","FIL"
     ]
 
     for sym, d in tickers.items():
@@ -65,6 +97,16 @@ def get_coin():
 
         vol = safe(d.get("quoteVolume"))
         if vol < 1000000 or vol > 5000000:
+            continue
+
+        high = safe(d.get("high"))
+        low = safe(d.get("low"))
+
+        if low == 0:
+            continue
+
+        volatility = (high - low) / low
+        if volatility < 0.03:
             continue
 
         arr.append(sym)
@@ -95,6 +137,9 @@ def open_trade(sym):
     global active_trade
 
     try:
+        if active_trade:
+            return
+
         price = exchange.fetch_ticker(sym)["last"]
         qty = (MARGIN * LEV) / price
 
@@ -139,21 +184,19 @@ def manage():
 
             side = "sell"
 
-            # ================= TP1
+            # TP1
             if not active_trade["tp1"] and pnl >= TP1:
 
                 close_qty = qty * 0.5
 
-                exchange.create_market_order(
-                    sym, side, close_qty, params={"reduceOnly": True}
-                )
+                exchange.create_market_order(sym, side, close_qty, params={"reduceOnly": True})
 
                 active_trade["tp1"] = True
                 active_trade["remaining_qty"] = qty - close_qty
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.50$")
 
-            # ================= TRAILING
+            # TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
 
                 if active_trade["max_pnl"] - pnl >= STEP:
@@ -165,16 +208,14 @@ def manage():
                         params={"reduceOnly": True}
                     )
 
-                    bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}$")
                     active_trade = None
                     continue
 
-            # ================= SL
+            # SL
             if pnl <= -SL:
 
-                exchange.create_market_order(
-                    sym, side, qty, params={"reduceOnly": True}
-                )
+                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
 
                 bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
                 active_trade = None
@@ -218,11 +259,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 CLEAN BOT FINAL TRAILING")
+print("🔥 FINAL PRO BOT")
+
+check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL TRAILING")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL PRO")
 
 bot.infinity_polling()
