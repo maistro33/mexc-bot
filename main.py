@@ -5,10 +5,10 @@ import telebot
 import threading
 import random
 
-LEV = 10
-MARGIN = 2
+LEV = 20
+MARGIN = 3
 
-TP = 0.25
+TP = 0.35
 SL = 0.20
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -29,11 +29,11 @@ def safe(x):
     except:
         return 0
 
-# ================= VOLATİL COİN =================
+# ================= COIN =================
 
 def get_coin():
     tickers = exchange.fetch_tickers()
-    candidates = []
+    arr = []
 
     for sym, d in tickers.items():
 
@@ -47,24 +47,40 @@ def get_coin():
         high = safe(d.get("high"))
         low = safe(d.get("low"))
 
-        if high == 0 or low == 0:
+        if low == 0:
             continue
 
-        volatility = (high - low) / low
+        volat = (high - low) / low
 
-        if volatility > 0.03:  # %3 hareket
-            candidates.append(sym)
+        if volat > 0.03:
+            arr.append(sym)
 
-    if not candidates:
-        return None
-
-    return random.choice(candidates)
+    return random.choice(arr) if arr else None
 
 # ================= MOMENTUM =================
 
 def momentum(sym):
-    candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
-    return (candles[-1][4] - candles[-2][4]) / candles[-2][4]
+    candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
+
+    last = candles[-1][4]
+    prev = candles[-2][4]
+
+    return (last - prev) / prev
+
+# ================= FAKE FILTER =================
+
+def fake_move(sym):
+    candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
+
+    c1 = candles[-4][4]
+    c2 = candles[-3][4]
+    c3 = candles[-2][4]
+    c4 = candles[-1][4]
+
+    # ani spike varsa girme
+    move = abs(c4 - c1) / c1
+
+    return move > 0.01  # %1 üstü ani hareket
 
 # ================= TRADE =================
 
@@ -82,7 +98,8 @@ def open_trade(sym, direction):
     active_trade = {
         "symbol": sym,
         "direction": direction,
-        "entry": price
+        "entry": price,
+        "qty": qty
     }
 
     bot.send_message(CHAT_ID, f"🚀 {sym} {direction} {round(price,5)}")
@@ -101,24 +118,22 @@ def manage():
             sym = active_trade["symbol"]
             direction = active_trade["direction"]
             entry = active_trade["entry"]
+            qty = active_trade["qty"]
 
             price = exchange.fetch_ticker(sym)["last"]
 
             pnl = (price - entry) if direction == "long" else (entry - price)
-
             pnl = pnl * (MARGIN * LEV) / entry
 
             side = "sell" if direction == "long" else "buy"
 
-            # TP
             if pnl >= TP:
-                exchange.create_market_order(sym, side, None, params={"reduceOnly": True})
+                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                 bot.send_message(CHAT_ID, f"💰 TP {sym} {round(pnl,2)}$")
                 active_trade = None
 
-            # SL
             elif pnl <= -SL:
-                exchange.create_market_order(sym, side, None, params={"reduceOnly": True})
+                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
                 bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
                 active_trade = None
 
@@ -143,6 +158,9 @@ def scanner():
                 time.sleep(2)
                 continue
 
+            if fake_move(sym):
+                continue
+
             m = momentum(sym)
 
             if m > 0.002:
@@ -158,11 +176,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 SIMPLE SCALP BOT")
+print("🔥 OPTIMIZED SCALP BOT")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 SIMPLE BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 OPTIMIZED BOT AKTİF")
 
 bot.infinity_polling()
