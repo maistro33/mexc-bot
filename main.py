@@ -5,8 +5,8 @@ import telebot
 import threading
 import random
 
-LEV = 20
-MARGIN = 3
+LEV = 15
+MARGIN = 2
 
 TP = 0.35
 SL = 0.20
