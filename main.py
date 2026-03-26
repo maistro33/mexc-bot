@@ -6,7 +6,7 @@ import threading
 import random
 
 LEV = 10
-MARGIN = 3
+MARGIN = 2
 
 TP = 0.35
 SL = 0.20
@@ -35,37 +35,39 @@ def get_coin():
     tickers = exchange.fetch_tickers()
     arr = []
 
+    blacklist = ["BTC","ETH","BNB","XRP","ADA","SOL","DOGE","PEPE","SHIB"]
+
     for sym, d in tickers.items():
 
         if "USDT" not in sym:
             continue
 
+        s = sym.upper()
+
+        if any(x in s for x in blacklist):
+            continue
+
         vol = safe(d.get("quoteVolume"))
-        if vol < 1000000:
+
+        if vol < 1000000 or vol > 20000000:
             continue
 
         arr.append(sym)
 
     return random.choice(arr) if arr else None
 
-# ================= DIP CONTROL =================
+# ================= DİP + ONAY =================
 
 def dip_signal(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
-
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=7)
         closes = [c[4] for c in candles]
 
-        # son 4 mum düşüş
-        falling = closes[-5] > closes[-4] > closes[-3] > closes[-2]
+        falling = closes[-6] > closes[-5] > closes[-4] > closes[-3]
+        green1 = closes[-2] > closes[-3]
+        green2 = closes[-1] > closes[-2]
 
-        # son mum yeşil ve yukarı
-        bounce = closes[-1] > closes[-2]
-
-        if falling and bounce:
-            return True
-
-        return False
+        return falling and green1 and green2
     except:
         return False
 
@@ -107,13 +109,11 @@ def manage():
 
             pnl = (price - entry) * (MARGIN * LEV) / entry
 
-            # TP
             if pnl >= TP:
                 exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                 bot.send_message(CHAT_ID, f"💰 TP {sym} {round(pnl,2)}$")
                 active_trade = None
 
-            # SL
             elif pnl <= -SL:
                 exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                 bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
@@ -150,11 +150,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 DIP BOT")
+print("🔥 DIP BOT FINAL")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 DIP BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL")
 
 bot.infinity_polling()
