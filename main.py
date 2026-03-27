@@ -76,12 +76,22 @@ def trend_ok(sym):
 
 def get_symbols():
     tickers = exchange.fetch_tickers()
+    markets = exchange.load_markets()
+
     arr = []
 
     blacklist = [
         "BTC","ETH","BNB","XRP","ADA","SOL",
         "DOGE","PEPE","SHIB",
         "AVAX","LINK","UNI","LTC","ATOM","ETC","FIL"
+    ]
+
+    stock_keywords = [
+        "ETF","STOCK","INDEX",
+        "SPY","QQQ","DOW","NDX",
+        "AAPL","TSLA","NVDA","META","AMZN","GOOG","MSFT",
+        "MARA","COIN","RIOT","PLTR","BABA",
+        "US30","NAS100","SPX","DJI"
     ]
 
     for sym, d in tickers.items():
@@ -93,6 +103,17 @@ def get_symbols():
 
         if any(x in s for x in blacklist):
             continue
+
+        # ETF / STOCK isim filtresi
+        if any(k in s for k in stock_keywords):
+            continue
+
+        # MARKET TYPE filtresi (çok kritik)
+        market = markets.get(sym)
+        if market:
+            mtype = str(market.get("type", "")).lower()
+            if "stock" in mtype or "index" in mtype:
+                continue
 
         vol = safe(d.get("quoteVolume"))
         if vol < 1000000 or vol > 5000000:
@@ -315,13 +336,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL V7+ STABLE")
+print("🔥 FINAL V7+ FULL FILTER")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL (ETF FİLTRELİ)")
 
 bot.infinity_polling()
