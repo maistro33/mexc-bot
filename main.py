@@ -1,5 +1,3 @@
-
-
 import os
 import time
 import ccxt
@@ -10,10 +8,10 @@ import random
 LEV = 10
 MARGIN = 3
 
-TP1 = 0.50
-TRAIL_START = 0.70
-STEP = 0.35
-SL = 0.25
+TP1_USDT = 0.30
+TRAIL_START = 0.50
+STEP = 0.20
+SL_PERCENT = 2.5
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -21,8 +19,9 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
+    "enableRateLimit": True
 })
 
 active_trade = None
@@ -37,10 +36,40 @@ def safe(x):
 
 def trend_ok(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=20)
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
         closes = [c[4] for c in candles]
-        ema = sum(closes[-10:]) / 10
-        return closes[-1] > ema
+
+        ema20 = sum(closes[-20:]) / 20
+        ema5 = sum(closes[-5:]) / 5
+
+        return closes[-1] > ema20 and ema5 > ema20
+    except:
+        return False
+
+# ================= VOLUME =================
+
+def volume_spike(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=10)
+        volumes = [c[5] for c in candles]
+        avg = sum(volumes[:-1]) / len(volumes[:-1])
+        return volumes[-1] > avg * 1.8
+    except:
+        return False
+
+# ================= ENTRY =================
+
+def strong_breakout(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
+
+        highs = [c[2] for c in candles]
+        closes = [c[4] for c in candles]
+
+        breakout = closes[-1] > max(highs[:-1])
+        strong = closes[-1] > closes[-2]
+
+        return breakout and strong
     except:
         return False
 
@@ -60,36 +89,18 @@ def get_coin():
         if "USDT" not in sym:
             continue
 
-        s = sym.upper()
-
-        if any(x in s for x in blacklist):
+        if any(x in sym for x in blacklist):
             continue
 
         vol = safe(d.get("quoteVolume"))
-        if vol < 1000000 or vol > 5000000:
+        if vol < 1000000:
             continue
 
         arr.append(sym)
 
-    return random.choice(arr) if arr else None
+    arr = sorted(arr, key=lambda x: safe(tickers[x]['quoteVolume']), reverse=True)
 
-# ================= SETUP =================
-
-def pullback(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
-        closes = [c[4] for c in candles]
-        return closes[-2] < closes[-3]
-    except:
-        return False
-
-def breakout(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
-        closes = [c[4] for c in candles]
-        return closes[-1] > closes[-2]
-    except:
-        return False
+    return arr[0] if arr else None
 
 # ================= TRADE =================
 
@@ -134,15 +145,15 @@ def manage():
 
             price = exchange.fetch_ticker(sym)["last"]
 
-            pnl = (price - entry) * (MARGIN * LEV) / entry
+            pnl = (price - entry) / entry * LEV * MARGIN
 
             if pnl > active_trade["max_pnl"]:
                 active_trade["max_pnl"] = pnl
 
             side = "sell"
 
-            # ================= TP1
-            if not active_trade["tp1"] and pnl >= TP1:
+            # ================= TP1 (0.30 USDT)
+            if not active_trade["tp1"] and pnl >= TP1_USDT:
 
                 close_qty = qty * 0.5
 
@@ -153,7 +164,7 @@ def manage():
                 active_trade["tp1"] = True
                 active_trade["remaining_qty"] = qty - close_qty
 
-                bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.50$")
+                bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30$")
 
             # ================= TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
@@ -171,8 +182,8 @@ def manage():
                     active_trade = None
                     continue
 
-            # ================= SL
-            if pnl <= -SL:
+            # ================= HARD SL (%2.5)
+            if pnl <= -(SL_PERCENT / 100 * LEV * MARGIN):
 
                 exchange.create_market_order(
                     sym, side, qty, params={"reduceOnly": True}
@@ -206,10 +217,15 @@ def scanner():
             if not trend_ok(sym):
                 continue
 
-            if not pullback(sym):
+            if not volume_spike(sym):
                 continue
 
-            if breakout(sym):
+            if not strong_breakout(sym):
+                continue
+
+            time.sleep(2)
+
+            if strong_breakout(sym):
                 open_trade(sym)
 
             time.sleep(2)
@@ -220,11 +236,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 CLEAN BOT FINAL TRAILING")
+print("🔥 FINAL PRO BOT AKTİF")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL TRAILING")
+bot.send_message(CHAT_ID, "🤖 PRO BOT AKTİF")
 
 bot.infinity_polling()
