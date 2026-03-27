@@ -86,6 +86,20 @@ def trend_ok(sym):
     except:
         return False
 
+# ================= ENTRY FILTER (YENİ) =================
+
+def overextended(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
+        closes = [c[4] for c in candles]
+
+        move = (closes[-1] - closes[-5]) / closes[-5]
+
+        return move > 0.018  # %1.8 üstü pump → girme
+
+    except:
+        return True
+
 # ================= COINS =================
 
 def get_symbols():
@@ -300,7 +314,7 @@ def manage():
                     active_trade = None
                     continue
 
-            # SL (sadece TP1 öncesi)
+            # SL (TP1 öncesi)
             if not active_trade["tp1"] and pnl_usdt <= -SL_USDT:
 
                 exchange.create_market_order(
@@ -331,6 +345,9 @@ def scanner():
 
             for sym in symbols:
 
+                if overextended(sym):
+                    continue
+
                 if not trend_ok(sym):
                     continue
 
@@ -357,13 +374,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL V8.3 LOCKED")
+print("🔥 FINAL V8.4 READY")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8.3 (SAFE MODE)")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8.4 (ENTRY FIXED)")
 
 bot.infinity_polling()
