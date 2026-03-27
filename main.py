@@ -8,10 +8,10 @@ import random
 LEV = 10
 MARGIN = 3
 
-TP1_PERCENT = 0.01
-TRAIL_START = 0.015
-STEP_PERCENT = 0.005
-SL_PERCENT = 0.005
+TP1_USDT = 0.30
+STEP_SIZE = 0.20
+TRAIL_STEP = 0.20
+SL_USDT = 0.30
 
 SCAN_LIMIT = 50
 
@@ -52,8 +52,9 @@ def check_open_position():
                 "entry": entry,
                 "qty": qty,
                 "tp1": True,
-                "max_pnl": 0.01,
-                "remaining_qty": qty
+                "max_pnl": 0,
+                "remaining_qty": qty,
+                "last_step": 0
             }
 
             bot.send_message(CHAT_ID, f"🔄 SYNC {sym}")
@@ -104,11 +105,9 @@ def get_symbols():
         if any(x in s for x in blacklist):
             continue
 
-        # ETF / STOCK isim filtresi
         if any(k in s for k in stock_keywords):
             continue
 
-        # MARKET TYPE filtresi (çok kritik)
         market = markets.get(sym)
         if market:
             mtype = str(market.get("type", "")).lower()
@@ -157,8 +156,6 @@ def entry_filter(sym):
         return True
     except:
         return False
-
-# ================= FAKE BREAKOUT =================
 
 def strong_breakout(sym):
     try:
@@ -211,7 +208,8 @@ def open_trade(sym):
             "qty": qty,
             "tp1": False,
             "max_pnl": 0,
-            "remaining_qty": qty
+            "remaining_qty": qty,
+            "last_step": 0
         }
 
         bot.send_message(CHAT_ID, f"🚀 LONG {sym} {round(price,5)}")
@@ -236,17 +234,17 @@ def manage():
 
             price = exchange.fetch_ticker(sym)["last"]
 
-            pnl_percent = (price - entry) / entry
-
-            # MAX takip (spam korumalı)
-            if pnl_percent > active_trade["max_pnl"] + 0.002:
-                active_trade["max_pnl"] = pnl_percent
-                bot.send_message(CHAT_ID, f"📈 {sym} MAX %{round(pnl_percent*100,2)}")
+            pnl_usdt = (price - entry) * qty
 
             side = "sell"
 
+            # STEP
+            if pnl_usdt >= active_trade["last_step"] + STEP_SIZE:
+                active_trade["last_step"] += STEP_SIZE
+                bot.send_message(CHAT_ID, f"📈 STEP {round(active_trade['last_step'],2)} USDT")
+
             # TP1
-            if not active_trade["tp1"] and pnl_percent >= TP1_PERCENT:
+            if not active_trade["tp1"] and pnl_usdt >= TP1_USDT:
 
                 close_qty = round(qty * 0.5, 6)
 
@@ -255,38 +253,47 @@ def manage():
                 )
 
                 active_trade["tp1"] = True
+                active_trade["remaining_qty"] = max(qty - close_qty, 0)
 
-                remaining = max(qty - close_qty, 0)
-                active_trade["remaining_qty"] = remaining
-
-                bot.send_message(CHAT_ID, f"💰 TP1 {sym} %{round(pnl_percent*100,2)}")
+                bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30 USDT")
 
             # TRAILING
-            if active_trade["tp1"] and pnl_percent >= TRAIL_START:
+            if active_trade["tp1"]:
 
-                drawdown = active_trade["max_pnl"] - pnl_percent
+                if pnl_usdt > active_trade["max_pnl"]:
+                    active_trade["max_pnl"] = pnl_usdt
 
-                if drawdown >= STEP_PERCENT and active_trade["remaining_qty"] > 0:
+                drawdown = active_trade["max_pnl"] - pnl_usdt
 
-                    exchange.create_market_order(
-                        sym,
-                        side,
-                        active_trade["remaining_qty"],
-                        params={"reduceOnly": True}
-                    )
+                if drawdown >= TRAIL_STEP:
 
-                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} %{round(pnl_percent*100,2)}")
+                    positions = exchange.fetch_positions()
+                    real_qty = 0
+
+                    for p in positions:
+                        if p["symbol"] == sym:
+                            real_qty = abs(float(p.get("contracts") or p.get("size", 0)))
+
+                    if real_qty > 0:
+                        exchange.create_market_order(
+                            sym,
+                            side,
+                            real_qty,
+                            params={"reduceOnly": True}
+                        )
+
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl_usdt,2)} USDT")
                     active_trade = None
                     continue
 
             # SL
-            if pnl_percent <= -SL_PERCENT:
+            if pnl_usdt <= -SL_USDT:
 
                 exchange.create_market_order(
                     sym, side, qty, params={"reduceOnly": True}
                 )
 
-                bot.send_message(CHAT_ID, f"🛑 SL {sym} %{round(pnl_percent*100,2)}")
+                bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl_usdt,2)} USDT")
                 active_trade = None
 
             time.sleep(1)
@@ -336,13 +343,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL V7+ FULL FILTER")
+print("🔥 FINAL V8 STABLE")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL (ETF FİLTRELİ)")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8 (USDT MODE)")
 
 bot.infinity_polling()
