@@ -13,12 +13,9 @@ TRAIL_START = 0.50
 STEP = 0.20
 SL_PERCENT = 2.5
 
-DEBUG = False
-
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-# 🔥 ENV + FALLBACK
 BITGET_PASS = os.getenv("BITGET_PASS") or "Berfin33"
 
 exchange = ccxt.bitget({
@@ -67,14 +64,32 @@ def volume_spike(sym):
 def strong_breakout(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
-
         highs = [c[2] for c in candles]
         closes = [c[4] for c in candles]
 
-        breakout = closes[-1] > max(highs[:-1])
-        strong = closes[-1] > closes[-2]
+        return closes[-1] > max(highs[:-1]) and closes[-1] > closes[-2]
+    except:
+        return False
 
-        return breakout and strong
+# ================= PULLBACK =================
+
+def pullback_after_breakout(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
+        closes = [c[4] for c in candles]
+
+        return closes[-2] < closes[-1] and closes[-3] > closes[-2]
+    except:
+        return False
+
+# ================= OVEREXTENDED =================
+
+def overextended(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=5)
+        closes = [c[4] for c in candles]
+
+        return (closes[-1] - closes[-5]) / closes[-5] > 0.01
     except:
         return False
 
@@ -181,8 +196,8 @@ def manage():
 
             side = "sell"
 
+            # TP1
             if not active_trade["tp1"] and pnl >= TP1_USDT:
-
                 close_qty = qty * 0.5
 
                 exchange.create_market_order(
@@ -194,12 +209,11 @@ def manage():
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30$")
 
+            # Trailing
             if active_trade["tp1"] and pnl >= TRAIL_START:
-
                 drawdown = active_trade["max_pnl"] - pnl
 
                 if drawdown >= STEP:
-
                     exchange.create_market_order(
                         sym,
                         side,
@@ -211,8 +225,8 @@ def manage():
                     active_trade = None
                     continue
 
+            # SL
             if pnl <= -(SL_PERCENT / 100 * LEV * MARGIN):
-
                 exchange.create_market_order(
                     sym, side, qty, params={"reduceOnly": True}
                 )
@@ -251,12 +265,19 @@ def scanner():
                 if not volume_spike(sym):
                     continue
 
-                if not strong_breakout(sym):
+                if overextended(sym):
+                    continue
+
+                # 🔥 HYBRID ENTRY
+                breakout = strong_breakout(sym)
+                pullback = pullback_after_breakout(sym)
+
+                if not breakout and not pullback:
                     continue
 
                 time.sleep(1)
 
-                if strong_breakout(sym):
+                if strong_breakout(sym) or pullback_after_breakout(sym):
                     print(f"ENTRY FOUND: {sym}")
                     open_trade(sym)
                     break
@@ -269,11 +290,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL BOT AKTİF")
+print("🔥 HYBRID FINAL BOT AKTİF")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 HYBRID BOT AKTİF")
 
 bot.infinity_polling()
