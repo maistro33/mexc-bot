@@ -53,11 +53,11 @@ def volume_spike(sym):
         candles = exchange.fetch_ohlcv(sym, "1m", limit=10)
         volumes = [c[5] for c in candles]
         avg = sum(volumes[:-1]) / len(volumes[:-1])
-        return volumes[-1] > avg * 1.8
+        return volumes[-1] > avg * 1.5
     except:
         return False
 
-# ================= ENTRY =================
+# ================= BREAKOUT =================
 
 def strong_breakout(sym):
     try:
@@ -73,9 +73,9 @@ def strong_breakout(sym):
     except:
         return False
 
-# ================= COIN =================
+# ================= COINS =================
 
-def get_coin():
+def get_coins():
     tickers = exchange.fetch_tickers()
     arr = []
 
@@ -93,14 +93,38 @@ def get_coin():
             continue
 
         vol = safe(d.get("quoteVolume"))
-        if vol < 1000000:
+
+        # 🔥 1M - 3M
+        if vol < 1_000_000 or vol > 3_000_000:
             continue
 
         arr.append(sym)
 
-    arr = sorted(arr, key=lambda x: safe(tickers[x]['quoteVolume']), reverse=True)
+    random.shuffle(arr)
+    return arr
 
-    return arr[0] if arr else None
+# ================= POSITION CHECK =================
+
+def check_open_position():
+    global active_trade
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            if float(p.get('contracts', 0)) > 0:
+                active_trade = {
+                    "symbol": p['symbol'],
+                    "entry": float(p['entryPrice']),
+                    "qty": float(p['contracts']),
+                    "tp1": False,
+                    "max_pnl": 0,
+                    "remaining_qty": float(p['contracts'])
+                }
+                return True
+    except:
+        return False
+
+    return False
 
 # ================= TRADE =================
 
@@ -152,7 +176,7 @@ def manage():
 
             side = "sell"
 
-            # ================= TP1 (0.30 USDT)
+            # ================= TP1
             if not active_trade["tp1"] and pnl >= TP1_USDT:
 
                 close_qty = qty * 0.5
@@ -169,7 +193,9 @@ def manage():
             # ================= TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
 
-                if active_trade["max_pnl"] - pnl >= STEP:
+                drawdown = active_trade["max_pnl"] - pnl
+
+                if drawdown >= STEP:
 
                     exchange.create_market_order(
                         sym,
@@ -209,26 +235,32 @@ def scanner():
                 time.sleep(1)
                 continue
 
-            sym = get_coin()
-            if not sym:
+            if check_open_position():
                 time.sleep(2)
                 continue
 
-            if not trend_ok(sym):
-                continue
+            coins = get_coins()
 
-            if not volume_spike(sym):
-                continue
+            for sym in coins:
 
-            if not strong_breakout(sym):
-                continue
+                print(f"SCAN: {sym}")
 
-            time.sleep(2)
+                if not trend_ok(sym):
+                    continue
 
-            if strong_breakout(sym):
-                open_trade(sym)
+                if not volume_spike(sym):
+                    continue
 
-            time.sleep(2)
+                if not strong_breakout(sym):
+                    continue
+
+                time.sleep(1)
+
+                if strong_breakout(sym):
+                    open_trade(sym)
+                    break
+
+            time.sleep(1)
 
         except Exception as e:
             print("SCAN ERROR:", e)
@@ -236,11 +268,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL PRO BOT AKTİF")
+print("🔥 FINAL BOT AKTİF")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF")
 
 bot.infinity_polling()
