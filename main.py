@@ -8,10 +8,10 @@ import random
 LEV = 10
 MARGIN = 3
 
-TP1 = 0.50
-TRAIL_START = 0.70
-STEP = 0.35
-SL = 0.25
+TP1_PERCENT = 0.01
+TRAIL_START = 0.015
+STEP_PERCENT = 0.005
+SL_PERCENT = 0.005
 
 SCAN_LIMIT = 50
 
@@ -52,7 +52,7 @@ def check_open_position():
                 "entry": entry,
                 "qty": qty,
                 "tp1": True,
-                "max_pnl": 0,
+                "max_pnl": 0.01,
                 "remaining_qty": qty
             }
 
@@ -123,8 +123,6 @@ def pullback(sym):
     except:
         return False
 
-# ================= ENTRY FILTER =================
-
 def entry_filter(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
@@ -139,7 +137,7 @@ def entry_filter(sym):
     except:
         return False
 
-# ================= FAKE BREAKOUT FILTER =================
+# ================= FAKE BREAKOUT =================
 
 def strong_breakout(sym):
     try:
@@ -152,7 +150,6 @@ def strong_breakout(sym):
         body = close_price - open_price
         wick = high - close_price
 
-        # mum yeşil olmalı ve gövde fitilden büyük olmalı
         if body <= 0:
             return False
 
@@ -163,8 +160,6 @@ def strong_breakout(sym):
 
     except:
         return False
-
-# ================= BREAKOUT =================
 
 def breakout(sym):
     try:
@@ -220,29 +215,37 @@ def manage():
 
             price = exchange.fetch_ticker(sym)["last"]
 
-            pnl = (price - entry) * (MARGIN * LEV) / entry
+            pnl_percent = (price - entry) / entry
 
-            if pnl > active_trade["max_pnl"]:
-                active_trade["max_pnl"] = pnl
+            # MAX takip (spam korumalı)
+            if pnl_percent > active_trade["max_pnl"] + 0.002:
+                active_trade["max_pnl"] = pnl_percent
+                bot.send_message(CHAT_ID, f"📈 {sym} MAX %{round(pnl_percent*100,2)}")
 
             side = "sell"
 
             # TP1
-            if not active_trade["tp1"] and pnl >= TP1:
+            if not active_trade["tp1"] and pnl_percent >= TP1_PERCENT:
 
-                close_qty = qty * 0.5
+                close_qty = round(qty * 0.5, 6)
 
-                exchange.create_market_order(sym, side, close_qty, params={"reduceOnly": True})
+                exchange.create_market_order(
+                    sym, side, close_qty, params={"reduceOnly": True}
+                )
 
                 active_trade["tp1"] = True
-                active_trade["remaining_qty"] = qty - close_qty
 
-                bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.50$")
+                remaining = max(qty - close_qty, 0)
+                active_trade["remaining_qty"] = remaining
+
+                bot.send_message(CHAT_ID, f"💰 TP1 {sym} %{round(pnl_percent*100,2)}")
 
             # TRAILING
-            if active_trade["tp1"] and pnl >= TRAIL_START:
+            if active_trade["tp1"] and pnl_percent >= TRAIL_START:
 
-                if active_trade["max_pnl"] - pnl >= STEP:
+                drawdown = active_trade["max_pnl"] - pnl_percent
+
+                if drawdown >= STEP_PERCENT and active_trade["remaining_qty"] > 0:
 
                     exchange.create_market_order(
                         sym,
@@ -251,16 +254,18 @@ def manage():
                         params={"reduceOnly": True}
                     )
 
-                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"🏁 EXIT {sym} %{round(pnl_percent*100,2)}")
                     active_trade = None
                     continue
 
             # SL
-            if pnl <= -SL:
+            if pnl_percent <= -SL_PERCENT:
 
-                exchange.create_market_order(sym, side, qty, params={"reduceOnly": True})
+                exchange.create_market_order(
+                    sym, side, qty, params={"reduceOnly": True}
+                )
 
-                bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
+                bot.send_message(CHAT_ID, f"🛑 SL {sym} %{round(pnl_percent*100,2)}")
                 active_trade = None
 
             time.sleep(1)
@@ -310,13 +315,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL V6 BOT")
+print("🔥 FINAL V7+ STABLE")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V6")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF FINAL")
 
 bot.infinity_polling()
