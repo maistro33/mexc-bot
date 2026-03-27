@@ -11,7 +11,7 @@ MARGIN = 3
 TP1_USDT = 0.30
 TRAIL_START = 0.50
 STEP = 0.20
-SL_PERCENT = 2.5
+SL_USDT = 0.30
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -33,6 +33,30 @@ def safe(x):
         return float(x)
     except:
         return 0
+
+# ================= REAL PNL =================
+
+def get_real_pnl(sym):
+    try:
+        positions = exchange.fetch_positions()
+        for p in positions:
+            if p['symbol'] == sym:
+                return float(p.get('unrealizedPnl', 0))
+    except:
+        return 0
+    return 0
+
+# ================= POSITION CHECK =================
+
+def position_still_open(sym):
+    try:
+        positions = exchange.fetch_positions()
+        for p in positions:
+            if p['symbol'] == sym and float(p.get('contracts', 0)) > 0:
+                return True
+        return False
+    except:
+        return True
 
 # ================= TREND =================
 
@@ -122,7 +146,7 @@ def get_coins():
     random.shuffle(arr)
     return arr
 
-# ================= POSITION CHECK =================
+# ================= POSITION LOAD =================
 
 def check_open_position():
     global active_trade
@@ -184,20 +208,24 @@ def manage():
                 continue
 
             sym = active_trade["symbol"]
-            entry = active_trade["entry"]
             qty = active_trade["qty"]
 
-            price = exchange.fetch_ticker(sym)["last"]
+            # pozisyon açık mı
+            if not position_still_open(sym):
+                print("Pozisyon kapanmış resetleniyor")
+                active_trade = None
+                continue
 
-            pnl = (price - entry) / entry * LEV * MARGIN
+            pnl = get_real_pnl(sym)
 
             if pnl > active_trade["max_pnl"]:
                 active_trade["max_pnl"] = pnl
 
             side = "sell"
 
-            # TP1
+            # ================= TP1 (GERÇEK)
             if not active_trade["tp1"] and pnl >= TP1_USDT:
+
                 close_qty = qty * 0.5
 
                 exchange.create_market_order(
@@ -207,13 +235,15 @@ def manage():
                 active_trade["tp1"] = True
                 active_trade["remaining_qty"] = qty - close_qty
 
-                bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30$")
+                bot.send_message(CHAT_ID, f"💰 TP1 {sym} +{round(pnl,3)} USDT")
 
-            # Trailing
+            # ================= TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
+
                 drawdown = active_trade["max_pnl"] - pnl
 
                 if drawdown >= STEP:
+
                     exchange.create_market_order(
                         sym,
                         side,
@@ -221,17 +251,18 @@ def manage():
                         params={"reduceOnly": True}
                     )
 
-                    bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym} {round(pnl,2)}$")
+                    bot.send_message(CHAT_ID, f"🏁 TRAILING EXIT {sym} {round(pnl,3)} USDT")
                     active_trade = None
                     continue
 
-            # SL
-            if pnl <= -(SL_PERCENT / 100 * LEV * MARGIN):
+            # ================= SL (GERÇEK)
+            if pnl <= -SL_USDT:
+
                 exchange.create_market_order(
                     sym, side, qty, params={"reduceOnly": True}
                 )
 
-                bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}$")
+                bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,3)} USDT")
                 active_trade = None
 
             time.sleep(1)
@@ -268,7 +299,6 @@ def scanner():
                 if overextended(sym):
                     continue
 
-                # 🔥 HYBRID ENTRY
                 breakout = strong_breakout(sym)
                 pullback = pullback_after_breakout(sym)
 
@@ -290,11 +320,11 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 HYBRID FINAL BOT AKTİF")
+print("🔥 FINAL GERÇEK PNL BOT AKTİF")
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 HYBRID BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 GERÇEK PNL BOT AKTİF")
 
 bot.infinity_polling()
