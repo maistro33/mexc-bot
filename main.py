@@ -18,10 +18,13 @@ DEBUG = False
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# 🔥 ENV + FALLBACK
+BITGET_PASS = os.getenv("BITGET_PASS") or "Berfin33"
+
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": BITGET_PASS,
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -96,7 +99,6 @@ def get_coins():
 
         vol = safe(d.get("quoteVolume"))
 
-        # 1M - 3M
         if vol < 1_000_000 or vol > 3_000_000:
             continue
 
@@ -152,6 +154,7 @@ def open_trade(sym):
         bot.send_message(CHAT_ID, f"🚀 LONG {sym} {round(price,5)}")
 
     except Exception as e:
+        bot.send_message(CHAT_ID, f"❌ TRADE ERROR: {str(e)}")
         print("TRADE ERROR:", e)
 
 # ================= MANAGE =================
@@ -178,7 +181,6 @@ def manage():
 
             side = "sell"
 
-            # TP1
             if not active_trade["tp1"] and pnl >= TP1_USDT:
 
                 close_qty = qty * 0.5
@@ -192,7 +194,6 @@ def manage():
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30$")
 
-            # TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
 
                 drawdown = active_trade["max_pnl"] - pnl
@@ -210,7 +211,6 @@ def manage():
                     active_trade = None
                     continue
 
-            # HARD SL (%2.5)
             if pnl <= -(SL_PERCENT / 100 * LEV * MARGIN):
 
                 exchange.create_market_order(
