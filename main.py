@@ -13,6 +13,8 @@ TRAIL_START = 0.50
 STEP = 0.20
 SL_PERCENT = 2.5
 
+DEBUG = False
+
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -94,7 +96,7 @@ def get_coins():
 
         vol = safe(d.get("quoteVolume"))
 
-        # 🔥 1M - 3M
+        # 1M - 3M
         if vol < 1_000_000 or vol > 3_000_000:
             continue
 
@@ -176,7 +178,7 @@ def manage():
 
             side = "sell"
 
-            # ================= TP1
+            # TP1
             if not active_trade["tp1"] and pnl >= TP1_USDT:
 
                 close_qty = qty * 0.5
@@ -190,7 +192,7 @@ def manage():
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30$")
 
-            # ================= TRAILING
+            # TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
 
                 drawdown = active_trade["max_pnl"] - pnl
@@ -208,7 +210,7 @@ def manage():
                     active_trade = None
                     continue
 
-            # ================= HARD SL (%2.5)
+            # HARD SL (%2.5)
             if pnl <= -(SL_PERCENT / 100 * LEV * MARGIN):
 
                 exchange.create_market_order(
@@ -243,8 +245,6 @@ def scanner():
 
             for sym in coins:
 
-                print(f"SCAN: {sym}")
-
                 if not trend_ok(sym):
                     continue
 
@@ -257,10 +257,11 @@ def scanner():
                 time.sleep(1)
 
                 if strong_breakout(sym):
+                    print(f"ENTRY FOUND: {sym}")
                     open_trade(sym)
                     break
 
-            time.sleep(1)
+            time.sleep(2)
 
         except Exception as e:
             print("SCAN ERROR:", e)
