@@ -51,7 +51,7 @@ def check_open_position():
                 "symbol": sym,
                 "entry": entry,
                 "qty": qty,
-                "tp1": True,
+                "tp1": False,  # 🔥 önemli FIX
                 "max_pnl": 0,
                 "remaining_qty": qty,
                 "last_step": 0
@@ -175,7 +175,6 @@ def strong_breakout(sym):
             return False
 
         return True
-
     except:
         return False
 
@@ -238,7 +237,7 @@ def manage():
 
             side = "sell"
 
-            # STEP
+            # STEP (spam yok)
             if pnl_usdt >= active_trade["last_step"] + STEP_SIZE:
                 active_trade["last_step"] += STEP_SIZE
                 bot.send_message(CHAT_ID, f"📈 STEP {round(active_trade['last_step'],2)} USDT")
@@ -254,10 +253,11 @@ def manage():
 
                 active_trade["tp1"] = True
                 active_trade["remaining_qty"] = max(qty - close_qty, 0)
+                active_trade["max_pnl"] = pnl_usdt  # 🔥 önemli FIX
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30 USDT")
 
-            # TRAILING
+            # TRAILING (SADECE TP1 SONRASI)
             if active_trade["tp1"]:
 
                 if pnl_usdt > active_trade["max_pnl"]:
@@ -286,7 +286,7 @@ def manage():
                     active_trade = None
                     continue
 
-            # SL
+            # SL (her zaman aktif)
             if pnl_usdt <= -SL_USDT:
 
                 exchange.create_market_order(
@@ -343,13 +343,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL V8 STABLE")
+print("🔥 FINAL V8.1 FIXED")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8 (USDT MODE)")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8.1 (FIXED)")
 
 bot.infinity_polling()
