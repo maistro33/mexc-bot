@@ -33,13 +33,25 @@ def safe(x):
     except:
         return 0
 
+# ================= OPEN POSITION CHECK =================
+
+def has_open_position():
+    try:
+        positions = exchange.fetch_positions()
+        for p in positions:
+            qty = safe(p.get("contracts") or p.get("size"))
+            if abs(qty) > 0:
+                return True
+        return False
+    except:
+        return False
+
 # ================= SYNC =================
 
 def check_open_position():
     global active_trade
     try:
         positions = exchange.fetch_positions()
-
         for p in positions:
             qty = safe(p.get("contracts") or p.get("size"))
             if abs(qty) <= 0:
@@ -193,7 +205,7 @@ def breakout(sym):
 def open_trade(sym):
     global active_trade
 
-    if active_trade:
+    if active_trade or has_open_position():
         return
 
     try:
@@ -238,7 +250,7 @@ def manage():
             pnl_usdt = (price - entry) * qty
             side = "sell"
 
-            # STEP sistemi (kaçırmaz)
+            # STEP
             while pnl_usdt >= active_trade["last_step"] + STEP_SIZE:
                 active_trade["last_step"] += STEP_SIZE
                 bot.send_message(CHAT_ID, f"📈 STEP {round(active_trade['last_step'],2)} USDT")
@@ -258,7 +270,7 @@ def manage():
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {sym} +0.30 USDT")
 
-            # TRAILING (sadece TP1 sonrası)
+            # TRAILING
             if active_trade["tp1"]:
 
                 if pnl_usdt > active_trade["max_pnl"]:
@@ -311,7 +323,7 @@ def scanner():
 
     while True:
         try:
-            if active_trade:
+            if active_trade or has_open_position():
                 time.sleep(1)
                 continue
 
@@ -345,13 +357,13 @@ def scanner():
 
 # ================= START =================
 
-print("🔥 FINAL V8.2 READY")
+print("🔥 FINAL V8.3 LOCKED")
 
 check_open_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8.2 (STABLE)")
+bot.send_message(CHAT_ID, "🤖 BOT AKTİF V8.3 (SAFE MODE)")
 
 bot.infinity_polling()
