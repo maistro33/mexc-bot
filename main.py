@@ -35,38 +35,46 @@ def safe(x):
     except:
         return 0
 
-# ===== POSITION =====
-def has_position():
-    try:
-        positions = exchange.fetch_positions()
-        for p in positions:
-            if abs(safe(p.get("contracts") or p.get("size"))) > 0:
-                return True
-        return False
-    except:
-        return False
+# ================= POSITION =================
 
-def get_pnl(sym):
+def get_position(sym=None):
     try:
         positions = exchange.fetch_positions()
+
         for p in positions:
-            if sym.replace("/", "") in p.get("symbol",""):
-                return safe(p.get("unrealizedPnl"))
-        return 0
+            qty = abs(safe(p.get("contracts") or p.get("size")))
+            if qty <= 0:
+                continue
+
+            psym = p.get("symbol","")
+
+            if sym is None:
+                return p
+
+            if sym.split("/")[0] in psym:
+                return p
+
+        return None
     except:
-        return 0
+        return None
+
+def has_position():
+    return get_position() is not None
 
 def get_qty(sym):
-    try:
-        positions = exchange.fetch_positions()
-        for p in positions:
-            if sym.replace("/", "") in p.get("symbol",""):
-                return abs(safe(p.get("contracts") or p.get("size")))
+    p = get_position(sym)
+    if not p:
         return 0
-    except:
-        return 0
+    return abs(safe(p.get("contracts") or p.get("size")))
 
-# ===== TREND =====
+def get_pnl(sym):
+    p = get_position(sym)
+    if not p:
+        return 0
+    return safe(p.get("unrealizedPnl"))
+
+# ================= TREND =================
+
 def trend_5m(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
@@ -76,12 +84,7 @@ def trend_5m(sym):
     except:
         return False
 
-def entry_ok(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=3)
-        return candles[-1][4] > candles[-2][4]
-    except:
-        return False
+# ================= ENTRY FILTERS =================
 
 def not_pumped(sym):
     try:
@@ -92,7 +95,36 @@ def not_pumped(sym):
     except:
         return False
 
-# ===== SYMBOLS =====
+def structure_ok(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
+        lows = [c[3] for c in candles]
+        highs = [c[2] for c in candles]
+
+        hl = lows[-1] > lows[-3]
+        hh = highs[-1] > highs[-2]
+
+        return hl and hh
+    except:
+        return False
+
+def buyer_strong(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=2)
+
+        o = candles[-1][1]
+        c = candles[-1][4]
+        h = candles[-1][2]
+
+        body = c - o
+        wick = h - c
+
+        return body > 0 and body > wick
+    except:
+        return False
+
+# ================= SYMBOL =================
+
 def get_symbols():
     tickers = exchange.fetch_tickers()
     arr = []
@@ -111,11 +143,12 @@ def get_symbols():
     random.shuffle(arr)
     return arr[:SCAN_LIMIT]
 
-# ===== TRADE =====
+# ================= TRADE =================
+
 def open_trade(sym):
     global active
 
-    if active or has_position():
+    if has_position():
         return
 
     try:
@@ -137,15 +170,35 @@ def open_trade(sym):
     except Exception as e:
         print(e)
 
-# ===== MANAGE =====
+# ================= SYNC =================
+
+def sync_position():
+    global active
+
+    p = get_position()
+    if p:
+        active = {
+            "symbol": p.get("symbol"),
+            "tp1": False,
+            "max": 0,
+            "step": 0
+        }
+        bot.send_message(CHAT_ID, f"🔄 SYNC")
+
+# ================= MANAGE =================
+
 def manage():
     global active
 
     while True:
         try:
-            if not active:
+            if not has_position():
+                active = None
                 time.sleep(1)
                 continue
+
+            if not active:
+                sync_position()
 
             sym = active["symbol"]
             pnl = get_pnl(sym)
@@ -158,29 +211,42 @@ def manage():
             # TP1
             if not active["tp1"] and pnl >= TP1:
                 qty = get_qty(sym)
-                exchange.create_market_order(sym, "sell", round(qty*0.5,6), params={"reduceOnly": True})
+
+                if qty > 0:
+                    exchange.create_market_order(sym, "sell", round(qty*0.5,6), params={"reduceOnly": True})
 
                 active["tp1"] = True
                 active["max"] = pnl
 
-                bot.send_message(CHAT_ID, "💰 TP1")
+                bot.send_message(CHAT_ID, f"💰 TP1 {round(pnl,2)}")
 
-            # TRAIL
+            # TRAILING
             if active["tp1"]:
                 if pnl > active["max"]:
                     active["max"] = pnl
 
                 if active["max"] - pnl >= TRAIL:
                     qty = get_qty(sym)
+
                     if qty > 0:
                         exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
 
+                        time.sleep(1)
+
+                        # HARD CLOSE
+                        if has_position():
+                            qty = get_qty(sym)
+                            if qty > 0:
+                                exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+
                     bot.send_message(CHAT_ID, f"🏁 EXIT {round(pnl,2)}")
                     active = None
+                    continue
 
             # SL
             if not active["tp1"] and pnl <= -SL:
                 qty = get_qty(sym)
+
                 if qty > 0:
                     exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
 
@@ -190,14 +256,15 @@ def manage():
             time.sleep(1)
 
         except Exception as e:
-            print(e)
+            print("ERR:", e)
             time.sleep(2)
 
-# ===== SCAN =====
+# ================= SCAN =================
+
 def scan():
     while True:
         try:
-            if active or has_position():
+            if has_position():
                 time.sleep(1)
                 continue
 
@@ -209,7 +276,10 @@ def scan():
                 if not not_pumped(sym):
                     continue
 
-                if not entry_ok(sym):
+                if not structure_ok(sym):
+                    continue
+
+                if not buyer_strong(sym):
                     continue
 
                 open_trade(sym)
@@ -220,10 +290,13 @@ def scan():
         except:
             time.sleep(2)
 
-# ===== START =====
+# ================= START =================
+
+sync_position()
+
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scan, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 FINAL PRO ENTRY BOT AKTİF")
 
 bot.infinity_polling()
