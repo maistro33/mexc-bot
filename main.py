@@ -35,18 +35,17 @@ def safe(x):
     except:
         return 0
 
-# ================= POSITION =================
+# ===== POSITION =====
 
 def get_position(sym=None):
     try:
         positions = exchange.fetch_positions()
-
         for p in positions:
             qty = abs(safe(p.get("contracts") or p.get("size")))
             if qty <= 0:
                 continue
 
-            psym = p.get("symbol","")
+            psym = p.get("symbol", "")
 
             if sym is None:
                 return p
@@ -73,7 +72,7 @@ def get_pnl(sym):
         return 0
     return safe(p.get("unrealizedPnl"))
 
-# ================= TREND =================
+# ===== TREND =====
 
 def trend_5m(sym):
     try:
@@ -84,7 +83,16 @@ def trend_5m(sym):
     except:
         return False
 
-# ================= ENTRY FILTERS =================
+def trend_strength(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "5m", limit=10)
+        closes = [c[4] for c in candles]
+        move = (closes[-1] - closes[0]) / closes[0]
+        return move > 0.01
+    except:
+        return False
+
+# ===== ENTRY FILTER =====
 
 def not_pumped(sym):
     try:
@@ -123,14 +131,13 @@ def buyer_strong(sym):
     except:
         return False
 
-# ================= SYMBOL =================
+# ===== SYMBOLS =====
 
 def get_symbols():
     tickers = exchange.fetch_tickers()
     arr = []
 
     for sym, d in tickers.items():
-
         if "USDT" not in sym:
             continue
 
@@ -143,7 +150,7 @@ def get_symbols():
     random.shuffle(arr)
     return arr[:SCAN_LIMIT]
 
-# ================= TRADE =================
+# ===== TRADE =====
 
 def open_trade(sym):
     global active
@@ -170,7 +177,7 @@ def open_trade(sym):
     except Exception as e:
         print(e)
 
-# ================= SYNC =================
+# ===== SYNC =====
 
 def sync_position():
     global active
@@ -183,9 +190,9 @@ def sync_position():
             "max": 0,
             "step": 0
         }
-        bot.send_message(CHAT_ID, f"🔄 SYNC")
+        bot.send_message(CHAT_ID, "🔄 SYNC")
 
-# ================= MANAGE =================
+# ===== MANAGE =====
 
 def manage():
     global active
@@ -211,13 +218,14 @@ def manage():
             # TP1
             if not active["tp1"] and pnl >= TP1:
                 qty = get_qty(sym)
-
                 if qty > 0:
-                    exchange.create_market_order(sym, "sell", round(qty*0.5,6), params={"reduceOnly": True})
+                    exchange.create_market_order(
+                        sym, "sell", round(qty * 0.5, 6),
+                        params={"reduceOnly": True}
+                    )
 
                 active["tp1"] = True
                 active["max"] = pnl
-
                 bot.send_message(CHAT_ID, f"💰 TP1 {round(pnl,2)}")
 
             # TRAILING
@@ -229,15 +237,20 @@ def manage():
                     qty = get_qty(sym)
 
                     if qty > 0:
-                        exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+                        exchange.create_market_order(
+                            sym, "sell", qty,
+                            params={"reduceOnly": True}
+                        )
 
                         time.sleep(1)
 
-                        # HARD CLOSE
                         if has_position():
                             qty = get_qty(sym)
                             if qty > 0:
-                                exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+                                exchange.create_market_order(
+                                    sym, "sell", qty,
+                                    params={"reduceOnly": True}
+                                )
 
                     bot.send_message(CHAT_ID, f"🏁 EXIT {round(pnl,2)}")
                     active = None
@@ -246,9 +259,11 @@ def manage():
             # SL
             if not active["tp1"] and pnl <= -SL:
                 qty = get_qty(sym)
-
                 if qty > 0:
-                    exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+                    exchange.create_market_order(
+                        sym, "sell", qty,
+                        params={"reduceOnly": True}
+                    )
 
                 bot.send_message(CHAT_ID, f"🛑 SL {round(pnl,2)}")
                 active = None
@@ -259,7 +274,7 @@ def manage():
             print("ERR:", e)
             time.sleep(2)
 
-# ================= SCAN =================
+# ===== SCAN =====
 
 def scan():
     while True:
@@ -271,6 +286,9 @@ def scan():
             for sym in get_symbols():
 
                 if not trend_5m(sym):
+                    continue
+
+                if not trend_strength(sym):
                     continue
 
                 if not not_pumped(sym):
@@ -290,13 +308,13 @@ def scan():
         except:
             time.sleep(2)
 
-# ================= START =================
+# ===== START =====
 
 sync_position()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scan, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL PRO ENTRY BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 FINAL V2 AKTİF")
 
 bot.infinity_polling()
