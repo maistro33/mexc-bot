@@ -83,16 +83,6 @@ def volume_spike(sym):
     except:
         return False
 
-# ================= OVEREXTENDED =================
-
-def overextended(sym):
-    try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=5)
-        closes = [c[4] for c in candles]
-        return (closes[-1] - closes[-5]) / closes[-5] > 0.01
-    except:
-        return False
-
 # ================= DİP =================
 
 def dip_reversal(sym):
@@ -102,26 +92,35 @@ def dip_reversal(sym):
         lows = [c[3] for c in candles]
         closes = [c[4] for c in candles]
 
-        old_low = lows[-5]
-        higher_low = lows[-1] > old_low
-        bullish = closes[-1] > closes[-2]
-
-        return higher_low and bullish
+        return lows[-1] > lows[-5] and closes[-1] > closes[-2]
     except:
         return False
 
-# ================= GEÇ GİRİŞ ENGEL =================
+# ================= GEÇ GİRİŞ =================
 
-def too_late_entry(sym):
+def too_late(sym):
     try:
         candles = exchange.fetch_ohlcv(sym, "1m", limit=15)
         closes = [c[4] for c in candles]
 
         move = (closes[-1] - min(closes)) / min(closes)
 
-        return move > 0.02  # %2 yukarı → geç
+        return move > 0.02
     except:
         return True
+
+# ================= İLK HAREKET =================
+
+def first_move(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=20)
+        closes = [c[4] for c in candles]
+
+        move = (closes[-1] - min(closes)) / min(closes)
+
+        return move < 0.012
+    except:
+        return False
 
 # ================= COINS =================
 
@@ -199,9 +198,7 @@ def manage():
 
             side = "sell"
 
-            # TP1
             if not active_trade["tp1"] and pnl >= TP1_USDT:
-
                 close_qty = qty * 0.5
 
                 exchange.create_market_order(
@@ -213,13 +210,10 @@ def manage():
 
                 bot.send_message(CHAT_ID, f"💰 TP1 {round(pnl,2)}")
 
-            # TRAILING
             if active_trade["tp1"] and pnl >= TRAIL_START:
-
                 drawdown = active_trade["max_pnl"] - pnl
 
                 if drawdown >= STEP:
-
                     exchange.create_market_order(
                         sym, side, active_trade["remaining_qty"],
                         params={"reduceOnly": True}
@@ -229,9 +223,7 @@ def manage():
                     active_trade = None
                     continue
 
-            # SL
             if pnl <= -SL_USDT:
-
                 exchange.create_market_order(
                     sym, side, qty, params={"reduceOnly": True}
                 )
@@ -266,15 +258,13 @@ def scanner():
                 if not volume_spike(sym):
                     continue
 
-                if overextended(sym):
-                    continue
-
-                # 🔥 DİP
                 if not dip_reversal(sym):
                     continue
 
-                # 🔥 GEÇ GİRİŞ ENGEL
-                if too_late_entry(sym):
+                if too_late(sym):
+                    continue
+
+                if not first_move(sym):
                     continue
 
                 open_trade(sym)
@@ -291,6 +281,6 @@ def scanner():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V4 AKTİF")
+bot.send_message(CHAT_ID, "🤖 FINAL V5 AKTİF")
 
 bot.infinity_polling()
