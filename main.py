@@ -38,17 +38,14 @@ def load_positions():
         positions = exchange.fetch_positions()
         for p in positions:
             if float(p.get('contracts', 0)) > 0:
-                sym = p['symbol']
-
                 active_trades.append({
-                    "symbol": sym,
+                    "symbol": p['symbol'],
                     "qty": float(p['contracts']),
                     "entry": float(p['entryPrice']),
                     "tp1": False,
                     "max_pnl": 0,
                     "remaining_qty": float(p['contracts'])
                 })
-
     except:
         pass
 
@@ -73,15 +70,25 @@ def position_open(sym):
     except:
         return True
 
-# ================= FILTERS =================
+# ================= TREND =================
 
-def trend_ok(sym):
+def trend_4h(sym):
+    try:
+        c = exchange.fetch_ohlcv(sym, "4h", limit=20)
+        closes = [x[4] for x in c]
+        return closes[-1] > sum(closes)/len(closes)
+    except:
+        return False
+
+def trend_5m(sym):
     try:
         c = exchange.fetch_ohlcv(sym, "5m", limit=20)
         closes = [x[4] for x in c]
         return closes[-1] > sum(closes)/len(closes)
     except:
         return False
+
+# ================= FILTERS =================
 
 def volume_spike(sym):
     try:
@@ -193,9 +200,8 @@ def manage():
 
                 side = "sell"
 
-                # TP1 (GERÇEK)
+                # TP1
                 if not trade["tp1"] and pnl >= TP1_USDT:
-
                     close_qty = trade["qty"] * 0.5
 
                     exchange.create_market_order(
@@ -205,30 +211,27 @@ def manage():
                     trade["tp1"] = True
                     trade["remaining_qty"] = trade["qty"] - close_qty
 
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)} USDT")
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}")
 
                 # TRAILING
                 if trade["tp1"] and pnl >= TRAIL_START:
-
                     if trade["max_pnl"] - pnl >= STEP:
-
                         exchange.create_market_order(
                             sym, side, trade["remaining_qty"],
                             params={"reduceOnly": True}
                         )
 
-                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)} USDT")
+                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}")
                         active_trades.remove(trade)
 
                 # SL
                 if pnl <= -SL_USDT:
-
                     exchange.create_market_order(
                         sym, side, trade["qty"],
                         params={"reduceOnly": True}
                     )
 
-                    bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)} USDT")
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}")
                     active_trades.remove(trade)
 
             time.sleep(1)
@@ -255,7 +258,11 @@ def scanner():
                 if any(t["symbol"] == sym for t in active_trades):
                     continue
 
-                if not trend_ok(sym):
+                # 🔥 EN KRİTİK
+                if not trend_4h(sym):
+                    continue
+
+                if not trend_5m(sym):
                     continue
 
                 if not volume_spike(sym):
@@ -289,6 +296,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V8 (TP FIX) AKTİF")
+bot.send_message(CHAT_ID, "🤖 FINAL V9 AKTİF (4H FILTER)")
 
 bot.infinity_polling()
