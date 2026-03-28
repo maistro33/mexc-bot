@@ -93,7 +93,7 @@ def overextended(sym):
     except:
         return False
 
-# ================= DIP REVERSAL =================
+# ================= DİP =================
 
 def dip_reversal(sym):
     try:
@@ -109,6 +109,19 @@ def dip_reversal(sym):
         return higher_low and bullish
     except:
         return False
+
+# ================= GEÇ GİRİŞ ENGEL =================
+
+def too_late_entry(sym):
+    try:
+        candles = exchange.fetch_ohlcv(sym, "1m", limit=15)
+        closes = [c[4] for c in candles]
+
+        move = (closes[-1] - min(closes)) / min(closes)
+
+        return move > 0.02  # %2 yukarı → geç
+    except:
+        return True
 
 # ================= COINS =================
 
@@ -256,8 +269,12 @@ def scanner():
                 if overextended(sym):
                     continue
 
-                # 🔥 EN KRİTİK
+                # 🔥 DİP
                 if not dip_reversal(sym):
+                    continue
+
+                # 🔥 GEÇ GİRİŞ ENGEL
+                if too_late_entry(sym):
                     continue
 
                 open_trade(sym)
@@ -274,6 +291,6 @@ def scanner():
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL DİP BOT AKTİF")
+bot.send_message(CHAT_ID, "🤖 FINAL V4 AKTİF")
 
 bot.infinity_polling()
