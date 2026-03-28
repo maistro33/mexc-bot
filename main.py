@@ -30,6 +30,9 @@ exchange = ccxt.bitget({
 
 active_trades = []
 
+# 🔥 YENİ (TEKRAR COIN ENGELİ)
+recent_trades = []
+
 # ================= LOAD =================
 
 def load_positions():
@@ -155,7 +158,7 @@ def get_coins():
 # ================= TRADE =================
 
 def open_trade(sym):
-    global active_trades
+    global active_trades, recent_trades
 
     try:
         price = exchange.fetch_ticker(sym)["last"]
@@ -172,6 +175,11 @@ def open_trade(sym):
             "max_pnl": 0,
             "remaining_qty": qty
         })
+
+        # 🔥 YENİ (SON 5 COIN)
+        recent_trades.append(sym)
+        if len(recent_trades) > 5:
+            recent_trades.pop(0)
 
         bot.send_message(CHAT_ID, f"🚀 LONG {sym}")
 
@@ -221,7 +229,9 @@ def manage():
                             params={"reduceOnly": True}
                         )
 
-                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)}")
+                        # 🔥 YENİ (NET KÂR YAKLAŞIK)
+                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl * 0.7,2)} USDT")
+
                         active_trades.remove(trade)
 
                 # SL
@@ -243,7 +253,7 @@ def manage():
 # ================= SCANNER =================
 
 def scanner():
-    global active_trades
+    global active_trades, recent_trades
 
     while True:
         try:
@@ -258,7 +268,10 @@ def scanner():
                 if any(t["symbol"] == sym for t in active_trades):
                     continue
 
-                # 🔥 EN KRİTİK
+                # 🔥 YENİ (TEKRAR COIN ENGELİ)
+                if sym in recent_trades:
+                    continue
+
                 if not trend_4h(sym):
                     continue
 
