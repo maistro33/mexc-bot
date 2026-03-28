@@ -149,7 +149,7 @@ def get_coins():
 
         vol = float(d.get("quoteVolume") or 0)
 
-        if 1_000_000 < vol < 3_000_000:
+        if 1_000_000 < vol < 6_000_000:
             arr.append(sym)
 
     random.shuffle(arr)
