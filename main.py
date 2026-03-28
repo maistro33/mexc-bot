@@ -29,8 +29,6 @@ exchange = ccxt.bitget({
 })
 
 active_trades = []
-
-# 🔥 YENİ (TEKRAR COIN ENGELİ)
 recent_trades = []
 
 # ================= LOAD =================
@@ -47,17 +45,17 @@ def load_positions():
                     "entry": float(p['entryPrice']),
                     "tp1": False,
                     "max_pnl": 0,
-                    "remaining_qty": float(p['contracts'])
+                    "remaining_qty": float(p['contracts']),
+                    "side": "long"
                 })
     except:
         pass
 
-# ================= REAL PNL =================
+# ================= PNL =================
 
-def real_pnl(sym, entry, qty):
+def get_price(sym):
     try:
-        price = exchange.fetch_ticker(sym)["last"]
-        return (price - entry) * qty
+        return exchange.fetch_ticker(sym)["last"]
     except:
         return 0
 
@@ -75,13 +73,18 @@ def position_open(sym):
 
 # ================= TREND =================
 
-def trend_4h(sym):
+def trend_direction_4h(sym):
     try:
         c = exchange.fetch_ohlcv(sym, "4h", limit=20)
         closes = [x[4] for x in c]
-        return closes[-1] > sum(closes)/len(closes)
+        avg = sum(closes)/len(closes)
+
+        if closes[-1] > avg:
+            return "long"
+        else:
+            return "short"
     except:
-        return False
+        return None
 
 def trend_5m(sym):
     try:
@@ -157,15 +160,18 @@ def get_coins():
 
 # ================= TRADE =================
 
-def open_trade(sym):
+def open_trade(sym, side):
     global active_trades, recent_trades
 
     try:
-        price = exchange.fetch_ticker(sym)["last"]
+        price = get_price(sym)
         qty = (MARGIN * LEV) / price
 
         exchange.set_leverage(LEV, sym)
-        exchange.create_market_order(sym, "buy", qty)
+
+        order_side = "buy" if side == "long" else "sell"
+
+        exchange.create_market_order(sym, order_side, qty)
 
         active_trades.append({
             "symbol": sym,
@@ -173,15 +179,15 @@ def open_trade(sym):
             "entry": price,
             "tp1": False,
             "max_pnl": 0,
-            "remaining_qty": qty
+            "remaining_qty": qty,
+            "side": side
         })
 
-        # 🔥 YENİ (SON 5 COIN)
         recent_trades.append(sym)
         if len(recent_trades) > 5:
             recent_trades.pop(0)
 
-        bot.send_message(CHAT_ID, f"🚀 LONG {sym}")
+        bot.send_message(CHAT_ID, f"🚀 {side.upper()} {sym}")
 
     except Exception as e:
         print(e)
@@ -196,24 +202,30 @@ def manage():
             for trade in active_trades[:]:
 
                 sym = trade["symbol"]
+                side = trade["side"]
 
                 if not position_open(sym):
                     active_trades.remove(trade)
                     continue
 
-                pnl = real_pnl(sym, trade["entry"], trade["qty"])
+                price = get_price(sym)
+
+                if side == "long":
+                    pnl = (price - trade["entry"]) * trade["qty"]
+                    close_side = "sell"
+                else:
+                    pnl = (trade["entry"] - price) * trade["qty"]
+                    close_side = "buy"
 
                 if pnl > trade["max_pnl"]:
                     trade["max_pnl"] = pnl
-
-                side = "sell"
 
                 # TP1
                 if not trade["tp1"] and pnl >= TP1_USDT:
                     close_qty = trade["qty"] * 0.5
 
                     exchange.create_market_order(
-                        sym, side, close_qty, params={"reduceOnly": True}
+                        sym, close_side, close_qty, params={"reduceOnly": True}
                     )
 
                     trade["tp1"] = True
@@ -225,19 +237,17 @@ def manage():
                 if trade["tp1"] and pnl >= TRAIL_START:
                     if trade["max_pnl"] - pnl >= STEP:
                         exchange.create_market_order(
-                            sym, side, trade["remaining_qty"],
+                            sym, close_side, trade["remaining_qty"],
                             params={"reduceOnly": True}
                         )
 
-                        # 🔥 YENİ (NET KÂR YAKLAŞIK)
-                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl * 0.7,2)} USDT")
-
+                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl*0.7,2)}")
                         active_trades.remove(trade)
 
                 # SL
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(
-                        sym, side, trade["qty"],
+                        sym, close_side, trade["qty"],
                         params={"reduceOnly": True}
                     )
 
@@ -268,15 +278,20 @@ def scanner():
                 if any(t["symbol"] == sym for t in active_trades):
                     continue
 
-                # 🔥 YENİ (TEKRAR COIN ENGELİ)
                 if sym in recent_trades:
                     continue
 
-                if not trend_4h(sym):
+                direction = trend_direction_4h(sym)
+                if not direction:
                     continue
 
-                if not trend_5m(sym):
-                    continue
+                # 5M onay
+                if direction == "long":
+                    if not trend_5m(sym):
+                        continue
+                else:
+                    if trend_5m(sym):
+                        continue
 
                 if not volume_spike(sym):
                     continue
@@ -293,7 +308,7 @@ def scanner():
                 if not ultra_entry(sym):
                     continue
 
-                open_trade(sym)
+                open_trade(sym, direction)
                 break
 
             time.sleep(2)
@@ -309,6 +324,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V9 AKTİF (4H FILTER)")
+bot.send_message(CHAT_ID, "🤖 FINAL V10 AKTİF (LONG + SHORT)")
 
 bot.infinity_polling()
