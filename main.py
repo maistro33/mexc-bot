@@ -29,7 +29,7 @@ exchange = ccxt.bitget({
 })
 
 active_trades = []
-recent_trades = []
+used_coins = set()   # 🔥 ARTIK TEKRAR YOK
 
 # ================= LOAD =================
 
@@ -39,8 +39,10 @@ def load_positions():
         positions = exchange.fetch_positions()
         for p in positions:
             if float(p.get('contracts', 0)) > 0:
+                sym = p['symbol']
+
                 active_trades.append({
-                    "symbol": p['symbol'],
+                    "symbol": sym,
                     "qty": float(p['contracts']),
                     "entry": float(p['entryPrice']),
                     "tp1": False,
@@ -48,10 +50,13 @@ def load_positions():
                     "remaining_qty": float(p['contracts']),
                     "side": "long"
                 })
+
+                used_coins.add(sym)  # 🔥 açık pozisyonu da tekrar alma
+
     except:
         pass
 
-# ================= PNL =================
+# ================= PRICE =================
 
 def get_price(sym):
     try:
@@ -79,10 +84,7 @@ def trend_direction_4h(sym):
         closes = [x[4] for x in c]
         avg = sum(closes)/len(closes)
 
-        if closes[-1] > avg:
-            return "long"
-        else:
-            return "short"
+        return "long" if closes[-1] > avg else "short"
     except:
         return None
 
@@ -161,7 +163,7 @@ def get_coins():
 # ================= TRADE =================
 
 def open_trade(sym, side):
-    global active_trades, recent_trades
+    global active_trades, used_coins
 
     try:
         price = get_price(sym)
@@ -183,9 +185,7 @@ def open_trade(sym, side):
             "side": side
         })
 
-        recent_trades.append(sym)
-        if len(recent_trades) > 5:
-            recent_trades.pop(0)
+        used_coins.add(sym)  # 🔥 bir daha asla açma
 
         bot.send_message(CHAT_ID, f"🚀 {side.upper()} {sym}")
 
@@ -263,7 +263,7 @@ def manage():
 # ================= SCANNER =================
 
 def scanner():
-    global active_trades, recent_trades
+    global active_trades, used_coins
 
     while True:
         try:
@@ -278,14 +278,13 @@ def scanner():
                 if any(t["symbol"] == sym for t in active_trades):
                     continue
 
-                if sym in recent_trades:
+                if sym in used_coins:   # 🔥 ARTIK TEKRAR YOK
                     continue
 
                 direction = trend_direction_4h(sym)
                 if not direction:
                     continue
 
-                # 5M onay
                 if direction == "long":
                     if not trend_5m(sym):
                         continue
@@ -324,6 +323,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V10 AKTİF (LONG + SHORT)")
+bot.send_message(CHAT_ID, "🤖 FINAL V11 AKTİF (NO REPEAT COIN)")
 
 bot.infinity_polling()
