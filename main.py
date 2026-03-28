@@ -38,33 +38,28 @@ def load_positions():
         positions = exchange.fetch_positions()
         for p in positions:
             if float(p.get('contracts', 0)) > 0:
-
                 sym = p['symbol']
 
                 active_trades.append({
                     "symbol": sym,
                     "qty": float(p['contracts']),
+                    "entry": float(p['entryPrice']),
                     "tp1": False,
                     "max_pnl": 0,
                     "remaining_qty": float(p['contracts'])
                 })
 
-        print("Açık işlemler yüklendi:", len(active_trades))
-
     except:
         pass
 
-# ================= PNL =================
+# ================= REAL PNL =================
 
-def get_pnl(sym):
+def real_pnl(sym, entry, qty):
     try:
-        positions = exchange.fetch_positions()
-        for p in positions:
-            if sym.split("/")[0] in p['symbol']:
-                return float(p.get('unrealizedPnl', 0))
+        price = exchange.fetch_ticker(sym)["last"]
+        return (price - entry) * qty
     except:
         return 0
-    return 0
 
 # ================= POSITION =================
 
@@ -82,49 +77,49 @@ def position_open(sym):
 
 def trend_ok(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "5m", limit=20)
-        closes = [c[4] for c in candles]
-        return closes[-1] > sum(closes[-20:])/20
+        c = exchange.fetch_ohlcv(sym, "5m", limit=20)
+        closes = [x[4] for x in c]
+        return closes[-1] > sum(closes)/len(closes)
     except:
         return False
 
 def volume_spike(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=10)
-        vols = [c[5] for c in candles]
-        return vols[-1] > (sum(vols[:-1])/len(vols[:-1])) * 1.5
+        c = exchange.fetch_ohlcv(sym, "1m", limit=10)
+        v = [x[5] for x in c]
+        return v[-1] > (sum(v[:-1])/len(v[:-1])) * 1.5
     except:
         return False
 
 def dip_reversal(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=6)
-        lows = [c[3] for c in candles]
-        closes = [c[4] for c in candles]
+        c = exchange.fetch_ohlcv(sym, "1m", limit=6)
+        lows = [x[3] for x in c]
+        closes = [x[4] for x in c]
         return lows[-1] > lows[-5] and closes[-1] > closes[-2]
     except:
         return False
 
 def too_late(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=15)
-        closes = [c[4] for c in candles]
+        c = exchange.fetch_ohlcv(sym, "1m", limit=15)
+        closes = [x[4] for x in c]
         return (closes[-1] - min(closes)) / min(closes) > 0.02
     except:
         return True
 
 def first_move(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=20)
-        closes = [c[4] for c in candles]
+        c = exchange.fetch_ohlcv(sym, "1m", limit=20)
+        closes = [x[4] for x in c]
         return (closes[-1] - min(closes)) / min(closes) < 0.012
     except:
         return False
 
 def ultra_entry(sym):
     try:
-        candles = exchange.fetch_ohlcv(sym, "1m", limit=4)
-        return candles[-2][4] > candles[-2][1] and candles[-1][4] > candles[-2][4]
+        c = exchange.fetch_ohlcv(sym, "1m", limit=4)
+        return c[-2][4] > c[-2][1]
     except:
         return False
 
@@ -165,6 +160,7 @@ def open_trade(sym):
         active_trades.append({
             "symbol": sym,
             "qty": qty,
+            "entry": price,
             "tp1": False,
             "max_pnl": 0,
             "remaining_qty": qty
@@ -190,35 +186,49 @@ def manage():
                     active_trades.remove(trade)
                     continue
 
-                pnl = get_pnl(sym)
+                pnl = real_pnl(sym, trade["entry"], trade["qty"])
 
                 if pnl > trade["max_pnl"]:
                     trade["max_pnl"] = pnl
 
                 side = "sell"
 
-                # TP1
+                # TP1 (GERÇEK)
                 if not trade["tp1"] and pnl >= TP1_USDT:
+
                     close_qty = trade["qty"] * 0.5
 
-                    exchange.create_market_order(sym, side, close_qty, params={"reduceOnly": True})
+                    exchange.create_market_order(
+                        sym, side, close_qty, params={"reduceOnly": True}
+                    )
 
                     trade["tp1"] = True
                     trade["remaining_qty"] = trade["qty"] - close_qty
 
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)} USDT")
 
                 # TRAILING
                 if trade["tp1"] and pnl >= TRAIL_START:
+
                     if trade["max_pnl"] - pnl >= STEP:
-                        exchange.create_market_order(sym, side, trade["remaining_qty"], params={"reduceOnly": True})
-                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym}")
+
+                        exchange.create_market_order(
+                            sym, side, trade["remaining_qty"],
+                            params={"reduceOnly": True}
+                        )
+
+                        bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl,2)} USDT")
                         active_trades.remove(trade)
 
                 # SL
                 if pnl <= -SL_USDT:
-                    exchange.create_market_order(sym, side, trade["qty"], params={"reduceOnly": True})
-                    bot.send_message(CHAT_ID, f"🛑 SL {sym}")
+
+                    exchange.create_market_order(
+                        sym, side, trade["qty"],
+                        params={"reduceOnly": True}
+                    )
+
+                    bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)} USDT")
                     active_trades.remove(trade)
 
             time.sleep(1)
@@ -279,6 +289,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V7 (2 TRADE) AKTİF")
+bot.send_message(CHAT_ID, "🤖 FINAL V8 (TP FIX) AKTİF")
 
 bot.infinity_polling()
