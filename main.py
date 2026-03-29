@@ -137,7 +137,25 @@ def ultra_entry(sym):
     except:
         return False
 
-# ================= NEW SHORT FIX =================
+# ================= SNIPER =================
+
+def strong_dip(sym):
+    try:
+        c = exchange.fetch_ohlcv(sym, "1m", limit=10)
+        lows = [x[3] for x in c]
+        closes = [x[4] for x in c]
+        return lows[-1] == min(lows) and closes[-1] > closes[-2]
+    except:
+        return False
+
+def strong_top(sym):
+    try:
+        c = exchange.fetch_ohlcv(sym, "1m", limit=10)
+        highs = [x[2] for x in c]
+        closes = [x[4] for x in c]
+        return highs[-1] == max(highs) and closes[-1] < closes[-2]
+    except:
+        return False
 
 def short_pullback(sym):
     try:
@@ -294,10 +312,14 @@ def scanner():
                 if direction == "long":
                     if not trend_5m(sym):
                         continue
+                    if not strong_dip(sym):
+                        continue
                 else:
                     if trend_5m(sym):
                         continue
                     if not short_pullback(sym):
+                        continue
+                    if not strong_top(sym):
                         continue
 
                 if not volume_spike(sym):
@@ -331,6 +353,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V12 AKTİF (SMART ENTRY)")
+bot.send_message(CHAT_ID, "🤖 FINAL V13 AKTİF (SNIPER MODE)")
 
 bot.infinity_polling()
