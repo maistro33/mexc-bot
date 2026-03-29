@@ -53,15 +53,19 @@ def open_hedge(sym):
 
         qty = (cfg["MARGIN"] * cfg["LEV"]) / price
 
-        # ✅ PRECISION FIX (EN ÖNEMLİ)
-        qty = float(exchange.amount_to_precision(sym, qty))
+        # 🔥 SOL FIX (KESİN)
+        if "SOL" in sym:
+            qty = round(qty, 1)
+        else:
+            qty = float(exchange.amount_to_precision(sym, qty))
+
+        # minimum 0 olmasın
+        if qty <= 0:
+            return
 
         exchange.set_leverage(cfg["LEV"], sym)
 
-        # LONG
         exchange.create_market_order(sym, "buy", qty)
-
-        # SHORT
         exchange.create_market_order(sym, "sell", qty)
 
         positions[sym] = {
@@ -69,7 +73,7 @@ def open_hedge(sym):
             "qty": qty
         }
 
-        print(f"OPEN HEDGE {sym}")
+        print(f"OPEN HEDGE {sym} | QTY: {qty}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
