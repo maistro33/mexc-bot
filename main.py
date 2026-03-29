@@ -2,13 +2,20 @@ import os
 import time
 import ccxt
 
+# ================= API =================
+
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
-    "options": {"defaultType": "swap"},
+    "options": {
+        "defaultType": "swap",
+        "defaultSubType": "linear"
+    },
     "enableRateLimit": True
 })
+
+exchange.load_markets()
 
 # ================= AYAR =================
 
@@ -16,13 +23,13 @@ CONFIG = {
     "BTC/USDT:USDT": {
         "LEV": 3,
         "MARGIN": 2,
-        "GRID_STEP": 0.007,   # %0.7
+        "STEP": 0.007,   # %0.7
         "TP": 0.8
     },
     "SOL/USDT:USDT": {
         "LEV": 3,
         "MARGIN": 2,
-        "GRID_STEP": 0.01,    # %1
+        "STEP": 0.01,    # %1
         "TP": 1.0
     }
 }
@@ -32,33 +39,34 @@ positions = {}
 # ================= PRICE =================
 
 def get_price(sym):
-    try:
-        return exchange.fetch_ticker(sym)["last"]
-    except:
-        return 0
+    return exchange.fetch_ticker(sym)["last"]
 
-# ================= OPEN =================
+# ================= HEDGE OPEN =================
 
 def open_hedge(sym):
-    cfg = CONFIG[sym]
-    price = get_price(sym)
+    try:
+        cfg = CONFIG[sym]
+        price = get_price(sym)
 
-    qty = (cfg["MARGIN"] * cfg["LEV"]) / price
+        qty = (cfg["MARGIN"] * cfg["LEV"]) / price
 
-    exchange.set_leverage(cfg["LEV"], sym)
+        exchange.set_leverage(cfg["LEV"], sym)
 
-    # LONG
-    exchange.create_market_order(sym, "buy", qty)
+        # LONG
+        exchange.create_market_order(sym, "buy", qty)
 
-    # SHORT
-    exchange.create_market_order(sym, "sell", qty)
+        # SHORT
+        exchange.create_market_order(sym, "sell", qty)
 
-    positions[sym] = {
-        "entry": price,
-        "qty": qty
-    }
+        positions[sym] = {
+            "entry": price,
+            "qty": qty
+        }
 
-    print(f"OPEN HEDGE {sym}")
+        print(f"OPEN HEDGE {sym}")
+
+    except Exception as e:
+        print("OPEN ERROR:", e)
 
 # ================= MANAGE =================
 
@@ -72,13 +80,12 @@ def manage():
                 cfg = CONFIG[sym]
                 pos = positions[sym]
 
+                price = get_price(sym)
                 entry = pos["entry"]
                 qty = pos["qty"]
 
-                p = get_price(sym)
-
-                long_pnl = (p - entry) * qty
-                short_pnl = (entry - p) * qty
+                long_pnl = (price - entry) * qty
+                short_pnl = (entry - price) * qty
 
                 # LONG TP
                 if long_pnl >= cfg["TP"]:
@@ -96,20 +103,20 @@ def manage():
                     )
                     print(f"SHORT TP {sym}")
 
-                # GRID yeniden aç
-                if abs(p - entry) / entry >= cfg["GRID_STEP"]:
+                # GRID RESET
+                if abs(price - entry) / entry >= cfg["STEP"]:
                     open_hedge(sym)
                     del positions[sym]
 
             time.sleep(2)
 
         except Exception as e:
-            print("ERROR:", e)
+            print("MANAGE ERROR:", e)
             time.sleep(2)
 
 # ================= START =================
 
-for s in CONFIG.keys():
-    open_hedge(s)
+for sym in CONFIG.keys():
+    open_hedge(sym)
 
 manage()
