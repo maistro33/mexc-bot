@@ -44,10 +44,7 @@ positions = {}
 
 # ===== PRICE =====
 def get_price(sym):
-    try:
-        return exchange.fetch_ticker(sym)["last"]
-    except:
-        return 0
+    return exchange.fetch_ticker(sym)["last"]
 
 # ===== OPEN HEDGE =====
 def open_hedge(sym):
@@ -58,13 +55,16 @@ def open_hedge(sym):
 
         exchange.set_leverage(LEV, sym)
 
-        # LONG hemen aç
-        exchange.create_market_order(sym, "buy", qty)
+        # 🔥 HEDGE PARAMETRELERİ
+        exchange.create_market_order(
+            sym, "buy", qty,
+            params={"posSide": "long"}
+        )
 
-        # SHORT farklı fiyattan aç (çok önemli fix)
-        short_price = price * 1.002
-
-        exchange.create_limit_order(sym, "sell", qty, short_price)
+        exchange.create_market_order(
+            sym, "sell", qty,
+            params={"posSide": "short"}
+        )
 
         positions[sym] = {
             "entry": price,
@@ -98,23 +98,17 @@ def manage():
                 if long_pnl >= cfg["TP"]:
                     exchange.create_market_order(
                         sym, "sell", qty,
-                        params={"reduceOnly": True}
+                        params={"reduceOnly": True, "posSide": "long"}
                     )
-
-                    msg = f"💰 LONG TP\n{sym}\nPNL: {round(long_pnl,2)}"
-                    print(msg)
-                    bot.send_message(CHAT_ID, msg)
+                    bot.send_message(CHAT_ID, f"💰 LONG TP {sym}")
 
                 # SHORT TP
                 if short_pnl >= cfg["TP"]:
                     exchange.create_market_order(
                         sym, "buy", qty,
-                        params={"reduceOnly": True}
+                        params={"reduceOnly": True, "posSide": "short"}
                     )
-
-                    msg = f"💰 SHORT TP\n{sym}\nPNL: {round(short_pnl,2)}"
-                    print(msg)
-                    bot.send_message(CHAT_ID, msg)
+                    bot.send_message(CHAT_ID, f"💰 SHORT TP {sym}")
 
                 # GRID RESET
                 if abs(price - entry) / entry >= cfg["STEP"]:
@@ -131,16 +125,13 @@ def manage():
 def start_bot():
     exchange.fetch_balance()
 
-    msg = "🤖 GRID BOT AKTİF (FINAL HEDGE FIX)"
-    print(msg)
-    bot.send_message(CHAT_ID, msg)
+    bot.send_message(CHAT_ID, "🤖 GRID BOT AKTİF (REAL HEDGE FIX)")
 
     for sym in CONFIG.keys():
         open_hedge(sym)
 
     manage()
 
-# ===== RUN =====
 threading.Thread(target=start_bot, daemon=True).start()
 
 bot.infinity_polling()
