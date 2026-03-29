@@ -45,30 +45,25 @@ def get_price(sym):
 
 # ===== PERFECT QTY FIX =====
 def fix_qty(sym, qty):
-    market = exchange.market(sym)
-
-    step = market.get("limits", {}).get("amount", {}).get("min", None)
 
     if "SOL" in sym:
-        return math.floor(qty * 10) / 10  # 0.1 step kesin
+        qty = math.floor(qty * 10) / 10
+        return max(qty, 0.1)
 
     if "BTC" in sym:
-        return math.floor(qty * 10000) / 10000  # 0.0001 step kesin
+        qty = math.floor(qty * 10000) / 10000
+        return max(qty, 0.0001)
 
-    return float(exchange.amount_to_precision(sym, qty))
+    return float(qty)
 
-# ===== OPEN =====
+# ===== OPEN HEDGE =====
 def open_hedge(sym):
     try:
         cfg = CONFIG[sym]
         price = get_price(sym)
 
         qty = (cfg["MARGIN"] * cfg["LEV"]) / price
-
         qty = fix_qty(sym, qty)
-
-        if qty <= 0:
-            return
 
         exchange.set_leverage(cfg["LEV"], sym)
 
@@ -102,11 +97,17 @@ def manage():
                 short_pnl = (entry - price) * qty
 
                 if long_pnl >= cfg["TP"]:
-                    exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+                    exchange.create_market_order(
+                        sym, "sell", qty,
+                        params={"reduceOnly": True}
+                    )
                     print(f"LONG TP {sym}")
 
                 if short_pnl >= cfg["TP"]:
-                    exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
+                    exchange.create_market_order(
+                        sym, "buy", qty,
+                        params={"reduceOnly": True}
+                    )
                     print(f"SHORT TP {sym}")
 
                 if abs(price - entry) / entry >= cfg["STEP"]:
