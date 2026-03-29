@@ -40,15 +40,20 @@ positions = {}
 
 # ===== PRICE =====
 def get_price(sym):
-    return exchange.fetch_ticker(sym)["last"]
+    try:
+        return exchange.fetch_ticker(sym)["last"]
+    except:
+        return 0
 
-# ===== OPEN =====
+# ===== OPEN HEDGE =====
 def open_hedge(sym):
     try:
         cfg = CONFIG[sym]
         price = get_price(sym)
 
         qty = (cfg["MARGIN"] * cfg["LEV"]) / price
+
+        # ✅ PRECISION FIX (EN ÖNEMLİ)
         qty = float(exchange.amount_to_precision(sym, qty))
 
         exchange.set_leverage(cfg["LEV"], sym)
@@ -113,6 +118,7 @@ def manage():
             time.sleep(2)
 
 # ===== START =====
+
 exchange.fetch_balance()
 
 print("GRID BOT BAŞLADI")
