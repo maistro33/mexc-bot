@@ -8,9 +8,9 @@ SYMBOL = "BTC/USDT:USDT"
 
 LEV = 5
 QTY = 0.0004
-GRID_STEP = 0.0025   # %0.25
+GRID_STEP = 0.0025
 LEVELS = 4
-RECENTER_PCT = 0.01  # %1
+RECENTER_PCT = 0.01
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -26,7 +26,7 @@ exchange = ccxt.bitget({
 exchange.load_markets()
 
 grid = {}
-base_price = 0
+base_price = None  # 🔥 önemli fix
 
 # ===== PRICE =====
 def get_price():
@@ -46,7 +46,8 @@ def place_grid():
     global base_price
 
     cancel_all()
-    base_price = get_price()
+
+    base_price = get_price()  # 🔥 burada set ediliyor
 
     exchange.set_leverage(LEV, SYMBOL)
 
@@ -90,9 +91,14 @@ def monitor():
         try:
             price = get_price()
 
-            # 🔥 TREND YAKALA → GRID YENİDEN KUR
+            # 🔥 FIX: base_price kontrolü
+            if base_price is None:
+                time.sleep(2)
+                continue
+
+            # GRID RESET
             if abs(price - base_price) / base_price > RECENTER_PCT:
-                bot.send_message(CHAT_ID, "♻️ GRID RESET (TREND)")
+                bot.send_message(CHAT_ID, "♻️ GRID RESET")
                 place_grid()
                 time.sleep(3)
                 continue
