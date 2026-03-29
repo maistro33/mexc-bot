@@ -12,50 +12,46 @@ bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
 # ===== BITGET =====
-API_KEY = os.getenv("BITGET_API")
-API_SEC = os.getenv("BITGET_SEC")
-PASSPHRASE = "Berfin33"
-
 exchange = ccxt.bitget({
-    "apiKey": API_KEY,
-    "secret": API_SEC,
-    "password": PASSPHRASE,
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
 exchange.load_markets()
 
-# ===== CONFIG =====
+# ===== CONFIG (PRO AYAR) =====
 CONFIG = {
     "BTC/USDT:USDT": {
-        "QTY": 0.0005,
-        "STEP": 0.005,
-        "TP": 1.0
+        "QTY": 0.001,
+        "STEP": 0.01,
+        "TP": 4.0
     },
     "SOL/USDT:USDT": {
-        "QTY": 0.5,
-        "STEP": 0.008,
-        "TP": 1.0
+        "QTY": 1,
+        "STEP": 0.015,
+        "TP": 3.0
     }
 }
 
 positions = {}
 
-# ===== PRICE =====
-def get_price(sym):
-    return exchange.fetch_ticker(sym)["last"]
-
-# ===== CHECK POSITION =====
+# ===== POSITION CHECK =====
 def has_position(sym):
     try:
-        positions = exchange.fetch_positions()
-        for p in positions:
+        pos = exchange.fetch_positions()
+        for p in pos:
             if sym in p["symbol"] and float(p["contracts"]) > 0:
                 return True
         return False
     except:
         return False
+
+# ===== PRICE =====
+def get_price(sym):
+    return exchange.fetch_ticker(sym)["last"]
 
 # ===== OPEN =====
 def open_trade(sym):
@@ -99,11 +95,13 @@ def manage():
                 # TP
                 if pnl >= cfg["TP"]:
                     exchange.create_market_order(
-                        sym, "sell", qty,
+                        sym,
+                        "sell",
+                        qty,
                         params={"reduceOnly": True}
                     )
 
-                    bot.send_message(CHAT_ID, f"💰 TP {sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"💰 TP\n{sym}\nPNL: {round(pnl,2)}")
                     del positions[sym]
 
                 # GRID ADD (düşüşte ekleme)
@@ -112,7 +110,7 @@ def manage():
 
                     positions[sym]["entry"] = (entry + price) / 2
 
-                    bot.send_message(CHAT_ID, f"📉 GRID ADD {sym}")
+                    bot.send_message(CHAT_ID, f"📉 GRID ADD\n{sym}")
 
             time.sleep(2)
 
@@ -121,18 +119,18 @@ def manage():
             time.sleep(3)
 
 # ===== START =====
-def start_bot():
+def start():
     exchange.fetch_balance()
-
-    bot.send_message(CHAT_ID, "🤖 GRID BOT AKTİF (ONE WAY FINAL)")
+    bot.send_message(CHAT_ID, "🤖 PRO GRID BOT AKTİF")
 
     while True:
-        for sym in CONFIG.keys():
+        for sym in CONFIG:
             open_trade(sym)
 
-        time.sleep(10)
+        time.sleep(15)
 
-threading.Thread(target=start_bot, daemon=True).start()
+# ===== RUN =====
+threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
 bot.infinity_polling()
