@@ -20,18 +20,16 @@ exchange = ccxt.bitget({
 exchange.load_markets()
 
 SYMBOL = "BTC/USDT:USDT"
-QTY = 0.0003
-GRID_STEP = 0.003  # %0.3
-LEVELS = 6
 
-grid_orders = []
+# 🔥 SENİN BAKİYEYE GÖRE
+QTY = 0.0001
+GRID_STEP = 0.003
+LEVELS = 2   # düşürdük!
 
 def get_price():
     return exchange.fetch_ticker(SYMBOL)["last"]
 
 def place_grid():
-    global grid_orders
-
     try:
         price = get_price()
         exchange.set_leverage(LEV, SYMBOL)
@@ -41,65 +39,36 @@ def place_grid():
             buy_price = price * (1 - GRID_STEP * i)
             sell_price = price * (1 + GRID_STEP * i)
 
-            # BUY LIMIT
-            buy = exchange.create_limit_order(
-                SYMBOL,
-                "buy",
-                QTY,
-                buy_price
-            )
+            exchange.create_limit_order(SYMBOL, "buy", QTY, buy_price)
+            exchange.create_limit_order(SYMBOL, "sell", QTY, sell_price)
 
-            # SELL LIMIT
-            sell = exchange.create_limit_order(
-                SYMBOL,
-                "sell",
-                QTY,
-                sell_price
-            )
-
-            grid_orders.append((buy["id"], sell["id"]))
-
-        bot.send_message(CHAT_ID, "📊 GRID KURULDU")
+        bot.send_message(CHAT_ID, "📊 GRID YERLEŞTİRİLDİ")
 
     except Exception as e:
         print("GRID ERROR:", e)
 
-def monitor():
-    global grid_orders
-
+def loop():
     while True:
         try:
             open_orders = exchange.fetch_open_orders(SYMBOL)
-            open_ids = [o["id"] for o in open_orders]
 
-            # doldurulan emirleri kontrol et
-            for buy_id, sell_id in grid_orders[:]:
-
-                if buy_id not in open_ids:
-                    bot.send_message(CHAT_ID, "📉 BUY gerçekleşti")
-                    grid_orders.remove((buy_id, sell_id))
-
-                if sell_id not in open_ids:
-                    bot.send_message(CHAT_ID, "📈 SELL gerçekleşti")
-                    grid_orders.remove((buy_id, sell_id))
-
-            # eğer azaldıysa yeniden kur
-            if len(grid_orders) < LEVELS:
+            # Eğer emir yoksa tekrar kur
+            if len(open_orders) < 2:
                 place_grid()
 
-            time.sleep(5)
+            time.sleep(10)
 
         except Exception as e:
-            print("MONITOR ERROR:", e)
+            print("LOOP ERROR:", e)
             time.sleep(5)
 
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 GERÇEK GRID BOT AKTİF")
+    bot.send_message(CHAT_ID, "🤖 GRID BOT FIX AKTİF")
 
     place_grid()
 
 threading.Thread(target=start, daemon=True).start()
-threading.Thread(target=monitor, daemon=True).start()
+threading.Thread(target=loop, daemon=True).start()
 
 bot.infinity_polling()
