@@ -1,7 +1,15 @@
 import os
 import time
-import math
 import ccxt
+import telebot
+import threading
+
+# ===== SETTINGS =====
+LEV = 3
+
+# ===== TELEGRAM =====
+bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
+CHAT_ID = os.getenv("MY_CHAT_ID")
 
 # ===== BITGET =====
 API_KEY = os.getenv("BITGET_API")
@@ -12,11 +20,8 @@ exchange = ccxt.bitget({
     "apiKey": API_KEY,
     "secret": API_SEC,
     "password": PASSPHRASE,
-    "options": {
-        "defaultType": "swap"
-    },
-    "enableRateLimit": True,
-    "timeout": 30000
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True
 })
 
 exchange.load_markets()
@@ -24,16 +29,14 @@ exchange.load_markets()
 # ===== CONFIG =====
 CONFIG = {
     "BTC/USDT:USDT": {
-        "LEV": 3,
-        "MARGIN": 2,
+        "QTY": 0.001,
         "STEP": 0.007,
-        "TP": 0.8
+        "TP": 1.5
     },
     "SOL/USDT:USDT": {
-        "LEV": 3,
-        "MARGIN": 2,
+        "QTY": 1,
         "STEP": 0.01,
-        "TP": 1.0
+        "TP": 1.5
     }
 }
 
@@ -41,31 +44,19 @@ positions = {}
 
 # ===== PRICE =====
 def get_price(sym):
-    return exchange.fetch_ticker(sym)["last"]
+    try:
+        return exchange.fetch_ticker(sym)["last"]
+    except:
+        return 0
 
-# ===== PERFECT QTY FIX =====
-def fix_qty(sym, qty):
-
-    if "SOL" in sym:
-        qty = math.floor(qty * 10) / 10
-        return max(qty, 0.1)
-
-    if "BTC" in sym:
-        qty = math.floor(qty * 10000) / 10000
-        return max(qty, 0.0001)
-
-    return float(qty)
-
-# ===== OPEN HEDGE =====
+# ===== OPEN =====
 def open_hedge(sym):
     try:
         cfg = CONFIG[sym]
         price = get_price(sym)
+        qty = cfg["QTY"]
 
-        qty = (cfg["MARGIN"] * cfg["LEV"]) / price
-        qty = fix_qty(sym, qty)
-
-        exchange.set_leverage(cfg["LEV"], sym)
+        exchange.set_leverage(LEV, sym)
 
         exchange.create_market_order(sym, "buy", qty)
         exchange.create_market_order(sym, "sell", qty)
@@ -75,7 +66,9 @@ def open_hedge(sym):
             "qty": qty
         }
 
-        print(f"OPEN HEDGE {sym} | QTY: {qty}")
+        msg = f"🚀 HEDGE AÇILDI\n{sym}\nQTY: {qty}"
+        print(msg)
+        bot.send_message(CHAT_ID, msg)
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -96,20 +89,29 @@ def manage():
                 long_pnl = (price - entry) * qty
                 short_pnl = (entry - price) * qty
 
+                # LONG TP
                 if long_pnl >= cfg["TP"]:
                     exchange.create_market_order(
                         sym, "sell", qty,
                         params={"reduceOnly": True}
                     )
-                    print(f"LONG TP {sym}")
 
+                    msg = f"💰 LONG TP\n{sym}\nPNL: {round(long_pnl,2)}"
+                    print(msg)
+                    bot.send_message(CHAT_ID, msg)
+
+                # SHORT TP
                 if short_pnl >= cfg["TP"]:
                     exchange.create_market_order(
                         sym, "buy", qty,
                         params={"reduceOnly": True}
                     )
-                    print(f"SHORT TP {sym}")
 
+                    msg = f"💰 SHORT TP\n{sym}\nPNL: {round(short_pnl,2)}"
+                    print(msg)
+                    bot.send_message(CHAT_ID, msg)
+
+                # GRID RESET
                 if abs(price - entry) / entry >= cfg["STEP"]:
                     open_hedge(sym)
                     del positions[sym]
@@ -118,15 +120,23 @@ def manage():
 
         except Exception as e:
             print("MANAGE ERROR:", e)
-            time.sleep(2)
+            time.sleep(3)
 
 # ===== START =====
 
-exchange.fetch_balance()
+def start_bot():
+    exchange.fetch_balance()
 
-print("GRID BOT BAŞLADI")
+    msg = "🤖 GRID BOT AKTİF (FINAL TELEGRAM)"
+    print(msg)
+    bot.send_message(CHAT_ID, msg)
 
-for sym in CONFIG.keys():
-    open_hedge(sym)
+    for sym in CONFIG.keys():
+        open_hedge(sym)
 
-manage()
+    manage()
+
+# ===== RUN THREAD =====
+threading.Thread(target=start_bot, daemon=True).start()
+
+bot.infinity_polling()
