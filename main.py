@@ -4,7 +4,7 @@ import ccxt
 import telebot
 import threading
 
-LEV = 5
+LEV = 3
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -19,80 +19,87 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
-CONFIG = {
-    "BTC/USDT:USDT": {
-        "QTY": 0.0005,
-        "TP": 0.5   # 🔥 hızlı kar
-    }
-}
+SYMBOL = "BTC/USDT:USDT"
+QTY = 0.0003
+GRID_STEP = 0.003  # %0.3
+LEVELS = 6
 
-position = None
+grid_orders = []
 
-def get_price(sym):
-    return exchange.fetch_ticker(sym)["last"]
+def get_price():
+    return exchange.fetch_ticker(SYMBOL)["last"]
 
-def open_trade():
-    global position
+def place_grid():
+    global grid_orders
+
     try:
-        if position:
-            return
+        price = get_price()
+        exchange.set_leverage(LEV, SYMBOL)
 
-        sym = "BTC/USDT:USDT"
-        price = get_price(sym)
+        for i in range(1, LEVELS + 1):
 
-        exchange.set_leverage(LEV, sym)
-        exchange.create_market_order(sym, "buy", CONFIG[sym]["QTY"])
+            buy_price = price * (1 - GRID_STEP * i)
+            sell_price = price * (1 + GRID_STEP * i)
 
-        position = {
-            "entry": price,
-            "qty": CONFIG[sym]["QTY"]
-        }
+            # BUY LIMIT
+            buy = exchange.create_limit_order(
+                SYMBOL,
+                "buy",
+                QTY,
+                buy_price
+            )
 
-        bot.send_message(CHAT_ID, f"🚀 BTC LONG AÇILDI")
+            # SELL LIMIT
+            sell = exchange.create_limit_order(
+                SYMBOL,
+                "sell",
+                QTY,
+                sell_price
+            )
+
+            grid_orders.append((buy["id"], sell["id"]))
+
+        bot.send_message(CHAT_ID, "📊 GRID KURULDU")
 
     except Exception as e:
-        print("OPEN ERROR:", e)
+        print("GRID ERROR:", e)
 
-def manage():
-    global position
+def monitor():
+    global grid_orders
 
     while True:
         try:
-            if not position:
-                time.sleep(2)
-                continue
+            open_orders = exchange.fetch_open_orders(SYMBOL)
+            open_ids = [o["id"] for o in open_orders]
 
-            sym = "BTC/USDT:USDT"
-            price = get_price(sym)
+            # doldurulan emirleri kontrol et
+            for buy_id, sell_id in grid_orders[:]:
 
-            pnl = (price - position["entry"]) * position["qty"]
+                if buy_id not in open_ids:
+                    bot.send_message(CHAT_ID, "📉 BUY gerçekleşti")
+                    grid_orders.remove((buy_id, sell_id))
 
-            if pnl >= CONFIG[sym]["TP"]:
-                exchange.create_market_order(
-                    sym,
-                    "sell",
-                    position["qty"],
-                    params={"reduceOnly": True}
-                )
+                if sell_id not in open_ids:
+                    bot.send_message(CHAT_ID, "📈 SELL gerçekleşti")
+                    grid_orders.remove((buy_id, sell_id))
 
-                bot.send_message(CHAT_ID, f"💰 KAR ALDI: {round(pnl,2)} USDT")
-                position = None
+            # eğer azaldıysa yeniden kur
+            if len(grid_orders) < LEVELS:
+                place_grid()
 
-            time.sleep(2)
+            time.sleep(5)
 
         except Exception as e:
-            print("MANAGE ERROR:", e)
-            time.sleep(3)
+            print("MONITOR ERROR:", e)
+            time.sleep(5)
 
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 BASİT BOT AKTİF")
+    bot.send_message(CHAT_ID, "🤖 GERÇEK GRID BOT AKTİF")
 
-    while True:
-        open_trade()
-        time.sleep(10)
+    place_grid()
 
 threading.Thread(target=start, daemon=True).start()
-threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=monitor, daemon=True).start()
 
 bot.infinity_polling()
