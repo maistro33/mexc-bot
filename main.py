@@ -2,53 +2,54 @@ import os
 import time
 import ccxt
 
-# ================= API =================
+# ===== BITGET =====
+API_KEY = os.getenv("BITGET_API")
+API_SEC = os.getenv("BITGET_SEC")
+PASSPHRASE = "Berfin33"
 
 exchange = ccxt.bitget({
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "apiKey": API_KEY,
+    "secret": API_SEC,
+    "password": PASSPHRASE,
     "options": {
-        "defaultType": "swap",
-        "defaultSubType": "linear"
+        "defaultType": "swap"
     },
-    "enableRateLimit": True
+    "enableRateLimit": True,
+    "timeout": 30000
 })
 
 exchange.load_markets()
 
-# ================= AYAR =================
-
+# ===== CONFIG =====
 CONFIG = {
     "BTC/USDT:USDT": {
         "LEV": 3,
         "MARGIN": 2,
-        "STEP": 0.007,   # %0.7
+        "STEP": 0.007,
         "TP": 0.8
     },
     "SOL/USDT:USDT": {
         "LEV": 3,
         "MARGIN": 2,
-        "STEP": 0.01,    # %1
+        "STEP": 0.01,
         "TP": 1.0
     }
 }
 
 positions = {}
 
-# ================= PRICE =================
-
+# ===== PRICE =====
 def get_price(sym):
     return exchange.fetch_ticker(sym)["last"]
 
-# ================= HEDGE OPEN =================
-
+# ===== OPEN =====
 def open_hedge(sym):
     try:
         cfg = CONFIG[sym]
         price = get_price(sym)
 
         qty = (cfg["MARGIN"] * cfg["LEV"]) / price
+        qty = float(exchange.amount_to_precision(sym, qty))
 
         exchange.set_leverage(cfg["LEV"], sym)
 
@@ -68,11 +69,8 @@ def open_hedge(sym):
     except Exception as e:
         print("OPEN ERROR:", e)
 
-# ================= MANAGE =================
-
+# ===== MANAGE =====
 def manage():
-    global positions
-
     while True:
         try:
             for sym in list(positions.keys()):
@@ -114,7 +112,10 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(2)
 
-# ================= START =================
+# ===== START =====
+exchange.fetch_balance()
+
+print("GRID BOT BAŞLADI")
 
 for sym in CONFIG.keys():
     open_hedge(sym)
