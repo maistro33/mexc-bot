@@ -29,7 +29,7 @@ exchange = ccxt.bitget({
 })
 
 active_trades = []
-used_coins = set()   # 🔥 ARTIK TEKRAR YOK
+used_coins = set()
 
 # ================= LOAD =================
 
@@ -51,7 +51,7 @@ def load_positions():
                     "side": "long"
                 })
 
-                used_coins.add(sym)  # 🔥 açık pozisyonu da tekrar alma
+                used_coins.add(sym)
 
     except:
         pass
@@ -83,7 +83,6 @@ def trend_direction_4h(sym):
         c = exchange.fetch_ohlcv(sym, "4h", limit=20)
         closes = [x[4] for x in c]
         avg = sum(closes)/len(closes)
-
         return "long" if closes[-1] > avg else "short"
     except:
         return None
@@ -138,6 +137,16 @@ def ultra_entry(sym):
     except:
         return False
 
+# ================= NEW SHORT FIX =================
+
+def short_pullback(sym):
+    try:
+        c = exchange.fetch_ohlcv(sym, "1m", limit=6)
+        closes = [x[4] for x in c]
+        return closes[-1] > closes[-2]
+    except:
+        return False
+
 # ================= COINS =================
 
 def get_coins():
@@ -185,7 +194,7 @@ def open_trade(sym, side):
             "side": side
         })
 
-        used_coins.add(sym)  # 🔥 bir daha asla açma
+        used_coins.add(sym)
 
         bot.send_message(CHAT_ID, f"🚀 {side.upper()} {sym}")
 
@@ -220,7 +229,6 @@ def manage():
                 if pnl > trade["max_pnl"]:
                     trade["max_pnl"] = pnl
 
-                # TP1
                 if not trade["tp1"] and pnl >= TP1_USDT:
                     close_qty = trade["qty"] * 0.5
 
@@ -233,7 +241,6 @@ def manage():
 
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}")
 
-                # TRAILING
                 if trade["tp1"] and pnl >= TRAIL_START:
                     if trade["max_pnl"] - pnl >= STEP:
                         exchange.create_market_order(
@@ -244,7 +251,6 @@ def manage():
                         bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl*0.7,2)}")
                         active_trades.remove(trade)
 
-                # SL
                 if pnl <= -SL_USDT:
                     exchange.create_market_order(
                         sym, close_side, trade["qty"],
@@ -278,7 +284,7 @@ def scanner():
                 if any(t["symbol"] == sym for t in active_trades):
                     continue
 
-                if sym in used_coins:   # 🔥 ARTIK TEKRAR YOK
+                if sym in used_coins:
                     continue
 
                 direction = trend_direction_4h(sym)
@@ -290,6 +296,8 @@ def scanner():
                         continue
                 else:
                     if trend_5m(sym):
+                        continue
+                    if not short_pullback(sym):
                         continue
 
                 if not volume_spike(sym):
@@ -323,6 +331,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V11 AKTİF (NO REPEAT COIN)")
+bot.send_message(CHAT_ID, "🤖 FINAL V12 AKTİF (SMART ENTRY)")
 
 bot.infinity_polling()
