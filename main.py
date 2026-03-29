@@ -19,33 +19,34 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
-# 🔥 SADECE BTC
 CONFIG = {
     "BTC/USDT:USDT": {
         "QTY": 0.0005,
-        "STEP": 0.01,
-        "TP": 2.0
+        "TP": 0.5   # 🔥 hızlı kar
     }
 }
 
-positions = {}
+position = None
 
 def get_price(sym):
     return exchange.fetch_ticker(sym)["last"]
 
-def open_trade(sym):
+def open_trade():
+    global position
     try:
-        if sym in positions:
+        if position:
             return
 
-        cfg = CONFIG[sym]
+        sym = "BTC/USDT:USDT"
         price = get_price(sym)
-        qty = cfg["QTY"]
 
         exchange.set_leverage(LEV, sym)
-        exchange.create_market_order(sym, "buy", qty)
+        exchange.create_market_order(sym, "buy", CONFIG[sym]["QTY"])
 
-        positions[sym] = {"entry": price, "qty": qty}
+        position = {
+            "entry": price,
+            "qty": CONFIG[sym]["QTY"]
+        }
 
         bot.send_message(CHAT_ID, f"🚀 BTC LONG AÇILDI")
 
@@ -53,36 +54,29 @@ def open_trade(sym):
         print("OPEN ERROR:", e)
 
 def manage():
+    global position
+
     while True:
         try:
-            for sym in list(positions.keys()):
-                cfg = CONFIG[sym]
-                pos = positions[sym]
+            if not position:
+                time.sleep(2)
+                continue
 
-                price = get_price(sym)
-                entry = pos["entry"]
-                qty = pos["qty"]
+            sym = "BTC/USDT:USDT"
+            price = get_price(sym)
 
-                pnl = (price - entry) * qty
+            pnl = (price - position["entry"]) * position["qty"]
 
-                # TP
-                if pnl >= cfg["TP"]:
-                    exchange.create_market_order(
-                        sym,
-                        "sell",
-                        qty,
-                        params={"reduceOnly": True}
-                    )
+            if pnl >= CONFIG[sym]["TP"]:
+                exchange.create_market_order(
+                    sym,
+                    "sell",
+                    position["qty"],
+                    params={"reduceOnly": True}
+                )
 
-                    bot.send_message(CHAT_ID, f"💰 TP {round(pnl,2)}$")
-                    del positions[sym]
-
-                # GRID ADD
-                elif price < entry * (1 - cfg["STEP"]):
-                    exchange.create_market_order(sym, "buy", qty)
-                    positions[sym]["entry"] = (entry + price) / 2
-
-                    bot.send_message(CHAT_ID, f"📉 GRID ADD BTC")
+                bot.send_message(CHAT_ID, f"💰 KAR ALDI: {round(pnl,2)} USDT")
+                position = None
 
             time.sleep(2)
 
@@ -92,13 +86,11 @@ def manage():
 
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 BTC GRID BOT AKTİF")
+    bot.send_message(CHAT_ID, "🤖 BASİT BOT AKTİF")
 
     while True:
-        for sym in CONFIG:
-            open_trade(sym)
-
-        time.sleep(15)
+        open_trade()
+        time.sleep(10)
 
 threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
