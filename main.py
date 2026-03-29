@@ -37,21 +37,29 @@ def load_positions():
     global active_trades
     try:
         positions = exchange.fetch_positions()
+
         for p in positions:
-            if float(p.get('contracts', 0)) > 0:
-                sym = p['symbol']
+            contracts = float(p.get('contracts', 0))
 
-                active_trades.append({
-                    "symbol": sym,
-                    "qty": float(p['contracts']),
-                    "entry": float(p['entryPrice']),
-                    "tp1": False,
-                    "max_pnl": 0,
-                    "remaining_qty": float(p['contracts']),
-                    "side": "long"
-                })
+            if contracts == 0:
+                continue
 
-                used_coins.add(sym)
+            # 🔥 DOĞRU SIDE
+            side = "long" if contracts > 0 else "short"
+
+            sym = p['symbol']
+
+            active_trades.append({
+                "symbol": sym,
+                "qty": abs(contracts),
+                "entry": float(p['entryPrice']),
+                "tp1": False,
+                "max_pnl": 0,
+                "remaining_qty": abs(contracts),
+                "side": side
+            })
+
+            used_coins.add(sym)
 
     except:
         pass
@@ -70,7 +78,7 @@ def position_open(sym):
     try:
         positions = exchange.fetch_positions()
         for p in positions:
-            if sym.split("/")[0] in p['symbol'] and float(p.get('contracts', 0)) > 0:
+            if sym.split("/")[0] in p['symbol'] and float(p.get('contracts', 0)) != 0:
                 return True
         return False
     except:
@@ -249,32 +257,19 @@ def manage():
 
                 if not trade["tp1"] and pnl >= TP1_USDT:
                     close_qty = trade["qty"] * 0.5
-
-                    exchange.create_market_order(
-                        sym, close_side, close_qty, params={"reduceOnly": True}
-                    )
-
+                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly": True})
                     trade["tp1"] = True
                     trade["remaining_qty"] = trade["qty"] - close_qty
-
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}")
 
                 if trade["tp1"] and pnl >= TRAIL_START:
                     if trade["max_pnl"] - pnl >= STEP:
-                        exchange.create_market_order(
-                            sym, close_side, trade["remaining_qty"],
-                            params={"reduceOnly": True}
-                        )
-
+                        exchange.create_market_order(sym, close_side, trade["remaining_qty"], params={"reduceOnly": True})
                         bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl*0.7,2)}")
                         active_trades.remove(trade)
 
                 if pnl <= -SL_USDT:
-                    exchange.create_market_order(
-                        sym, close_side, trade["qty"],
-                        params={"reduceOnly": True}
-                    )
-
+                    exchange.create_market_order(sym, close_side, trade["qty"], params={"reduceOnly": True})
                     bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}")
                     active_trades.remove(trade)
 
@@ -353,6 +348,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V13 AKTİF (SNIPER MODE)")
+bot.send_message(CHAT_ID, "🤖 FINAL V15 AKTİF (ULTRA STABLE)")
 
 bot.infinity_polling()
