@@ -40,10 +40,18 @@ positions = {}
 
 # ===== PRICE =====
 def get_price(sym):
-    try:
-        return exchange.fetch_ticker(sym)["last"]
-    except:
-        return 0
+    return exchange.fetch_ticker(sym)["last"]
+
+# ===== PRECISION FIX (EN ÖNEMLİ) =====
+def fix_qty(sym, qty):
+    market = exchange.market(sym)
+
+    step = market.get("precision", {}).get("amount", None)
+
+    if step is not None:
+        return float(exchange.amount_to_precision(sym, qty))
+
+    return float(qty)
 
 # ===== OPEN HEDGE =====
 def open_hedge(sym):
@@ -53,13 +61,9 @@ def open_hedge(sym):
 
         qty = (cfg["MARGIN"] * cfg["LEV"]) / price
 
-        # 🔥 SOL FIX (KESİN)
-        if "SOL" in sym:
-            qty = round(qty, 1)
-        else:
-            qty = float(exchange.amount_to_precision(sym, qty))
+        # 🔥 TEK DOĞRU FIX
+        qty = fix_qty(sym, qty)
 
-        # minimum 0 olmasın
         if qty <= 0:
             return
 
@@ -94,23 +98,14 @@ def manage():
                 long_pnl = (price - entry) * qty
                 short_pnl = (entry - price) * qty
 
-                # LONG TP
                 if long_pnl >= cfg["TP"]:
-                    exchange.create_market_order(
-                        sym, "sell", qty,
-                        params={"reduceOnly": True}
-                    )
+                    exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                     print(f"LONG TP {sym}")
 
-                # SHORT TP
                 if short_pnl >= cfg["TP"]:
-                    exchange.create_market_order(
-                        sym, "buy", qty,
-                        params={"reduceOnly": True}
-                    )
+                    exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
                     print(f"SHORT TP {sym}")
 
-                # GRID RESET
                 if abs(price - entry) / entry >= cfg["STEP"]:
                     open_hedge(sym)
                     del positions[sym]
