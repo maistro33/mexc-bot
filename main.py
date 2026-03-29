@@ -8,8 +8,8 @@ import random
 LEV = 10
 MARGIN = 3
 
-TP1_USDT = 0.40
-TRAIL_START = 0.55
+TP1_USDT = 0.60
+TRAIL_START = 0.70
 STEP = 0.20
 SL_USDT = 0.30
 
@@ -40,11 +40,9 @@ def load_positions():
 
         for p in positions:
             contracts = float(p.get('contracts', 0))
-
             if contracts == 0:
                 continue
 
-            # 🔥 DOĞRU SIDE
             side = "long" if contracts > 0 else "short"
 
             sym = p['symbol']
@@ -134,7 +132,7 @@ def first_move(sym):
     try:
         c = exchange.fetch_ohlcv(sym, "1m", limit=20)
         closes = [x[4] for x in c]
-        return (closes[-1] - min(closes)) / min(closes) < 0.012
+        return (closes[-1] - min(closes)) / min(closes) < 0.015
     except:
         return False
 
@@ -145,14 +143,15 @@ def ultra_entry(sym):
     except:
         return False
 
-# ================= SNIPER =================
+# ================= SNIPER AKTİF =================
 
 def strong_dip(sym):
     try:
         c = exchange.fetch_ohlcv(sym, "1m", limit=10)
         lows = [x[3] for x in c]
         closes = [x[4] for x in c]
-        return lows[-1] == min(lows) and closes[-1] > closes[-2]
+
+        return lows[-1] <= min(lows) * 1.002 and closes[-1] > closes[-2]
     except:
         return False
 
@@ -161,7 +160,8 @@ def strong_top(sym):
         c = exchange.fetch_ohlcv(sym, "1m", limit=10)
         highs = [x[2] for x in c]
         closes = [x[4] for x in c]
-        return highs[-1] == max(highs) and closes[-1] < closes[-2]
+
+        return highs[-1] >= max(highs) * 0.998 and closes[-1] < closes[-2]
     except:
         return False
 
@@ -257,19 +257,32 @@ def manage():
 
                 if not trade["tp1"] and pnl >= TP1_USDT:
                     close_qty = trade["qty"] * 0.5
-                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly": True})
+
+                    exchange.create_market_order(
+                        sym, close_side, close_qty, params={"reduceOnly": True}
+                    )
+
                     trade["tp1"] = True
                     trade["remaining_qty"] = trade["qty"] - close_qty
+
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym} {round(pnl,2)}")
 
                 if trade["tp1"] and pnl >= TRAIL_START:
                     if trade["max_pnl"] - pnl >= STEP:
-                        exchange.create_market_order(sym, close_side, trade["remaining_qty"], params={"reduceOnly": True})
+                        exchange.create_market_order(
+                            sym, close_side, trade["remaining_qty"],
+                            params={"reduceOnly": True}
+                        )
+
                         bot.send_message(CHAT_ID, f"🏁 EXIT {sym} {round(pnl*0.7,2)}")
                         active_trades.remove(trade)
 
                 if pnl <= -SL_USDT:
-                    exchange.create_market_order(sym, close_side, trade["qty"], params={"reduceOnly": True})
+                    exchange.create_market_order(
+                        sym, close_side, trade["qty"],
+                        params={"reduceOnly": True}
+                    )
+
                     bot.send_message(CHAT_ID, f"🛑 SL {sym} {round(pnl,2)}")
                     active_trades.remove(trade)
 
@@ -348,6 +361,6 @@ load_positions()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🤖 FINAL V15 AKTİF (ULTRA STABLE)")
+bot.send_message(CHAT_ID, "🤖 FINAL V16 AKTİF (SNIPER + AKTİF)")
 
 bot.infinity_polling()
