@@ -5,7 +5,7 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-LEV = 3
+LEV = 5  # artırdık
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -29,14 +29,14 @@ exchange.load_markets()
 # ===== CONFIG =====
 CONFIG = {
     "BTC/USDT:USDT": {
-        "QTY": 0.001,
+        "QTY": 0.0005,
         "STEP": 0.007,
-        "TP": 1.5
+        "TP": 1.2
     },
     "SOL/USDT:USDT": {
-        "QTY": 1,
+        "QTY": 0.5,
         "STEP": 0.01,
-        "TP": 1.5
+        "TP": 1.2
     }
 }
 
@@ -58,7 +58,10 @@ def open_hedge(sym):
 
         exchange.set_leverage(LEV, sym)
 
+        # LONG
         exchange.create_market_order(sym, "buy", qty)
+
+        # SHORT
         exchange.create_market_order(sym, "sell", qty)
 
         positions[sym] = {
@@ -123,11 +126,10 @@ def manage():
             time.sleep(3)
 
 # ===== START =====
-
 def start_bot():
     exchange.fetch_balance()
 
-    msg = "🤖 GRID BOT AKTİF (FINAL TELEGRAM)"
+    msg = "🤖 GRID BOT AKTİF (BALANCE FIX)"
     print(msg)
     bot.send_message(CHAT_ID, msg)
 
@@ -136,7 +138,7 @@ def start_bot():
 
     manage()
 
-# ===== RUN THREAD =====
+# ===== RUN =====
 threading.Thread(target=start_bot, daemon=True).start()
 
 bot.infinity_polling()
