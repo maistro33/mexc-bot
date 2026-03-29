@@ -19,21 +19,22 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
+# 🔥 SADECE BTC
 CONFIG = {
-    "BTC/USDT:USDT": {"QTY": 0.001, "STEP": 0.01, "TP": 4.0},
-    "SOL/USDT:USDT": {"QTY": 1, "STEP": 0.015, "TP": 3.0}
+    "BTC/USDT:USDT": {
+        "QTY": 0.0005,
+        "STEP": 0.01,
+        "TP": 2.0
+    }
 }
 
 positions = {}
 
-# ===== PRICE =====
 def get_price(sym):
     return exchange.fetch_ticker(sym)["last"]
 
-# ===== OPEN =====
 def open_trade(sym):
     try:
-        # 🔥 ARTIK SADECE KENDİ KAYDIMIZA BAKIYORUZ
         if sym in positions:
             return
 
@@ -44,22 +45,17 @@ def open_trade(sym):
         exchange.set_leverage(LEV, sym)
         exchange.create_market_order(sym, "buy", qty)
 
-        positions[sym] = {
-            "entry": price,
-            "qty": qty
-        }
+        positions[sym] = {"entry": price, "qty": qty}
 
-        bot.send_message(CHAT_ID, f"🚀 LONG AÇILDI {sym}")
+        bot.send_message(CHAT_ID, f"🚀 BTC LONG AÇILDI")
 
     except Exception as e:
         print("OPEN ERROR:", e)
 
-# ===== MANAGE =====
 def manage():
     while True:
         try:
             for sym in list(positions.keys()):
-
                 cfg = CONFIG[sym]
                 pos = positions[sym]
 
@@ -78,16 +74,15 @@ def manage():
                         params={"reduceOnly": True}
                     )
 
-                    bot.send_message(CHAT_ID, f"💰 TP {sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"💰 TP {round(pnl,2)}$")
                     del positions[sym]
 
                 # GRID ADD
                 elif price < entry * (1 - cfg["STEP"]):
                     exchange.create_market_order(sym, "buy", qty)
-
                     positions[sym]["entry"] = (entry + price) / 2
 
-                    bot.send_message(CHAT_ID, f"📉 GRID ADD {sym}")
+                    bot.send_message(CHAT_ID, f"📉 GRID ADD BTC")
 
             time.sleep(2)
 
@@ -95,16 +90,15 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(3)
 
-# ===== START =====
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 PRO GRID BOT AKTİF (NO ERROR)")
+    bot.send_message(CHAT_ID, "🤖 BTC GRID BOT AKTİF")
 
     while True:
         for sym in CONFIG:
             open_trade(sym)
 
-        time.sleep(20)
+        time.sleep(15)
 
 threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
