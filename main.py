@@ -5,7 +5,7 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-LEV = 5  # artırdık
+LEV = 5
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -49,7 +49,7 @@ def get_price(sym):
     except:
         return 0
 
-# ===== OPEN =====
+# ===== OPEN HEDGE =====
 def open_hedge(sym):
     try:
         cfg = CONFIG[sym]
@@ -58,11 +58,13 @@ def open_hedge(sym):
 
         exchange.set_leverage(LEV, sym)
 
-        # LONG
+        # LONG hemen aç
         exchange.create_market_order(sym, "buy", qty)
 
-        # SHORT
-        exchange.create_market_order(sym, "sell", qty)
+        # SHORT farklı fiyattan aç (çok önemli fix)
+        short_price = price * 1.002
+
+        exchange.create_limit_order(sym, "sell", qty, short_price)
 
         positions[sym] = {
             "entry": price,
@@ -129,7 +131,7 @@ def manage():
 def start_bot():
     exchange.fetch_balance()
 
-    msg = "🤖 GRID BOT AKTİF (BALANCE FIX)"
+    msg = "🤖 GRID BOT AKTİF (FINAL HEDGE FIX)"
     print(msg)
     bot.send_message(CHAT_ID, msg)
 
