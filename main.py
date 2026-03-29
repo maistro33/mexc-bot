@@ -30,13 +30,13 @@ exchange.load_markets()
 CONFIG = {
     "BTC/USDT:USDT": {
         "QTY": 0.0005,
-        "STEP": 0.007,
-        "TP": 1.2
+        "STEP": 0.005,
+        "TP": 1.0
     },
     "SOL/USDT:USDT": {
         "QTY": 0.5,
-        "STEP": 0.01,
-        "TP": 1.2
+        "STEP": 0.008,
+        "TP": 1.0
     }
 }
 
@@ -46,34 +46,37 @@ positions = {}
 def get_price(sym):
     return exchange.fetch_ticker(sym)["last"]
 
-# ===== OPEN HEDGE =====
-def open_hedge(sym):
+# ===== CHECK POSITION =====
+def has_position(sym):
     try:
+        positions = exchange.fetch_positions()
+        for p in positions:
+            if sym in p["symbol"] and float(p["contracts"]) > 0:
+                return True
+        return False
+    except:
+        return False
+
+# ===== OPEN =====
+def open_trade(sym):
+    try:
+        if has_position(sym):
+            return
+
         cfg = CONFIG[sym]
         price = get_price(sym)
         qty = cfg["QTY"]
 
         exchange.set_leverage(LEV, sym)
 
-        # 🔥 HEDGE PARAMETRELERİ
-        exchange.create_market_order(
-            sym, "buy", qty,
-            params={"posSide": "long"}
-        )
-
-        exchange.create_market_order(
-            sym, "sell", qty,
-            params={"posSide": "short"}
-        )
+        exchange.create_market_order(sym, "buy", qty)
 
         positions[sym] = {
             "entry": price,
             "qty": qty
         }
 
-        msg = f"🚀 HEDGE AÇILDI\n{sym}\nQTY: {qty}"
-        print(msg)
-        bot.send_message(CHAT_ID, msg)
+        bot.send_message(CHAT_ID, f"🚀 LONG AÇILDI\n{sym}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -91,29 +94,25 @@ def manage():
                 entry = pos["entry"]
                 qty = pos["qty"]
 
-                long_pnl = (price - entry) * qty
-                short_pnl = (entry - price) * qty
+                pnl = (price - entry) * qty
 
-                # LONG TP
-                if long_pnl >= cfg["TP"]:
+                # TP
+                if pnl >= cfg["TP"]:
                     exchange.create_market_order(
                         sym, "sell", qty,
-                        params={"reduceOnly": True, "posSide": "long"}
+                        params={"reduceOnly": True}
                     )
-                    bot.send_message(CHAT_ID, f"💰 LONG TP {sym}")
 
-                # SHORT TP
-                if short_pnl >= cfg["TP"]:
-                    exchange.create_market_order(
-                        sym, "buy", qty,
-                        params={"reduceOnly": True, "posSide": "short"}
-                    )
-                    bot.send_message(CHAT_ID, f"💰 SHORT TP {sym}")
-
-                # GRID RESET
-                if abs(price - entry) / entry >= cfg["STEP"]:
-                    open_hedge(sym)
+                    bot.send_message(CHAT_ID, f"💰 TP {sym} {round(pnl,2)}")
                     del positions[sym]
+
+                # GRID ADD (düşüşte ekleme)
+                elif price < entry * (1 - cfg["STEP"]):
+                    exchange.create_market_order(sym, "buy", qty)
+
+                    positions[sym]["entry"] = (entry + price) / 2
+
+                    bot.send_message(CHAT_ID, f"📉 GRID ADD {sym}")
 
             time.sleep(2)
 
@@ -125,13 +124,15 @@ def manage():
 def start_bot():
     exchange.fetch_balance()
 
-    bot.send_message(CHAT_ID, "🤖 GRID BOT AKTİF (REAL HEDGE FIX)")
+    bot.send_message(CHAT_ID, "🤖 GRID BOT AKTİF (ONE WAY FINAL)")
 
-    for sym in CONFIG.keys():
-        open_hedge(sym)
+    while True:
+        for sym in CONFIG.keys():
+            open_trade(sym)
 
-    manage()
+        time.sleep(10)
 
 threading.Thread(target=start_bot, daemon=True).start()
+threading.Thread(target=manage, daemon=True).start()
 
 bot.infinity_polling()
