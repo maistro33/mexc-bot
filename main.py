@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import ccxt
 
 # ===== BITGET =====
@@ -42,18 +43,21 @@ positions = {}
 def get_price(sym):
     return exchange.fetch_ticker(sym)["last"]
 
-# ===== PRECISION FIX (EN ÖNEMLİ) =====
+# ===== PERFECT QTY FIX =====
 def fix_qty(sym, qty):
     market = exchange.market(sym)
 
-    step = market.get("precision", {}).get("amount", None)
+    step = market.get("limits", {}).get("amount", {}).get("min", None)
 
-    if step is not None:
-        return float(exchange.amount_to_precision(sym, qty))
+    if "SOL" in sym:
+        return math.floor(qty * 10) / 10  # 0.1 step kesin
 
-    return float(qty)
+    if "BTC" in sym:
+        return math.floor(qty * 10000) / 10000  # 0.0001 step kesin
 
-# ===== OPEN HEDGE =====
+    return float(exchange.amount_to_precision(sym, qty))
+
+# ===== OPEN =====
 def open_hedge(sym):
     try:
         cfg = CONFIG[sym]
@@ -61,7 +65,6 @@ def open_hedge(sym):
 
         qty = (cfg["MARGIN"] * cfg["LEV"]) / price
 
-        # 🔥 TEK DOĞRU FIX
         qty = fix_qty(sym, qty)
 
         if qty <= 0:
