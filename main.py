@@ -6,14 +6,21 @@ import threading
 
 SYMBOL = "BTC/USDT:USDT"
 
-LEV = 3
-QTY = 0.00015
+LEV = 5
+QTY = 0.0003
 
-GRID_STEP = 0.004
-LEVELS = 2
+GRID_STEP = 0.003
+LEVELS = 3
 
+SCALP_PCT = 0.002
 RECENTER_PCT = 0.015
 STOP_LOSS = 0.02
+
+SCALP_COOLDOWN = 30
+last_scalp_time = 0
+
+TREND_THRESHOLD = 0.004
+trend_position = False
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -21,7 +28,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -48,35 +55,22 @@ def cancel_all():
         pass
 
 
-# ===== TEST ORDER =====
-def test_order():
+# ===== LEVERAGE =====
+def set_leverage_safe():
     try:
-        bot.send_message(CHAT_ID, "🧪 TEST ORDER GÖNDERİLİYOR")
-
-        order = exchange.create_market_order(
-            SYMBOL,
-            "buy",
-            0.0001,
-            {"tdMode": "cross", "posSide": "long"}
-        )
-
-        bot.send_message(CHAT_ID, "✅ TEST LONG AÇILDI")
-
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ TEST HATA: {e}")
-        print("TEST ERROR:", e)
+        exchange.set_leverage(LEV, SYMBOL)
+    except:
+        pass
 
 
 # ===== GRID =====
 def place_grid():
-    global base_price, grid
+    global base_price
 
     cancel_all()
-    grid = {}
-
     base_price = get_price()
 
-    exchange.set_leverage(LEV, SYMBOL)
+    set_leverage_safe()
 
     for i in range(1, LEVELS + 1):
 
@@ -96,7 +90,39 @@ def place_grid():
         grid[buy["id"]] = ("buy", buy_price)
         grid[sell["id"]] = ("sell", sell_price)
 
-    bot.send_message(CHAT_ID, "📊 GRID KURULDU")
+    bot.send_message(CHAT_ID, "📊 GRID AKTİF")
+
+
+# ===== TREND TRADE =====
+def trend_trade(direction):
+    global trend_position
+
+    if trend_position:
+        return
+
+    try:
+        if direction == "up":
+            exchange.create_market_order(
+                SYMBOL,
+                "buy",
+                QTY,
+                {"tdMode": "cross", "posSide": "long"}
+            )
+            bot.send_message(CHAT_ID, "🚀 TREND LONG")
+
+        else:
+            exchange.create_market_order(
+                SYMBOL,
+                "sell",
+                QTY,
+                {"tdMode": "cross", "posSide": "short"}
+            )
+            bot.send_message(CHAT_ID, "🔻 TREND SHORT")
+
+        trend_position = True
+
+    except Exception as e:
+        print("TREND ERROR:", e)
 
 
 # ===== STOP LOSS =====
@@ -110,7 +136,7 @@ def check_stop():
 
                 if pnl < -STOP_LOSS:
                     cancel_all()
-                    bot.send_message(CHAT_ID, "⛔ STOP LOSS ÇALIŞTI")
+                    bot.send_message(CHAT_ID, "⛔ STOP LOSS")
                     return True
     except:
         pass
@@ -120,7 +146,7 @@ def check_stop():
 
 # ===== MONITOR =====
 def monitor():
-    global last_price, base_price, grid
+    global last_price, base_price
 
     while True:
         try:
@@ -135,12 +161,22 @@ def monitor():
                 time.sleep(5)
                 continue
 
+            # TREND ALGILAMA
+            if last_price:
+                change = (price - last_price) / last_price
+
+                if abs(change) > TREND_THRESHOLD:
+                    if change > 0:
+                        trend_trade("up")
+                    else:
+                        trend_trade("down")
+
             # GRID RESET
             if abs(price - base_price) / base_price > RECENTER_PCT:
-                bot.send_message(CHAT_ID, "♻️ GRID RESET")
+                bot.send_message(CHAT_ID, "♻️ RESET")
                 place_grid()
-                time.sleep(3)
-                continue
+
+            last_price = price
 
             open_orders = exchange.fetch_open_orders(SYMBOL)
             open_ids = [o["id"] for o in open_orders]
@@ -151,7 +187,7 @@ def monitor():
 
                     side, p = grid.pop(oid)
 
-                    bot.send_message(CHAT_ID, f"💰 {side.upper()} EXECUTED")
+                    bot.send_message(CHAT_ID, f"💰 {side.upper()}")
 
                     if side == "buy":
                         new_price = p * (1 + GRID_STEP)
@@ -169,9 +205,7 @@ def monitor():
                         )
                         grid[o["id"]] = ("buy", new_price)
 
-            last_price = price
-
-            time.sleep(3)
+            time.sleep(2)
 
         except Exception as e:
             print("MONITOR ERROR:", e)
@@ -181,11 +215,7 @@ def monitor():
 # ===== START =====
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 BOT BAŞLADI")
-
-    test_order()  # 🔥 TEST BURADA
-
-    time.sleep(5)
+    bot.send_message(CHAT_ID, "🤖 HYBRID BOT AKTİF")
 
     place_grid()
 
