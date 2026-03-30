@@ -75,12 +75,12 @@ def place_grid():
 
         buy = exchange.create_limit_order(
             SYMBOL, "buy", QTY, buy_price,
-            {"marginMode": "cross", "posSide": "long"}
+            {"reduceOnly": False}
         )
 
         sell = exchange.create_limit_order(
             SYMBOL, "sell", QTY, sell_price,
-            {"marginMode": "cross", "posSide": "short"}
+            {"reduceOnly": False}
         )
 
         grid[buy["id"]] = ("buy", buy_price)
@@ -88,7 +88,7 @@ def place_grid():
 
     bot.send_message(CHAT_ID, "📊 HYBRID GRID KURULDU")
 
-# ===== SCALP (PASİF - SİLİNMEDİ) =====
+# ===== SCALP (PASİF) =====
 def scalp_trade(price):
     return
 
@@ -105,7 +105,7 @@ def trend_trade(direction):
                 SYMBOL,
                 "buy",
                 QTY,
-                {"marginMode": "cross", "posSide": "long"}
+                {"reduceOnly": False}
             )
             bot.send_message(CHAT_ID, "🚀 TREND LONG")
 
@@ -114,7 +114,7 @@ def trend_trade(direction):
                 SYMBOL,
                 "sell",
                 QTY,
-                {"marginMode": "cross", "posSide": "short"}
+                {"reduceOnly": False}
             )
             bot.send_message(CHAT_ID, "🔻 TREND SHORT")
 
@@ -192,7 +192,7 @@ def monitor():
                         new_price = p * (1 + GRID_STEP)
                         o = exchange.create_limit_order(
                             SYMBOL, "sell", QTY, new_price,
-                            {"marginMode": "cross", "posSide": "short"}
+                            {"reduceOnly": False}
                         )
                         grid[o["id"]] = ("sell", new_price)
 
@@ -200,7 +200,7 @@ def monitor():
                         new_price = p * (1 - GRID_STEP)
                         o = exchange.create_limit_order(
                             SYMBOL, "buy", QTY, new_price,
-                            {"marginMode": "cross", "posSide": "long"}
+                            {"reduceOnly": False}
                         )
                         grid[o["id"]] = ("buy", new_price)
 
@@ -220,5 +220,5 @@ def start():
 threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=monitor, daemon=True).start()
 
-# 🔥 BU SATIR KALACAK
+# 🔥 BU ÇOK ÖNEMLİ
 bot.infinity_polling()
