@@ -7,10 +7,13 @@ import threading
 SYMBOL = "BTC/USDT:USDT"
 
 LEV = 5
-QTY = 0.0004
-GRID_STEP = 0.0025
-LEVELS = 4
-RECENTER_PCT = 0.01
+QTY = 0.0003
+
+GRID_STEP = 0.003
+LEVELS = 3
+
+SCALP_PCT = 0.002   # %0.2 scalp
+RECENTER_PCT = 0.015  # %1.5 reset
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -26,7 +29,8 @@ exchange = ccxt.bitget({
 exchange.load_markets()
 
 grid = {}
-base_price = None  # 🔥 önemli fix
+base_price = None
+last_price = None
 
 # ===== PRICE =====
 def get_price():
@@ -41,13 +45,12 @@ def cancel_all():
     except:
         pass
 
-# ===== GRID KUR =====
+# ===== GRID =====
 def place_grid():
     global base_price
 
     cancel_all()
-
-    base_price = get_price()  # 🔥 burada set ediliyor
+    base_price = get_price()
 
     exchange.set_leverage(LEV, SYMBOL)
 
@@ -62,46 +65,51 @@ def place_grid():
         grid[buy["id"]] = ("buy", buy_price)
         grid[sell["id"]] = ("sell", sell_price)
 
-    bot.send_message(CHAT_ID, "🚀 PRO GRID KURULDU")
+    bot.send_message(CHAT_ID, "📊 HYBRID GRID KURULDU")
 
-# ===== YENİ EMİR =====
-def place_opposite(side, price):
-
+# ===== SCALP =====
+def scalp_trade(price):
     try:
-        if side == "buy":
-            new_price = price * (1 + GRID_STEP)
-            order = exchange.create_limit_order(SYMBOL, "sell", QTY, new_price)
-            grid[order["id"]] = ("sell", new_price)
-            bot.send_message(CHAT_ID, f"📈 SELL {round(new_price,2)}")
+        qty = QTY
+        exchange.create_market_order(SYMBOL, "buy", qty)
+        time.sleep(1)
 
-        else:
-            new_price = price * (1 - GRID_STEP)
-            order = exchange.create_limit_order(SYMBOL, "buy", QTY, new_price)
-            grid[order["id"]] = ("buy", new_price)
-            bot.send_message(CHAT_ID, f"📉 BUY {round(new_price,2)}")
+        sell_price = price * (1 + SCALP_PCT)
+
+        exchange.create_limit_order(SYMBOL, "sell", qty, sell_price)
+
+        bot.send_message(CHAT_ID, f"⚡ SCALP TRADE {round(price,2)}")
 
     except Exception as e:
-        print("OPPOSITE ERROR:", e)
+        print("SCALP ERROR:", e)
 
-# ===== TAKİP =====
+# ===== MONITOR =====
 def monitor():
-    global base_price
+    global last_price, base_price
 
     while True:
         try:
             price = get_price()
 
-            # 🔥 FIX: base_price kontrolü
             if base_price is None:
                 time.sleep(2)
                 continue
 
-            # GRID RESET
+            # 🔥 GRID RESET
             if abs(price - base_price) / base_price > RECENTER_PCT:
-                bot.send_message(CHAT_ID, "♻️ GRID RESET")
+                bot.send_message(CHAT_ID, "♻️ RESET (TREND)")
                 place_grid()
-                time.sleep(3)
+                time.sleep(2)
                 continue
+
+            # ⚡ SCALP fırsatı
+            if last_price:
+                change = (price - last_price) / last_price
+
+                if change > SCALP_PCT:
+                    scalp_trade(price)
+
+            last_price = price
 
             open_orders = exchange.fetch_open_orders(SYMBOL)
             open_ids = [o["id"] for o in open_orders]
@@ -112,9 +120,18 @@ def monitor():
 
                     side, p = grid.pop(oid)
 
-                    bot.send_message(CHAT_ID, f"💰 {side.upper()} DOLDU")
+                    bot.send_message(CHAT_ID, f"💰 {side.upper()}")
 
-                    place_opposite(side, p)
+                    # ters emir
+                    if side == "buy":
+                        new_price = p * (1 + GRID_STEP)
+                        o = exchange.create_limit_order(SYMBOL, "sell", QTY, new_price)
+                        grid[o["id"]] = ("sell", new_price)
+
+                    else:
+                        new_price = p * (1 - GRID_STEP)
+                        o = exchange.create_limit_order(SYMBOL, "buy", QTY, new_price)
+                        grid[o["id"]] = ("buy", new_price)
 
             time.sleep(2)
 
@@ -125,7 +142,7 @@ def monitor():
 # ===== START =====
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 PRO AGRESİF GRID AKTİF")
+    bot.send_message(CHAT_ID, "🤖 HYBRID BOT AKTİF")
 
     place_grid()
 
