@@ -4,221 +4,344 @@ import ccxt
 import telebot
 import threading
 
-SYMBOL = "BTC/USDT:USDT"
+# ===== SETTINGS =====
+SAFE_VOLUME = 3_000_000
+AGGR_VOLUME = 1_000_000
 
-LEV = 5
-QTY = 0.0003
+SAFE_LEV = 5
+SAFE_MARGIN = 5
 
-GRID_STEP = 0.003
-LEVELS = 3
+AGGR_LEV = 10
+AGGR_MARGIN = 5
 
-SCALP_PCT = 0.002
-RECENTER_PCT = 0.015
-STOP_LOSS = 0.02
+MAX_POS = 1
+TOP_COINS = 200
+BUFFER_PCT = 0.0015
 
-TREND_THRESHOLD = 0.004
-trend_position = False
+TP_SPLIT = [0.4, 0.3, 0.3]
 
-SCALP_COOLDOWN = 30
-last_scalp_time = 0
-
+# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# ===== BITGET =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": "Berfin33",
     "options": {"defaultType": "swap"},
-    "enableRateLimit": True
+    "enableRateLimit": True,
+    "timeout": 30000
 })
 
 exchange.load_markets()
 
-grid = {}
-base_price = None
-last_price = None
-
-# ===== PRICE =====
-def get_price():
-    return exchange.fetch_ticker(SYMBOL)["last"]
-
-# ===== CLEAR =====
-def cancel_all():
+# ===== HELPERS =====
+def safe(x):
     try:
-        orders = exchange.fetch_open_orders(SYMBOL)
-        for o in orders:
-            exchange.cancel_order(o["id"], SYMBOL)
+        return float(x)
     except:
-        pass
+        return 0.0
 
-# ===== LEVERAGE SAFE =====
-def set_leverage_safe():
+def get_candles(sym, tf, limit=100):
     try:
-        exchange.set_leverage(LEV, SYMBOL)
-    except Exception as e:
-        print("LEV ERROR:", e)
-
-# ===== GRID =====
-def place_grid():
-    global base_price
-
-    cancel_all()
-    base_price = get_price()
-
-    set_leverage_safe()
-
-    for i in range(1, LEVELS + 1):
-
-        buy_price = base_price * (1 - GRID_STEP * i)
-        sell_price = base_price * (1 + GRID_STEP * i)
-
-        buy = exchange.create_limit_order(
-            SYMBOL, "buy", QTY, buy_price,
-            {"reduceOnly": False}
-        )
-
-        sell = exchange.create_limit_order(
-            SYMBOL, "sell", QTY, sell_price,
-            {"reduceOnly": False}
-        )
-
-        grid[buy["id"]] = ("buy", buy_price)
-        grid[sell["id"]] = ("sell", sell_price)
-
-    bot.send_message(CHAT_ID, "📊 HYBRID GRID KURULDU")
-
-# ===== SCALP (PASİF) =====
-def scalp_trade(price):
-    return
-
-# ===== TREND =====
-def trend_trade(direction):
-    global trend_position
-
-    if trend_position:
-        return
-
-    try:
-        if direction == "up":
-            exchange.create_market_order(
-                SYMBOL,
-                "buy",
-                QTY,
-                {"reduceOnly": False}
-            )
-            bot.send_message(CHAT_ID, "🚀 TREND LONG")
-
-        else:
-            exchange.create_market_order(
-                SYMBOL,
-                "sell",
-                QTY,
-                {"reduceOnly": False}
-            )
-            bot.send_message(CHAT_ID, "🔻 TREND SHORT")
-
-        trend_position = True
-
-    except Exception as e:
-        print("TREND ERROR:", e)
-
-# ===== STOP LOSS =====
-def check_stop():
-    try:
-        positions = exchange.fetch_positions([SYMBOL])
-
-        for p in positions:
-            if float(p["contracts"]) > 0:
-                pnl = float(p["unrealizedPnl"])
-
-                if pnl < -STOP_LOSS:
-                    cancel_all()
-                    bot.send_message(CHAT_ID, "⛔ STOP LOSS")
-                    return True
+        return exchange.fetch_ohlcv(sym, tf, limit=limit)
     except:
-        pass
+        return []
 
-    return False
+def has_position():
+    try:
+        pos = exchange.fetch_positions()
+        return any(safe(p.get("contracts")) > 0 for p in pos)
+    except:
+        return False
 
-# ===== MONITOR =====
-def monitor():
-    global last_price, base_price
+# ===== MARKET FILTER =====
+def get_symbols(volume):
+    try:
+        tickers = exchange.fetch_tickers()
+        filtered = []
 
+        for sym, data in tickers.items():
+            if ":USDT" not in sym:
+                continue
+            vol = safe(data.get("quoteVolume"))
+            if vol >= volume:
+                filtered.append((sym, vol))
+
+        filtered.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in filtered[:TOP_COINS]]
+    except:
+        return []
+
+# ===== DIRECTION =====
+def get_direction(sym):
+    d = get_candles(sym, "1d", 50)
+    h4 = get_candles(sym, "4h", 50)
+
+    if len(d) < 2 or len(h4) < 2:
+        return None
+
+    d_high = [c[2] for c in d]
+    d_low  = [c[3] for c in d]
+
+    h_high = [c[2] for c in h4]
+    h_low  = [c[3] for c in h4]
+
+    if d_high[-1] > d_high[-2] and h_high[-1] > h_high[-2]:
+        return "long"
+
+    if d_low[-1] < d_low[-2] and h_low[-1] < h_low[-2]:
+        return "short"
+
+    return None
+
+# ===== LIQUIDITY =====
+def liquidity_sweep(sym, direction):
+    h1 = get_candles(sym, "1h", 30)
+
+    if len(h1) < 5:
+        return False
+
+    highs = [c[2] for c in h1]
+    lows  = [c[3] for c in h1]
+
+    if direction == "long":
+        return lows[-1] < min(lows[:-2])
+    else:
+        return highs[-1] > max(highs[:-2])
+
+# ===== ENTRY MODEL =====
+def entry_model(sym, direction):
+    m15 = get_candles(sym, "15m", 60)
+
+    if len(m15) < 20:
+        return None
+
+    o = [c[1] for c in m15]
+    h = [c[2] for c in m15]
+    l = [c[3] for c in m15]
+    c_ = [c[4] for c in m15]
+
+    body = abs(c_[-1] - o[-1])
+    avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
+
+    if body < avg_body * 1.5:
+        return None
+
+    if direction == "long" and h[-3] < l[-1]:
+        entry = (h[-3] + l[-1]) / 2
+        swing_low = min(l[-15:])
+        sl = swing_low - (swing_low * BUFFER_PCT)
+        return {"entry": entry, "sl": sl}
+
+    if direction == "short" and l[-3] > h[-1]:
+        entry = (l[-3] + h[-1]) / 2
+        swing_high = max(h[-15:])
+        sl = swing_high + (swing_high * BUFFER_PCT)
+        return {"entry": entry, "sl": sl}
+
+    return None
+
+# ===== STATE =====
+trade_state = {}
+
+# ===== MANAGER =====
+def manage():
     while True:
         try:
-            price = get_price()
+            positions = exchange.fetch_positions()
 
-            if base_price is None:
-                time.sleep(2)
-                continue
+            for p in positions:
+                qty = safe(p.get("contracts"))
+                if qty <= 0:
+                    continue
 
-            # STOP LOSS
-            if check_stop():
-                time.sleep(5)
-                continue
+                sym = p["symbol"]
 
-            if last_price:
-                change = (price - last_price) / last_price
+                if sym not in trade_state:
+                    continue
 
-                # TREND
-                if abs(change) > TREND_THRESHOLD:
-                    if change > 0:
-                        trend_trade("up")
-                    else:
-                        trend_trade("down")
+                entry = safe(p["entryPrice"])
+                side = p["side"]
+                direction = "long" if side == "long" else "short"
 
-            # GRID RESET
-            if abs(price - base_price) / base_price > RECENTER_PCT:
-                bot.send_message(CHAT_ID, "♻️ RESET (TREND)")
-                place_grid()
-                time.sleep(2)
-                continue
+                price = safe(exchange.fetch_ticker(sym)["last"])
 
-            last_price = price
+                sl = trade_state[sym]["sl"]
+                risk = abs(entry - sl)
 
-            open_orders = exchange.fetch_open_orders(SYMBOL)
-            open_ids = [o["id"] for o in open_orders]
+                tp1 = entry + risk if direction == "long" else entry - risk
+                tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
+                tp3 = entry + 3*risk if direction == "long" else entry - 3*risk
 
-            for oid in list(grid.keys()):
+                # STOP
+                if (direction == "long" and price <= sl) or \
+                   (direction == "short" and price >= sl):
 
-                if oid not in open_ids:
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        qty,
+                        params={"reduceOnly": True}
+                    )
+                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
+                    trade_state.pop(sym, None)
+                    continue
 
-                    side, p = grid.pop(oid)
+                # TP1
+                if not trade_state[sym]["tp1"] and \
+                   ((direction == "long" and price >= tp1) or
+                    (direction == "short" and price <= tp1)):
 
-                    bot.send_message(CHAT_ID, f"💰 {side.upper()}")
+                    part = qty * TP_SPLIT[0]
 
-                    if side == "buy":
-                        new_price = p * (1 + GRID_STEP)
-                        o = exchange.create_limit_order(
-                            SYMBOL, "sell", QTY, new_price,
-                            {"reduceOnly": False}
-                        )
-                        grid[o["id"]] = ("sell", new_price)
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        part,
+                        params={"reduceOnly": True}
+                    )
 
-                    else:
-                        new_price = p * (1 - GRID_STEP)
-                        o = exchange.create_limit_order(
-                            SYMBOL, "buy", QTY, new_price,
-                            {"reduceOnly": False}
-                        )
-                        grid[o["id"]] = ("buy", new_price)
+                    trade_state[sym]["tp1"] = True
+                    trade_state[sym]["sl"] = entry
 
-            time.sleep(2)
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-        except Exception as e:
-            print("MONITOR ERROR:", e)
+                # TP2
+                if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
+                   ((direction == "long" and price >= tp2) or
+                    (direction == "short" and price <= tp2)):
+
+                    part = qty * TP_SPLIT[1]
+
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        part,
+                        params={"reduceOnly": True}
+                    )
+
+                    trade_state[sym]["tp2"] = True
+                    bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
+
+                # TP3
+                if trade_state[sym]["tp2"] and \
+                   ((direction == "long" and price >= tp3) or
+                    (direction == "short" and price <= tp3)):
+
+                    exchange.create_market_order(
+                        sym,
+                        "sell" if direction == "long" else "buy",
+                        qty,
+                        params={"reduceOnly": True}
+                    )
+
+                    bot.send_message(CHAT_ID, f"🏆 TP3 {sym}")
+                    trade_state.pop(sym, None)
+
             time.sleep(5)
 
+        except Exception as e:
+            print("MANAGE ERROR:", e)
+            time.sleep(5)
+
+# ===== ENTRY LOOP =====
+def run():
+    while True:
+        try:
+            if has_position():
+                time.sleep(20)
+                continue
+
+            # ===== SAFE MODE =====
+            symbols = get_symbols(SAFE_VOLUME)
+            trade_found = False
+
+            for sym in symbols:
+
+                direction = get_direction(sym)
+                if not direction:
+                    continue
+
+                if not liquidity_sweep(sym, direction):
+                    continue
+
+                setup = entry_model(sym, direction)
+                if not setup:
+                    continue
+
+                try:
+                    exchange.set_leverage(SAFE_LEV, sym)
+                except:
+                    pass
+
+                price = safe(exchange.fetch_ticker(sym)["last"])
+                qty = (SAFE_MARGIN * SAFE_LEV) / price
+                qty = float(exchange.amount_to_precision(sym, qty))
+
+                side = "buy" if direction == "long" else "sell"
+                exchange.create_market_order(sym, side, qty)
+
+                trade_state[sym] = {
+                    "sl": setup["sl"],
+                    "tp1": False,
+                    "tp2": False
+                }
+
+                bot.send_message(CHAT_ID, f"🟢 SAFE {sym} {direction.upper()}")
+                trade_found = True
+                break
+
+            # ===== AGGRESSIVE MODE =====
+            if not trade_found:
+                symbols = get_symbols(AGGR_VOLUME)
+
+                for sym in symbols:
+
+                    direction = get_direction(sym)
+                    if not direction:
+                        continue
+
+                    if not liquidity_sweep(sym, direction):
+                        continue
+
+                    setup = entry_model(sym, direction)
+                    if not setup:
+                        continue
+
+                    try:
+                        exchange.set_leverage(AGGR_LEV, sym)
+                    except:
+                        pass
+
+                    price = safe(exchange.fetch_ticker(sym)["last"])
+                    qty = (AGGR_MARGIN * AGGR_LEV) / price
+                    qty = float(exchange.amount_to_precision(sym, qty))
+
+                    side = "buy" if direction == "long" else "sell"
+                    exchange.create_market_order(sym, side, qty)
+
+                    trade_state[sym] = {
+                        "sl": setup["sl"],
+                        "tp1": False,
+                        "tp2": False
+                    }
+
+                    bot.send_message(CHAT_ID, f"🔥 AGGRESSIVE {sym} {direction.upper()}")
+                    break
+
+            time.sleep(30)
+
+        except Exception as e:
+            print("RUN ERROR:", e)
+            time.sleep(30)
+
 # ===== START =====
-def start():
-    exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 HYBRID BOT AKTİF")
+exchange.fetch_balance()
 
-    place_grid()
+threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=run, daemon=True).start()
 
-threading.Thread(target=start, daemon=True).start()
-threading.Thread(target=monitor, daemon=True).start()
-
-# 🔥 BU ÇOK ÖNEMLİ
+bot.send_message(CHAT_ID, "SMC PRO BOT (SAFE + AGGRESSIVE) AKTİF 🚀")
 bot.infinity_polling()
