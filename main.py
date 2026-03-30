@@ -1,154 +1,185 @@
-import ccxt from "ccxt";
-import axios from "axios";
+import os
+import time
+import ccxt
+import telebot
+import threading
 
-// ===== API =====
-const exchange = new ccxt.bitget({
-  apiKey: process.env.API_KEY,
-  secret: process.env.API_SECRET,
-  password: process.env.API_PASS,
-  options: { defaultType: "swap" },
-  enableRateLimit: true,
-});
+SYMBOL = "BTC/USDT:USDT"
 
-// ===== TELEGRAM =====
-const TELEGRAM_TOKEN = process.env.TG_TOKEN;
-const CHAT_ID = process.env.TG_CHAT;
+LEV = 5
+QTY = 0.0003
 
-// ===== SETTINGS =====
-const SYMBOL = "BTC/USDT:USDT";
-const LEVERAGE = 5;
+GRID_STEP = 0.003
+LEVELS = 3
 
-const GRID_SIZE = 6;
-const GRID_SPREAD = 0.012;     // %1.2 aralık
-const RESET_THRESHOLD = 0.018; // %1.8 reset
+SCALP_PCT = 0.002
+RECENTER_PCT = 0.015
 
-let lastCenterPrice = null;
-let lastResetTime = 0;
+RESET_COOLDOWN = 20
+SCALP_COOLDOWN = 10
 
-// ===== TELEGRAM =====
-async function send(msg) {
-  try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: CHAT_ID,
-      text: msg,
-    });
-  } catch {}
-}
+bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
+CHAT_ID = os.getenv("MY_CHAT_ID")
 
-// ===== LEVERAGE =====
-async function setLeverage() {
-  try {
-    await exchange.setLeverage(LEVERAGE, SYMBOL);
-  } catch {}
-}
+exchange = ccxt.bitget({
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": "Berfin33",  # 🔴 BUNA DOKUNMADIM
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True
+})
 
-// ===== LOT HESAP =====
-function calcQty(balance, price) {
-  if (!price || price <= 0) return 0;
+exchange.load_markets()
 
-  const usable = balance * 0.9;
-  let qty = usable / GRID_SIZE / price;
+grid = {}
+base_price = None
+last_price = None
+last_reset = 0
+last_scalp = 0
 
-  return parseFloat(qty.toFixed(4)); // BTC precision
-}
 
-// ===== EMİRLERİ TEMİZLE =====
-async function cancelAll() {
-  try {
-    const orders = await exchange.fetchOpenOrders(SYMBOL);
-    for (let o of orders) {
-      await exchange.cancelOrder(o.id, SYMBOL);
-    }
-  } catch {}
-}
+# ===== PRICE =====
+def get_price():
+    return exchange.fetch_ticker(SYMBOL)["last"]
 
-// ===== GRID KUR =====
-async function placeGrid(price) {
-  try {
-    const balance = await exchange.fetchBalance();
-    const usdt = balance.USDT.free;
 
-    if (!usdt || usdt < 5) {
-      await send("❌ Bakiye düşük");
-      return;
-    }
+# ===== CLEAR =====
+def cancel_all():
+    try:
+        orders = exchange.fetch_open_orders(SYMBOL)
+        for o in orders:
+            exchange.cancel_order(o["id"], SYMBOL)
+    except:
+        pass
 
-    const qty = calcQty(usdt, price);
-    if (qty <= 0) return;
 
-    for (let i = 1; i <= GRID_SIZE; i++) {
-      const buyPrice = price * (1 - GRID_SPREAD * i);
-      const sellPrice = price * (1 + GRID_SPREAD * i);
+# ===== GRID =====
+def place_grid():
+    global base_price, grid
 
-      try {
-        await exchange.createLimitBuyOrder(SYMBOL, qty, buyPrice);
-        await send(`📉 BUY ${buyPrice.toFixed(1)}`);
-      } catch {}
+    cancel_all()
+    grid = {}
 
-      try {
-        await exchange.createLimitSellOrder(SYMBOL, qty, sellPrice);
-        await send(`📈 SELL ${sellPrice.toFixed(1)}`);
-      } catch {}
-    }
+    base_price = get_price()
 
-    await send("📊 GRID KURULDU");
-  } catch (e) {
-    console.log("GRID ERROR:", e.message);
-  }
-}
+    try:
+        exchange.set_leverage(LEV, SYMBOL)
+    except:
+        pass
 
-// ===== RESET =====
-async function resetGrid(price) {
-  const now = Date.now();
+    for i in range(1, LEVELS + 1):
 
-  // spam koruma (15 sn)
-  if (now - lastResetTime < 15000) return;
+        buy_price = round(base_price * (1 - GRID_STEP * i), 1)
+        sell_price = round(base_price * (1 + GRID_STEP * i), 1)
 
-  await send("♻️ RESET");
+        try:
+            buy = exchange.create_limit_order(SYMBOL, "buy", QTY, buy_price)
+            grid[buy["id"]] = ("buy", buy_price)
+        except:
+            pass
 
-  await cancelAll();
-  await placeGrid(price);
+        try:
+            sell = exchange.create_limit_order(SYMBOL, "sell", QTY, sell_price)
+            grid[sell["id"]] = ("sell", sell_price)
+        except:
+            pass
 
-  lastCenterPrice = price;
-  lastResetTime = now;
-}
+    bot.send_message(CHAT_ID, "HYBRID GRID KURULDU")
 
-// ===== ANA KONTROL =====
-async function monitor() {
-  try {
-    const ticker = await exchange.fetchTicker(SYMBOL);
-    const price = ticker.last;
 
-    if (!price || price <= 0) return;
+# ===== SCALP =====
+def scalp_trade(price):
+    global last_scalp
 
-    // ilk kurulum
-    if (!lastCenterPrice) {
-      await placeGrid(price);
-      lastCenterPrice = price;
-      return;
-    }
+    now = time.time()
+    if now - last_scalp < SCALP_COOLDOWN:
+        return
 
-    const diff = Math.abs(price - lastCenterPrice) / lastCenterPrice;
+    try:
+        exchange.create_market_order(SYMBOL, "buy", QTY)
 
-    // reset kontrol
-    if (diff > RESET_THRESHOLD) {
-      await resetGrid(price);
-    }
+        sell_price = round(price * (1 + SCALP_PCT), 1)
 
-  } catch (e) {
-    console.log("MONITOR ERROR:", e.message);
-  }
-}
+        exchange.create_limit_order(SYMBOL, "sell", QTY, sell_price)
 
-// ===== START =====
-async function run() {
-  await setLeverage();
-  await send("🤖 FINAL GRID BOT AKTİF");
+        bot.send_message(CHAT_ID, f"SCALP {round(price,2)}")
 
-  while (true) {
-    await monitor();
-    await new Promise(r => setTimeout(r, 5000));
-  }
-}
+        last_scalp = now
 
-run();
+    except Exception as e:
+        print("SCALP ERROR:", e)
+
+
+# ===== MONITOR =====
+def monitor():
+    global last_price, base_price, last_reset
+
+    while True:
+        try:
+            price = get_price()
+
+            if base_price is None:
+                time.sleep(2)
+                continue
+
+            now = time.time()
+
+            # 🔥 RESET (spam engelli)
+            if abs(price - base_price) / base_price > RECENTER_PCT:
+                if now - last_reset > RESET_COOLDOWN:
+                    bot.send_message(CHAT_ID, "RESET (TREND)")
+                    place_grid()
+                    last_reset = now
+                    time.sleep(2)
+                    continue
+
+            # ⚡ SCALP
+            if last_price:
+                change = (price - last_price) / last_price
+
+                if change > SCALP_PCT:
+                    scalp_trade(price)
+
+            last_price = price
+
+            open_orders = exchange.fetch_open_orders(SYMBOL)
+            open_ids = [o["id"] for o in open_orders]
+
+            for oid in list(grid.keys()):
+
+                if oid not in open_ids:
+
+                    side, p = grid.pop(oid)
+
+                    bot.send_message(CHAT_ID, f"{side.upper()}")
+
+                    try:
+                        if side == "buy":
+                            new_price = round(p * (1 + GRID_STEP), 1)
+                            o = exchange.create_limit_order(SYMBOL, "sell", QTY, new_price)
+                            grid[o["id"]] = ("sell", new_price)
+
+                        else:
+                            new_price = round(p * (1 - GRID_STEP), 1)
+                            o = exchange.create_limit_order(SYMBOL, "buy", QTY, new_price)
+                            grid[o["id"]] = ("buy", new_price)
+                    except:
+                        pass
+
+            time.sleep(2)
+
+        except Exception as e:
+            print("MONITOR ERROR:", e)
+            time.sleep(5)
+
+
+# ===== START =====
+def start():
+    exchange.fetch_balance()
+    bot.send_message(CHAT_ID, "FINAL HYBRID BOT AKTIF")
+
+    place_grid()
+
+
+threading.Thread(target=start, daemon=True).start()
+threading.Thread(target=monitor, daemon=True).start()
