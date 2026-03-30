@@ -4,19 +4,20 @@ import ccxt
 import telebot
 import threading
 
-# ===== AYARLAR =====
+# ===== AYAR =====
 SYMBOL = "BTC/USDT:USDT"
 
 LEV = 5
 QTY = 0.0003
 
 GRID_STEP = 0.0015
-LEVELS = 5
+LEVELS = 4
 
-SCALP_PCT = 0.0015
-SHIFT_PCT = 0.008   # %0.8 → daha erken reset
+SCALP_PCT = 0.0007   # 🔥 hızlı scalp
+SHIFT_PCT = 0.007    # 🔥 daha erken reset
 
-FOLLOW_DIST = 0.0008   # %0.08 takip mesafesi
+FOLLOW_DIST = 0.0004  # 🔥 çok yakın takip
+FOLLOW_UPDATE = 0.001  # 🔥 %0.1 değişmeden güncelleme yok
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -37,7 +38,9 @@ exchange.load_markets()
 grid = {}
 base_price = None
 last_price = None
+
 follow_orders = {}
+last_follow_price = None
 
 # ===== PRICE =====
 def get_price():
@@ -74,17 +77,28 @@ def place_grid():
 
     bot.send_message(CHAT_ID, "📊 GRID AKTİF")
 
-# ===== FOLLOW MODE =====
+# ===== FOLLOW =====
 def update_follow(price):
-    global follow_orders
+    global follow_orders, last_follow_price
 
     try:
-        # eski follow emirleri sil
+        # sadece yeterli hareket varsa güncelle
+        if last_follow_price:
+            change = abs(price - last_follow_price) / last_follow_price
+            if change < FOLLOW_UPDATE:
+                return
+
+        last_follow_price = price
+
+        # eski emirleri sil
         for oid in list(follow_orders.keys()):
-            exchange.cancel_order(oid, SYMBOL)
+            try:
+                exchange.cancel_order(oid, SYMBOL)
+            except:
+                pass
             follow_orders.pop(oid, None)
 
-        # yeni takip emirleri
+        # yeni emirler
         buy_price = price * (1 - FOLLOW_DIST)
         sell_price = price * (1 + FOLLOW_DIST)
 
@@ -101,7 +115,7 @@ def update_follow(price):
 def scalp_trade(price):
     try:
         exchange.create_market_order(SYMBOL, "buy", QTY)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
         tp = price * (1 + SCALP_PCT)
         exchange.create_limit_order(SYMBOL, "sell", QTY, tp)
@@ -161,16 +175,16 @@ def monitor():
                         o = exchange.create_limit_order(SYMBOL, "buy", QTY, new_price)
                         grid[o["id"]] = ("buy", new_price)
 
-            time.sleep(2)
+            time.sleep(1.5)
 
         except Exception as e:
             print("MONITOR ERROR:", e)
-            time.sleep(5)
+            time.sleep(3)
 
 # ===== START =====
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🚀 FOLLOW BOT AKTİF")
+    bot.send_message(CHAT_ID, "🚀 FINAL BOT AKTİF")
 
     place_grid()
 
