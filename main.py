@@ -7,10 +7,10 @@ import threading
 SYMBOL = "INJ/USDT:USDT"
 
 LEV = 5
-QTY = 0.5
+QTY = 2  # 🔥 minimum 5 USDT için
 
 GRID_STEP = 0.003
-LEVELS = 3
+LEVELS = 2  # 🔥 balance için düşürüldü
 
 SCALP_PCT = 0.003
 SHIFT_PCT = 0.008
@@ -70,9 +70,9 @@ def place_grid():
         grid[buy["id"]] = ("buy", buy_price)
         grid[sell["id"]] = ("sell", sell_price)
 
-    bot.send_message(CHAT_ID, "🚀 INJ BOT AKTİF (FINAL)")
+    bot.send_message(CHAT_ID, "🚀 INJ BOT FINAL AKTİF")
 
-# ===== FOLLOW (FİYATI TAKİP) =====
+# ===== FOLLOW =====
 def update_follow(price):
     global follow_orders, last_follow_price
 
@@ -83,7 +83,6 @@ def update_follow(price):
 
     last_follow_price = price
 
-    # eski follow emirlerini sil
     for oid in list(follow_orders.keys()):
         try:
             exchange.cancel_order(oid, SYMBOL)
@@ -91,7 +90,6 @@ def update_follow(price):
             pass
         follow_orders.pop(oid, None)
 
-    # yeni emirler (fiyatın yakınında)
     buy = exchange.create_limit_order(SYMBOL, "buy", QTY, price * (1 - FOLLOW_DIST))
     sell = exchange.create_limit_order(SYMBOL, "sell", QTY, price * (1 + FOLLOW_DIST))
 
@@ -115,14 +113,14 @@ def monitor():
         try:
             price = get_price()
 
-            # GRID RESET (trend yakalama)
+            # RESET (trend yakalama)
             if abs(price - base_price) / base_price > SHIFT_PCT:
-                bot.send_message(CHAT_ID, "♻️ RESET (TREND)")
+                bot.send_message(CHAT_ID, "♻️ RESET")
                 place_grid()
                 time.sleep(1)
                 continue
 
-            # FOLLOW (fiyatı kovala)
+            # FOLLOW
             update_follow(price)
 
             # SCALP (filtreli)
