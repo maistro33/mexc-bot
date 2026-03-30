@@ -147,7 +147,7 @@ def entry_model(sym, direction):
 # ===== STATE =====
 trade_state = {}
 
-# ===== 🔥 RESTART RECOVERY =====
+# ===== 🔥 RECOVERY FIXED =====
 def load_open_positions():
     try:
         positions = exchange.fetch_positions()
@@ -159,9 +159,16 @@ def load_open_positions():
 
             sym = p["symbol"]
             entry = safe(p["entryPrice"])
+            side = p["side"]
+
+            # 🔥 DOĞRU SL
+            if side == "long":
+                sl = entry * 0.97
+            else:
+                sl = entry * 1.03
 
             trade_state[sym] = {
-                "sl": entry * 0.98,
+                "sl": sl,
                 "tp1": False,
                 "tp2": False,
                 "trail_active": True,
@@ -186,7 +193,6 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-
                 if sym not in trade_state:
                     continue
 
@@ -263,7 +269,6 @@ def run():
                 if not setup:
                     continue
 
-                # SOFT FILTER
                 if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.1:
                     continue
 
@@ -300,11 +305,10 @@ exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
-# 🔥 RECOVERY
 load_open_positions()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO FINAL FIX AKTİF")
 bot.infinity_polling()
