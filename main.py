@@ -6,16 +6,16 @@ import threading
 
 # ===== SETTINGS =====
 SAFE_VOLUME = 2_000_000
-AGGR_VOLUME = 1_000_000
+AGGR_VOLUME = 800_000
 
-SAFE_LEV = 10
+SAFE_LEV = 5
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
 AGGR_MARGIN = 5
 
 MAX_POS = 1
-TOP_COINS = 200
+TOP_COINS = 120
 BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
@@ -96,7 +96,7 @@ def get_direction(sym):
 
     return None
 
-# ===== LIQUIDITY =====
+# ===== LIQUIDITY (gevşetildi) =====
 def liquidity_sweep(sym, direction):
     h1 = get_candles(sym, "1h", 30)
 
@@ -107,11 +107,11 @@ def liquidity_sweep(sym, direction):
     lows  = [c[3] for c in h1]
 
     if direction == "long":
-        return lows[-1] < min(lows[:-2])
+        return lows[-1] <= min(lows[:-3])
     else:
-        return highs[-1] > max(highs[:-2])
+        return highs[-1] >= max(highs[:-3])
 
-# ===== ENTRY MODEL =====
+# ===== ENTRY MODEL (gevşetildi) =====
 def entry_model(sym, direction):
     m15 = get_candles(sym, "15m", 60)
 
@@ -126,7 +126,7 @@ def entry_model(sym, direction):
     body = abs(c_[-1] - o[-1])
     avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
 
-    if body < avg_body * 1.5:
+    if body < avg_body * 1.2:
         return None
 
     if direction == "long" and h[-3] < l[-1]:
@@ -175,7 +175,6 @@ def manage():
                 tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
                 tp3 = entry + 3*risk if direction == "long" else entry - 3*risk
 
-                # STOP
                 if (direction == "long" and price <= sl) or \
                    (direction == "short" and price >= sl):
 
@@ -189,7 +188,6 @@ def manage():
                     trade_state.pop(sym, None)
                     continue
 
-                # TP1
                 if not trade_state[sym]["tp1"] and \
                    ((direction == "long" and price >= tp1) or
                     (direction == "short" and price <= tp1)):
@@ -208,7 +206,6 @@ def manage():
 
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # TP2
                 if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp2) or
                     (direction == "short" and price <= tp2)):
@@ -225,7 +222,6 @@ def manage():
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
-                # TP3
                 if trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp3) or
                     (direction == "short" and price <= tp3)):
@@ -251,10 +247,10 @@ def run():
     while True:
         try:
             if has_position():
-                time.sleep(20)
+                time.sleep(10)
                 continue
 
-            # ===== SAFE MODE =====
+            # SAFE
             symbols = get_symbols(SAFE_VOLUME)
             trade_found = False
 
@@ -293,7 +289,7 @@ def run():
                 trade_found = True
                 break
 
-            # ===== AGGRESSIVE MODE =====
+            # AGGRESSIVE
             if not trade_found:
                 symbols = get_symbols(AGGR_VOLUME)
 
@@ -331,11 +327,11 @@ def run():
                     bot.send_message(CHAT_ID, f"🔥 AGGRESSIVE {sym} {direction.upper()}")
                     break
 
-            time.sleep(30)
+            time.sleep(15)
 
         except Exception as e:
             print("RUN ERROR:", e)
-            time.sleep(30)
+            time.sleep(15)
 
 # ===== START =====
 exchange.fetch_balance()
@@ -343,5 +339,5 @@ exchange.fetch_balance()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "SMC PRO BOT (SAFE + AGGRESSIVE) AKTİF 🚀")
+bot.send_message(CHAT_ID, "FAST SMC BOT AKTİF 🚀")
 bot.infinity_polling()
