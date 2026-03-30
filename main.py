@@ -8,7 +8,7 @@ import threading
 SAFE_VOLUME = 2_000_000
 AGGR_VOLUME = 800_000
 
-SAFE_LEV = 10
+SAFE_LEV = 5
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
@@ -20,9 +20,11 @@ BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
+# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# ===== BITGET =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -34,6 +36,7 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
+# ===== HELPERS =====
 def safe(x):
     try:
         return float(x)
@@ -53,6 +56,7 @@ def has_position():
     except:
         return False
 
+# ===== MARKET FILTER =====
 def get_symbols(volume):
     try:
         tickers = exchange.fetch_tickers()
@@ -70,30 +74,27 @@ def get_symbols(volume):
     except:
         return []
 
-# ===== TREND (GEVŞETİLDİ) =====
+# ===== TREND (DAHA GEVŞEK) =====
 def get_direction(sym):
     d = get_candles(sym, "1d", 50)
     h4 = get_candles(sym, "4h", 50)
 
-    if len(d) < 3 or len(h4) < 3:
+    if len(d) < 5 or len(h4) < 5:
         return None
 
     d_high = [c[2] for c in d]
     d_low  = [c[3] for c in d]
 
-    h_high = [c[2] for c in h4]
-    h_low  = [c[3] for c in h4]
-
-    # 🔥 daha esnek
-    if d_high[-1] > d_high[-3] and h_high[-1] > h_high[-3]:
+    # 🔥 sadece günlük trend yeter
+    if d_high[-1] > d_high[-5]:
         return "long"
 
-    if d_low[-1] < d_low[-3] and h_low[-1] < h_low[-3]:
+    if d_low[-1] < d_low[-5]:
         return "short"
 
     return None
 
-# ===== LIQUIDITY (AZ GEVŞETİLDİ) =====
+# ===== LIQUIDITY =====
 def liquidity_sweep(sym, direction):
     h1 = get_candles(sym, "1h", 30)
 
@@ -108,7 +109,7 @@ def liquidity_sweep(sym, direction):
     else:
         return highs[-1] >= max(highs[:-3])
 
-# ===== ENTRY MODEL (GEVŞETİLDİ AMA KORUNDU) =====
+# ===== ENTRY MODEL (GEVŞEK) =====
 def entry_model(sym, direction):
     m15 = get_candles(sym, "15m", 60)
 
@@ -123,19 +124,19 @@ def entry_model(sym, direction):
     body = abs(c_[-1] - o[-1])
     avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
 
-    # 🔥 daha esnek
-    if body < avg_body * 1.1:
+    # 🔥 daha serbest
+    if body < avg_body * 0.9:
         return None
 
-    # 🔥 FVG gevşetildi (tam kaldırılmadı)
-    if direction == "long" and h[-4] < l[-1]:
-        entry = (h[-4] + l[-1]) / 2
+    # 🔥 FVG yerine basit momentum
+    if direction == "long" and l[-1] > l[-3]:
+        entry = c_[-1]
         swing_low = min(l[-15:])
         sl = swing_low - (swing_low * BUFFER_PCT)
         return {"entry": entry, "sl": sl}
 
-    if direction == "short" and l[-4] > h[-1]:
-        entry = (l[-4] + h[-1]) / 2
+    if direction == "short" and h[-1] < h[-3]:
+        entry = c_[-1]
         swing_high = max(h[-15:])
         sl = swing_high + (swing_high * BUFFER_PCT)
         return {"entry": entry, "sl": sl}
@@ -174,6 +175,7 @@ def manage():
                 tp2 = entry + 2*risk if direction == "long" else entry - 2*risk
                 tp3 = entry + 3*risk if direction == "long" else entry - 3*risk
 
+                # STOP
                 if (direction == "long" and price <= sl) or \
                    (direction == "short" and price >= sl):
 
@@ -187,6 +189,7 @@ def manage():
                     trade_state.pop(sym, None)
                     continue
 
+                # TP1
                 if not trade_state[sym]["tp1"] and \
                    ((direction == "long" and price >= tp1) or
                     (direction == "short" and price <= tp1)):
@@ -205,6 +208,7 @@ def manage():
 
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
+                # TP2
                 if trade_state[sym]["tp1"] and not trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp2) or
                     (direction == "short" and price <= tp2)):
@@ -221,6 +225,7 @@ def manage():
                     trade_state[sym]["tp2"] = True
                     bot.send_message(CHAT_ID, f"🚀 TP2 {sym}")
 
+                # TP3
                 if trade_state[sym]["tp2"] and \
                    ((direction == "long" and price >= tp3) or
                     (direction == "short" and price <= tp3)):
@@ -330,10 +335,14 @@ def run():
             print("RUN ERROR:", e)
             time.sleep(15)
 
+# ===== START =====
 exchange.fetch_balance()
+
+bot.remove_webhook()
+time.sleep(1)
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "SMC BOT (BALANCED FAST) AKTİF 🚀")
+bot.send_message(CHAT_ID, "SMC FAST BOT AKTİF 🚀")
 bot.infinity_polling()
