@@ -16,11 +16,11 @@ SCALP_PCT = 0.002
 RECENTER_PCT = 0.015
 STOP_LOSS = 0.02
 
-SCALP_COOLDOWN = 30
-last_scalp_time = 0
-
 TREND_THRESHOLD = 0.004
 trend_position = False
+
+SCALP_COOLDOWN = 30
+last_scalp_time = 0
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -39,11 +39,9 @@ grid = {}
 base_price = None
 last_price = None
 
-
 # ===== PRICE =====
 def get_price():
     return exchange.fetch_ticker(SYMBOL)["last"]
-
 
 # ===== CLEAR =====
 def cancel_all():
@@ -54,14 +52,12 @@ def cancel_all():
     except:
         pass
 
-
-# ===== LEVERAGE =====
+# ===== LEVERAGE SAFE =====
 def set_leverage_safe():
     try:
         exchange.set_leverage(LEV, SYMBOL)
     except:
         pass
-
 
 # ===== GRID =====
 def place_grid():
@@ -90,10 +86,13 @@ def place_grid():
         grid[buy["id"]] = ("buy", buy_price)
         grid[sell["id"]] = ("sell", sell_price)
 
-    bot.send_message(CHAT_ID, "📊 GRID AKTİF")
+    bot.send_message(CHAT_ID, "📊 HYBRID GRID KURULDU")
 
+# ===== SCALP (PASİF) =====
+def scalp_trade(price):
+    return  # kapalı ama silinmedi
 
-# ===== TREND TRADE =====
+# ===== TREND =====
 def trend_trade(direction):
     global trend_position
 
@@ -124,7 +123,6 @@ def trend_trade(direction):
     except Exception as e:
         print("TREND ERROR:", e)
 
-
 # ===== STOP LOSS =====
 def check_stop():
     try:
@@ -143,7 +141,6 @@ def check_stop():
 
     return False
 
-
 # ===== MONITOR =====
 def monitor():
     global last_price, base_price
@@ -161,10 +158,10 @@ def monitor():
                 time.sleep(5)
                 continue
 
-            # TREND ALGILAMA
             if last_price:
                 change = (price - last_price) / last_price
 
+                # TREND
                 if abs(change) > TREND_THRESHOLD:
                     if change > 0:
                         trend_trade("up")
@@ -173,8 +170,10 @@ def monitor():
 
             # GRID RESET
             if abs(price - base_price) / base_price > RECENTER_PCT:
-                bot.send_message(CHAT_ID, "♻️ RESET")
+                bot.send_message(CHAT_ID, "♻️ RESET (TREND)")
                 place_grid()
+                time.sleep(2)
+                continue
 
             last_price = price
 
@@ -211,7 +210,6 @@ def monitor():
             print("MONITOR ERROR:", e)
             time.sleep(5)
 
-
 # ===== START =====
 def start():
     exchange.fetch_balance()
@@ -219,6 +217,8 @@ def start():
 
     place_grid()
 
-
 threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=monitor, daemon=True).start()
+
+# 🔥 BU ÇOK ÖNEMLİ
+bot.infinity_polling()
