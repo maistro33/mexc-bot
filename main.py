@@ -56,8 +56,8 @@ def cancel_all():
 def set_leverage_safe():
     try:
         exchange.set_leverage(LEV, SYMBOL)
-    except:
-        pass
+    except Exception as e:
+        print("LEV ERROR:", e)
 
 # ===== GRID =====
 def place_grid():
@@ -75,12 +75,12 @@ def place_grid():
 
         buy = exchange.create_limit_order(
             SYMBOL, "buy", QTY, buy_price,
-            {"tdMode": "cross", "posSide": "long"}
+            {"marginMode": "cross", "posSide": "long"}
         )
 
         sell = exchange.create_limit_order(
             SYMBOL, "sell", QTY, sell_price,
-            {"tdMode": "cross", "posSide": "short"}
+            {"marginMode": "cross", "posSide": "short"}
         )
 
         grid[buy["id"]] = ("buy", buy_price)
@@ -88,9 +88,9 @@ def place_grid():
 
     bot.send_message(CHAT_ID, "📊 HYBRID GRID KURULDU")
 
-# ===== SCALP (PASİF) =====
+# ===== SCALP (PASİF - SİLİNMEDİ) =====
 def scalp_trade(price):
-    return  # kapalı ama silinmedi
+    return
 
 # ===== TREND =====
 def trend_trade(direction):
@@ -105,7 +105,7 @@ def trend_trade(direction):
                 SYMBOL,
                 "buy",
                 QTY,
-                {"tdMode": "cross", "posSide": "long"}
+                {"marginMode": "cross", "posSide": "long"}
             )
             bot.send_message(CHAT_ID, "🚀 TREND LONG")
 
@@ -114,7 +114,7 @@ def trend_trade(direction):
                 SYMBOL,
                 "sell",
                 QTY,
-                {"tdMode": "cross", "posSide": "short"}
+                {"marginMode": "cross", "posSide": "short"}
             )
             bot.send_message(CHAT_ID, "🔻 TREND SHORT")
 
@@ -192,7 +192,7 @@ def monitor():
                         new_price = p * (1 + GRID_STEP)
                         o = exchange.create_limit_order(
                             SYMBOL, "sell", QTY, new_price,
-                            {"tdMode": "cross", "posSide": "short"}
+                            {"marginMode": "cross", "posSide": "short"}
                         )
                         grid[o["id"]] = ("sell", new_price)
 
@@ -200,7 +200,7 @@ def monitor():
                         new_price = p * (1 - GRID_STEP)
                         o = exchange.create_limit_order(
                             SYMBOL, "buy", QTY, new_price,
-                            {"tdMode": "cross", "posSide": "long"}
+                            {"marginMode": "cross", "posSide": "long"}
                         )
                         grid[o["id"]] = ("buy", new_price)
 
@@ -220,5 +220,5 @@ def start():
 threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=monitor, daemon=True).start()
 
-# 🔥 BU ÇOK ÖNEMLİ
+# 🔥 BU SATIR KALACAK
 bot.infinity_polling()
