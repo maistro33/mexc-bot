@@ -8,7 +8,7 @@ import threading
 SAFE_VOLUME = 2_000_000
 AGGR_VOLUME = 800_000
 
-SAFE_LEV = 10
+SAFE_LEV = 5
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
@@ -19,8 +19,8 @@ BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
-TRAIL_START = 0.003
-TRAIL_GAP = 0.01
+TRAIL_START = 0.008
+TRAIL_GAP = 0.02
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -147,7 +147,7 @@ def entry_model(sym, direction):
 # ===== STATE =====
 trade_state = {}
 
-# ===== 🔥 RECOVERY FIXED =====
+# ===== 🔥 RECOVERY (FIXED) =====
 def load_open_positions():
     try:
         positions = exchange.fetch_positions()
@@ -305,10 +305,15 @@ exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
-load_open_positions()
-
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO FINAL FIX AKTİF")
-bot.infinity_polling()
+# 🔥 TELEGRAM BAĞLANTI
+threading.Thread(target=bot.infinity_polling, daemon=True).start()
+
+time.sleep(2)
+
+# 🔥 RECOVERY
+load_open_positions()
+
+bot.send_message(CHAT_ID, "🔥 PRO FINAL BOT AKTİF")
