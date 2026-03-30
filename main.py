@@ -8,7 +8,7 @@ import threading
 SAFE_VOLUME = 2_000_000
 AGGR_VOLUME = 800_000
 
-SAFE_LEV = 5
+SAFE_LEV = 10
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
@@ -20,11 +20,9 @@ BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
-# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-# ===== BITGET =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -36,7 +34,6 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
-# ===== HELPERS =====
 def safe(x):
     try:
         return float(x)
@@ -56,7 +53,6 @@ def has_position():
     except:
         return False
 
-# ===== MARKET FILTER =====
 def get_symbols(volume):
     try:
         tickers = exchange.fetch_tickers()
@@ -74,12 +70,12 @@ def get_symbols(volume):
     except:
         return []
 
-# ===== DIRECTION =====
+# ===== TREND (GEVŞETİLDİ) =====
 def get_direction(sym):
     d = get_candles(sym, "1d", 50)
     h4 = get_candles(sym, "4h", 50)
 
-    if len(d) < 2 or len(h4) < 2:
+    if len(d) < 3 or len(h4) < 3:
         return None
 
     d_high = [c[2] for c in d]
@@ -88,15 +84,16 @@ def get_direction(sym):
     h_high = [c[2] for c in h4]
     h_low  = [c[3] for c in h4]
 
-    if d_high[-1] > d_high[-2] and h_high[-1] > h_high[-2]:
+    # 🔥 daha esnek
+    if d_high[-1] > d_high[-3] and h_high[-1] > h_high[-3]:
         return "long"
 
-    if d_low[-1] < d_low[-2] and h_low[-1] < h_low[-2]:
+    if d_low[-1] < d_low[-3] and h_low[-1] < h_low[-3]:
         return "short"
 
     return None
 
-# ===== LIQUIDITY (gevşetildi) =====
+# ===== LIQUIDITY (AZ GEVŞETİLDİ) =====
 def liquidity_sweep(sym, direction):
     h1 = get_candles(sym, "1h", 30)
 
@@ -111,7 +108,7 @@ def liquidity_sweep(sym, direction):
     else:
         return highs[-1] >= max(highs[:-3])
 
-# ===== ENTRY MODEL (gevşetildi) =====
+# ===== ENTRY MODEL (GEVŞETİLDİ AMA KORUNDU) =====
 def entry_model(sym, direction):
     m15 = get_candles(sym, "15m", 60)
 
@@ -126,17 +123,19 @@ def entry_model(sym, direction):
     body = abs(c_[-1] - o[-1])
     avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
 
-    if body < avg_body * 1.2:
+    # 🔥 daha esnek
+    if body < avg_body * 1.1:
         return None
 
-    if direction == "long" and h[-3] < l[-1]:
-        entry = (h[-3] + l[-1]) / 2
+    # 🔥 FVG gevşetildi (tam kaldırılmadı)
+    if direction == "long" and h[-4] < l[-1]:
+        entry = (h[-4] + l[-1]) / 2
         swing_low = min(l[-15:])
         sl = swing_low - (swing_low * BUFFER_PCT)
         return {"entry": entry, "sl": sl}
 
-    if direction == "short" and l[-3] > h[-1]:
-        entry = (l[-3] + h[-1]) / 2
+    if direction == "short" and l[-4] > h[-1]:
+        entry = (l[-4] + h[-1]) / 2
         swing_high = max(h[-15:])
         sl = swing_high + (swing_high * BUFFER_PCT)
         return {"entry": entry, "sl": sl}
@@ -250,7 +249,6 @@ def run():
                 time.sleep(10)
                 continue
 
-            # SAFE
             symbols = get_symbols(SAFE_VOLUME)
             trade_found = False
 
@@ -289,7 +287,6 @@ def run():
                 trade_found = True
                 break
 
-            # AGGRESSIVE
             if not trade_found:
                 symbols = get_symbols(AGGR_VOLUME)
 
@@ -324,7 +321,7 @@ def run():
                         "tp2": False
                     }
 
-                    bot.send_message(CHAT_ID, f"🔥 AGGRESSIVE {sym} {direction.upper()}")
+                    bot.send_message(CHAT_ID, f"🔥 AGGR {sym} {direction.upper()}")
                     break
 
             time.sleep(15)
@@ -333,11 +330,10 @@ def run():
             print("RUN ERROR:", e)
             time.sleep(15)
 
-# ===== START =====
 exchange.fetch_balance()
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-bot.send_message(CHAT_ID, "FAST SMC BOT AKTİF 🚀")
+bot.send_message(CHAT_ID, "SMC BOT (BALANCED FAST) AKTİF 🚀")
 bot.infinity_polling()
