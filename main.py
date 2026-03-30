@@ -79,7 +79,7 @@ def monitor():
                 time.sleep(2)
                 continue
 
-            # 🔥 RESET (trend kaçırma)
+            # RESET
             if abs(price - base_price) / base_price > RECENTER_PCT:
                 bot.send_message(CHAT_ID, "♻️ RESET")
                 place_grid()
@@ -97,7 +97,6 @@ def monitor():
 
                     bot.send_message(CHAT_ID, f"💰 {side.upper()}")
 
-                    # ters emir koy (grid devam etsin)
                     if side == "buy":
                         new_price = p * (1 + GRID_STEP)
                         o = exchange.create_limit_order(SYMBOL, "sell", QTY, new_price)
@@ -117,8 +116,13 @@ def monitor():
 # ===== START =====
 def start():
     exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🤖 BOT BAŞLADI (FINAL GRID)")
+
+    bot.send_message(CHAT_ID, "🤖 BOT BAŞLADI (FINAL FIX)")
+    time.sleep(1)
+
     place_grid()
 
-threading.Thread(target=start, daemon=True).start()
+# 🔥 BURASI DÜZELTİLDİ
+start()
+
 threading.Thread(target=monitor, daemon=True).start()
