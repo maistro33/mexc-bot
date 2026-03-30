@@ -13,11 +13,11 @@ QTY = 0.0003
 GRID_STEP = 0.0015
 LEVELS = 4
 
-SCALP_PCT = 0.0007   # 🔥 hızlı scalp
-SHIFT_PCT = 0.007    # 🔥 daha erken reset
+SCALP_PCT = 0.0005      # 🔥 ultra hassas scalp
+SHIFT_PCT = 0.007       # reset
 
-FOLLOW_DIST = 0.0004  # 🔥 çok yakın takip
-FOLLOW_UPDATE = 0.001  # 🔥 %0.1 değişmeden güncelleme yok
+FOLLOW_DIST = 0.0003    # 🔥 çok yakın takip
+FOLLOW_UPDATE = 0.0006  # 🔥 sık güncelleme
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -82,7 +82,6 @@ def update_follow(price):
     global follow_orders, last_follow_price
 
     try:
-        # sadece yeterli hareket varsa güncelle
         if last_follow_price:
             change = abs(price - last_follow_price) / last_follow_price
             if change < FOLLOW_UPDATE:
@@ -90,7 +89,6 @@ def update_follow(price):
 
         last_follow_price = price
 
-        # eski emirleri sil
         for oid in list(follow_orders.keys()):
             try:
                 exchange.cancel_order(oid, SYMBOL)
@@ -98,7 +96,6 @@ def update_follow(price):
                 pass
             follow_orders.pop(oid, None)
 
-        # yeni emirler
         buy_price = price * (1 - FOLLOW_DIST)
         sell_price = price * (1 + FOLLOW_DIST)
 
@@ -137,16 +134,16 @@ def monitor():
                 time.sleep(2)
                 continue
 
-            # 🔄 RESET
+            # RESET
             if abs(price - base_price) / base_price > SHIFT_PCT:
                 bot.send_message(CHAT_ID, "🔄 RESET")
                 place_grid()
                 continue
 
-            # 🔥 FOLLOW
+            # FOLLOW
             update_follow(price)
 
-            # ⚡ SCALP
+            # SCALP
             if last_price:
                 change = abs(price - last_price) / last_price
                 if change > SCALP_PCT:
@@ -154,7 +151,7 @@ def monitor():
 
             last_price = price
 
-            # GRID kontrol
+            # GRID CHECK
             open_orders = exchange.fetch_open_orders(SYMBOL)
             open_ids = [o["id"] for o in open_orders]
 
@@ -175,7 +172,7 @@ def monitor():
                         o = exchange.create_limit_order(SYMBOL, "buy", QTY, new_price)
                         grid[o["id"]] = ("buy", new_price)
 
-            time.sleep(1.5)
+            time.sleep(1.2)
 
         except Exception as e:
             print("MONITOR ERROR:", e)
