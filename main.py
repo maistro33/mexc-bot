@@ -9,11 +9,11 @@ SYMBOL = "BTC/USDT:USDT"
 LEV = 5
 QTY = 0.0003
 
-GRID_STEP = 0.002   # %0.2 (sık işlem)
+GRID_STEP = 0.002
 LEVELS = 4
 
-SCALP_PCT = 0.0015  # %0.15 hızlı scalp
-SHIFT_PCT = 0.008   # %0.8 grid kaydırma
+SCALP_PCT = 0.0015
+SHIFT_PCT = 0.008
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -21,7 +21,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",
+    "password": "Berfin33",  # SENİN ÇALIŞAN HALİNİ BOZMADIM
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -38,15 +38,16 @@ def get_price():
 
 # ===== TREND =====
 def get_trend():
-    ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe="1m", limit=20)
-    closes = [c[4] for c in ohlcv]
-    ma_short = sum(closes[-5:]) / 5
-    ma_long = sum(closes[-15:]) / 15
+    try:
+        ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe="1m", limit=20)
+        closes = [c[4] for c in ohlcv]
 
-    if ma_short > ma_long:
+        ma_short = sum(closes[-5:]) / 5
+        ma_long = sum(closes[-15:]) / 15
+
+        return "up" if ma_short > ma_long else "down"
+    except:
         return "up"
-    else:
-        return "down"
 
 # ===== CLEAR =====
 def cancel_all():
@@ -54,33 +55,39 @@ def cancel_all():
         orders = exchange.fetch_open_orders(SYMBOL)
         for o in orders:
             exchange.cancel_order(o["id"], SYMBOL)
-    except:
-        pass
+    except Exception as e:
+        print("CANCEL ERROR:", e)
 
 # ===== GRID =====
 def place_grid():
     global base_price
-    cancel_all()
 
-    base_price = get_price()
-    trend = get_trend()
+    try:
+        cancel_all()
+        base_price = get_price()
 
-    exchange.set_leverage(LEV, SYMBOL)
+        trend = get_trend()
 
-    for i in range(1, LEVELS + 1):
+        exchange.set_leverage(LEV, SYMBOL)
 
-        buy_price = base_price * (1 - GRID_STEP * i)
-        sell_price = base_price * (1 + GRID_STEP * i)
+        for i in range(1, LEVELS + 1):
 
-        if trend == "up":
-            buy = exchange.create_limit_order(SYMBOL, "buy", QTY, buy_price)
-            grid[buy["id"]] = ("buy", buy_price)
+            buy_price = base_price * (1 - GRID_STEP * i)
+            sell_price = base_price * (1 + GRID_STEP * i)
 
-        elif trend == "down":
-            sell = exchange.create_limit_order(SYMBOL, "sell", QTY, sell_price)
-            grid[sell["id"]] = ("sell", sell_price)
+            if trend == "up":
+                buy = exchange.create_limit_order(SYMBOL, "buy", QTY, buy_price)
+                grid[buy["id"]] = ("buy", buy_price)
 
-    bot.send_message(CHAT_ID, f"📊 GRID ({trend.upper()})")
+            else:
+                sell = exchange.create_limit_order(SYMBOL, "sell", QTY, sell_price)
+                grid[sell["id"]] = ("sell", sell_price)
+
+        print("GRID KURULDU:", trend)
+        bot.send_message(CHAT_ID, f"📊 GRID ({trend.upper()})")
+
+    except Exception as e:
+        print("GRID ERROR:", e)
 
 # ===== SCALP =====
 def scalp_trade(price):
@@ -93,8 +100,8 @@ def scalp_trade(price):
 
         bot.send_message(CHAT_ID, f"⚡ SCALP {round(price,2)}")
 
-    except:
-        pass
+    except Exception as e:
+        print("SCALP ERROR:", e)
 
 # ===== MONITOR =====
 def monitor():
@@ -108,7 +115,7 @@ def monitor():
                 time.sleep(2)
                 continue
 
-            # 🔄 GRID SHIFT
+            # 🔄 SHIFT
             if abs(price - base_price) / base_price > SHIFT_PCT:
                 bot.send_message(CHAT_ID, "🔄 GRID SHIFT")
                 place_grid()
@@ -128,6 +135,7 @@ def monitor():
 
             for oid in list(grid.keys()):
                 if oid not in open_ids:
+
                     side, p = grid.pop(oid)
 
                     bot.send_message(CHAT_ID, f"💰 {side.upper()}")
@@ -145,15 +153,26 @@ def monitor():
             time.sleep(2)
 
         except Exception as e:
-            print("ERROR:", e)
+            print("MONITOR ERROR:", e)
             time.sleep(5)
 
 # ===== START =====
 def start():
-    exchange.fetch_balance()
-    bot.send_message(CHAT_ID, "🚀 PRO BOT AKTİF")
+    try:
+        exchange.fetch_balance()
+        print("BOT BASLADI")
 
-    place_grid()
+        bot.send_message(CHAT_ID, "🚀 PRO BOT AKTİF")
 
+        place_grid()
+
+    except Exception as e:
+        print("START ERROR:", e)
+
+# THREADS
 threading.Thread(target=start, daemon=True).start()
 threading.Thread(target=monitor, daemon=True).start()
+
+# 🔥 BOT KAPANMASIN
+while True:
+    time.sleep(60)
