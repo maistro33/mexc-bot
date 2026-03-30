@@ -10,8 +10,8 @@ SYMBOL = "BTC/USDT:USDT"
 LEV = 5
 QTY = 0.0003
 
-GRID_STEP = 0.0015   # %0.15 → sık işlem
-LEVELS = 5
+GRID_STEP = 0.001   # %0.15 → sık işlemt
+LEVELS = 7
 
 SCALP_PCT = 0.0015   # %0.15 scalp
 SHIFT_PCT = 0.01     # %1 kayarsa grid yenilenir
