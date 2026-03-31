@@ -68,11 +68,9 @@ def liquidity_sweep(sym, direction):
     lows  = [c[3] for c in h1]
 
     if direction == "long":
-        recent_low = min(lows[-5:])
-        return lows[-1] <= recent_low
+        return lows[-1] <= min(lows[-5:])
     else:
-        recent_high = max(highs[-5:])
-        return highs[-1] >= recent_high
+        return highs[-1] >= max(highs[-5:])
 
 # ===== FILTERS =====
 def orderbook_imbalance(sym):
@@ -325,4 +323,3 @@ threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
 bot.send_message(CHAT_ID, "🔥 FAST LIQUIDITY BOT AKTİF")
-bot.infinity_polling()
