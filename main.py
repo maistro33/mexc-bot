@@ -22,7 +22,7 @@ TP_SPLIT = [0.4, 0.3, 0.3]
 TRAIL_START = 0.01
 TRAIL_GAP = 0.015
 
-SCORE_THRESHOLD = 4  # 🔥 YENİ
+SCORE_THRESHOLD = 3  # 🔥 DÜŞÜRÜLDÜ
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -73,7 +73,7 @@ def volume_spike(sym):
         return False
     vols = [c[5] for c in candles]
     avg = sum(vols[:-1]) / len(vols[:-1])
-    return vols[-1] > avg * 1.5
+    return vols[-1] > avg * 1.3  # 🔥 YUMUŞATILDI
 
 def orderbook_imbalance(sym):
     try:
@@ -98,7 +98,7 @@ def fake_breakout(sym, direction):
     else:
         return lows[-1] > min(lows[:-3])
 
-# 🔥 RSI
+# ===== RSI =====
 def rsi(sym):
     candles = get_candles(sym, "15m", 50)
     if len(candles) < 20:
@@ -122,7 +122,7 @@ def rsi(sym):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# 🔥 Whale
+# ===== WHALE =====
 def whale_activity(sym):
     try:
         ticker = exchange.fetch_ticker(sym)
@@ -254,14 +254,12 @@ def manage():
                 else:
                     TP_USDT = 2.0
 
-                # STOP
                 if (direction == "long" and price <= sl) or (direction == "short" and price >= sl):
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty, params={"reduceOnly": True})
                     trade_state.pop(sym, None)
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # TP1
                 if not st["tp1"] and pnl >= TP_USDT:
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty * TP_SPLIT[0], params={"reduceOnly": True})
                     st["tp1"] = True
@@ -270,7 +268,6 @@ def manage():
                     st["trail_price"] = price
                     bot.send_message(CHAT_ID, f"💰 TP1 ({TP_USDT} USDT) {sym}")
 
-                # TRAILING
                 if st.get("trail_active"):
                     if direction == "long":
                         if price > st["trail_price"]:
@@ -316,14 +313,13 @@ def run():
                 if not setup:
                     continue
 
-                # ===== SCORE SYSTEM =====
                 score = 0
 
                 if volume_spike(sym):
                     score += 2
 
                 imbalance = abs(orderbook_imbalance(sym))
-                if imbalance > 0.02:
+                if imbalance > 0.01:
                     score += 2
 
                 if not fake_breakout(sym, direction):
@@ -339,6 +335,7 @@ def run():
                     score += 1
 
                 if score < SCORE_THRESHOLD:
+                    print(sym, "SKIPPED SCORE:", score)
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -378,4 +375,4 @@ threading.Thread(target=bot.infinity_polling, daemon=True).start()
 time.sleep(2)
 load_open_positions()
 
-bot.send_message(CHAT_ID, "🔥 SCORE FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL BOT AKTİF")
