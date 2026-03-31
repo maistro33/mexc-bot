@@ -8,7 +8,7 @@ import threading
 SAFE_VOLUME = 2_000_000
 AGGR_VOLUME = 800_000
 
-SAFE_LEV = 5
+SAFE_LEV = 10
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
@@ -56,6 +56,21 @@ def has_position():
         return any(safe(p.get("contracts")) > 0 for p in pos)
     except:
         return False
+
+# ===== LIQUIDITY (ANA EDGE) =====
+def liquidity_sweep(sym, direction):
+    h1 = get_candles(sym, "1h", 30)
+
+    if len(h1) < 5:
+        return False
+
+    highs = [c[2] for c in h1]
+    lows  = [c[3] for c in h1]
+
+    if direction == "long":
+        return lows[-1] <= min(lows[:-3])
+    else:
+        return highs[-1] >= max(highs[:-3])
 
 # ===== FILTERS =====
 def volume_spike(sym):
@@ -265,6 +280,10 @@ def run():
                 if not direction:
                     continue
 
+                # 🔥 ANA EDGE GERİ
+                if not liquidity_sweep(sym, direction):
+                    continue
+
                 setup = entry_model(sym, direction)
                 if not setup:
                     continue
@@ -304,6 +323,10 @@ def run():
                 for sym in symbols:
                     direction = get_direction(sym)
                     if not direction:
+                        continue
+
+                    # 🔥 ANA EDGE GERİ
+                    if not liquidity_sweep(sym, direction):
                         continue
 
                     setup = entry_model(sym, direction)
@@ -348,4 +371,4 @@ time.sleep(2)
 
 load_open_positions()
 
-bot.send_message(CHAT_ID, "🔥 PRO FINAL (SAFE+AGGR) AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO FINAL (LIQUIDITY FIX) AKTİF")
