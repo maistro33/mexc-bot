@@ -6,9 +6,9 @@ import threading
 
 # ===== SETTINGS =====
 SAFE_VOLUME = 500_000
-AGGR_VOLUME = 800_000
+AGGR_VOLUME = 300_000
 
-SAFE_LEV = 10
+SAFE_LEV = 5
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
@@ -57,30 +57,24 @@ def has_position():
     except:
         return False
 
-# ===== LIQUIDITY (ANA EDGE) =====
+# ===== 🔥 YUMUŞAK LIQUIDITY =====
 def liquidity_sweep(sym, direction):
-    h1 = get_candles(sym, "1h", 30)
+    h1 = get_candles(sym, "1h", 20)
 
-    if len(h1) < 5:
+    if len(h1) < 6:
         return False
 
     highs = [c[2] for c in h1]
     lows  = [c[3] for c in h1]
 
     if direction == "long":
-        return lows[-1] <= min(lows[:-3])
+        recent_low = min(lows[-5:])
+        return lows[-1] <= recent_low
     else:
-        return highs[-1] >= max(highs[:-3])
+        recent_high = max(highs[-5:])
+        return highs[-1] >= recent_high
 
 # ===== FILTERS =====
-def volume_spike(sym):
-    candles = get_candles(sym, "5m", 20)
-    if len(candles) < 10:
-        return False
-    vols = [c[5] for c in candles]
-    avg = sum(vols[:-1]) / len(vols[:-1])
-    return vols[-1] > avg * 1.5
-
 def orderbook_imbalance(sym):
     try:
         ob = exchange.fetch_order_book(sym, limit=10)
@@ -162,39 +156,6 @@ def entry_model(sym, direction):
 # ===== STATE =====
 trade_state = {}
 
-# ===== RECOVERY =====
-def load_open_positions():
-    try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-            side = p["side"]
-
-            if side == "long":
-                sl = entry * 0.97
-            else:
-                sl = entry * 1.03
-
-            trade_state[sym] = {
-                "sl": sl,
-                "tp1": False,
-                "tp2": False,
-                "trail_active": True,
-                "trail_price": entry,
-                "trail_started": False
-            }
-
-            bot.send_message(CHAT_ID, f"♻️ RECOVERED {sym}")
-
-    except Exception as e:
-        print("RECOVERY ERROR:", e)
-
 # ===== MANAGER =====
 def manage():
     while True:
@@ -272,7 +233,6 @@ def run():
                 time.sleep(10)
                 continue
 
-            # ===== SAFE =====
             symbols = get_symbols(SAFE_VOLUME)
 
             for sym in symbols:
@@ -280,7 +240,6 @@ def run():
                 if not direction:
                     continue
 
-                # 🔥 ANA EDGE GERİ
                 if not liquidity_sweep(sym, direction):
                     continue
 
@@ -290,12 +249,12 @@ def run():
 
                 imb = orderbook_imbalance(sym)
 
-                if direction == "long" and imb < -0.4:
+                if direction == "long" and imb < -0.5:
                     continue
-                if direction == "short" and imb > 0.4:
+                if direction == "short" and imb > 0.5:
                     continue
 
-                if fake_breakout(sym, direction) and abs(imb) < 0.05:
+                if fake_breakout(sym, direction) and abs(imb) < 0.02:
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -317,7 +276,6 @@ def run():
                 bot.send_message(CHAT_ID, f"🟢 SAFE {sym} {direction.upper()}")
                 break
             else:
-                # ===== AGGR =====
                 symbols = get_symbols(AGGR_VOLUME)
 
                 for sym in symbols:
@@ -325,7 +283,6 @@ def run():
                     if not direction:
                         continue
 
-                    # 🔥 ANA EDGE GERİ
                     if not liquidity_sweep(sym, direction):
                         continue
 
@@ -352,11 +309,11 @@ def run():
                     bot.send_message(CHAT_ID, f"🔥 AGGR {sym} {direction.upper()}")
                     break
 
-            time.sleep(15)
+            time.sleep(10)
 
         except Exception as e:
             print("RUN ERROR:", e)
-            time.sleep(15)
+            time.sleep(10)
 
 # ===== START =====
 exchange.fetch_balance()
@@ -367,8 +324,5 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-time.sleep(2)
-
-load_open_positions()
-
-bot.send_message(CHAT_ID, "🔥 PRO FINAL (LIQUIDITY FIX) AKTİF")
+bot.send_message(CHAT_ID, "🔥 FAST LIQUIDITY BOT AKTİF")
+bot.infinity_polling()
