@@ -257,6 +257,7 @@ def run():
                 time.sleep(10)
                 continue
 
+            # ===== SAFE =====
             symbols = get_symbols(SAFE_VOLUME)
 
             for sym in symbols:
@@ -270,13 +271,12 @@ def run():
 
                 imb = orderbook_imbalance(sym)
 
-                # 🔥 YUMUŞAK FİLTRE
-                if direction == "long" and imb < -0.2:
+                if direction == "long" and imb < -0.4:
                     continue
-                if direction == "short" and imb > 0.2:
+                if direction == "short" and imb > 0.4:
                     continue
 
-                if fake_breakout(sym, direction) and not volume_spike(sym):
+                if fake_breakout(sym, direction) and abs(imb) < 0.05:
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -297,6 +297,37 @@ def run():
 
                 bot.send_message(CHAT_ID, f"🟢 SAFE {sym} {direction.upper()}")
                 break
+            else:
+                # ===== AGGR =====
+                symbols = get_symbols(AGGR_VOLUME)
+
+                for sym in symbols:
+                    direction = get_direction(sym)
+                    if not direction:
+                        continue
+
+                    setup = entry_model(sym, direction)
+                    if not setup:
+                        continue
+
+                    price = safe(exchange.fetch_ticker(sym)["last"])
+                    qty = (AGGR_MARGIN * AGGR_LEV) / price
+                    qty = float(exchange.amount_to_precision(sym, qty))
+
+                    exchange.set_leverage(AGGR_LEV, sym)
+                    exchange.create_market_order(sym, "buy" if direction == "long" else "sell", qty)
+
+                    trade_state[sym] = {
+                        "sl": setup["sl"],
+                        "tp1": False,
+                        "tp2": False,
+                        "trail_active": False,
+                        "trail_price": 0,
+                        "trail_started": False
+                    }
+
+                    bot.send_message(CHAT_ID, f"🔥 AGGR {sym} {direction.upper()}")
+                    break
 
             time.sleep(15)
 
@@ -311,11 +342,10 @@ time.sleep(1)
 
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
-
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
 time.sleep(2)
 
 load_open_positions()
 
-bot.send_message(CHAT_ID, "🔥 PRO FINAL BALANCED AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO FINAL (SAFE+AGGR) AKTİF")
