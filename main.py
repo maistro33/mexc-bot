@@ -14,12 +14,11 @@ SAFE_MARGIN = 5
 AGGR_LEV = 10
 AGGR_MARGIN = 5
 
-TOP_COINS = 120
+TOP_COINS = 180
 BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
-# 🔥 UPDATED TRAILING
 TRAIL_START = 0.01
 TRAIL_GAP = 0.015
 
@@ -162,10 +161,7 @@ def load_open_positions():
             entry = safe(p["entryPrice"])
             side = p["side"]
 
-            if side == "long":
-                sl = entry * 0.97
-            else:
-                sl = entry * 1.03
+            sl = entry * 0.97 if side == "long" else entry * 1.03
 
             trade_state[sym] = {
                 "sl": sl,
@@ -205,6 +201,18 @@ def manage():
                 st = trade_state[sym]
                 sl = st["sl"]
 
+                # 🔥 LEVERAGE TP
+                lev = SAFE_LEV if "SAFE" in sym else AGGR_LEV
+
+                if lev <= 5:
+                    TP_USDT = 0.8
+                elif lev <= 10:
+                    TP_USDT = 1.0
+                elif lev <= 15:
+                    TP_USDT = 1.5
+                else:
+                    TP_USDT = 2.0
+
                 # STOP
                 if (direction == "long" and price <= sl) or (direction == "short" and price >= sl):
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty, params={"reduceOnly": True})
@@ -212,16 +220,16 @@ def manage():
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # 💰 TP1 (0.8 USDT)
-                if not st["tp1"] and pnl >= 0.8:
+                # TP1
+                if not st["tp1"] and pnl >= TP_USDT:
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty * TP_SPLIT[0], params={"reduceOnly": True})
                     st["tp1"] = True
                     st["sl"] = entry
                     st["trail_active"] = True
                     st["trail_price"] = price
-                    bot.send_message(CHAT_ID, f"💰 TP1 (0.8 USDT) {sym}")
+                    bot.send_message(CHAT_ID, f"💰 TP1 ({TP_USDT} USDT) {sym}")
 
-                # 🔒 TRAILING
+                # TRAILING
                 if st.get("trail_active"):
                     if direction == "long":
                         if price > st["trail_price"]:
