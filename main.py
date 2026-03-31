@@ -6,12 +6,13 @@ import threading
 
 # ===== SETTINGS =====
 SAFE_VOLUME = 2_000_000
+AGGR_VOLUME = 800_000  # 🔥 EKLENDİ
 
 SAFE_LEV = 10
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
-AGGR_MARGIN = 10  # 🔥 AKTİF
+AGGR_MARGIN = 5
 
 TOP_COINS = 130
 BUFFER_PCT = 0.0015
@@ -273,15 +274,18 @@ def run():
                 if score < SCORE_THRESHOLD:
                     continue
 
-                # 🔥 AGGR LOGIC
-                if score >= 5:
+                # 🔥 AGGR SEÇİMİ (VOLUME + SCORE)
+                ticker = exchange.fetch_ticker(sym)
+                vol = safe(ticker.get("quoteVolume"))
+
+                if score >= 5 and vol > AGGR_VOLUME:
                     margin = AGGR_MARGIN
                     lev = AGGR_LEV
                 else:
                     margin = SAFE_MARGIN
                     lev = SAFE_LEV
 
-                price = safe(exchange.fetch_ticker(sym)["last"])
+                price = safe(ticker["last"])
                 qty = (margin * lev) / price
                 qty = float(exchange.amount_to_precision(sym, qty))
 
@@ -314,4 +318,4 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL PRO BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FULL FINAL BOT AKTİF")
