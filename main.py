@@ -5,22 +5,16 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-SAFE_VOLUME = 2_000_000
-AGGR_VOLUME = 800_000
+LEV = 10
+MARGIN = 5
 
-SAFE_LEV = 10
-SAFE_MARGIN = 5
-
-AGGR_LEV = 10
-AGGR_MARGIN = 5
-
-TOP_COINS = 130
-BUFFER_PCT = 0.0015
-
-TP_SPLIT = [0.4, 0.3, 0.3]
+TP_USDT = 1.0
+SL_PCT = 0.025
 
 TRAIL_START = 0.01
 TRAIL_GAP = 0.015
+
+MIN_VOLUME = 1_000_000
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -44,7 +38,7 @@ def safe(x):
     except:
         return 0.0
 
-def get_candles(sym, tf, limit=100):
+def get_candles(sym, tf="15m", limit=50):
     try:
         return exchange.fetch_ohlcv(sym, tf, limit=limit)
     except:
@@ -59,12 +53,12 @@ def has_position():
 
 # ===== FILTERS =====
 def volume_spike(sym):
-    candles = get_candles(sym, "5m", 20)
-    if len(candles) < 10:
+    c = get_candles(sym, "5m", 20)
+    if len(c) < 10:
         return False
-    vols = [c[5] for c in candles]
+    vols = [x[5] for x in c]
     avg = sum(vols[:-1]) / len(vols[:-1])
-    return vols[-1] > avg * 1.5
+    return vols[-1] > avg * 1.3
 
 def orderbook_imbalance(sym):
     try:
@@ -77,105 +71,59 @@ def orderbook_imbalance(sym):
     except:
         return 0
 
-def fake_breakout(sym, direction):
-    m5 = get_candles(sym, "5m", 15)
-    if len(m5) < 5:
-        return False
-    highs = [c[2] for c in m5]
-    lows = [c[3] for c in m5]
-
-    if direction == "long":
-        return highs[-1] < max(highs[:-3])
-    else:
-        return lows[-1] > min(lows[:-3])
+def fake_breakout(sym):
+    c = get_candles(sym, "5m", 15)
+    highs = [x[2] for x in c]
+    return highs[-1] < max(highs[:-3])
 
 # ===== MARKET =====
-def get_symbols(volume):
-    try:
-        tickers = exchange.fetch_tickers()
-        filtered = []
-        for sym, data in tickers.items():
-            if ":USDT" not in sym:
-                continue
-            vol = safe(data.get("quoteVolume"))
-            if vol >= volume:
-                filtered.append((sym, vol))
-        filtered.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in filtered[:TOP_COINS]]
-    except:
-        return []
+def get_symbols():
+    tickers = exchange.fetch_tickers()
+    result = []
 
-def get_direction(sym):
-    d = get_candles(sym, "1d", 50)
-    if len(d) < 5:
-        return None
+    for sym, data in tickers.items():
+        if ":USDT" not in sym:
+            continue
 
-    highs = [c[2] for c in d]
-    lows = [c[3] for c in d]
+        vol = safe(data.get("quoteVolume"))
+        if vol >= MIN_VOLUME:
+            result.append(sym)
 
-    if highs[-1] > highs[-5]:
-        return "long"
-    if lows[-1] < lows[-5]:
-        return "short"
+    return result[:60]
 
-    return None
+# ===== DUMP DETECTION =====
+def is_dump(sym):
+    c = get_candles(sym, "15m", 20)
+    if len(c) < 15:
+        return False
 
-def entry_model(sym, direction):
-    m15 = get_candles(sym, "15m", 60)
-    if len(m15) < 20:
-        return None
+    start = c[-15][4]
+    end = c[-1][4]
 
-    o = [c[1] for c in m15]
-    h = [c[2] for c in m15]
-    l = [c[3] for c in m15]
-    c_ = [c[4] for c in m15]
+    drop = (start - end) / start
 
-    body = abs(c_[-1] - o[-1])
-    avg = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
+    return drop > 0.05  # %5+
 
-    if body < avg * 0.9:
-        return None
+# ===== PULLBACK =====
+def pullback(sym):
+    c = get_candles(sym, "15m", 30)
 
-    if direction == "long" and l[-1] > l[-3]:
-        return {"entry": c_[-1], "sl": min(l[-15:]) * (1 - BUFFER_PCT)}
+    highs = [x[2] for x in c]
+    lows = [x[3] for x in c]
 
-    if direction == "short" and h[-1] < h[-3]:
-        return {"entry": c_[-1], "sl": max(h[-15:]) * (1 + BUFFER_PCT)}
+    last = c[-1][4]
+    high = max(highs[-10:])
+    low = min(lows[-10:])
 
-    return None
+    if high - low == 0:
+        return False
+
+    retrace = (last - low) / (high - low)
+
+    return retrace > 0.3  # %30+
 
 # ===== STATE =====
-trade_state = {}
-
-# ===== RECOVERY =====
-def load_open_positions():
-    try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-            side = p["side"]
-
-            sl = entry * 0.97 if side == "long" else entry * 1.03
-
-            trade_state[sym] = {
-                "sl": sl,
-                "tp1": False,
-                "tp2": False,
-                "trail_active": True,
-                "trail_price": entry,
-                "trail_started": False
-            }
-
-            bot.send_message(CHAT_ID, f"♻️ RECOVERED {sym}")
-
-    except Exception as e:
-        print("RECOVERY ERROR:", e)
+trade = {}
 
 # ===== MANAGER =====
 def manage():
@@ -189,71 +137,47 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-                if sym not in trade_state:
-                    continue
 
                 entry = safe(p["entryPrice"])
-                side = p["side"]
-                direction = "long" if side == "long" else "short"
                 price = safe(exchange.fetch_ticker(sym)["last"])
                 pnl = safe(p.get("unrealizedPnl"))
 
-                st = trade_state[sym]
-                sl = st["sl"]
+                st = trade.get(sym)
+                if not st:
+                    continue
 
-                # 🔥 FIXED TP (AGGR LEV kullan)
-                lev = AGGR_LEV
-
-                if lev <= 5:
-                    TP_USDT = 0.8
-                elif lev <= 10:
-                    TP_USDT = 1.0
-                elif lev <= 15:
-                    TP_USDT = 1.5
-                else:
-                    TP_USDT = 2.0
-
-                # STOP
-                if (direction == "long" and price <= sl) or (direction == "short" and price >= sl):
-                    exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty, params={"reduceOnly": True})
-                    trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
+                # STOP LOSS
+                if price >= st["sl"]:
+                    exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
+                    trade.pop(sym, None)
+                    bot.send_message(CHAT_ID, f"❌ SL {sym}")
                     continue
 
                 # TP1
-                if not st["tp1"] and pnl >= TP_USDT:
-                    exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty * TP_SPLIT[0], params={"reduceOnly": True})
-                    st["tp1"] = True
-                    st["sl"] = entry
-                    st["trail_active"] = True
+                if not st["tp"] and pnl >= TP_USDT:
+                    exchange.create_market_order(sym, "buy", qty * 0.5, params={"reduceOnly": True})
+                    st["tp"] = True
+                    st["trail"] = True
                     st["trail_price"] = price
-                    bot.send_message(CHAT_ID, f"💰 TP1 ({TP_USDT} USDT) {sym}")
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 # TRAILING
-                if st.get("trail_active"):
-                    if direction == "long":
-                        if price > st["trail_price"]:
-                            st["trail_price"] = price
-                        if (price - entry)/entry > TRAIL_START:
-                            st["trail_started"] = True
-                        if st["trail_started"] and price <= st["trail_price"] * (1 - TRAIL_GAP):
-                            exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
-                            trade_state.pop(sym, None)
-                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
-                    else:
-                        if price < st["trail_price"]:
-                            st["trail_price"] = price
-                        if (entry - price)/entry > TRAIL_START:
-                            st["trail_started"] = True
-                        if st["trail_started"] and price >= st["trail_price"] * (1 + TRAIL_GAP):
-                            exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
-                            trade_state.pop(sym, None)
-                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
+                if st["trail"]:
+                    if price < st["trail_price"]:
+                        st["trail_price"] = price
+
+                    if (entry - price)/entry > TRAIL_START:
+                        st["trail_on"] = True
+
+                    if st.get("trail_on") and price >= st["trail_price"] * (1 + TRAIL_GAP):
+                        exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
+                        trade.pop(sym, None)
+                        bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
 
             time.sleep(5)
 
         except Exception as e:
-            print("MANAGE ERROR:", e)
+            print("MANAGE:", e)
             time.sleep(5)
 
 # ===== ENTRY =====
@@ -264,47 +188,50 @@ def run():
                 time.sleep(10)
                 continue
 
-            symbols = get_symbols(SAFE_VOLUME)
+            symbols = get_symbols()
 
             for sym in symbols:
-                direction = get_direction(sym)
-                if not direction:
+
+                if not is_dump(sym):
                     continue
 
-                setup = entry_model(sym, direction)
-                if not setup:
+                if not pullback(sym):
                     continue
 
-                # 🔥 FIXED FILTER (YUMUŞATILDI)
-                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.02:
+                imb = orderbook_imbalance(sym)
+
+                if imb > 0.2:
                     continue
 
-                if fake_breakout(sym, direction) and abs(orderbook_imbalance(sym)) < 0.02:
+                if not volume_spike(sym):
+                    continue
+
+                if fake_breakout(sym):
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
-                qty = (SAFE_MARGIN * SAFE_LEV) / price
+                qty = (MARGIN * LEV) / price
                 qty = float(exchange.amount_to_precision(sym, qty))
 
-                exchange.set_leverage(SAFE_LEV, sym)
-                exchange.create_market_order(sym, "buy" if direction == "long" else "sell", qty)
+                exchange.set_leverage(LEV, sym)
+                exchange.create_market_order(sym, "sell", qty)
 
-                trade_state[sym] = {
-                    "sl": setup["sl"],
-                    "tp1": False,
-                    "tp2": False,
-                    "trail_active": False,
-                    "trail_price": 0,
-                    "trail_started": False
+                sl = price * (1 + SL_PCT)
+
+                trade[sym] = {
+                    "sl": sl,
+                    "tp": False,
+                    "trail": False,
+                    "trail_price": price
                 }
 
-                bot.send_message(CHAT_ID, f"🟢 SAFE {sym} {direction.upper()}")
+                bot.send_message(CHAT_ID, f"💣 SHORT {sym}")
                 break
 
-            time.sleep(10)
+            time.sleep(15)
 
         except Exception as e:
-            print("RUN ERROR:", e)
+            print("RUN:", e)
             time.sleep(10)
 
 # ===== START =====
@@ -316,7 +243,4 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-time.sleep(2)
-load_open_positions()
-
-bot.send_message(CHAT_ID, "🔥 FIXED FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "💣 SHORT HUNTER PRO AKTİF")
