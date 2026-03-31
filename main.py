@@ -1,3 +1,4 @@
+
 import os
 import time
 import ccxt
@@ -5,22 +6,22 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-SAFE_VOLUME = 500_000
-AGGR_VOLUME = 300_000
+SAFE_VOLUME = 2_000_000
+AGGR_VOLUME = 800_000
 
-SAFE_LEV = 5
+SAFE_LEV = 10
 SAFE_MARGIN = 5
 
 AGGR_LEV = 10
 AGGR_MARGIN = 5
 
-TOP_COINS = 200
+TOP_COINS = 120
 BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
-TRAIL_START = 0.008
-TRAIL_GAP = 0.02
+TRAIL_START = 0.003
+TRAIL_GAP = 0.01
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -57,22 +58,15 @@ def has_position():
     except:
         return False
 
-# ===== 🔥 YUMUŞAK LIQUIDITY =====
-def liquidity_sweep(sym, direction):
-    h1 = get_candles(sym, "1h", 20)
-
-    if len(h1) < 6:
-        return False
-
-    highs = [c[2] for c in h1]
-    lows  = [c[3] for c in h1]
-
-    if direction == "long":
-        return lows[-1] <= min(lows[-5:])
-    else:
-        return highs[-1] >= max(highs[-5:])
-
 # ===== FILTERS =====
+def volume_spike(sym):
+    candles = get_candles(sym, "5m", 20)
+    if len(candles) < 10:
+        return False
+    vols = [c[5] for c in candles]
+    avg = sum(vols[:-1]) / len(vols[:-1])
+    return vols[-1] > avg * 1.5
+
 def orderbook_imbalance(sym):
     try:
         ob = exchange.fetch_order_book(sym, limit=10)
@@ -154,6 +148,33 @@ def entry_model(sym, direction):
 # ===== STATE =====
 trade_state = {}
 
+# ===== 🔥 RESTART RECOVERY =====
+def load_open_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+
+            trade_state[sym] = {
+                "sl": entry * 0.98,
+                "tp1": False,
+                "tp2": False,
+                "trail_active": True,
+                "trail_price": entry,
+                "trail_started": False
+            }
+
+            bot.send_message(CHAT_ID, f"♻️ RECOVERED {sym}")
+
+    except Exception as e:
+        print("RECOVERY ERROR:", e)
+
 # ===== MANAGER =====
 def manage():
     while True:
@@ -166,6 +187,7 @@ def manage():
                     continue
 
                 sym = p["symbol"]
+
                 if sym not in trade_state:
                     continue
 
@@ -238,21 +260,15 @@ def run():
                 if not direction:
                     continue
 
-                if not liquidity_sweep(sym, direction):
-                    continue
-
                 setup = entry_model(sym, direction)
                 if not setup:
                     continue
 
-                imb = orderbook_imbalance(sym)
-
-                if direction == "long" and imb < -0.5:
-                    continue
-                if direction == "short" and imb > 0.5:
+                # SOFT FILTER
+                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.1:
                     continue
 
-                if fake_breakout(sym, direction) and abs(imb) < 0.02:
+                if fake_breakout(sym, direction):
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -273,53 +289,23 @@ def run():
 
                 bot.send_message(CHAT_ID, f"🟢 SAFE {sym} {direction.upper()}")
                 break
-            else:
-                symbols = get_symbols(AGGR_VOLUME)
 
-                for sym in symbols:
-                    direction = get_direction(sym)
-                    if not direction:
-                        continue
-
-                    if not liquidity_sweep(sym, direction):
-                        continue
-
-                    setup = entry_model(sym, direction)
-                    if not setup:
-                        continue
-
-                    price = safe(exchange.fetch_ticker(sym)["last"])
-                    qty = (AGGR_MARGIN * AGGR_LEV) / price
-                    qty = float(exchange.amount_to_precision(sym, qty))
-
-                    exchange.set_leverage(AGGR_LEV, sym)
-                    exchange.create_market_order(sym, "buy" if direction == "long" else "sell", qty)
-
-                    trade_state[sym] = {
-                        "sl": setup["sl"],
-                        "tp1": False,
-                        "tp2": False,
-                        "trail_active": False,
-                        "trail_price": 0,
-                        "trail_started": False
-                    }
-
-                    bot.send_message(CHAT_ID, f"🔥 AGGR {sym} {direction.upper()}")
-                    break
-
-            time.sleep(10)
+            time.sleep(15)
 
         except Exception as e:
             print("RUN ERROR:", e)
-            time.sleep(10)
+            time.sleep(15)
 
 # ===== START =====
 exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
+# 🔥 RECOVERY
+load_open_positions()
+
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
-threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FAST LIQUIDITY BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO FINAL BOT AKTİF")
+bot.infinity_polling()
