@@ -5,7 +5,7 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-SAFE_VOLUME = 2_000_000
+SAFE_VOLUME = 500_000
 AGGR_VOLUME = 800_000
 
 SAFE_LEV = 10
@@ -14,7 +14,7 @@ SAFE_MARGIN = 5
 AGGR_LEV = 10
 AGGR_MARGIN = 5
 
-TOP_COINS = 120
+TOP_COINS = 200
 BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
