@@ -147,7 +147,7 @@ def entry_model(sym, direction):
 # ===== STATE =====
 trade_state = {}
 
-# ===== 🔥 RECOVERY (FIXED) =====
+# ===== RECOVERY =====
 def load_open_positions():
     try:
         positions = exchange.fetch_positions()
@@ -161,7 +161,6 @@ def load_open_positions():
             entry = safe(p["entryPrice"])
             side = p["side"]
 
-            # 🔥 DOĞRU SL
             if side == "long":
                 sl = entry * 0.97
             else:
@@ -269,10 +268,15 @@ def run():
                 if not setup:
                     continue
 
-                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.1:
+                imb = orderbook_imbalance(sym)
+
+                # 🔥 YUMUŞAK FİLTRE
+                if direction == "long" and imb < -0.2:
+                    continue
+                if direction == "short" and imb > 0.2:
                     continue
 
-                if fake_breakout(sym, direction):
+                if fake_breakout(sym, direction) and not volume_spike(sym):
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -308,12 +312,10 @@ time.sleep(1)
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 
-# 🔥 TELEGRAM BAĞLANTI
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
 time.sleep(2)
 
-# 🔥 RECOVERY
 load_open_positions()
 
-bot.send_message(CHAT_ID, "🔥 PRO FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO FINAL BALANCED AKTİF")
