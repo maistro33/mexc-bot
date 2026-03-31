@@ -14,7 +14,7 @@ SAFE_MARGIN = 5
 AGGR_LEV = 10
 AGGR_MARGIN = 5
 
-TOP_COINS = 180
+TOP_COINS = 130
 BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
@@ -201,8 +201,8 @@ def manage():
                 st = trade_state[sym]
                 sl = st["sl"]
 
-                # 🔥 LEVERAGE TP
-                lev = SAFE_LEV if "SAFE" in sym else AGGR_LEV
+                # 🔥 FIXED TP (AGGR LEV kullan)
+                lev = AGGR_LEV
 
                 if lev <= 5:
                     TP_USDT = 0.8
@@ -275,10 +275,11 @@ def run():
                 if not setup:
                     continue
 
-                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.05:
+                # 🔥 FIXED FILTER (YUMUŞATILDI)
+                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.02:
                     continue
 
-                if fake_breakout(sym, direction) and abs(orderbook_imbalance(sym)) < 0.05:
+                if fake_breakout(sym, direction) and abs(orderbook_imbalance(sym)) < 0.02:
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -300,11 +301,11 @@ def run():
                 bot.send_message(CHAT_ID, f"🟢 SAFE {sym} {direction.upper()}")
                 break
 
-            time.sleep(15)
+            time.sleep(10)
 
         except Exception as e:
             print("RUN ERROR:", e)
-            time.sleep(15)
+            time.sleep(10)
 
 # ===== START =====
 exchange.fetch_balance()
@@ -318,4 +319,4 @@ threading.Thread(target=bot.infinity_polling, daemon=True).start()
 time.sleep(2)
 load_open_positions()
 
-bot.send_message(CHAT_ID, "🔥 PRO FINAL BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FIXED FINAL BOT AKTİF")
