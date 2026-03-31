@@ -1,4 +1,3 @@
-
 import os
 import time
 import ccxt
@@ -20,8 +19,9 @@ BUFFER_PCT = 0.0015
 
 TP_SPLIT = [0.4, 0.3, 0.3]
 
-TRAIL_START = 0.003
-TRAIL_GAP = 0.01
+# 🔥 UPDATED TRAILING
+TRAIL_START = 0.01
+TRAIL_GAP = 0.015
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -148,7 +148,7 @@ def entry_model(sym, direction):
 # ===== STATE =====
 trade_state = {}
 
-# ===== 🔥 RESTART RECOVERY =====
+# ===== RECOVERY =====
 def load_open_positions():
     try:
         positions = exchange.fetch_positions()
@@ -160,9 +160,15 @@ def load_open_positions():
 
             sym = p["symbol"]
             entry = safe(p["entryPrice"])
+            side = p["side"]
+
+            if side == "long":
+                sl = entry * 0.97
+            else:
+                sl = entry * 1.03
 
             trade_state[sym] = {
-                "sl": entry * 0.98,
+                "sl": sl,
                 "tp1": False,
                 "tp2": False,
                 "trail_active": True,
@@ -187,7 +193,6 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-
                 if sym not in trade_state:
                     continue
 
@@ -195,12 +200,10 @@ def manage():
                 side = p["side"]
                 direction = "long" if side == "long" else "short"
                 price = safe(exchange.fetch_ticker(sym)["last"])
+                pnl = safe(p.get("unrealizedPnl"))
 
                 st = trade_state[sym]
                 sl = st["sl"]
-                risk = abs(entry - sl)
-
-                tp1 = entry + risk if direction == "long" else entry - risk
 
                 # STOP
                 if (direction == "long" and price <= sl) or (direction == "short" and price >= sl):
@@ -209,16 +212,16 @@ def manage():
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
-                # TP1
-                if not st["tp1"] and ((direction == "long" and price >= tp1) or (direction == "short" and price <= tp1)):
+                # 💰 TP1 (0.8 USDT)
+                if not st["tp1"] and pnl >= 0.8:
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty * TP_SPLIT[0], params={"reduceOnly": True})
                     st["tp1"] = True
                     st["sl"] = entry
                     st["trail_active"] = True
                     st["trail_price"] = price
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                    bot.send_message(CHAT_ID, f"💰 TP1 (0.8 USDT) {sym}")
 
-                # TRAILING
+                # 🔒 TRAILING
                 if st.get("trail_active"):
                     if direction == "long":
                         if price > st["trail_price"]:
@@ -264,11 +267,10 @@ def run():
                 if not setup:
                     continue
 
-                # SOFT FILTER
-                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.1:
+                if not volume_spike(sym) and abs(orderbook_imbalance(sym)) < 0.05:
                     continue
 
-                if fake_breakout(sym, direction):
+                if fake_breakout(sym, direction) and abs(orderbook_imbalance(sym)) < 0.05:
                     continue
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
@@ -301,11 +303,11 @@ exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
-# 🔥 RECOVERY
-load_open_positions()
-
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
+threading.Thread(target=bot.infinity_polling, daemon=True).start()
+
+time.sleep(2)
+load_open_positions()
 
 bot.send_message(CHAT_ID, "🔥 PRO FINAL BOT AKTİF")
-bot.infinity_polling()
