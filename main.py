@@ -5,7 +5,6 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-SAFE_VOLUME = 2_000_000
 SAFE_LEV = 10
 SAFE_MARGIN = 5
 
@@ -51,8 +50,8 @@ def has_position():
         positions = exchange.fetch_positions()
         for p in positions:
             qty = safe(p.get("contracts"))
-            if qty is not None and qty > 0:
-                print("ACTIVE POSITION:", p["symbol"], qty)
+            if qty and qty > 0:
+                print("ACTIVE POSITION:", p["symbol"])
                 return True
         return False
     except Exception as e:
@@ -84,21 +83,18 @@ def short_pullback_entry(sym):
 
     return None
 
-# ===== MARKET =====
-def get_symbols(volume):
+# ===== 🔥 FIXED SYMBOL SYSTEM =====
+def get_symbols():
     try:
-        tickers = exchange.fetch_tickers()
-        result = []
+        markets = exchange.load_markets()
+        symbols = []
 
-        for sym, data in tickers.items():
-            if ":USDT" not in sym:
-                continue
+        for sym in markets:
+            if ":USDT" in sym:
+                symbols.append(sym)
 
-            vol = safe(data.get("quoteVolume"))
-            if vol >= volume:
-                result.append(sym)
-
-        return result[:TOP_COINS]
+        print("TOTAL SYMBOLS:", len(symbols))
+        return symbols[:TOP_COINS]
 
     except Exception as e:
         print("SYMBOL ERROR:", e)
@@ -183,11 +179,11 @@ def run():
             print("RUNNING SCAN...")
 
             if has_position():
-                print("POSITION VAR - BEKLIYOR")
+                print("POSITION VAR - WAIT")
                 time.sleep(5)
                 continue
 
-            symbols = get_symbols(SAFE_VOLUME)
+            symbols = get_symbols()
 
             for sym in symbols:
                 print("SCAN:", sym)
@@ -230,4 +226,4 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT FIXED & AKTİF")
+bot.send_message(CHAT_ID, "🔥 BOT %100 AKTİF (FIXED)")
