@@ -57,6 +57,48 @@ def has_open_position(sym):
     except:
         return False
 
+# ===== 🔥 NEW: TREND FILTER =====
+def trend_filter(sym, direction):
+    m15 = get_candles(sym, "15m", 50)
+    if len(m15) < 20:
+        return True
+
+    closes = [c[4] for c in m15]
+    avg = sum(closes[-20:]) / 20
+
+    if closes[-1] > avg:
+        return direction == "long"
+    else:
+        return direction == "short"
+
+# ===== 🔥 NEW: RECOVERY =====
+def load_open_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+
+            if sym not in trade_state:
+                trade_state[sym] = {
+                    "sl": entry * 0.98,
+                    "tp1": False,
+                    "trail_active": False,
+                    "trail_price": 0
+                }
+
+                active_trades.add(sym)
+
+                bot.send_message(CHAT_ID, f"♻️ RECOVERED {sym}")
+
+    except Exception as e:
+        print("RECOVERY ERROR:", e)
+
 # ===== FILTERS =====
 def volume_spike(sym):
     c = get_candles(sym, "5m", 20)
@@ -167,6 +209,11 @@ def trade_engine(mode):
                 if not direction:
                     continue
 
+                # 🔥 TREND FILTER (sadece AGGRESSIVE)
+                if mode=="AGGRESSIVE":
+                    if not trend_filter(sym, direction):
+                        continue
+
                 score = calculate_score(sym, direction)
 
                 if mode=="SAFE":
@@ -238,6 +285,7 @@ def manage():
                     exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly": True})
                     trade_state.pop(sym, None)
                     active_trades.discard(sym)
+                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
                 if not st["tp1"] and ((direction=="long" and price >= tp1) or (direction=="short" and price <= tp1)):
@@ -246,6 +294,7 @@ def manage():
                     st["sl"] = entry
                     st["trail_active"] = True
                     st["trail_price"] = price
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
                 if st["trail_active"]:
                     if direction=="long":
@@ -255,6 +304,7 @@ def manage():
                             exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                             trade_state.pop(sym, None)
                             active_trades.discard(sym)
+                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
                     else:
                         if price < st["trail_price"]:
                             st["trail_price"] = price
@@ -262,6 +312,7 @@ def manage():
                             exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
                             trade_state.pop(sym, None)
                             active_trades.discard(sym)
+                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
 
             time.sleep(5)
 
@@ -274,9 +325,12 @@ exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
+# 🔥 RECOVERY EKLENDİ
+load_open_positions()
+
 threading.Thread(target=trade_engine, args=("SAFE",), daemon=True).start()
 threading.Thread(target=trade_engine, args=("AGGRESSIVE",), daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL BOT (DUAL + MANAGE) AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL BOT (GÜNCEL + RECOVERY + TREND) AKTİF")
 bot.infinity_polling()
