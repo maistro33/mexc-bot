@@ -52,32 +52,26 @@ def has_position():
     except:
         return False
 
-# ===== SHORT PULLBACK (GEVŞEK) =====
+# ===== 🔥 YENİ BASİT SHORT SİSTEM =====
 def short_pullback_entry(sym):
-    m5 = get_candles(sym, "5m", 30)
-    if len(m5) < 20:
+    m5 = get_candles(sym, "5m", 20)
+    if len(m5) < 10:
         return None
 
     closes = [c[4] for c in m5]
-    highs  = [c[2] for c in m5]
-    lows   = [c[3] for c in m5]
 
-    # 🔥 GEVŞETİLDİ
-    drop = (highs[-10] - lows[-1]) / highs[-10]
-    if drop < 0.025:
+    # düşüş var mı
+    if closes[-1] > closes[-5]:
         return None
 
-    bounce = (closes[-1] - lows[-3]) / lows[-3]
-    if bounce < 0.005:
-        return None
-
-    last = m5[-1]
     prev = m5[-2]
+    last = m5[-1]
 
-    # red after green
-    if last[4] < last[1] and prev[4] > prev[1]:
+    # yeşil → kırmızı
+    if prev[4] > prev[1] and last[4] < last[1]:
         entry = last[4]
-        sl = max(highs[-10:]) * (1 + BUFFER_PCT)
+        highs = [c[2] for c in m5[-10:]]
+        sl = max(highs) * (1 + BUFFER_PCT)
 
         return {"entry": entry, "sl": sl}
 
@@ -127,7 +121,7 @@ def entry_model(sym, direction):
     body = abs(c_[-1] - o[-1])
     avg = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
 
-    if body < avg * 0.8:  # 🔥 biraz gevşetildi
+    if body < avg * 0.8:
         return None
 
     if direction == "long" and l[-1] > l[-3]:
@@ -268,4 +262,4 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL AKTİF (GEVŞEK + SHORT AV)")
+bot.send_message(CHAT_ID, "🔥 SCALP BOT AKTİF (SIMPLE SHORT)")
