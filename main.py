@@ -52,7 +52,7 @@ def has_position():
     except:
         return False
 
-# ===== SHORT PULLBACK SYSTEM =====
+# ===== SHORT PULLBACK (GEVŞEK) =====
 def short_pullback_entry(sym):
     m5 = get_candles(sym, "5m", 30)
     if len(m5) < 20:
@@ -62,17 +62,19 @@ def short_pullback_entry(sym):
     highs  = [c[2] for c in m5]
     lows   = [c[3] for c in m5]
 
+    # 🔥 GEVŞETİLDİ
     drop = (highs[-10] - lows[-1]) / highs[-10]
-    if drop < 0.04:
+    if drop < 0.025:
         return None
 
     bounce = (closes[-1] - lows[-3]) / lows[-3]
-    if bounce < 0.01:
+    if bounce < 0.005:
         return None
 
     last = m5[-1]
     prev = m5[-2]
 
+    # red after green
     if last[4] < last[1] and prev[4] > prev[1]:
         entry = last[4]
         sl = max(highs[-10:]) * (1 + BUFFER_PCT)
@@ -125,7 +127,7 @@ def entry_model(sym, direction):
     body = abs(c_[-1] - o[-1])
     avg = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
 
-    if body < avg * 0.9:
+    if body < avg * 0.8:  # 🔥 biraz gevşetildi
         return None
 
     if direction == "long" and l[-1] > l[-3]:
@@ -165,12 +167,14 @@ def manage():
 
                 TP_USDT = 1.0
 
+                # STOP
                 if (direction == "long" and price <= sl) or (direction == "short" and price >= sl):
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty, params={"reduceOnly": True})
                     trade_state.pop(sym, None)
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
                     continue
 
+                # TP1
                 if not st["tp1"] and pnl >= TP_USDT:
                     exchange.create_market_order(sym, "sell" if direction == "long" else "buy", qty * TP_SPLIT[0], params={"reduceOnly": True})
                     st["tp1"] = True
@@ -179,10 +183,13 @@ def manage():
                     st["trail_price"] = price
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
+                # TRAILING
                 if st.get("trail_active"):
                     if direction == "long":
                         if price > st["trail_price"]:
                             st["trail_price"] = price
+                        if (price - entry)/entry > TRAIL_START:
+                            st["trail_started"] = True
                         if st["trail_started"] and price <= st["trail_price"] * (1 - TRAIL_GAP):
                             exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
                             trade_state.pop(sym, None)
@@ -190,6 +197,8 @@ def manage():
                     else:
                         if price < st["trail_price"]:
                             st["trail_price"] = price
+                        if (entry - price)/entry > TRAIL_START:
+                            st["trail_started"] = True
                         if st["trail_started"] and price >= st["trail_price"] * (1 + TRAIL_GAP):
                             exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
                             trade_state.pop(sym, None)
@@ -205,15 +214,16 @@ def run():
     while True:
         try:
             if has_position():
-                time.sleep(10)
+                time.sleep(5)
                 continue
 
             symbols = get_symbols(SAFE_VOLUME)
 
             for sym in symbols:
 
-                # 🔥 SHORT PRIORITY
+                # 🔥 SHORT ÖNCELİK
                 pb = short_pullback_entry(sym)
+
                 if pb:
                     direction = "short"
                     setup = pb
@@ -245,7 +255,7 @@ def run():
                 bot.send_message(CHAT_ID, f"🟢 {direction.upper()} {sym}")
                 break
 
-            time.sleep(10)
+            time.sleep(5)
 
         except Exception as e:
             print("RUN ERROR:", e)
@@ -258,4 +268,4 @@ threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=run, daemon=True).start()
 threading.Thread(target=bot.infinity_polling, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SHORT AV BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL AKTİF (GEVŞEK + SHORT AV)")
