@@ -19,6 +19,9 @@ TP_SPLIT = [0.4, 0.3, 0.3]
 TRAIL_START = 0.003
 TRAIL_GAP = 0.01
 
+TP1_USDT = 0.80
+STEP_LEVELS = [1, 2, 3, 4, 5]
+
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -57,7 +60,7 @@ def has_open_position(sym):
     except:
         return False
 
-# ===== 🔥 NEW: TREND FILTER =====
+# ===== TREND FILTER =====
 def trend_filter(sym, direction):
     m15 = get_candles(sym, "15m", 50)
     if len(m15) < 20:
@@ -71,7 +74,7 @@ def trend_filter(sym, direction):
     else:
         return direction == "short"
 
-# ===== 🔥 NEW: RECOVERY =====
+# ===== RECOVERY =====
 def load_open_positions():
     try:
         positions = exchange.fetch_positions()
@@ -89,11 +92,11 @@ def load_open_positions():
                     "sl": entry * 0.98,
                     "tp1": False,
                     "trail_active": False,
-                    "trail_price": 0
+                    "trail_price": 0,
+                    "step": 0
                 }
 
                 active_trades.add(sym)
-
                 bot.send_message(CHAT_ID, f"♻️ RECOVERED {sym}")
 
     except Exception as e:
@@ -209,7 +212,6 @@ def trade_engine(mode):
                 if not direction:
                     continue
 
-                # 🔥 TREND FILTER (sadece AGGRESSIVE)
                 if mode=="AGGRESSIVE":
                     if not trend_filter(sym, direction):
                         continue
@@ -243,7 +245,8 @@ def trade_engine(mode):
                     "sl": price * 0.98 if direction=="long" else price * 1.02,
                     "tp1": False,
                     "trail_active": False,
-                    "trail_price": 0
+                    "trail_price": 0,
+                    "step": 0
                 }
 
                 bot.send_message(CHAT_ID, f"🚀 {mode} {sym} {direction.upper()} SCORE:{score}")
@@ -278,41 +281,45 @@ def manage():
 
                 st = trade_state[sym]
                 sl = st["sl"]
-                risk = abs(entry - sl)
-                tp1 = entry + risk if direction=="long" else entry - risk
 
-                if (direction=="long" and price <= sl) or (direction=="short" and price >= sl):
-                    exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly": True})
-                    trade_state.pop(sym, None)
-                    active_trades.discard(sym)
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
-                    continue
+                # ===== TP1 USDT =====
+                pnl = abs(price - entry) * qty
+                tp1_hit = pnl >= TP1_USDT
 
-                if not st["tp1"] and ((direction=="long" and price >= tp1) or (direction=="short" and price <= tp1)):
+                if not st["tp1"] and tp1_hit:
                     exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty * TP_SPLIT[0], params={"reduceOnly": True})
                     st["tp1"] = True
                     st["sl"] = entry
                     st["trail_active"] = True
                     st["trail_price"] = price
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym} (+{round(pnl,2)} USDT)")
 
-                if st["trail_active"]:
-                    if direction=="long":
-                        if price > st["trail_price"]:
-                            st["trail_price"] = price
-                        if price <= st["trail_price"] * (1 - TRAIL_GAP):
-                            exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
-                            trade_state.pop(sym, None)
-                            active_trades.discard(sym)
-                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
-                    else:
-                        if price < st["trail_price"]:
-                            st["trail_price"] = price
-                        if price >= st["trail_price"] * (1 + TRAIL_GAP):
-                            exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
-                            trade_state.pop(sym, None)
-                            active_trades.discard(sym)
-                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
+                # ===== STEP SYSTEM =====
+                if st["tp1"]:
+                    risk = abs(entry - sl) if abs(entry - sl) > 0 else entry * 0.02
+                    current_r = abs(price - entry) / risk
+
+                    for lvl in STEP_LEVELS:
+                        if current_r >= lvl and st["step"] < lvl:
+                            st["step"] = lvl
+
+                            if direction == "long":
+                                new_sl = entry + (lvl - 1) * risk
+                                if new_sl > st["sl"]:
+                                    st["sl"] = new_sl
+                            else:
+                                new_sl = entry - (lvl - 1) * risk
+                                if new_sl < st["sl"]:
+                                    st["sl"] = new_sl
+
+                            bot.send_message(CHAT_ID, f"📈 STEP {lvl} {sym} SL updated")
+
+                # ===== STOP =====
+                if (direction=="long" and price <= st["sl"]) or (direction=="short" and price >= st["sl"]):
+                    exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly": True})
+                    trade_state.pop(sym, None)
+                    active_trades.discard(sym)
+                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
 
             time.sleep(5)
 
@@ -325,12 +332,11 @@ exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
-# 🔥 RECOVERY EKLENDİ
 load_open_positions()
 
 threading.Thread(target=trade_engine, args=("SAFE",), daemon=True).start()
 threading.Thread(target=trade_engine, args=("AGGRESSIVE",), daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL BOT (GÜNCEL + RECOVERY + TREND) AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL BOT (TP1 + STEP + FULL) AKTİF")
 bot.infinity_polling()
