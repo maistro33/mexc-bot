@@ -3,6 +3,10 @@ import time
 import ccxt
 import telebot
 import threading
+from openai import OpenAI
+
+# ===== AI =====
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===== SETTINGS =====
 SAFE_VOLUME = 1_500_000
@@ -21,8 +25,6 @@ TP1_USDT = 0.80
 STEP_LEVELS = [1, 2, 3, 4, 5]
 
 ANTI_DUMP_PCT = 0.004
-
-# 🔥 MAX TRADE
 MAX_TRADES = 1
 
 # ===== TELEGRAM =====
@@ -60,6 +62,40 @@ def total_open_positions():
     except:
         return 0
 
+# ===== AI DECISION =====
+def ai_decision(sym, direction, score, ob):
+    try:
+        prompt = f"""
+You are a professional crypto futures trader.
+
+Symbol: {sym}
+Trend: {direction}
+Score: {score}
+Orderbook imbalance: {ob}
+
+Only take strong trades. Avoid fake breakout.
+
+Answer:
+LONG
+SHORT
+SKIP
+"""
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        decision = res.choices[0].message.content.strip().upper()
+
+        if decision not in ["LONG","SHORT"]:
+            return "SKIP"
+
+        return decision
+
+    except Exception as e:
+        print("AI ERROR:", e)
+        return "SKIP"
+
 # ===== MARKET =====
 def get_symbols(volume):
     try:
@@ -79,16 +115,6 @@ def get_direction(sym):
     if highs[-1]>highs[-5]: return "long"
     if lows[-1]<lows[-5]: return "short"
     return None
-
-# ===== ANTI DUMP =====
-def anti_dump(sym):
-    try:
-        c = get_candles(sym, "1m", 3)
-        if len(c) < 2: return False
-        change = abs(c[-1][4] - c[-2][4]) / c[-2][4]
-        return change > ANTI_DUMP_PCT
-    except:
-        return False
 
 # ===== TREND =====
 def trend_filter(sym, direction):
@@ -149,7 +175,6 @@ def trade_engine(mode):
 
             for sym in get_symbols(vol):
 
-                # 🔥 MAX TRADE KONTROL
                 if total_open_positions() >= MAX_TRADES:
                     break
 
@@ -167,6 +192,17 @@ def trade_engine(mode):
                 if score < (4 if mode=="SAFE" else 3):
                     continue
 
+                # 🔥 AI EKLENDİ
+                ob = orderbook_imbalance(sym)
+                decision = ai_decision(sym, direction, score, ob)
+
+                if decision == "SKIP":
+                    continue
+                if decision == "LONG":
+                    direction = "long"
+                if decision == "SHORT":
+                    direction = "short"
+
                 price = safe(exchange.fetch_ticker(sym)["last"])
                 qty = float(exchange.amount_to_precision(sym,(MARGIN*lev)/price))
 
@@ -182,7 +218,7 @@ def trade_engine(mode):
                 }
 
                 active_trades.add(sym)
-                bot.send_message(CHAT_ID,f"🚀 {mode} {sym} {direction}")
+                bot.send_message(CHAT_ID,f"🤖 AI {mode} {sym} {direction}")
                 break
 
             time.sleep(10)
@@ -209,7 +245,6 @@ def manage():
 
                 st = trade_state[sym]
 
-                # ANTI DUMP
                 if anti_dump(sym):
                     exchange.create_market_order(sym,"sell" if direction=="long" else "buy",qty,params={"reduceOnly":True})
                     trade_state.pop(sym,None)
@@ -219,14 +254,12 @@ def manage():
 
                 pnl = safe(p.get("unrealizedPnl"))
 
-                # TP1
                 if not st["tp1"] and pnl >= TP1_USDT:
                     exchange.create_market_order(sym,"sell" if direction=="long" else "buy",qty*0.4,params={"reduceOnly":True})
                     st["tp1"]=True
                     st["sl"]=entry
                     bot.send_message(CHAT_ID,f"💰 TP1 {sym} {round(pnl,2)}")
 
-                # STEP
                 if st["tp1"]:
                     risk = st["initial_risk"]
                     r = abs(price-entry)/risk if risk>0 else 0
@@ -237,7 +270,6 @@ def manage():
                             st["sl"]=entry+(lvl-1)*risk if direction=="long" else entry-(lvl-1)*risk
                             bot.send_message(CHAT_ID,f"📈 STEP {lvl} {sym}")
 
-                # STOP
                 if (direction=="long" and price<=st["sl"]) or (direction=="short" and price>=st["sl"]):
                     exchange.create_market_order(sym,"sell" if direction=="long" else "buy",qty,params={"reduceOnly":True})
                     trade_state.pop(sym,None)
@@ -250,6 +282,16 @@ def manage():
             print("MANAGE ERROR:",e)
             time.sleep(5)
 
+# ===== ANTI DUMP =====
+def anti_dump(sym):
+    try:
+        c = get_candles(sym, "1m", 3)
+        if len(c) < 2: return False
+        change = abs(c[-1][4] - c[-2][4]) / c[-2][4]
+        return change > ANTI_DUMP_PCT
+    except:
+        return False
+
 # ===== START =====
 exchange.fetch_balance()
 bot.remove_webhook()
@@ -261,5 +303,5 @@ threading.Thread(target=trade_engine,args=("SAFE",),daemon=True).start()
 threading.Thread(target=trade_engine,args=("AGGRESSIVE",),daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 FINAL BOT (1 TRADE + STEP + SAFE)")
+bot.send_message(CHAT_ID,"🔥 AI FINAL BOT AKTİF")
 bot.infinity_polling()
