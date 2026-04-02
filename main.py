@@ -3,10 +3,6 @@ import time
 import ccxt
 import telebot
 import threading
-from openai import OpenAI
-
-# ===== AI =====
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===== SETTINGS =====
 SAFE_VOLUME = 1_500_000
@@ -62,35 +58,83 @@ def total_open_positions():
     except:
         return 0
 
-# ===== AI DECISION =====
+# ===== PRO AI (SENİN AKLIN) =====
 def ai_decision(sym, direction, score, ob):
     try:
-        prompt = f"""
-You are a professional crypto futures trader.
-
-Symbol: {sym}
-Trend: {direction}
-Score: {score}
-Orderbook imbalance: {ob}
-
-Only take strong trades. Avoid fake breakout.
-
-Answer:
-LONG
-SHORT
-SKIP
-"""
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        decision = res.choices[0].message.content.strip().upper()
-
-        if decision not in ["LONG","SHORT"]:
+        # ===== 1H TREND =====
+        h1 = get_candles(sym, "1h", 50)
+        if len(h1) < 30:
             return "SKIP"
 
-        return decision
+        closes = [c[4] for c in h1]
+        highs = [c[2] for c in h1]
+        lows = [c[3] for c in h1]
+
+        ma = sum(closes[-20:]) / 20
+        trend = "long" if closes[-1] > ma else "short"
+
+        hh = highs[-1] > highs[-3]
+        ll = lows[-1] < lows[-3]
+
+        # ===== 5M ENTRY =====
+        m5 = get_candles(sym, "5m", 30)
+        closes5 = [c[4] for c in m5]
+        highs5 = [c[2] for c in m5]
+        lows5 = [c[3] for c in m5]
+
+        price = closes5[-1]
+
+        resistance = max(highs5[:-3])
+        support = min(lows5[:-3])
+
+        breakout_up = price > resistance
+        breakout_down = price < support
+
+        near_res = price >= resistance * 0.998
+        near_sup = price <= support * 1.002
+
+        momentum = closes5[-1] > closes5[-3] if direction=="long" else closes5[-1] < closes5[-3]
+
+        vol = abs(closes5[-1] - closes5[-2]) / closes5[-2]
+
+        sweep_low = lows5[-1] < min(lows5[:-5])
+        sweep_high = highs5[-1] > max(highs5[:-5])
+
+        # ===== RULES =====
+        if trend == "short" and direction == "long":
+            return "SKIP"
+
+        if trend == "long" and direction == "short":
+            return "SKIP"
+
+        if trend == "long" and not hh:
+            return "SKIP"
+
+        if trend == "short" and not ll:
+            return "SKIP"
+
+        if direction == "long" and near_res and not breakout_up:
+            return "SKIP"
+
+        if direction == "short" and near_sup and not breakout_down:
+            return "SKIP"
+
+        if not momentum:
+            return "SKIP"
+
+        if vol < 0.0005:
+            return "SKIP"
+
+        if direction == "long" and not breakout_up and near_res:
+            return "SKIP"
+
+        if direction == "short" and not breakout_down and near_sup:
+            return "SKIP"
+
+        if score < 2:
+            return "SKIP"
+
+        return direction.upper()
 
     except Exception as e:
         print("AI ERROR:", e)
@@ -115,13 +159,6 @@ def get_direction(sym):
     if highs[-1]>highs[-5]: return "long"
     if lows[-1]<lows[-5]: return "short"
     return None
-
-# ===== TREND =====
-def trend_filter(sym, direction):
-    c = get_candles(sym, "15m", 50)
-    if len(c)<20: return True
-    avg = sum(x[4] for x in c[-20:]) / 20
-    return direction == "long" if c[-1][4] > avg else direction == "short"
 
 # ===== SIGNAL =====
 def volume_spike(sym):
@@ -171,7 +208,6 @@ def trade_engine(mode):
     while True:
         try:
             vol = SAFE_VOLUME if mode=="SAFE" else AGGR_VOLUME
-            lev = SAFE_LEV if mode=="SAFE" else AGGR_LEV
 
             for sym in get_symbols(vol):
 
@@ -185,26 +221,25 @@ def trade_engine(mode):
                 if not direction:
                     continue
 
-                if mode=="AGGRESSIVE" and not trend_filter(sym, direction):
-                    continue
-
                 score = calculate_score(sym, direction)
-                if score < (4 if mode=="SAFE" else 3):
+                if score < 2:
                     continue
 
-                # 🔥 AI EKLENDİ
                 ob = orderbook_imbalance(sym)
+
                 decision = ai_decision(sym, direction, score, ob)
 
                 if decision == "SKIP":
                     continue
+
                 if decision == "LONG":
                     direction = "long"
+
                 if decision == "SHORT":
                     direction = "short"
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
-                qty = float(exchange.amount_to_precision(sym,(MARGIN*lev)/price))
+                qty = float(exchange.amount_to_precision(sym,(MARGIN*SAFE_LEV)/price))
 
                 exchange.create_market_order(sym,"buy" if direction=="long" else "sell",qty)
 
@@ -218,7 +253,7 @@ def trade_engine(mode):
                 }
 
                 active_trades.add(sym)
-                bot.send_message(CHAT_ID,f"🤖 AI {mode} {sym} {direction}")
+                bot.send_message(CHAT_ID,f"🧠 PRO AI {sym} {direction}")
                 break
 
             time.sleep(10)
@@ -300,8 +335,7 @@ time.sleep(1)
 load_open_positions()
 
 threading.Thread(target=trade_engine,args=("SAFE",),daemon=True).start()
-threading.Thread(target=trade_engine,args=("AGGRESSIVE",),daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 AI FINAL BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 PRO AI BOT AKTİF")
 bot.infinity_polling()
