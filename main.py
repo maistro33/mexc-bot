@@ -22,6 +22,9 @@ STEP_LEVELS = [1, 2, 3, 4, 5]
 
 ANTI_DUMP_PCT = 0.004
 
+# 🔥 MAX TRADE
+MAX_TRADES = 1
+
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -49,6 +52,13 @@ def safe(x):
 def get_candles(sym, tf, limit=100):
     try: return exchange.fetch_ohlcv(sym, tf, limit=limit)
     except: return []
+
+def total_open_positions():
+    try:
+        positions = exchange.fetch_positions()
+        return sum(1 for p in positions if safe(p.get("contracts")) > 0)
+    except:
+        return 0
 
 # ===== MARKET =====
 def get_symbols(volume):
@@ -139,6 +149,10 @@ def trade_engine(mode):
 
             for sym in get_symbols(vol):
 
+                # 🔥 MAX TRADE KONTROL
+                if total_open_positions() >= MAX_TRADES:
+                    break
+
                 if sym in active_trades:
                     continue
 
@@ -195,7 +209,7 @@ def manage():
 
                 st = trade_state[sym]
 
-                # anti dump
+                # ANTI DUMP
                 if anti_dump(sym):
                     exchange.create_market_order(sym,"sell" if direction=="long" else "buy",qty,params={"reduceOnly":True})
                     trade_state.pop(sym,None)
@@ -247,5 +261,5 @@ threading.Thread(target=trade_engine,args=("SAFE",),daemon=True).start()
 threading.Thread(target=trade_engine,args=("AGGRESSIVE",),daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 BOT AKTİF (FINAL STABLE)")
+bot.send_message(CHAT_ID,"🔥 FINAL BOT (1 TRADE + STEP + SAFE)")
 bot.infinity_polling()
