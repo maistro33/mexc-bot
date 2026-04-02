@@ -20,7 +20,9 @@ TRAIL_GAP = 0.01
 TP1_USDT = 0.80
 STEP_LEVELS = [1, 2, 3, 4, 5]
 
-ANTI_DUMP_PCT = 0.001
+# 🔥 DÜZELTİLDİ
+ANTI_DUMP_PCT = 0.01
+
 MAX_TRADES = 1
 
 # ===== TELEGRAM =====
@@ -58,10 +60,9 @@ def total_open_positions():
     except:
         return 0
 
-# ===== PRO AI (SENİN AKLIN) =====
+# ===== PRO AI =====
 def ai_decision(sym, direction, score, ob):
     try:
-        # ===== 1H TREND =====
         h1 = get_candles(sym, "1h", 50)
         if len(h1) < 30:
             return "SKIP"
@@ -76,7 +77,6 @@ def ai_decision(sym, direction, score, ob):
         hh = highs[-1] > highs[-3]
         ll = lows[-1] < lows[-3]
 
-        # ===== 5M ENTRY =====
         m5 = get_candles(sym, "5m", 30)
         closes5 = [c[4] for c in m5]
         highs5 = [c[2] for c in m5]
@@ -97,10 +97,6 @@ def ai_decision(sym, direction, score, ob):
 
         vol = abs(closes5[-1] - closes5[-2]) / closes5[-2]
 
-        sweep_low = lows5[-1] < min(lows5[:-5])
-        sweep_high = highs5[-1] > max(highs5[:-5])
-
-        # ===== RULES =====
         if trend == "short" and direction == "long":
             return "SKIP"
 
@@ -122,16 +118,10 @@ def ai_decision(sym, direction, score, ob):
         if not momentum:
             return "SKIP"
 
-        if vol < 0.0005:
+        if vol < 0.0002:
             return "SKIP"
 
-        if direction == "long" and not breakout_up and near_res:
-            return "SKIP"
-
-        if direction == "short" and not breakout_down and near_sup:
-            return "SKIP"
-
-        if score < 2:
+        if score < 1:
             return "SKIP"
 
         return direction.upper()
@@ -222,7 +212,7 @@ def trade_engine(mode):
                     continue
 
                 score = calculate_score(sym, direction)
-                if score < 2:
+                if score < 1:
                     continue
 
                 ob = orderbook_imbalance(sym)
@@ -317,10 +307,10 @@ def manage():
             print("MANAGE ERROR:",e)
             time.sleep(5)
 
-# ===== ANTI DUMP =====
+# ===== ANTI DUMP (DÜZELTİLDİ) =====
 def anti_dump(sym):
     try:
-        c = get_candles(sym, "1m", 3)
+        c = get_candles(sym, "3m", 3)  # 🔥 1m → 3m
         if len(c) < 2: return False
         change = abs(c[-1][4] - c[-2][4]) / c[-2][4]
         return change > ANTI_DUMP_PCT
@@ -337,5 +327,5 @@ load_open_positions()
 threading.Thread(target=trade_engine,args=("SAFE",),daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 PRO AI BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 PRO AI BOT AKTİF (FIXED)")
 bot.infinity_polling()
