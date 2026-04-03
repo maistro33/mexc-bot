@@ -9,7 +9,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 30
+TOP_COINS = 100
 MAX_TRADES = 1
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
