@@ -7,13 +7,14 @@ from openai import OpenAI
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# ===== SETTINGS =====
 AGGR_VOLUME = 200_000
 LEVERAGE = 7
 MARGIN = 5
-TOP_COINS = 120
+TOP_COINS = 30
 
 ANTI_DUMP_PCT = 0.04
-MAX_TRADES = 2
+MAX_TRADES = 1
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -60,6 +61,40 @@ def orderbook_imbalance(sym):
     bids = sum(b[1] for b in ob["bids"])
     asks = sum(a[1] for a in ob["asks"])
     return (bids - asks)/(bids + asks) if bids+asks else 0
+
+# ===== LOAD POSITIONS (FIXED) =====
+def load_positions():
+    try:
+        positions = safe_api(lambda: exchange.fetch_positions())
+        if not positions:
+            return
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+            side = p.get("side","").lower()
+
+            direction = "long" if side in ["long","buy"] else "short"
+
+            sl = entry * 0.98 if direction=="long" else entry * 1.02
+
+            trade_state[sym] = {
+                "entry": entry,
+                "sl": sl,
+                "risk": abs(entry - sl),
+                "step": 0,
+                "direction": direction,
+                "open_time": time.time()
+            }
+
+            active_trades.add(sym)
+
+    except Exception as e:
+        print("LOAD ERROR:", e)
 
 # ===== AI CHAT =====
 def ai_chat(prompt):
@@ -116,16 +151,11 @@ def ai_decision(sym):
         history_str = ",".join(trade_history[-10:])
 
         prompt = f"""
-You are a professional trader.
-
-Recent trades: {history_str}
-
 Trend: {trend}
 Momentum: {momentum}
 Volatility: {volatility}
 Range: {range_pct}
 Orderbook: {ob}
-
 FakeBreakUp: {fake_up}
 FakeBreakDown: {fake_down}
 LiquidityGrab: {liquidity}
@@ -243,16 +273,9 @@ def engine():
 
                     active_trades.add(sym)
 
-                    analysis = ai_chat(f"Why enter {sym} {direction}? short aggressive style")
+                    analysis = ai_chat(f"Why enter {sym} {direction}?")
 
-                    bot.send_message(CHAT_ID, f"""
-🚀 TRADE
-
-{sym}
-Yön: {direction}
-
-🧠 {analysis}
-""")
+                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction}\n{analysis}")
                     break
 
             time.sleep(15)
@@ -301,11 +324,9 @@ def manage():
 
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
-
                     bot.send_message(CHAT_ID, f"⚠️ ANTI-DUMP {sym}")
                     continue
 
-                # AGGRESSIVE TP
                 if pnl > 0.8:
                     safe_api(lambda: exchange.create_market_order(
                         sym,
@@ -340,16 +361,7 @@ def manage():
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
 
-                    yorum = ai_chat(f"Trade closed {sym}, pnl {pnl}, explain")
-
-                    bot.send_message(CHAT_ID, f"""
-❌ CLOSE
-
-{sym}
-PnL: {round(pnl,2)}
-
-🧠 {yorum}
-""")
+                    bot.send_message(CHAT_ID, f"❌ CLOSE {sym} PnL:{round(pnl,2)}")
 
             time.sleep(7)
 
@@ -363,10 +375,6 @@ def ai_cmd(msg):
     text = msg.text.replace("/ai","").strip()
     bot.send_message(CHAT_ID, ai_chat(text))
 
-@bot.message_handler(commands=['durum'])
-def durum(msg):
-    bot.send_message(CHAT_ID, ai_chat("Short aggressive crypto market analysis"))
-
 # ===== START =====
 safe_api(lambda: exchange.fetch_balance())
 
@@ -378,5 +386,5 @@ load_positions()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 ULTIMATE AI BOT LIVE")
+bot.send_message(CHAT_ID, "🔥 FINAL AI BOT ACTIVE")
 bot.infinity_polling()
