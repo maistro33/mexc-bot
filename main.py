@@ -19,12 +19,14 @@ MAX_TRADES = 1
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# ===== EXCHANGE (STABLE) =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": "Berfin33",
     "options": {"defaultType": "swap"},
-    "enableRateLimit": True
+    "enableRateLimit": True,
+    "timeout": 30000
 })
 
 exchange.load_markets()
@@ -37,18 +39,29 @@ lock = threading.Lock()
 trade_history = []
 MAX_HISTORY = 20
 
+# ===== SAFE API CALL =====
+def safe_api(call, retries=3):
+    for i in range(retries):
+        try:
+            return call()
+        except Exception as e:
+            print("API ERROR:", e)
+            time.sleep(2)
+    return None
+
 # ===== HELPERS =====
 def safe(x):
     try: return float(x)
     except: return 0.0
 
 def get_candles(sym, tf, limit=100):
-    try: return exchange.fetch_ohlcv(sym, tf, limit=limit)
-    except: return []
+    return safe_api(lambda: exchange.fetch_ohlcv(sym, tf, limit=limit)) or []
 
 def orderbook_imbalance(sym):
     try:
-        ob = exchange.fetch_order_book(sym, 10)
+        ob = safe_api(lambda: exchange.fetch_order_book(sym, 5))
+        if not ob:
+            return 0
         bids = sum(b[1] for b in ob["bids"])
         asks = sum(a[1] for a in ob["asks"])
         return (bids - asks)/(bids + asks) if bids+asks else 0
@@ -58,7 +71,11 @@ def orderbook_imbalance(sym):
 # ===== LOAD POSITIONS =====
 def load_positions():
     try:
-        for p in exchange.fetch_positions():
+        positions = safe_api(lambda: exchange.fetch_positions())
+        if not positions:
+            return
+
+        for p in positions:
             qty = safe(p.get("contracts"))
             if qty <= 0:
                 continue
@@ -85,8 +102,8 @@ def load_positions():
 
             active_trades.add(sym)
 
-    except:
-        pass
+    except Exception as e:
+        print("LOAD ERROR:", e)
 
 # ===== AI =====
 def ai_decision(sym):
@@ -112,16 +129,12 @@ def ai_decision(sym):
 
         ob = orderbook_imbalance(sym)
 
-        # 🧠 MEMORY ANALİZ
         history_str = ",".join(trade_history[-10:])
 
         prompt = f"""
 You are a professional crypto trader.
 
 Recent trades: {history_str}
-
-If many losses → be selective
-If many wins → allow trades
 
 Trend: {trend}
 Momentum: {momentum}
@@ -135,11 +148,14 @@ ENTER_SHORT
 SKIP
 """
 
-        res = client.chat.completions.create(
+        res = safe_api(lambda: client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
             temperature=0.2
-        )
+        ))
+
+        if not res:
+            return None
 
         txt = res.choices[0].message.content.upper()
 
@@ -150,13 +166,17 @@ SKIP
 
         return None
 
-    except:
+    except Exception as e:
+        print("AI ERROR:", e)
         return None
 
 # ===== SYMBOLS =====
 def get_symbols():
     try:
-        t = exchange.fetch_tickers()
+        t = safe_api(lambda: exchange.fetch_tickers())
+        if not t:
+            return []
+
         f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
         f = [x for x in f if x[1] >= AGGR_VOLUME]
         f.sort(key=lambda x: x[1], reverse=True)
@@ -204,10 +224,18 @@ def engine():
                     if len(active_trades) >= MAX_TRADES:
                         break
 
-                    price = safe(exchange.fetch_ticker(sym)["last"])
+                    ticker = safe_api(lambda: exchange.fetch_ticker(sym))
+                    if not ticker:
+                        continue
+
+                    price = safe(ticker["last"])
                     qty = float(exchange.amount_to_precision(sym, (MARGIN * LEVERAGE) / price))
 
-                    exchange.create_market_order(sym, "buy" if direction=="long" else "sell", qty)
+                    safe_api(lambda: exchange.create_market_order(
+                        sym,
+                        "buy" if direction=="long" else "sell",
+                        qty
+                    ))
 
                     sl = price * 0.98 if direction=="long" else price * 1.02
 
@@ -224,17 +252,22 @@ def engine():
                     bot.send_message(CHAT_ID, f"🤖 AI {sym} {direction}")
                     break
 
-            time.sleep(10)
+            time.sleep(15)
 
         except Exception as e:
-            print(e)
+            print("ENTRY ERROR:", e)
             time.sleep(10)
 
 # ===== MANAGE =====
 def manage():
     while True:
         try:
-            for p in exchange.fetch_positions():
+            positions = safe_api(lambda: exchange.fetch_positions())
+            if not positions:
+                time.sleep(7)
+                continue
+
+            for p in positions:
 
                 qty = safe(p.get("contracts"))
                 if qty <= 0:
@@ -248,22 +281,35 @@ def manage():
                 entry = st["entry"]
                 direction = st["direction"]
 
-                price = safe(exchange.fetch_ticker(sym)["last"])
+                ticker = safe_api(lambda: exchange.fetch_ticker(sym))
+                if not ticker:
+                    continue
+
+                price = safe(ticker["last"])
                 pnl = safe(p.get("unrealizedPnl"))
 
+                # ANTI-DUMP
                 if anti_dump(sym, pnl):
-                    exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly":True})
+                    safe_api(lambda: exchange.create_market_order(
+                        sym,
+                        "sell" if direction=="long" else "buy",
+                        qty,
+                        params={"reduceOnly":True}
+                    ))
+
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
-                    bot.send_message(CHAT_ID, f"⚠️ ANTI-DUMP {sym}")
 
                     trade_history.append("loss")
                     if len(trade_history)>MAX_HISTORY:
                         trade_history.pop(0)
+
+                    bot.send_message(CHAT_ID, f"⚠️ ANTI-DUMP {sym}")
                     continue
 
                 r = abs(price - entry) / st["risk"] if st["risk"] > 0 else 0
 
+                # STEP
                 if r >= 0.5 and st["step"] < 1:
                     st["step"] = 1
                     st["sl"] = entry
@@ -276,29 +322,33 @@ def manage():
                     st["step"] = 3
                     st["sl"] = entry + 2*st["risk"] if direction=="long" else entry - 2*st["risk"]
 
+                # STOP
                 if (direction=="long" and price <= st["sl"]) or (direction=="short" and price >= st["sl"]):
-                    exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly":True})
+                    safe_api(lambda: exchange.create_market_order(
+                        sym,
+                        "sell" if direction=="long" else "buy",
+                        qty,
+                        params={"reduceOnly":True}
+                    ))
+
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
 
-                    if pnl > 0:
-                        trade_history.append("win")
-                    else:
-                        trade_history.append("loss")
-
+                    trade_history.append("win" if pnl > 0 else "loss")
                     if len(trade_history)>MAX_HISTORY:
                         trade_history.pop(0)
 
                     bot.send_message(CHAT_ID, f"❌ CLOSE {sym}")
 
-            time.sleep(5)
+            time.sleep(7)
 
         except Exception as e:
-            print(e)
-            time.sleep(5)
+            print("MANAGE ERROR:", e)
+            time.sleep(7)
 
 # ===== START =====
-exchange.fetch_balance()
+safe_api(lambda: exchange.fetch_balance())
+
 bot.remove_webhook()
 time.sleep(1)
 
@@ -307,5 +357,5 @@ load_positions()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 LEARNING AI ACTIVE")
+bot.send_message(CHAT_ID, "🔥 STABLE AI BOT ACTIVE")
 bot.infinity_polling()
