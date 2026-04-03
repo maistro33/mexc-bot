@@ -6,7 +6,7 @@ import threading
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 120
+TOP_COINS = 100
 MAX_TRADES = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -84,7 +84,7 @@ def get_lev(score):
     if score >= 3: return 8
     return 5
 
-# ===== DECISION (AGGRESSIVE + THINKING) =====
+# ===== DECISION (FIXED - NO LOCK) =====
 def decide(sym):
     try:
         m5 = exchange.fetch_ohlcv(sym, "5m", 30)
@@ -104,23 +104,13 @@ def decide(sym):
 
         confidence = score / 5
 
-        # ❌ zayıf sinyal
-        if confidence < 0.4:
+        # 🔥 daha agresif threshold
+        if confidence < 0.3:
             return None, score
-
-        # ⚖️ orta sinyal → 1 tur bekle
-        if 0.4 <= confidence < 0.7:
-            if sym not in trade_state:
-                trade_state[sym] = {"wait": True}
-                return None, score
-
-            if trade_state[sym].get("wait"):
-                trade_state[sym]["wait"] = False
-                return None, score
 
         direction = "long" if momentum else "short"
 
-        # MEMORY filtresi
+        # memory filtresi
         wr = get_winrate(sym, direction)
         if wr < 0.3:
             return None, score
@@ -135,7 +125,7 @@ def exit_check(sym, pnl, direction, open_time):
     if time.time() - open_time < 60:
         return False
 
-    if abs(pnl) < 0.2:
+    if abs(pnl) < 0.15:
         return False
 
     try:
@@ -313,5 +303,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 SMART AGGRESSIVE AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 FIXED AI AKTİF")
 bot.infinity_polling()
