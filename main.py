@@ -126,7 +126,7 @@ def calculate_score(sym):
 def decide(sym):
     score, trend_big, trend, momentum = calculate_score(sym)
 
-    if score < 4:
+    if score < 3:
         return None, score
 
     direction = "long" if trend else "short"
