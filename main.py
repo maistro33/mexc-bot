@@ -1,3 +1,4 @@
+
 import os
 import time
 import ccxt
@@ -11,10 +12,10 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 AGGR_VOLUME = 200_000
 LEVERAGE = 7
 MARGIN = 5
-TOP_COINS = 50
+TOP_COINS = 120
 
 ANTI_DUMP_PCT = 0.02
-MAX_TRADES = 1
+MAX_TRADES = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -22,7 +23,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),  # FIX
+    "password": "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -65,23 +66,6 @@ def load_positions():
             active_trades.add(sym)
     except:
         pass
-
-# ===== REAL STOP FUNCTION =====
-def place_stop(sym, direction, qty, sl):
-    try:
-        exchange.create_order(
-            sym,
-            "stop_market",
-            "sell" if direction=="long" else "buy",
-            float(exchange.amount_to_precision(sym, qty)),
-            None,
-            {
-                "stopPrice": sl,
-                "reduceOnly": True
-            }
-        )
-    except Exception as e:
-        print("STOP ERROR:", e)
 
 # ===== AI =====
 def ai_decision(sym, score, ob):
@@ -219,8 +203,6 @@ def engine():
                         "open_time": time.time()
                     }
 
-                    place_stop(sym, direction, qty, sl)  # REAL STOP
-
                     active_trades.add(sym)
                     bot.send_message(CHAT_ID, f"🤖 {sym} {direction}")
                     break
@@ -265,23 +247,20 @@ def manage():
                 # R hesap
                 r = abs(price - entry) / st["risk"] if st["risk"] > 0 else 0
 
-                # STEP SYSTEM (OPTIMIZED)
-                if r >= 0.4 and st["step"] < 1:
+                # STEP SYSTEM
+                if r >= 0.5 and st["step"] < 1:
                     st["step"] = 1
                     st["sl"] = entry
-                    place_stop(sym, direction, qty, st["sl"])
                     bot.send_message(CHAT_ID, f"📈 STEP1 BE {sym}")
 
-                elif r >= 0.8 and st["step"] < 2:
+                elif r >= 1 and st["step"] < 2:
                     st["step"] = 2
                     st["sl"] = entry + st["risk"] if direction=="long" else entry - st["risk"]
-                    place_stop(sym, direction, qty, st["sl"])
                     bot.send_message(CHAT_ID, f"📈 STEP2 PROFIT {sym}")
 
-                elif r >= 1.5 and st["step"] < 3:
+                elif r >= 2 and st["step"] < 3:
                     st["step"] = 3
                     st["sl"] = entry + 2*st["risk"] if direction=="long" else entry - 2*st["risk"]
-                    place_stop(sym, direction, qty, st["sl"])
                     bot.send_message(CHAT_ID, f"📈 STEP3 {sym}")
 
                 # STOP
@@ -308,3 +287,4 @@ threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
 bot.send_message(CHAT_ID, "🔥 STEP AI BOT ACTIVE")
+bot.infinity_polling()
