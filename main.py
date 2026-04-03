@@ -7,9 +7,8 @@ from openai import OpenAI
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 100
+TOP_COINS = 30
 MAX_TRADES = 1
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -27,12 +26,12 @@ exchange.load_markets()
 
 active_trades = set()
 trade_state = {}
+last_trade_time = {}
+trade_memory = {}
+
 lock = threading.Lock()
 
-# ===== RISK =====
 current_margin = 5
-win_count = 0
-loss_count = 0
 
 # ===== SAFE =====
 def safe_api(call):
@@ -45,18 +44,6 @@ def safe_api(call):
 def safe(x):
     try: return float(x)
     except: return 0.0
-
-# ===== AI CHAT =====
-def ai_chat(prompt):
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.3
-        )
-        return res.choices[0].message.content.strip()
-    except:
-        return "AI hata"
 
 # ===== ORDERBOOK =====
 def orderbook_imbalance(sym):
@@ -72,8 +59,7 @@ def get_dynamic_leverage(sym):
     try:
         c = exchange.fetch_ohlcv(sym, "5m", limit=20)
         closes = [x[4] for x in c]
-
-        trend_strength = abs(closes[-1] - closes[-5]) / closes[-5]
+        trend_strength = abs(closes[-1]-closes[-5])/closes[-5]
         ob = orderbook_imbalance(sym)
 
         if trend_strength > 0.01 and ob > 0:
@@ -95,18 +81,44 @@ def ai_decision(sym):
         momentum = closes[-1] > closes[-3]
         ob = orderbook_imbalance(sym)
 
+        # 🧠 LEARNING FILTER
+        mem = trade_memory.get(sym)
+        if mem:
+            total = mem["win"] + mem["loss"]
+            if total >= 5:
+                winrate = mem["win"] / total
+
+                if winrate < 0.4:
+                    return None
+
+                if winrate > 0.6:
+                    if trend and ob > 0:
+                        return "long"
+                    if not trend and ob < 0:
+                        return "short"
+
         if trend and momentum and ob > 0:
             return "long"
 
-        if (not trend) and (not momentum) and ob < 0:
+        if not trend and not momentum and ob < 0:
             return "short"
 
         return None
+
     except:
         return None
 
 # ===== AI EXIT =====
-def ai_exit(sym, pnl, direction):
+def ai_exit(sym, pnl, direction, open_time):
+
+    # ⛔ minimum bekleme
+    if time.time() - open_time < 60:
+        return False
+
+    # ⛔ küçük hareket ignore
+    if abs(pnl) < 0.3:
+        return False
+
     try:
         c = exchange.fetch_ohlcv(sym, "5m", limit=20)
         closes = [x[4] for x in c]
@@ -114,27 +126,15 @@ def ai_exit(sym, pnl, direction):
         trend = closes[-1] > sum(closes[-10:])/10
         momentum = closes[-1] > closes[-3]
 
-        prompt = f"""
-Türkçe.
-Tek kelime:
+        if direction == "long":
+            if not trend and not momentum:
+                return True
 
-CLOSE veya HOLD
+        if direction == "short":
+            if trend and momentum:
+                return True
 
-PnL: {pnl}
-Trend: {trend}
-Momentum: {momentum}
-Direction: {direction}
-"""
-
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0
-        )
-
-        txt = res.choices[0].message.content.upper()
-
-        return "CLOSE" in txt
+        return False
 
     except:
         return False
@@ -165,13 +165,16 @@ def engine():
                 if sym in active_trades:
                     continue
 
+                # ⛔ cooldown
+                if time.time() - last_trade_time.get(sym,0) < 120:
+                    continue
+
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
                 if not ticker:
                     continue
 
                 price = safe(ticker["last"])
 
-                # FILTER
                 if price < 0.001 or price > 200:
                     continue
 
@@ -183,7 +186,6 @@ def engine():
 
                     lev = get_dynamic_leverage(sym)
 
-                    # SAFE LEVERAGE
                     try:
                         exchange.set_margin_mode("cross", sym)
                     except:
@@ -203,25 +205,19 @@ def engine():
 
                     safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "buy" if direction == "long" else "sell",
+                        "buy" if direction=="long" else "sell",
                         qty
                     ))
 
                     trade_state[sym] = {
                         "direction": direction,
-                        "leverage": lev
+                        "open_time": time.time()
                     }
 
                     active_trades.add(sym)
+                    last_trade_time[sym] = time.time()
 
-                    yorum = ai_chat(f"""
-Türkçe yaz
-max 2 satır
-
-{sym} {direction}
-""")
-
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} x{lev}\n{yorum}")
+                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} x{lev}")
                     break
 
             time.sleep(10)
@@ -232,7 +228,7 @@ max 2 satır
 
 # ===== MANAGE =====
 def manage():
-    global current_margin, win_count, loss_count
+    global current_margin
 
     while True:
         try:
@@ -248,48 +244,40 @@ def manage():
                     continue
 
                 sym = p["symbol"]
-                direction = "long" if p["side"] == "long" else "short"
-
-                ticker = safe_api(lambda: exchange.fetch_ticker(sym))
-                if not ticker:
+                if sym not in trade_state:
                     continue
 
+                direction = "long" if p["side"]=="long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
-                # AI EXIT
-                if ai_exit(sym, pnl, direction):
+                st = trade_state[sym]
+
+                if ai_exit(sym, pnl, direction, st["open_time"]):
 
                     safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "sell" if direction == "long" else "buy",
+                        "sell" if direction=="long" else "buy",
                         qty,
-                        params={"reduceOnly": True}
+                        params={"reduceOnly":True}
                     ))
 
                     active_trades.discard(sym)
                     trade_state.pop(sym, None)
 
-                    # RISK UPDATE
+                    # 🧠 LEARNING UPDATE
+                    if sym not in trade_memory:
+                        trade_memory[sym] = {"win":0,"loss":0}
+
                     if pnl > 0:
-                        win_count += 1
+                        trade_memory[sym]["win"] += 1
                         current_margin += 1
                     else:
-                        loss_count += 1
+                        trade_memory[sym]["loss"] += 1
                         current_margin -= 1
 
-                    if current_margin < 3:
-                        current_margin = 3
-                    if current_margin > 12:
-                        current_margin = 12
+                    current_margin = max(3, min(12, current_margin))
 
-                    yorum = ai_chat(f"""
-Türkçe yaz
-max 2 satır
-
-PnL: {pnl}
-""")
-
-                    bot.send_message(CHAT_ID, f"❌ {sym} {round(pnl,2)}\n{yorum}")
+                    bot.send_message(CHAT_ID, f"❌ {sym} {round(pnl,2)}")
 
             time.sleep(5)
 
@@ -304,5 +292,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO AI TRADER AKTİF")
+bot.send_message(CHAT_ID, "🔥 LEARNING AI BOT AKTİF")
 bot.infinity_polling()
