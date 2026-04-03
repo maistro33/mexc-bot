@@ -5,8 +5,8 @@ import telebot
 import threading
 
 # ===== SETTINGS =====
-AGGR_VOLUME = 200_000
-TOP_COINS = 100
+AGGR_VOLUME = 100_000
+TOP_COINS = 120
 MAX_TRADES = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -33,6 +33,15 @@ current_margin = 5
 win_streak = 0
 loss_streak = 0
 
+# ===== AI WEIGHTS =====
+ai_weights = {
+    "trend": 1.2,
+    "momentum": 1.5,
+    "volume": 2.0,
+    "volatility": 1.0,
+    "fakeout": 1.5
+}
+
 # ===== SAFE =====
 def safe(x):
     try: return float(x)
@@ -41,7 +50,12 @@ def safe(x):
 def safe_api(call):
     try:
         return call()
-    except:
+    except Exception as e:
+        print("API ERROR:", str(e))
+        try:
+            bot.send_message(CHAT_ID, f"API ERROR: {e}")
+        except:
+            pass
         return None
 
 # ===== MEMORY =====
@@ -50,82 +64,60 @@ def update_memory(sym, direction, pnl):
         memory[sym] = {"long_win":0,"long_loss":0,"short_win":0,"short_loss":0}
 
     if pnl > 0:
-        if direction == "long":
-            memory[sym]["long_win"] += 1
-        else:
-            memory[sym]["short_win"] += 1
+        memory[sym][direction + "_win"] += 1
     else:
-        if direction == "long":
-            memory[sym]["long_loss"] += 1
-        else:
-            memory[sym]["short_loss"] += 1
+        memory[sym][direction + "_loss"] += 1
 
-def get_winrate(sym, direction):
-    m = memory.get(sym)
-    if not m:
-        return 0.5
-
-    if direction == "long":
-        w = m["long_win"]
-        l = m["long_loss"]
-    else:
-        w = m["short_win"]
-        l = m["short_loss"]
-
-    total = w + l
-    if total < 5:
-        return 0.5
-
-    return w / total
-
-# ===== LEVERAGE =====
-def get_lev(score):
-    if score >= 5: return 12
-    if score >= 3: return 8
-    return 5
-
-# ===== DECISION (FIXED - NO LOCK) =====
+# ===== AI DECISION =====
 def decide(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", 30)
+        m5 = exchange.fetch_ohlcv(sym, "5m", 50)
         closes = [x[4] for x in m5]
+        volumes = [x[5] for x in m5]
 
-        trend = closes[-1] > sum(closes[-10:]) / 10
-        momentum = closes[-1] > closes[-3]
+        trend = 1 if closes[-1] > sum(closes[-10:]) / 10 else 0
+        momentum = 1 if closes[-1] > closes[-3] else 0
 
-        up = closes[-1] > closes[-2] > closes[-3]
-        down = closes[-1] < closes[-2] < closes[-3]
+        avg_vol = sum(volumes[-10:]) / 10
+        volume_spike = 1 if volumes[-1] > avg_vol * 1.3 else 0
 
-        score = 0
+        volatility = abs(closes[-1] - closes[-5]) / closes[-5]
 
-        if trend: score += 1
-        if momentum: score += 2
-        if up or down: score += 2
+        high = max([x[2] for x in m5[-10:]])
+        low = min([x[3] for x in m5[-10:]])
 
-        confidence = score / 5
+        fakeout = 1
+        if closes[-1] > high and closes[-2] < high:
+            fakeout = -1
+        elif closes[-1] < low and closes[-2] > low:
+            fakeout = -1
 
-        # 🔥 daha agresif threshold
-        if confidence < 0.3:
-            return None, score
+        features = {
+            "trend": trend,
+            "momentum": momentum,
+            "volume": volume_spike,
+            "volatility": volatility,
+            "fakeout": fakeout
+        }
+
+        score = sum(features[k] * ai_weights[k] for k in features)
+
+        # AGRESİF
+        if score < 1.2:
+            return None, score, features
 
         direction = "long" if momentum else "short"
 
-        # memory filtresi
-        wr = get_winrate(sym, direction)
-        if wr < 0.3:
-            return None, score
+        return direction, score, features
 
-        return direction, score
-
-    except:
-        return None, 0
+    except Exception as e:
+        print("DECIDE ERROR:", e)
+        return None, 0, {}
 
 # ===== EXIT =====
 def exit_check(sym, pnl, direction, open_time):
-    if time.time() - open_time < 60:
-        return False
-
-    if abs(pnl) < 0.15:
+    # erken kapatma engeli
+    if time.time() - open_time < 180:
         return False
 
     try:
@@ -133,7 +125,6 @@ def exit_check(sym, pnl, direction, open_time):
         closes = [x[4] for x in m5]
 
         trend = closes[-1] > sum(closes[-10:]) / 10
-        momentum = closes[-1] > closes[-3]
 
         if direction == "long" and not trend:
             return True
@@ -141,7 +132,10 @@ def exit_check(sym, pnl, direction, open_time):
         if direction == "short" and trend:
             return True
 
-        if pnl < -1:
+        if pnl < -2:
+            return True
+
+        if pnl > 3:
             return True
 
         return False
@@ -175,7 +169,7 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                if time.time() - last_trade_time.get(sym, 0) < 10:
+                if time.time() - last_trade_time.get(sym, 0) < 5:
                     continue
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
@@ -183,18 +177,16 @@ def engine():
                     continue
 
                 price = safe(ticker["last"])
-
-                if price < 0.001 or price > 200:
+                if price <= 0:
                     continue
 
-                direction, score = decide(sym)
+                direction, score, features = decide(sym)
 
                 if not direction:
                     continue
 
                 with lock:
-
-                    lev = get_lev(score)
+                    lev = 10
 
                     try:
                         exchange.set_margin_mode("cross", sym)
@@ -209,30 +201,35 @@ def engine():
                     market = exchange.market(sym)
                     min_q = market['limits']['amount']['min'] or 0.001
 
-                    risk_multiplier = 1 + (win_streak * 0.2)
-                    margin = current_margin * risk_multiplier
-
+                    margin = current_margin
                     qty = max((margin * lev) / price, min_q)
                     qty = float(exchange.amount_to_precision(sym, qty))
 
-                    safe_api(lambda: exchange.create_market_order(
+                    params = {"marginMode": "cross"}
+
+                    order = safe_api(lambda: exchange.create_market_order(
                         sym,
                         "buy" if direction == "long" else "sell",
-                        qty
+                        qty,
+                        params=params
                     ))
+
+                    if not order:
+                        continue
 
                     trade_state[sym] = {
                         "dir": direction,
-                        "time": time.time()
+                        "time": time.time(),
+                        "features": features
                     }
 
                     active_trades.add(sym)
                     last_trade_time[sym] = time.time()
 
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} x{lev} score:{score}")
+                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} score:{round(score,2)}")
                     break
 
-            time.sleep(8)
+            time.sleep(5)
 
         except:
             time.sleep(5)
@@ -278,6 +275,17 @@ def manage():
 
                     update_memory(sym, direction, pnl)
 
+                    # AI LEARNING
+                    features = st.get("features", {})
+                    for k, v in features.items():
+                        if pnl > 0:
+                            ai_weights[k] += 0.02 * v
+                        else:
+                            ai_weights[k] -= 0.02 * v
+
+                    for k in ai_weights:
+                        ai_weights[k] = max(0.1, min(5, ai_weights[k]))
+
                     if pnl > 0:
                         win_streak += 1
                         loss_streak = 0
@@ -287,9 +295,9 @@ def manage():
                         win_streak = 0
                         current_margin -= 1
 
-                    current_margin = max(3, min(15, current_margin))
+                    current_margin = max(3, min(20, current_margin))
 
-                    bot.send_message(CHAT_ID, f"❌ {sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"❌ {sym} PNL: {round(pnl,2)}")
 
             time.sleep(5)
 
@@ -303,5 +311,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FIXED AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF")
 bot.infinity_polling()
