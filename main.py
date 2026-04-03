@@ -3,8 +3,10 @@ import time
 import ccxt
 import telebot
 import threading
+from openai import OpenAI
 
-# ===== SETTINGS =====
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 SAFE_VOLUME = 1_500_000
 AGGR_VOLUME = 800_000
 
@@ -16,19 +18,15 @@ TOP_COINS = 100
 
 STEP_LEVELS = [1,2,3,4,5]
 
-ANTI_DUMP_PCT = 0.004
-
+ANTI_DUMP_PCT = 0.04
 MAX_TRADES = 1
 
-# 🔥 PRO TP
 MIN_TP_USDT = 0.50
 FEE_BUFFER = 0.05
 
-# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -39,11 +37,9 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
-# ===== GLOBAL =====
 active_trades = set()
 trade_state = {}
 
-# ===== HELPERS =====
 def safe(x):
     try: return float(x)
     except: return 0.0
@@ -58,7 +54,58 @@ def total_open_positions():
     except:
         return 0
 
-# ===== MARKET =====
+# ===== AI =====
+def ai_decision(sym, direction, score, ob):
+    try:
+        h1 = get_candles(sym,"1h",50)
+        m5 = get_candles(sym,"5m",30)
+
+        if len(h1)<30 or len(m5)<20:
+            return "SKIP"
+
+        closes1=[c[4] for c in h1]
+        closes5=[c[4] for c in m5]
+
+        trend = "UP" if closes1[-1] > sum(closes1[-20:])/20 else "DOWN"
+        momentum = "UP" if closes5[-1] > closes5[-3] else "DOWN"
+
+        highs=[c[2] for c in m5]
+        lows=[c[3] for c in m5]
+
+        range_size = max(highs[-10:]) - min(lows[-10:])
+        range_pct = range_size / closes5[-1]
+
+        prompt = f"""
+You are a professional crypto trader.
+
+Trend: {trend}
+Momentum: {momentum}
+Range: {range_pct}
+Score: {score}
+Orderbook: {ob}
+
+Avoid range and weak setups.
+
+Answer ONLY: LONG, SHORT or SKIP
+"""
+
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.2
+        )
+
+        decision = res.choices[0].message.content.strip().upper()
+
+        if decision not in ["LONG","SHORT"]:
+            return "SKIP"
+
+        return decision
+
+    except Exception as e:
+        print("AI ERROR:",e)
+        return "SKIP"
+
 def get_symbols(volume):
     try:
         t = exchange.fetch_tickers()
@@ -70,7 +117,7 @@ def get_symbols(volume):
         return []
 
 def get_direction(sym):
-    d = get_candles(sym, "1d", 50)
+    d = get_candles(sym,"1d",50)
     if len(d)<5: return None
     highs=[c[2] for c in d]
     lows=[c[3] for c in d]
@@ -78,24 +125,27 @@ def get_direction(sym):
     if lows[-1]<lows[-5]: return "short"
     return None
 
-# ===== ANTI DUMP =====
-def anti_dump(sym):
+# ===== 🔥 FIXED ANTI-DUMP =====
+def anti_dump(sym, pnl):
     try:
-        c = get_candles(sym, "1m", 3)
-        if len(c)<2: return False
-        change = abs(c[-1][4]-c[-2][4]) / c[-2][4]
+        if pnl > -0.3:
+            return False
+
+        c = get_candles(sym,"3m",3)
+        if len(c)<3: return False
+
+        change = abs(c[-1][4]-c[-3][4]) / c[-3][4]
+
         return change > ANTI_DUMP_PCT
     except:
         return False
 
-# ===== TREND =====
 def trend_filter(sym, direction):
-    c = get_candles(sym, "15m", 50)
+    c = get_candles(sym,"15m",50)
     if len(c)<20: return True
     avg = sum(x[4] for x in c[-20:]) / 20
     return direction=="long" if c[-1][4]>avg else direction=="short"
 
-# ===== SIGNAL =====
 def volume_spike(sym):
     c = get_candles(sym,"5m",20)
     if len(c)<10: return False
@@ -105,8 +155,8 @@ def volume_spike(sym):
 def orderbook_imbalance(sym):
     try:
         ob = exchange.fetch_order_book(sym,10)
-        bids = sum(b[1] for b in ob["bids"])
-        asks = sum(a[1] for a in ob["asks"])
+        bids=sum(b[1] for b in ob["bids"])
+        asks=sum(a[1] for a in ob["asks"])
         return (bids-asks)/(bids+asks) if bids+asks else 0
     except:
         return 0
@@ -114,18 +164,16 @@ def orderbook_imbalance(sym):
 def calculate_score(sym, direction):
     score=0
     if volume_spike(sym): score+=2
-    ob = orderbook_imbalance(sym)
+    ob=orderbook_imbalance(sym)
     if direction=="long" and ob>0.1: score+=2
     if direction=="short" and ob<-0.1: score+=2
     return score
 
-# ===== SYNC (PRO) =====
 def sync_positions():
     try:
         for p in exchange.fetch_positions():
             qty = safe(p.get("contracts"))
             if qty<=0: continue
-
             sym = p["symbol"]
             entry = safe(p["entryPrice"])
             side = p["side"]
@@ -144,7 +192,6 @@ def sync_positions():
     except:
         pass
 
-# ===== ENTRY =====
 def trade_engine(mode):
     while True:
         try:
@@ -153,7 +200,7 @@ def trade_engine(mode):
 
             for sym in get_symbols(vol):
 
-                if total_open_positions() >= MAX_TRADES:
+                if len(active_trades) >= MAX_TRADES:
                     break
 
                 if sym in active_trades:
@@ -170,6 +217,17 @@ def trade_engine(mode):
                 if score < (4 if mode=="SAFE" else 3):
                     continue
 
+                ob = orderbook_imbalance(sym)
+
+                decision = ai_decision(sym, direction, score, ob)
+                if decision == "SKIP":
+                    continue
+
+                if decision == "LONG":
+                    direction="long"
+                elif decision=="SHORT":
+                    direction="short"
+
                 price = safe(exchange.fetch_ticker(sym)["last"])
                 qty = float(exchange.amount_to_precision(sym,(MARGIN*lev)/price))
 
@@ -185,7 +243,7 @@ def trade_engine(mode):
                 }
 
                 active_trades.add(sym)
-                bot.send_message(CHAT_ID,f"🚀 {mode} {sym} {direction}")
+                bot.send_message(CHAT_ID,f"🤖 AI {mode} {sym} {direction}")
                 break
 
             time.sleep(10)
@@ -194,7 +252,6 @@ def trade_engine(mode):
             print("ENTRY ERROR:",e)
             time.sleep(10)
 
-# ===== MANAGE =====
 def manage():
     while True:
         try:
@@ -212,19 +269,17 @@ def manage():
                 price = safe(exchange.fetch_ticker(sym)["last"])
                 direction = "long" if p["side"]=="long" else "short"
 
+                pnl = safe(p.get("unrealizedPnl"))
+
                 st = trade_state[sym]
 
-                # ANTI DUMP
-                if anti_dump(sym):
+                if anti_dump(sym, pnl):
                     exchange.create_market_order(sym,"sell" if direction=="long" else "buy",qty,params={"reduceOnly":True})
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
                     bot.send_message(CHAT_ID,f"⚠️ ANTI-DUMP {sym}")
                     continue
 
-                pnl = safe(p.get("unrealizedPnl"))
-
-                # 🔥 PRO TP
                 position_size = qty * price
                 dynamic_tp = max(MIN_TP_USDT, position_size * 0.01) + FEE_BUFFER
 
@@ -234,7 +289,6 @@ def manage():
                     st["sl"]=entry
                     bot.send_message(CHAT_ID,f"💰 TP1 {sym} {round(pnl,2)}")
 
-                # STEP
                 if st["tp1"]:
                     risk = st["initial_risk"]
                     r = abs(price-entry)/risk if risk>0 else 0
@@ -245,7 +299,6 @@ def manage():
                             st["sl"]=entry+(lvl-1)*risk if direction=="long" else entry-(lvl-1)*risk
                             bot.send_message(CHAT_ID,f"📈 STEP {lvl} {sym}")
 
-                # STOP
                 if (direction=="long" and price<=st["sl"]) or (direction=="short" and price>=st["sl"]):
                     exchange.create_market_order(sym,"sell" if direction=="long" else "buy",qty,params={"reduceOnly":True})
                     trade_state.pop(sym,None)
@@ -258,7 +311,6 @@ def manage():
             print("MANAGE ERROR:",e)
             time.sleep(5)
 
-# ===== START =====
 exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
@@ -269,5 +321,5 @@ threading.Thread(target=trade_engine,args=("SAFE",),daemon=True).start()
 threading.Thread(target=trade_engine,args=("AGGRESSIVE",),daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 PRO BOT AKTİF (FULL)")
+bot.send_message(CHAT_ID,"🔥 FINAL PRO AI BOT")
 bot.infinity_polling()
