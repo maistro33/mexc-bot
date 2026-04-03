@@ -6,8 +6,8 @@ import threading
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 100
-MAX_TRADES = 2   # 🔥 agresif
+TOP_COINS = 120
+MAX_TRADES = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -25,10 +25,13 @@ exchange.load_markets()
 active_trades = set()
 trade_state = {}
 last_trade_time = {}
-trade_memory = {}
+memory = {}
 
 lock = threading.Lock()
+
 current_margin = 5
+win_streak = 0
+loss_streak = 0
 
 # ===== SAFE =====
 def safe(x):
@@ -49,22 +52,48 @@ def ob(sym):
     a = sum(x[1] for x in o["asks"])
     return (b-a)/(b+a) if (b+a) else 0
 
+# ===== MEMORY =====
+def update_memory(sym, direction, pnl):
+    if sym not in memory:
+        memory[sym] = {"long_win":0,"long_loss":0,"short_win":0,"short_loss":0}
+
+    if pnl > 0:
+        if direction == "long":
+            memory[sym]["long_win"] += 1
+        else:
+            memory[sym]["short_win"] += 1
+    else:
+        if direction == "long":
+            memory[sym]["long_loss"] += 1
+        else:
+            memory[sym]["short_loss"] += 1
+
+def get_winrate(sym, direction):
+    m = memory.get(sym)
+    if not m:
+        return 0.5
+
+    if direction == "long":
+        w = m["long_win"]
+        l = m["long_loss"]
+    else:
+        w = m["short_win"]
+        l = m["short_loss"]
+
+    total = w + l
+    if total < 5:
+        return 0.5
+
+    return w / total
+
 # ===== LEVERAGE =====
-def get_lev(sym):
-    try:
-        c = exchange.fetch_ohlcv(sym,"5m",20)
-        cl = [x[4] for x in c]
-        strength = abs(cl[-1]-cl[-5])/cl[-5]
-        o = ob(sym)
+def get_lev(score):
+    if score >= 6: return 12
+    if score >= 4: return 8
+    return 5
 
-        if strength>0.01 and o>0: return 12
-        if strength>0.005: return 8
-        return 5
-    except:
-        return 5
-
-# ===== DECISION =====
-def decide(sym):
+# ===== SCORE SYSTEM =====
+def calculate_score(sym):
     try:
         h1 = exchange.fetch_ohlcv(sym,"1h",50)
         m5 = exchange.fetch_ohlcv(sym,"5m",30)
@@ -72,66 +101,66 @@ def decide(sym):
         h1c = [x[4] for x in h1]
         m5c = [x[4] for x in m5]
 
+        score = 0
+
         trend_big = h1c[-1] > sum(h1c[-20:])/20
         trend = m5c[-1] > sum(m5c[-10:])/10
         momentum = m5c[-1] > m5c[-3]
 
-        up = m5c[-1] > m5c[-2] > m5c[-3]
-        down = m5c[-1] < m5c[-2] < m5c[-3]
+        if trend_big: score += 2
+        if trend: score += 2
+        if momentum: score += 2
 
-        highs = [x[2] for x in m5]
-        lows = [x[3] for x in m5]
+        if m5c[-1] > m5c[-2] > m5c[-3]:
+            score += 1
 
-        fake_up = m5c[-1]>max(highs[-10:]) and m5c[-2]<max(highs[-10:])
-        fake_down = m5c[-1]<min(lows[-10:]) and m5c[-2]>min(lows[-10:])
+        if ob(sym) > 0:
+            score += 1
 
-        o = ob(sym)
-
-        # 🧠 MEMORY
-        mem = trade_memory.get(sym)
-        if mem:
-            t = mem["win"]+mem["loss"]
-            if t>=5:
-                wr = mem["win"]/t
-                if wr<0.4: return None
-
-        if trend_big and trend and momentum and up and not fake_up and o>0:
-            return "long"
-
-        if (not trend_big) and (not trend) and (not momentum) and down and not fake_down and o<0:
-            return "short"
-
-        return None
+        return score, trend_big, trend, momentum
 
     except:
-        return None
+        return 0, False, False, False
+
+# ===== DECISION =====
+def decide(sym):
+    score, trend_big, trend, momentum = calculate_score(sym)
+
+    if score < 4:
+        return None, score
+
+    direction = "long" if trend else "short"
+
+    wr = get_winrate(sym, direction)
+
+    # kötü coinleri ele
+    if wr < 0.4:
+        return None, score
+
+    return direction, score
 
 # ===== EXIT =====
-def exit_check(sym,pnl,dir,open_time):
-    if time.time()-open_time<60: return False
-    if abs(pnl)<0.4: return False
-
-    try:
-        m5 = exchange.fetch_ohlcv(sym,"5m",20)
-        c = [x[4] for x in m5]
-
-        trend = c[-1] > sum(c[-10:])/10
-        momentum = c[-1] > c[-3]
-
-        if dir=="long" and (not trend and not momentum):
-            return True
-
-        if dir=="short" and (trend and momentum):
-            return True
-
-        # 🔥 zarar büyüyorsa çık
-        if pnl < -1:
-            return True
-
+def exit_check(sym, pnl, direction, open_time):
+    if time.time() - open_time < 60:
         return False
 
-    except:
+    if abs(pnl) < 0.2:
         return False
+
+    score, trend_big, trend, momentum = calculate_score(sym)
+
+    # trend bozulduysa çık
+    if direction == "long" and not trend:
+        return True
+
+    if direction == "short" and trend:
+        return True
+
+    # zarar büyüyorsa çık
+    if pnl < -1:
+        return True
+
+    return False
 
 # ===== SYMBOLS =====
 def symbols():
@@ -151,58 +180,70 @@ def engine():
         try:
             for sym in symbols():
 
-                if len(active_trades)>=MAX_TRADES:
+                if len(active_trades) >= MAX_TRADES:
                     break
 
                 if sym in active_trades:
                     continue
 
-                if time.time()-last_trade_time.get(sym,0)<120:
+                if time.time() - last_trade_time.get(sym,0) < 30:
                     continue
 
                 t = safe_api(lambda: exchange.fetch_ticker(sym))
                 if not t: continue
 
                 price = safe(t["last"])
-                if price<0.001 or price>200: continue
+                if price < 0.001 or price > 200:
+                    continue
 
-                d = decide(sym)
-                if not d: continue
+                direction, score = decide(sym)
+                if not direction:
+                    continue
 
                 with lock:
 
-                    lev = get_lev(sym)
+                    lev = get_lev(score)
 
                     try: exchange.set_margin_mode("cross", sym)
                     except: pass
                     try: exchange.set_leverage(lev, sym)
                     except: pass
 
-                    m = exchange.market(sym)
-                    min_q = m['limits']['amount']['min'] or 0.001
+                    market = exchange.market(sym)
+                    min_q = market['limits']['amount']['min'] or 0.001
 
-                    qty = max((current_margin*lev)/price, min_q)
+                    # 🔥 risk zekası
+                    risk_multiplier = 1 + (win_streak * 0.2)
+                    margin = current_margin * risk_multiplier
+
+                    qty = max((margin * lev) / price, min_q)
                     qty = float(exchange.amount_to_precision(sym, qty))
 
                     safe_api(lambda: exchange.create_market_order(
-                        sym,"buy" if d=="long" else "sell",qty
+                        sym,
+                        "buy" if direction=="long" else "sell",
+                        qty
                     ))
 
-                    trade_state[sym] = {"dir":d,"time":time.time()}
-                    active_trades.add(sym)
-                    last_trade_time[sym]=time.time()
+                    trade_state[sym] = {
+                        "dir": direction,
+                        "time": time.time()
+                    }
 
-                    bot.send_message(CHAT_ID,f"🚀 {sym} {d} x{lev}")
+                    active_trades.add(sym)
+                    last_trade_time[sym] = time.time()
+
+                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} x{lev} score:{score}")
                     break
 
-            time.sleep(10)
+            time.sleep(8)
 
         except:
             time.sleep(5)
 
 # ===== MANAGE =====
 def manage():
-    global current_margin
+    global current_margin, win_streak, loss_streak
 
     while True:
         try:
@@ -214,40 +255,44 @@ def manage():
             for p in pos:
 
                 qty = safe(p.get("contracts"))
-                if qty<=0: continue
+                if qty <= 0:
+                    continue
 
                 sym = p["symbol"]
-                if sym not in trade_state: continue
+                if sym not in trade_state:
+                    continue
 
-                dir = "long" if p["side"]=="long" else "short"
+                direction = "long" if p["side"]=="long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
                 st = trade_state[sym]
 
-                if exit_check(sym,pnl,dir,st["time"]):
+                if exit_check(sym, pnl, direction, st["time"]):
 
                     safe_api(lambda: exchange.create_market_order(
-                        sym,"sell" if dir=="long" else "buy",
-                        qty,params={"reduceOnly":True}
+                        sym,
+                        "sell" if direction=="long" else "buy",
+                        qty,
+                        params={"reduceOnly":True}
                     ))
 
                     active_trades.discard(sym)
-                    trade_state.pop(sym,None)
+                    trade_state.pop(sym, None)
 
-                    # 🧠 LEARNING
-                    if sym not in trade_memory:
-                        trade_memory[sym]={"win":0,"loss":0}
+                    update_memory(sym, direction, pnl)
 
-                    if pnl>0:
-                        trade_memory[sym]["win"]+=1
-                        current_margin+=1
+                    if pnl > 0:
+                        win_streak += 1
+                        loss_streak = 0
+                        current_margin += 1
                     else:
-                        trade_memory[sym]["loss"]+=1
-                        current_margin-=1
+                        loss_streak += 1
+                        win_streak = 0
+                        current_margin -= 1
 
-                    current_margin=max(3,min(15,current_margin))
+                    current_margin = max(3, min(15, current_margin))
 
-                    bot.send_message(CHAT_ID,f"❌ {sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"❌ {sym} {round(pnl,2)}")
 
             time.sleep(5)
 
@@ -261,5 +306,5 @@ time.sleep(1)
 threading.Thread(target=engine,daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 ULTRA AI AKTİF")
+bot.send_message(CHAT_ID,"🔥 AGGRESSIVE SMART AI AKTİF")
 bot.infinity_polling()
