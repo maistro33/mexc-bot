@@ -44,14 +44,6 @@ def safe_api(call):
     except:
         return None
 
-# ===== ORDERBOOK =====
-def ob(sym):
-    o = safe_api(lambda: exchange.fetch_order_book(sym, 5))
-    if not o: return 0
-    b = sum(x[1] for x in o["bids"])
-    a = sum(x[1] for x in o["asks"])
-    return (b-a)/(b+a) if (b+a) else 0
-
 # ===== MEMORY =====
 def update_memory(sym, direction, pnl):
     if sym not in memory:
@@ -88,56 +80,55 @@ def get_winrate(sym, direction):
 
 # ===== LEVERAGE =====
 def get_lev(score):
-    if score >= 6: return 12
-    if score >= 4: return 8
+    if score >= 5: return 12
+    if score >= 3: return 8
     return 5
 
-# ===== SCORE SYSTEM =====
-def calculate_score(sym):
+# ===== DECISION (AGGRESSIVE + THINKING) =====
+def decide(sym):
     try:
-        h1 = exchange.fetch_ohlcv(sym,"1h",50)
-        m5 = exchange.fetch_ohlcv(sym,"5m",30)
+        m5 = exchange.fetch_ohlcv(sym, "5m", 30)
+        closes = [x[4] for x in m5]
 
-        h1c = [x[4] for x in h1]
-        m5c = [x[4] for x in m5]
+        trend = closes[-1] > sum(closes[-10:]) / 10
+        momentum = closes[-1] > closes[-3]
+
+        up = closes[-1] > closes[-2] > closes[-3]
+        down = closes[-1] < closes[-2] < closes[-3]
 
         score = 0
 
-        trend_big = h1c[-1] > sum(h1c[-20:])/20
-        trend = m5c[-1] > sum(m5c[-10:])/10
-        momentum = m5c[-1] > m5c[-3]
-
-        if trend_big: score += 2
-        if trend: score += 2
+        if trend: score += 1
         if momentum: score += 2
+        if up or down: score += 2
 
-        if m5c[-1] > m5c[-2] > m5c[-3]:
-            score += 1
+        confidence = score / 5
 
-        if ob(sym) > 0:
-            score += 1
+        # ❌ zayıf sinyal
+        if confidence < 0.4:
+            return None, score
 
-        return score, trend_big, trend, momentum
+        # ⚖️ orta sinyal → 1 tur bekle
+        if 0.4 <= confidence < 0.7:
+            if sym not in trade_state:
+                trade_state[sym] = {"wait": True}
+                return None, score
+
+            if trade_state[sym].get("wait"):
+                trade_state[sym]["wait"] = False
+                return None, score
+
+        direction = "long" if momentum else "short"
+
+        # MEMORY filtresi
+        wr = get_winrate(sym, direction)
+        if wr < 0.3:
+            return None, score
+
+        return direction, score
 
     except:
-        return 0, False, False, False
-
-# ===== DECISION =====
-def decide(sym):
-    score, trend_big, trend, momentum = calculate_score(sym)
-
-    if score < 3:
-        return None, score
-
-    direction = "long" if trend else "short"
-
-    wr = get_winrate(sym, direction)
-
-    # kötü coinleri ele
-    if wr < 0.4:
-        return None, score
-
-    return direction, score
+        return None, 0
 
 # ===== EXIT =====
 def exit_check(sym, pnl, direction, open_time):
@@ -147,29 +138,37 @@ def exit_check(sym, pnl, direction, open_time):
     if abs(pnl) < 0.2:
         return False
 
-    score, trend_big, trend, momentum = calculate_score(sym)
+    try:
+        m5 = exchange.fetch_ohlcv(sym, "5m", 20)
+        closes = [x[4] for x in m5]
 
-    # trend bozulduysa çık
-    if direction == "long" and not trend:
-        return True
+        trend = closes[-1] > sum(closes[-10:]) / 10
+        momentum = closes[-1] > closes[-3]
 
-    if direction == "short" and trend:
-        return True
+        if direction == "long" and not trend:
+            return True
 
-    # zarar büyüyorsa çık
-    if pnl < -1:
-        return True
+        if direction == "short" and trend:
+            return True
 
-    return False
+        if pnl < -1:
+            return True
+
+        return False
+
+    except:
+        return False
 
 # ===== SYMBOLS =====
 def symbols():
     t = safe_api(lambda: exchange.fetch_tickers())
-    if not t: return []
+    if not t:
+        return []
 
-    f = [(s,safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
-    f = [x for x in f if x[1]>=AGGR_VOLUME]
-    f.sort(key=lambda x:x[1],reverse=True)
+    f = [(s, safe(d.get("quoteVolume"))) for s, d in t.items() if ":USDT" in s]
+    f = [x for x in f if x[1] >= AGGR_VOLUME]
+    f.sort(key=lambda x: x[1], reverse=True)
+
     return [x[0] for x in f[:TOP_COINS]]
 
 # ===== ENGINE =====
@@ -186,17 +185,20 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                if time.time() - last_trade_time.get(sym,0) < 30:
+                if time.time() - last_trade_time.get(sym, 0) < 10:
                     continue
 
-                t = safe_api(lambda: exchange.fetch_ticker(sym))
-                if not t: continue
+                ticker = safe_api(lambda: exchange.fetch_ticker(sym))
+                if not ticker:
+                    continue
 
-                price = safe(t["last"])
+                price = safe(ticker["last"])
+
                 if price < 0.001 or price > 200:
                     continue
 
                 direction, score = decide(sym)
+
                 if not direction:
                     continue
 
@@ -204,15 +206,19 @@ def engine():
 
                     lev = get_lev(score)
 
-                    try: exchange.set_margin_mode("cross", sym)
-                    except: pass
-                    try: exchange.set_leverage(lev, sym)
-                    except: pass
+                    try:
+                        exchange.set_margin_mode("cross", sym)
+                    except:
+                        pass
+
+                    try:
+                        exchange.set_leverage(lev, sym)
+                    except:
+                        pass
 
                     market = exchange.market(sym)
                     min_q = market['limits']['amount']['min'] or 0.001
 
-                    # 🔥 risk zekası
                     risk_multiplier = 1 + (win_streak * 0.2)
                     margin = current_margin * risk_multiplier
 
@@ -221,7 +227,7 @@ def engine():
 
                     safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "buy" if direction=="long" else "sell",
+                        "buy" if direction == "long" else "sell",
                         qty
                     ))
 
@@ -247,22 +253,23 @@ def manage():
 
     while True:
         try:
-            pos = safe_api(lambda: exchange.fetch_positions())
-            if not pos:
+            positions = safe_api(lambda: exchange.fetch_positions())
+            if not positions:
                 time.sleep(5)
                 continue
 
-            for p in pos:
+            for p in positions:
 
                 qty = safe(p.get("contracts"))
                 if qty <= 0:
                     continue
 
                 sym = p["symbol"]
+
                 if sym not in trade_state:
                     continue
 
-                direction = "long" if p["side"]=="long" else "short"
+                direction = "long" if p["side"] == "long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
                 st = trade_state[sym]
@@ -271,9 +278,9 @@ def manage():
 
                     safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "sell" if direction=="long" else "buy",
+                        "sell" if direction == "long" else "buy",
                         qty,
-                        params={"reduceOnly":True}
+                        params={"reduceOnly": True}
                     ))
 
                     active_trades.discard(sym)
@@ -303,8 +310,8 @@ def manage():
 bot.remove_webhook()
 time.sleep(1)
 
-threading.Thread(target=engine,daemon=True).start()
-threading.Thread(target=manage,daemon=True).start()
+threading.Thread(target=engine, daemon=True).start()
+threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 AGGRESSIVE SMART AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 SMART AGGRESSIVE AI AKTİF")
 bot.infinity_polling()
