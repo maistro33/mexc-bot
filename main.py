@@ -11,10 +11,10 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 AGGR_VOLUME = 200_000
 LEVERAGE = 7
 MARGIN = 5
-TOP_COINS = 120
+TOP_COINS = 50
 
 ANTI_DUMP_PCT = 0.02
-MAX_TRADES = 2
+MAX_TRADES = 1
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
