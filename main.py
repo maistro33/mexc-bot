@@ -6,7 +6,7 @@ import threading
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 100_000
-TOP_COINS = 120
+TOP_COINS = 100
 MAX_TRADES = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -15,7 +15,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": "Berfin33",
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -71,9 +71,15 @@ def update_memory(sym, direction, pnl):
 # ===== AI DECISION =====
 def decide(sym):
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", 50)
-        closes = [x[4] for x in m5]
-        volumes = [x[5] for x in m5]
+        m5 = safe_api(lambda: exchange.fetch_ohlcv(sym, "5m", 50))
+        if not m5 or len(m5) < 20:
+            return None, 0, {}
+
+        closes = [x[4] for x in m5 if len(x) > 5]
+        volumes = [x[5] for x in m5 if len(x) > 5]
+
+        if len(closes) < 10 or len(volumes) < 10:
+            return None, 0, {}
 
         trend = 1 if closes[-1] > sum(closes[-10:]) / 10 else 0
         momentum = 1 if closes[-1] > closes[-3] else 0
@@ -83,8 +89,14 @@ def decide(sym):
 
         volatility = abs(closes[-1] - closes[-5]) / closes[-5]
 
-        high = max([x[2] for x in m5[-10:]])
-        low = min([x[3] for x in m5[-10:]])
+        highs = [x[2] for x in m5[-10:] if len(x) > 5]
+        lows = [x[3] for x in m5[-10:] if len(x) > 5]
+
+        if len(highs) < 5 or len(lows) < 5:
+            return None, 0, {}
+
+        high = max(highs)
+        low = min(lows)
 
         fakeout = 1
         if closes[-1] > high and closes[-2] < high:
@@ -102,7 +114,6 @@ def decide(sym):
 
         score = sum(features[k] * ai_weights[k] for k in features)
 
-        # AGRESİF
         if score < 1.2:
             return None, score, features
 
@@ -116,13 +127,17 @@ def decide(sym):
 
 # ===== EXIT =====
 def exit_check(sym, pnl, direction, open_time):
-    # erken kapatma engeli
     if time.time() - open_time < 180:
         return False
 
     try:
-        m5 = exchange.fetch_ohlcv(sym, "5m", 20)
-        closes = [x[4] for x in m5]
+        m5 = safe_api(lambda: exchange.fetch_ohlcv(sym, "5m", 20))
+        if not m5 or len(m5) < 15:
+            return False
+
+        closes = [x[4] for x in m5 if len(x) > 5]
+        if len(closes) < 10:
+            return False
 
         trend = closes[-1] > sum(closes[-10:]) / 10
 
@@ -176,7 +191,7 @@ def engine():
                 if not ticker:
                     continue
 
-                price = safe(ticker["last"])
+                price = safe(ticker.get("last"))
                 if price <= 0:
                     continue
 
@@ -231,7 +246,8 @@ def engine():
 
             time.sleep(5)
 
-        except:
+        except Exception as e:
+            print("ENGINE ERROR:", e)
             time.sleep(5)
 
 # ===== MANAGE =====
@@ -251,12 +267,11 @@ def manage():
                 if qty <= 0:
                     continue
 
-                sym = p["symbol"]
-
+                sym = p.get("symbol")
                 if sym not in trade_state:
                     continue
 
-                direction = "long" if p["side"] == "long" else "short"
+                direction = "long" if p.get("side") == "long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
                 st = trade_state[sym]
@@ -275,7 +290,6 @@ def manage():
 
                     update_memory(sym, direction, pnl)
 
-                    # AI LEARNING
                     features = st.get("features", {})
                     for k, v in features.items():
                         if pnl > 0:
@@ -301,7 +315,8 @@ def manage():
 
             time.sleep(5)
 
-        except:
+        except Exception as e:
+            print("MANAGE ERROR:", e)
             time.sleep(5)
 
 # ===== START =====
@@ -311,5 +326,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (STABLE)")
 bot.infinity_polling()
