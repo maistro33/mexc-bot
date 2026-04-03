@@ -3,13 +3,11 @@ import time
 import ccxt
 import telebot
 import threading
-from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+# ===== SETTINGS =====
 AGGR_VOLUME = 200_000
 TOP_COINS = 30
-MAX_TRADES = 1
+MAX_TRADES = 2   # 🔥 agresif
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -30,77 +28,77 @@ last_trade_time = {}
 trade_memory = {}
 
 lock = threading.Lock()
-
 current_margin = 5
 
 # ===== SAFE =====
-def safe_api(call):
-    try:
-        return call()
-    except Exception as e:
-        print("API ERROR:", e)
-        return None
-
 def safe(x):
     try: return float(x)
     except: return 0.0
 
+def safe_api(call):
+    try:
+        return call()
+    except:
+        return None
+
 # ===== ORDERBOOK =====
-def orderbook_imbalance(sym):
-    ob = safe_api(lambda: exchange.fetch_order_book(sym, 5))
-    if not ob:
-        return 0
-    bids = sum(b[1] for b in ob["bids"])
-    asks = sum(a[1] for a in ob["asks"])
-    return (bids - asks)/(bids + asks) if bids+asks else 0
+def ob(sym):
+    o = safe_api(lambda: exchange.fetch_order_book(sym, 5))
+    if not o: return 0
+    b = sum(x[1] for x in o["bids"])
+    a = sum(x[1] for x in o["asks"])
+    return (b-a)/(b+a) if (b+a) else 0
 
 # ===== LEVERAGE =====
-def get_dynamic_leverage(sym):
+def get_lev(sym):
     try:
-        c = exchange.fetch_ohlcv(sym, "5m", limit=20)
-        closes = [x[4] for x in c]
-        trend_strength = abs(closes[-1]-closes[-5])/closes[-5]
-        ob = orderbook_imbalance(sym)
+        c = exchange.fetch_ohlcv(sym,"5m",20)
+        cl = [x[4] for x in c]
+        strength = abs(cl[-1]-cl[-5])/cl[-5]
+        o = ob(sym)
 
-        if trend_strength > 0.01 and ob > 0:
-            return 10
-        elif trend_strength > 0.005:
-            return 7
-        else:
-            return 4
+        if strength>0.01 and o>0: return 12
+        if strength>0.005: return 8
+        return 5
     except:
         return 5
 
-# ===== AI ENTRY =====
-def ai_decision(sym):
+# ===== DECISION =====
+def decide(sym):
     try:
-        c = exchange.fetch_ohlcv(sym, "5m", limit=30)
-        closes = [x[4] for x in c]
+        h1 = exchange.fetch_ohlcv(sym,"1h",50)
+        m5 = exchange.fetch_ohlcv(sym,"5m",30)
 
-        trend = closes[-1] > sum(closes[-10:])/10
-        momentum = closes[-1] > closes[-3]
-        ob = orderbook_imbalance(sym)
+        h1c = [x[4] for x in h1]
+        m5c = [x[4] for x in m5]
 
-        # 🧠 LEARNING FILTER
+        trend_big = h1c[-1] > sum(h1c[-20:])/20
+        trend = m5c[-1] > sum(m5c[-10:])/10
+        momentum = m5c[-1] > m5c[-3]
+
+        up = m5c[-1] > m5c[-2] > m5c[-3]
+        down = m5c[-1] < m5c[-2] < m5c[-3]
+
+        highs = [x[2] for x in m5]
+        lows = [x[3] for x in m5]
+
+        fake_up = m5c[-1]>max(highs[-10:]) and m5c[-2]<max(highs[-10:])
+        fake_down = m5c[-1]<min(lows[-10:]) and m5c[-2]>min(lows[-10:])
+
+        o = ob(sym)
+
+        # 🧠 MEMORY
         mem = trade_memory.get(sym)
         if mem:
-            total = mem["win"] + mem["loss"]
-            if total >= 5:
-                winrate = mem["win"] / total
+            t = mem["win"]+mem["loss"]
+            if t>=5:
+                wr = mem["win"]/t
+                if wr<0.4: return None
 
-                if winrate < 0.4:
-                    return None
-
-                if winrate > 0.6:
-                    if trend and ob > 0:
-                        return "long"
-                    if not trend and ob < 0:
-                        return "short"
-
-        if trend and momentum and ob > 0:
+        if trend_big and trend and momentum and up and not fake_up and o>0:
             return "long"
 
-        if not trend and not momentum and ob < 0:
+        if (not trend_big) and (not trend) and (not momentum) and down and not fake_down and o<0:
             return "short"
 
         return None
@@ -108,31 +106,27 @@ def ai_decision(sym):
     except:
         return None
 
-# ===== AI EXIT =====
-def ai_exit(sym, pnl, direction, open_time):
-
-    # ⛔ minimum bekleme
-    if time.time() - open_time < 60:
-        return False
-
-    # ⛔ küçük hareket ignore
-    if abs(pnl) < 0.3:
-        return False
+# ===== EXIT =====
+def exit_check(sym,pnl,dir,open_time):
+    if time.time()-open_time<60: return False
+    if abs(pnl)<0.4: return False
 
     try:
-        c = exchange.fetch_ohlcv(sym, "5m", limit=20)
-        closes = [x[4] for x in c]
+        m5 = exchange.fetch_ohlcv(sym,"5m",20)
+        c = [x[4] for x in m5]
 
-        trend = closes[-1] > sum(closes[-10:])/10
-        momentum = closes[-1] > closes[-3]
+        trend = c[-1] > sum(c[-10:])/10
+        momentum = c[-1] > c[-3]
 
-        if direction == "long":
-            if not trend and not momentum:
-                return True
+        if dir=="long" and (not trend and not momentum):
+            return True
 
-        if direction == "short":
-            if trend and momentum:
-                return True
+        if dir=="short" and (trend and momentum):
+            return True
+
+        # 🔥 zarar büyüyorsa çık
+        if pnl < -1:
+            return True
 
         return False
 
@@ -140,90 +134,70 @@ def ai_exit(sym, pnl, direction, open_time):
         return False
 
 # ===== SYMBOLS =====
-def get_symbols():
+def symbols():
     t = safe_api(lambda: exchange.fetch_tickers())
-    if not t:
-        return []
+    if not t: return []
 
-    f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
-    f = [x for x in f if x[1] >= AGGR_VOLUME]
-    f.sort(key=lambda x: x[1], reverse=True)
-
+    f = [(s,safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
+    f = [x for x in f if x[1]>=AGGR_VOLUME]
+    f.sort(key=lambda x:x[1],reverse=True)
     return [x[0] for x in f[:TOP_COINS]]
 
-# ===== ENTRY =====
+# ===== ENGINE =====
 def engine():
     global current_margin
 
     while True:
         try:
-            for sym in get_symbols():
+            for sym in symbols():
 
-                if len(active_trades) >= MAX_TRADES:
+                if len(active_trades)>=MAX_TRADES:
                     break
 
                 if sym in active_trades:
                     continue
 
-                # ⛔ cooldown
-                if time.time() - last_trade_time.get(sym,0) < 120:
+                if time.time()-last_trade_time.get(sym,0)<120:
                     continue
 
-                ticker = safe_api(lambda: exchange.fetch_ticker(sym))
-                if not ticker:
-                    continue
+                t = safe_api(lambda: exchange.fetch_ticker(sym))
+                if not t: continue
 
-                price = safe(ticker["last"])
+                price = safe(t["last"])
+                if price<0.001 or price>200: continue
 
-                if price < 0.001 or price > 200:
-                    continue
-
-                direction = ai_decision(sym)
-                if not direction:
-                    continue
+                d = decide(sym)
+                if not d: continue
 
                 with lock:
 
-                    lev = get_dynamic_leverage(sym)
+                    lev = get_lev(sym)
 
-                    try:
-                        exchange.set_margin_mode("cross", sym)
-                    except:
-                        pass
+                    try: exchange.set_margin_mode("cross", sym)
+                    except: pass
+                    try: exchange.set_leverage(lev, sym)
+                    except: pass
 
-                    try:
-                        exchange.set_leverage(lev, sym)
-                    except:
-                        pass
+                    m = exchange.market(sym)
+                    min_q = m['limits']['amount']['min'] or 0.001
 
-                    market = exchange.market(sym)
-                    min_qty = market['limits']['amount']['min'] or 0.001
-
-                    qty = (current_margin * lev) / price
-                    qty = max(qty, min_qty)
+                    qty = max((current_margin*lev)/price, min_q)
                     qty = float(exchange.amount_to_precision(sym, qty))
 
                     safe_api(lambda: exchange.create_market_order(
-                        sym,
-                        "buy" if direction=="long" else "sell",
-                        qty
+                        sym,"buy" if d=="long" else "sell",qty
                     ))
 
-                    trade_state[sym] = {
-                        "direction": direction,
-                        "open_time": time.time()
-                    }
-
+                    trade_state[sym] = {"dir":d,"time":time.time()}
                     active_trades.add(sym)
-                    last_trade_time[sym] = time.time()
+                    last_trade_time[sym]=time.time()
 
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} x{lev}")
+                    bot.send_message(CHAT_ID,f"🚀 {sym} {d} x{lev}")
                     break
 
             time.sleep(10)
 
-        except Exception as e:
-            print("ENTRY ERROR:", e)
+        except:
             time.sleep(5)
 
 # ===== MANAGE =====
@@ -232,65 +206,60 @@ def manage():
 
     while True:
         try:
-            positions = safe_api(lambda: exchange.fetch_positions())
-            if not positions:
+            pos = safe_api(lambda: exchange.fetch_positions())
+            if not pos:
                 time.sleep(5)
                 continue
 
-            for p in positions:
+            for p in pos:
 
                 qty = safe(p.get("contracts"))
-                if qty <= 0:
-                    continue
+                if qty<=0: continue
 
                 sym = p["symbol"]
-                if sym not in trade_state:
-                    continue
+                if sym not in trade_state: continue
 
-                direction = "long" if p["side"]=="long" else "short"
+                dir = "long" if p["side"]=="long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
                 st = trade_state[sym]
 
-                if ai_exit(sym, pnl, direction, st["open_time"]):
+                if exit_check(sym,pnl,dir,st["time"]):
 
                     safe_api(lambda: exchange.create_market_order(
-                        sym,
-                        "sell" if direction=="long" else "buy",
-                        qty,
-                        params={"reduceOnly":True}
+                        sym,"sell" if dir=="long" else "buy",
+                        qty,params={"reduceOnly":True}
                     ))
 
                     active_trades.discard(sym)
-                    trade_state.pop(sym, None)
+                    trade_state.pop(sym,None)
 
-                    # 🧠 LEARNING UPDATE
+                    # 🧠 LEARNING
                     if sym not in trade_memory:
-                        trade_memory[sym] = {"win":0,"loss":0}
+                        trade_memory[sym]={"win":0,"loss":0}
 
-                    if pnl > 0:
-                        trade_memory[sym]["win"] += 1
-                        current_margin += 1
+                    if pnl>0:
+                        trade_memory[sym]["win"]+=1
+                        current_margin+=1
                     else:
-                        trade_memory[sym]["loss"] += 1
-                        current_margin -= 1
+                        trade_memory[sym]["loss"]+=1
+                        current_margin-=1
 
-                    current_margin = max(3, min(12, current_margin))
+                    current_margin=max(3,min(15,current_margin))
 
-                    bot.send_message(CHAT_ID, f"❌ {sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID,f"❌ {sym} {round(pnl,2)}")
 
             time.sleep(5)
 
-        except Exception as e:
-            print("MANAGE ERROR:", e)
+        except:
             time.sleep(5)
 
 # ===== START =====
 bot.remove_webhook()
 time.sleep(1)
 
-threading.Thread(target=engine, daemon=True).start()
-threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=engine,daemon=True).start()
+threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 LEARNING AI BOT AKTİF")
+bot.send_message(CHAT_ID,"🔥 ULTRA AI AKTİF")
 bot.infinity_polling()
