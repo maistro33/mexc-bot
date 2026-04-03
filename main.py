@@ -11,7 +11,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 AGGR_VOLUME = 200_000
 LEVERAGE = 7
 MARGIN = 5
-TOP_COINS = 50
+TOP_COINS = 30
 
 ANTI_DUMP_PCT = 0.02
 MAX_TRADES = 1
@@ -33,6 +33,10 @@ active_trades = set()
 trade_state = {}
 lock = threading.Lock()
 
+# ===== 🧠 MEMORY =====
+trade_history = []
+MAX_HISTORY = 20
+
 # ===== HELPERS =====
 def safe(x):
     try: return float(x)
@@ -41,88 +45,6 @@ def safe(x):
 def get_candles(sym, tf, limit=100):
     try: return exchange.fetch_ohlcv(sym, tf, limit=limit)
     except: return []
-
-# ===== LOAD OPEN POSITIONS =====
-def load_positions():
-    try:
-        for p in exchange.fetch_positions():
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-            sl = entry * 0.98
-
-            trade_state[sym] = {
-                "entry": entry,
-                "sl": sl,
-                "risk": abs(entry - sl),
-                "step": 0,
-                "open_time": time.time()
-            }
-
-            active_trades.add(sym)
-    except:
-        pass
-
-# ===== AI =====
-def ai_decision(sym, score, ob):
-    try:
-        h1 = get_candles(sym, "1h", 50)
-        m5 = get_candles(sym, "5m", 30)
-
-        if len(h1) < 30 or len(m5) < 20:
-            return "SKIP"
-
-        closes1 = [c[4] for c in h1]
-        closes5 = [c[4] for c in m5]
-
-        trend = "UP" if closes1[-1] > sum(closes1[-20:])/20 else "DOWN"
-        volatility = abs(closes5[-1] - closes5[-2]) / closes5[-2]
-
-        highs = [c[2] for c in m5]
-        lows = [c[3] for c in m5]
-        range_pct = (max(highs[-10:]) - min(lows[-10:])) / closes5[-1]
-
-        if volatility < 0.002 or range_pct < 0.01:
-            return "SKIP"
-
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":f"Trend:{trend} Score:{score} OB:{ob} LONG SHORT or SKIP"}],
-            temperature=0.2
-        )
-
-        d = res.choices[0].message.content.strip().upper()
-
-        if d == "LONG" and trend != "UP":
-            return "SKIP"
-        if d == "SHORT" and trend != "DOWN":
-            return "SKIP"
-
-        return d if d in ["LONG","SHORT"] else "SKIP"
-
-    except:
-        return "SKIP"
-
-# ===== MARKET =====
-def get_symbols():
-    try:
-        t = exchange.fetch_tickers()
-        f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
-        f = [x for x in f if x[1] >= AGGR_VOLUME]
-        f.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in f[:TOP_COINS]]
-    except:
-        return []
-
-def volume_spike(sym):
-    c = get_candles(sym, "5m", 20)
-    if len(c) < 10:
-        return False
-    v = [x[5] for x in c]
-    return v[-1] > (sum(v[:-1]) / len(v[:-1])) * 1.5
 
 def orderbook_imbalance(sym):
     try:
@@ -133,12 +55,114 @@ def orderbook_imbalance(sym):
     except:
         return 0
 
-def score(sym):
-    s = 0
-    if volume_spike(sym): s += 2
-    ob = orderbook_imbalance(sym)
-    if abs(ob) > 0.1: s += 2
-    return s
+# ===== LOAD POSITIONS =====
+def load_positions():
+    try:
+        for p in exchange.fetch_positions():
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p["entryPrice"])
+            side = p.get("side","").lower()
+
+            if side in ["long","buy"]:
+                sl = entry * 0.98
+                direction = "long"
+            else:
+                sl = entry * 1.02
+                direction = "short"
+
+            trade_state[sym] = {
+                "entry": entry,
+                "sl": sl,
+                "risk": abs(entry - sl),
+                "step": 0,
+                "direction": direction,
+                "open_time": time.time()
+            }
+
+            active_trades.add(sym)
+
+    except:
+        pass
+
+# ===== AI =====
+def ai_decision(sym):
+
+    try:
+        h1 = get_candles(sym, "1h", 50)
+        m5 = get_candles(sym, "5m", 30)
+
+        if len(h1) < 30 or len(m5) < 20:
+            return None
+
+        closes1 = [c[4] for c in h1]
+        closes5 = [c[4] for c in m5]
+
+        trend = "UP" if closes1[-1] > sum(closes1[-20:])/20 else "DOWN"
+        momentum = "UP" if closes5[-1] > closes5[-3] else "DOWN"
+
+        volatility = abs(closes5[-1]-closes5[-2]) / closes5[-2]
+
+        highs = [c[2] for c in m5]
+        lows = [c[3] for c in m5]
+        range_pct = (max(highs[-10:]) - min(lows[-10:])) / closes5[-1]
+
+        ob = orderbook_imbalance(sym)
+
+        # 🧠 MEMORY ANALİZ
+        history_str = ",".join(trade_history[-10:])
+
+        prompt = f"""
+You are a professional crypto trader.
+
+Recent trades: {history_str}
+
+If many losses → be selective
+If many wins → allow trades
+
+Trend: {trend}
+Momentum: {momentum}
+Volatility: {volatility}
+Range: {range_pct}
+Orderbook: {ob}
+
+Answer:
+ENTER_LONG
+ENTER_SHORT
+SKIP
+"""
+
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.2
+        )
+
+        txt = res.choices[0].message.content.upper()
+
+        if "ENTER_LONG" in txt:
+            return "long"
+        elif "ENTER_SHORT" in txt:
+            return "short"
+
+        return None
+
+    except:
+        return None
+
+# ===== SYMBOLS =====
+def get_symbols():
+    try:
+        t = exchange.fetch_tickers()
+        f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
+        f = [x for x in f if x[1] >= AGGR_VOLUME]
+        f.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in f[:TOP_COINS]]
+    except:
+        return []
 
 # ===== ANTI-DUMP =====
 def anti_dump(sym, pnl):
@@ -171,17 +195,10 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                sc = score(sym)
-                if sc < 3:
+                direction = ai_decision(sym)
+
+                if not direction:
                     continue
-
-                ob = orderbook_imbalance(sym)
-                d = ai_decision(sym, sc, ob)
-
-                if d == "SKIP":
-                    continue
-
-                direction = "long" if d == "LONG" else "short"
 
                 with lock:
                     if len(active_trades) >= MAX_TRADES:
@@ -199,17 +216,18 @@ def engine():
                         "sl": sl,
                         "risk": abs(price - sl),
                         "step": 0,
+                        "direction": direction,
                         "open_time": time.time()
                     }
 
                     active_trades.add(sym)
-                    bot.send_message(CHAT_ID, f"🤖 {sym} {direction}")
+                    bot.send_message(CHAT_ID, f"🤖 AI {sym} {direction}")
                     break
 
             time.sleep(10)
 
         except Exception as e:
-            print("ENTRY ERROR:", e)
+            print(e)
             time.sleep(10)
 
 # ===== MANAGE =====
@@ -228,51 +246,55 @@ def manage():
 
                 st = trade_state[sym]
                 entry = st["entry"]
+                direction = st["direction"]
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
-                side = p.get("side","").lower()
-                direction = "long" if side in ["long","buy"] else "short"
-
                 pnl = safe(p.get("unrealizedPnl"))
 
-                # ANTI-DUMP
                 if anti_dump(sym, pnl):
                     exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly":True})
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
                     bot.send_message(CHAT_ID, f"⚠️ ANTI-DUMP {sym}")
+
+                    trade_history.append("loss")
+                    if len(trade_history)>MAX_HISTORY:
+                        trade_history.pop(0)
                     continue
 
-                # R hesap
                 r = abs(price - entry) / st["risk"] if st["risk"] > 0 else 0
 
-                # STEP SYSTEM
                 if r >= 0.5 and st["step"] < 1:
                     st["step"] = 1
                     st["sl"] = entry
-                    bot.send_message(CHAT_ID, f"📈 STEP1 BE {sym}")
 
                 elif r >= 1 and st["step"] < 2:
                     st["step"] = 2
                     st["sl"] = entry + st["risk"] if direction=="long" else entry - st["risk"]
-                    bot.send_message(CHAT_ID, f"📈 STEP2 PROFIT {sym}")
 
                 elif r >= 2 and st["step"] < 3:
                     st["step"] = 3
                     st["sl"] = entry + 2*st["risk"] if direction=="long" else entry - 2*st["risk"]
-                    bot.send_message(CHAT_ID, f"📈 STEP3 {sym}")
 
-                # STOP
                 if (direction=="long" and price <= st["sl"]) or (direction=="short" and price >= st["sl"]):
                     exchange.create_market_order(sym, "sell" if direction=="long" else "buy", qty, params={"reduceOnly":True})
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
+
+                    if pnl > 0:
+                        trade_history.append("win")
+                    else:
+                        trade_history.append("loss")
+
+                    if len(trade_history)>MAX_HISTORY:
+                        trade_history.pop(0)
+
+                    bot.send_message(CHAT_ID, f"❌ CLOSE {sym}")
 
             time.sleep(5)
 
         except Exception as e:
-            print("MANAGE ERROR:", e)
+            print(e)
             time.sleep(5)
 
 # ===== START =====
@@ -285,5 +307,5 @@ load_positions()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 STEP AI BOT ACTIVE")
+bot.send_message(CHAT_ID, "🔥 LEARNING AI ACTIVE")
 bot.infinity_polling()
