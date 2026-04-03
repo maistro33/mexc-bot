@@ -6,7 +6,7 @@ import threading
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 30
+TOP_COINS = 100
 MAX_TRADES = 2   # 🔥 agresif
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
