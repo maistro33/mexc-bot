@@ -15,7 +15,7 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": os.getenv("BITGET_PASS") or "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
