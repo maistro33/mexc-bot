@@ -11,15 +11,15 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 AGGR_VOLUME = 200_000
 LEVERAGE = 7
 MARGIN = 5
-TOP_COINS = 30
+TOP_COINS = 100
 
 ANTI_DUMP_PCT = 0.02
-MAX_TRADES = 1
+MAX_TRADES = 2
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-# ===== EXCHANGE (STABLE) =====
+# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -35,13 +35,16 @@ active_trades = set()
 trade_state = {}
 lock = threading.Lock()
 
-# ===== 🧠 MEMORY =====
+# ===== MEMORY =====
 trade_history = []
-MAX_HISTORY = 20
+pattern_memory = []
 
-# ===== SAFE API CALL =====
+MAX_HISTORY = 20
+MAX_PATTERN = 50
+
+# ===== SAFE API =====
 def safe_api(call, retries=3):
-    for i in range(retries):
+    for _ in range(retries):
         try:
             return call()
         except Exception as e:
@@ -68,42 +71,56 @@ def orderbook_imbalance(sym):
     except:
         return 0
 
+# ===== PATTERN SCORE =====
+def pattern_score(current):
+    score = 0
+    count = 0
+
+    for p in pattern_memory:
+        if abs(p["volatility"] - current["volatility"]) < 0.002:
+            if abs(p["range"] - current["range"]) < 0.01:
+                if p["trend"] == current["trend"]:
+                    if p["momentum"] == current["momentum"]:
+                        count += 1
+                        if p["result"] == "win":
+                            score += 1
+                        else:
+                            score -= 1
+
+    return score, count
+
 # ===== LOAD POSITIONS =====
 def load_positions():
-    try:
-        positions = safe_api(lambda: exchange.fetch_positions())
-        if not positions:
-            return
+    positions = safe_api(lambda: exchange.fetch_positions())
+    if not positions:
+        return
 
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
+    for p in positions:
+        qty = safe(p.get("contracts"))
+        if qty <= 0:
+            continue
 
-            sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-            side = p.get("side","").lower()
+        sym = p["symbol"]
+        entry = safe(p["entryPrice"])
+        side = p.get("side","").lower()
 
-            if side in ["long","buy"]:
-                sl = entry * 0.98
-                direction = "long"
-            else:
-                sl = entry * 1.02
-                direction = "short"
+        if side in ["long","buy"]:
+            sl = entry * 0.98
+            direction = "long"
+        else:
+            sl = entry * 1.02
+            direction = "short"
 
-            trade_state[sym] = {
-                "entry": entry,
-                "sl": sl,
-                "risk": abs(entry - sl),
-                "step": 0,
-                "direction": direction,
-                "open_time": time.time()
-            }
+        trade_state[sym] = {
+            "entry": entry,
+            "sl": sl,
+            "risk": abs(entry - sl),
+            "step": 0,
+            "direction": direction,
+            "open_time": time.time()
+        }
 
-            active_trades.add(sym)
-
-    except Exception as e:
-        print("LOAD ERROR:", e)
+        active_trades.add(sym)
 
 # ===== AI =====
 def ai_decision(sym):
@@ -129,12 +146,26 @@ def ai_decision(sym):
 
         ob = orderbook_imbalance(sym)
 
+        pattern = {
+            "trend": trend,
+            "momentum": momentum,
+            "volatility": round(volatility,4),
+            "range": round(range_pct,4),
+            "ob": round(ob,2)
+        }
+
+        score, count = pattern_score(pattern)
         history_str = ",".join(trade_history[-10:])
 
         prompt = f"""
 You are a professional crypto trader.
 
 Recent trades: {history_str}
+PatternScore: {score}
+Samples: {count}
+
+If score negative → avoid trade
+If score positive → allow trade
 
 Trend: {trend}
 Momentum: {momentum}
@@ -160,29 +191,25 @@ SKIP
         txt = res.choices[0].message.content.upper()
 
         if "ENTER_LONG" in txt:
-            return "long"
+            return "long", pattern
         elif "ENTER_SHORT" in txt:
-            return "short"
+            return "short", pattern
 
         return None
 
-    except Exception as e:
-        print("AI ERROR:", e)
+    except:
         return None
 
 # ===== SYMBOLS =====
 def get_symbols():
-    try:
-        t = safe_api(lambda: exchange.fetch_tickers())
-        if not t:
-            return []
-
-        f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
-        f = [x for x in f if x[1] >= AGGR_VOLUME]
-        f.sort(key=lambda x: x[1], reverse=True)
-        return [x[0] for x in f[:TOP_COINS]]
-    except:
+    t = safe_api(lambda: exchange.fetch_tickers())
+    if not t:
         return []
+
+    f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
+    f = [x for x in f if x[1] >= AGGR_VOLUME]
+    f.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in f[:TOP_COINS]]
 
 # ===== ANTI-DUMP =====
 def anti_dump(sym, pnl):
@@ -215,20 +242,14 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                direction = ai_decision(sym)
-
-                if not direction:
+                result = ai_decision(sym)
+                if not result:
                     continue
 
+                direction, pattern = result
+
                 with lock:
-                    if len(active_trades) >= MAX_TRADES:
-                        break
-
-                    ticker = safe_api(lambda: exchange.fetch_ticker(sym))
-                    if not ticker:
-                        continue
-
-                    price = safe(ticker["last"])
+                    price = safe(safe_api(lambda: exchange.fetch_ticker(sym))["last"])
                     qty = float(exchange.amount_to_precision(sym, (MARGIN * LEVERAGE) / price))
 
                     safe_api(lambda: exchange.create_market_order(
@@ -245,6 +266,7 @@ def engine():
                         "risk": abs(price - sl),
                         "step": 0,
                         "direction": direction,
+                        "pattern": pattern,
                         "open_time": time.time()
                     }
 
@@ -255,7 +277,7 @@ def engine():
             time.sleep(15)
 
         except Exception as e:
-            print("ENTRY ERROR:", e)
+            print(e)
             time.sleep(10)
 
 # ===== MANAGE =====
@@ -280,6 +302,7 @@ def manage():
                 st = trade_state[sym]
                 entry = st["entry"]
                 direction = st["direction"]
+                pattern = st.get("pattern")
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
                 if not ticker:
@@ -288,7 +311,6 @@ def manage():
                 price = safe(ticker["last"])
                 pnl = safe(p.get("unrealizedPnl"))
 
-                # ANTI-DUMP
                 if anti_dump(sym, pnl):
                     safe_api(lambda: exchange.create_market_order(
                         sym,
@@ -301,15 +323,15 @@ def manage():
                     active_trades.discard(sym)
 
                     trade_history.append("loss")
-                    if len(trade_history)>MAX_HISTORY:
-                        trade_history.pop(0)
 
-                    bot.send_message(CHAT_ID, f"⚠️ ANTI-DUMP {sym}")
+                    if pattern:
+                        pattern["result"] = "loss"
+                        pattern_memory.append(pattern)
+
                     continue
 
                 r = abs(price - entry) / st["risk"] if st["risk"] > 0 else 0
 
-                # STEP
                 if r >= 0.5 and st["step"] < 1:
                     st["step"] = 1
                     st["sl"] = entry
@@ -322,7 +344,6 @@ def manage():
                     st["step"] = 3
                     st["sl"] = entry + 2*st["risk"] if direction=="long" else entry - 2*st["risk"]
 
-                # STOP
                 if (direction=="long" and price <= st["sl"]) or (direction=="short" and price >= st["sl"]):
                     safe_api(lambda: exchange.create_market_order(
                         sym,
@@ -334,16 +355,22 @@ def manage():
                     trade_state.pop(sym,None)
                     active_trades.discard(sym)
 
-                    trade_history.append("win" if pnl > 0 else "loss")
-                    if len(trade_history)>MAX_HISTORY:
-                        trade_history.pop(0)
+                    result = "win" if pnl > 0 else "loss"
+                    trade_history.append(result)
+
+                    if pattern:
+                        pattern["result"] = result
+                        pattern_memory.append(pattern)
+
+                    if len(pattern_memory) > MAX_PATTERN:
+                        pattern_memory.pop(0)
 
                     bot.send_message(CHAT_ID, f"❌ CLOSE {sym}")
 
             time.sleep(7)
 
         except Exception as e:
-            print("MANAGE ERROR:", e)
+            print(e)
             time.sleep(7)
 
 # ===== START =====
@@ -357,5 +384,5 @@ load_positions()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 STABLE AI BOT ACTIVE")
+bot.send_message(CHAT_ID, "🔥 LEVEL 2 AI ACTIVE")
 bot.infinity_polling()
