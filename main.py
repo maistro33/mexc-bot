@@ -23,7 +23,8 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS") or "",
+    # 💣 FIX BURADA
+    "password": os.getenv("BITGET_PASS") or "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -112,7 +113,6 @@ def predict(sym):
 
         direction = "long" if p[1] > p[0] else "short"
 
-        # ===== SMART FILTER =====
         if regime(sym) == "sideways":
             return None,conf
 
@@ -227,11 +227,9 @@ def manage():
 
                 close = False
 
-                # TP / SL
                 if pnl > TP_USDT or pnl < SL_USDT:
                     close = True
 
-                # TRAILING
                 if peak > TRAIL_START and pnl < peak - TRAIL_GAP:
                     close = True
 
@@ -269,5 +267,5 @@ recover()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID,"🧠 Sadik AI v8 FULL AKTİF")
+bot.send_message(CHAT_ID,"🧠 Sadik AI v8 FINAL AKTİF")
 bot.infinity_polling()
