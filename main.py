@@ -17,7 +17,8 @@ exchange = ccxt.bitget({
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS") or "Berfin33",
     "options": {"defaultType": "swap"},
-    "enableRateLimit": True
+    "enableRateLimit": True,
+    "timeout": 20000  # 🔥 timeout fix
 })
 
 exchange.load_markets()
@@ -52,10 +53,6 @@ def safe_api(call):
         return call()
     except Exception as e:
         print("API ERROR:", str(e))
-        try:
-            bot.send_message(CHAT_ID, f"API ERROR: {e}")
-        except:
-            pass
         return None
 
 # ===== MEMORY =====
@@ -114,10 +111,13 @@ def decide(sym):
 
         score = sum(features[k] * ai_weights[k] for k in features)
 
-        if score < 1.2:
+        if volume_spike:
+            score += 1
+
+        if score < 0.5:
             return None, score, features
 
-        direction = "long" if momentum else "short"
+        direction = "long" if trend else "short"
 
         return direction, score, features
 
@@ -184,7 +184,7 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                if time.time() - last_trade_time.get(sym, 0) < 5:
+                if time.time() - last_trade_time.get(sym, 0) < 8:
                     continue
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
@@ -244,7 +244,7 @@ def engine():
                     bot.send_message(CHAT_ID, f"🚀 {sym} {direction} score:{round(score,2)}")
                     break
 
-            time.sleep(5)
+            time.sleep(8)
 
         except Exception as e:
             print("ENGINE ERROR:", e)
@@ -258,7 +258,7 @@ def manage():
         try:
             positions = safe_api(lambda: exchange.fetch_positions())
             if not positions:
-                time.sleep(5)
+                time.sleep(8)
                 continue
 
             for p in positions:
@@ -313,7 +313,7 @@ def manage():
 
                     bot.send_message(CHAT_ID, f"❌ {sym} PNL: {round(pnl,2)}")
 
-            time.sleep(5)
+            time.sleep(8)
 
         except Exception as e:
             print("MANAGE ERROR:", e)
@@ -326,5 +326,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (STABLE)")
+bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (STABLE + FAST)")
 bot.infinity_polling()
