@@ -106,7 +106,7 @@ def decide(sym):
         direction = "long" if trend else "short"
         key = f"{sym}_{direction}"
 
-        mem = ai_memory.get(key, {"win": 1, "loss": 1})
+        mem = ai_memory.get(key, {"win":1, "loss":1})
         winrate = mem["win"] / (mem["win"] + mem["loss"])
 
         confidence = score * winrate
@@ -184,8 +184,13 @@ def engine():
                     qty = max((current_margin * lev) / price, min_q)
                     qty = float(exchange.amount_to_precision(sym, qty))
 
+                    # 🔥 SYMBOL FIX
+                    clean_sym = sym.replace(":USDT", "")
+
+                    print("ORDER:", clean_sym, direction, qty)
+
                     order = safe_api(lambda: exchange.create_market_order(
-                        sym,
+                        clean_sym,
                         "buy" if direction == "long" else "sell",
                         qty
                     ))
@@ -203,7 +208,7 @@ def engine():
                     active_trades.add(sym)
                     last_trade_time[sym] = time.time()
 
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} AI:{round(score,2)}")
+                    bot.send_message(CHAT_ID, f"🚀 {clean_sym} {direction} AI:{round(score,2)}")
                     break
 
             time.sleep(6)
@@ -231,6 +236,8 @@ def manage():
                 if sym not in trade_state:
                     continue
 
+                clean_sym = sym.replace(":USDT", "")
+
                 direction = "long" if p.get("side") == "long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
@@ -239,7 +246,7 @@ def manage():
                 if exit_check(sym, pnl, direction, st["time"]):
 
                     safe_api(lambda: exchange.create_market_order(
-                        sym,
+                        clean_sym,
                         "sell" if direction == "long" else "buy",
                         qty,
                         params={"reduceOnly": True}
@@ -248,9 +255,8 @@ def manage():
                     active_trades.discard(sym)
                     trade_state.pop(sym, None)
 
-                    # ===== AI LEARNING =====
+                    # AI learning
                     k = st.get("key")
-
                     if k:
                         if k not in ai_memory:
                             ai_memory[k] = {"win":1, "loss":1}
@@ -260,7 +266,7 @@ def manage():
                         else:
                             ai_memory[k]["loss"] += 1
 
-                    bot.send_message(CHAT_ID, f"❌ {sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"❌ {clean_sym} {round(pnl,2)}")
 
             time.sleep(6)
 
@@ -275,5 +281,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (REAL AI MODE)")
+bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (FIXED FINAL)")
 bot.infinity_polling()
