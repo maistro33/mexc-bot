@@ -5,6 +5,7 @@ import telebot
 import threading
 import pandas as pd
 import joblib
+import numpy as np
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
@@ -13,6 +14,9 @@ MAX_TRADES = 2
 
 TP1_USDT = 0.25
 TRAIL_GAP = 0.01
+
+AI_CONFIDENCE = 0.60   # 💣 sadece güçlü sinyal
+MIN_VOLATILITY = 0.002 # 💣 düşük hareket yok
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -31,27 +35,20 @@ exchange.load_markets()
 
 # ===== AUTO AI TRAIN =====
 def train_model():
-    import numpy as np
     from xgboost import XGBClassifier
 
-    print("🤖 MODEL YOK → TRAIN BAŞLIYOR")
-
-    symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+    print("🤖 MODEL YOK → TRAIN")
 
     data = []
+    symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
 
     for sym in symbols:
-        try:
-            ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=300)
+        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=300)
 
-            for c in ohlcv:
-                t,o,h,l,close,v = c
-                vol = (h-l)/close if close else 0
-
-                data.append([o,h,l,close,v,vol])
-
-        except Exception as e:
-            print("DATA ERROR:", e)
+        for c in ohlcv:
+            t,o,h,l,close,v = c
+            vol = (h-l)/close if close else 0
+            data.append([o,h,l,close,v,vol])
 
     df = pd.DataFrame(data, columns=[
         "open","high","low","close","volume","volatility"
@@ -59,21 +56,18 @@ def train_model():
 
     df["return"] = df["close"].pct_change()
     df["target"] = (df["return"].shift(-1) > 0).astype(int)
-
     df = df.dropna()
 
     X = df[["open","high","low","close","volume","volatility"]]
     y = df["target"]
 
-    model = XGBClassifier(n_estimators=100)
-
+    model = XGBClassifier(n_estimators=120)
     model.fit(X, y)
 
     joblib.dump(model, "ai_model.pkl")
+    print("✅ MODEL HAZIR")
 
-    print("✅ MODEL OLUŞTURULDU")
-
-# ===== LOAD MODEL =====
+# ===== LOAD =====
 if not os.path.exists("ai_model.pkl"):
     train_model()
 
@@ -92,58 +86,52 @@ def safe(x):
 def safe_api(call):
     try:
         return call()
-    except Exception as e:
-        print("API ERROR:", e)
+    except:
         return None
 
-# ===== RECOVERY =====
-def load_open_positions():
-    try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            entry = safe(p.get("entryPrice"))
-            side = p["side"]
-
-            trade_state[sym] = {
-                "direction": "long" if side == "long" else "short",
-                "entry": entry,
-                "tp1": True,
-                "trail_active": True,
-                "trail_price": entry,
-                "closing": False
-            }
-
-            active_trades.add(sym)
-            print(f"♻️ RECOVERED: {sym}")
-
-    except Exception as e:
-        print("RECOVERY ERROR:", e)
+# ===== TREND =====
+def get_trend(sym):
+    c = exchange.fetch_ohlcv(sym, "5m", limit=20)
+    closes = [x[4] for x in c]
+    avg = sum(closes)/len(closes)
+    return "up" if closes[-1] > avg else "down"
 
 # ===== AI =====
 def ai_predict(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
+        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=2)
         if not ohlcv:
-            return None
+            return None, 0
 
-        t,o,h,l,c,v = ohlcv[0]
+        t,o,h,l,c,v = ohlcv[-1]
         vol = (h-l)/c if c else 0
+
+        # 💣 volatility filter
+        if vol < MIN_VOLATILITY:
+            return None, 0
 
         data = [[o,h,l,c,v,vol]]
 
-        pred = model.predict(data)[0]
+        proba = model.predict_proba(data)[0]
+        confidence = max(proba)
 
-        return "long" if pred == 1 else "short"
+        if confidence < AI_CONFIDENCE:
+            return None, confidence
+
+        direction = "long" if proba[1] > proba[0] else "short"
+
+        # 💣 trend filter
+        trend = get_trend(sym)
+        if direction == "long" and trend != "up":
+            return None, confidence
+        if direction == "short" and trend != "down":
+            return None, confidence
+
+        return direction, confidence
 
     except Exception as e:
         print("AI ERROR:", e)
-        return None
+        return None, 0
 
 # ===== SYMBOLS =====
 def get_symbols():
@@ -185,7 +173,7 @@ def engine():
                 if price <= 0:
                     continue
 
-                direction = ai_predict(sym)
+                direction, conf = ai_predict(sym)
                 if not direction:
                     continue
 
@@ -217,7 +205,7 @@ def engine():
                     }
 
                     active_trades.add(sym)
-                    bot.send_message(CHAT_ID, f"🚀 AI {sym} {direction}")
+                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} ({round(conf,2)})")
                     break
 
             time.sleep(5)
@@ -321,12 +309,10 @@ def manage():
 
 # ===== START =====
 exchange.fetch_balance()
-load_open_positions()
-
 bot.remove_webhook()
 
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 Sadik Bot v2.0 AUTO AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 Sadik Bot v3.0 AI AKTİF")
 bot.infinity_polling()
