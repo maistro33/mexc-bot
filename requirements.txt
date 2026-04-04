@@ -3,3 +3,6 @@ pandas
 pyTelegramBotAPI
 websocket-client
 openai>=1.0.0
+xgboost
+scikit-learn
+joblib
