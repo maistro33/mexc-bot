@@ -1,4 +1,5 @@
 ccxt
+pandas
 pyTelegramBotAPI
 websocket-client
 openai>=1.0.0
