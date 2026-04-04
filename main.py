@@ -3,11 +3,16 @@ import time
 import ccxt
 import telebot
 import threading
+from openai import OpenAI
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ===== SETTINGS =====
-AGGR_VOLUME = 100_000
-TOP_COINS = 100
-MAX_TRADES = 2
+AGGR_VOLUME = 200_000
+LEVERAGE = 7
+MARGIN = 5
+TOP_COINS = 50
+MAX_TRADES = 1
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -25,140 +30,80 @@ exchange.load_markets()
 
 active_trades = set()
 trade_state = {}
-last_trade_time = {}
-
 lock = threading.Lock()
-
-current_margin = 5
-
-# ===== AI =====
-ai_weights = {
-    "trend": 1.2,
-    "momentum": 1.5,
-    "volume": 2.0,
-    "volatility": 1.0,
-    "fakeout": 1.5
-}
-
-ai_memory = {}
 
 # ===== SAFE =====
 def safe(x):
     try: return float(x)
     except: return 0.0
 
-def safe_api(call):
+def get_candles(sym, tf, limit=100):
+    try: return exchange.fetch_ohlcv(sym, tf, limit=limit)
+    except: return []
+
+# ===== AI =====
+def ai_decision(sym, score, ob):
     try:
-        return call()
-    except Exception as e:
-        print("API ERROR:", str(e))
-        return None
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role": "user",
+                "content": f"Score:{score} OB:{ob}. ONLY answer LONG SHORT or SKIP"
+            }],
+            temperature=0
+        )
 
-# ===== POSITION CHECK =====
-def has_open_position():
-    pos = safe_api(lambda: exchange.fetch_positions())
-    if not pos:
-        return False
-    for p in pos:
-        if safe(p.get("contracts")) > 0:
-            return True
-    return False
+        d = res.choices[0].message.content.strip().upper()
 
-# ===== AI DECISION =====
-def decide(sym):
+        if "LONG" in d:
+            return "LONG"
+        if "SHORT" in d:
+            return "SHORT"
+
+        return "SKIP"
+
+    except:
+        return "SKIP"
+
+# ===== MARKET =====
+def get_symbols():
     try:
-        m5 = safe_api(lambda: exchange.fetch_ohlcv(sym, "5m", 50))
-        if not m5 or len(m5) < 20:
-            return None, 0, {}, None
-
-        closes = [x[4] for x in m5 if len(x) > 5]
-        volumes = [x[5] for x in m5 if len(x) > 5]
-
-        if len(closes) < 10 or len(volumes) < 10:
-            return None, 0, {}, None
-
-        trend = 1 if closes[-1] > sum(closes[-10:]) / 10 else 0
-        momentum = 1 if closes[-1] > closes[-3] else 0
-
-        avg_vol = sum(volumes[-10:]) / 10
-        volume_spike = 1 if volumes[-1] > avg_vol * 1.3 else 0
-
-        volatility = abs(closes[-1] - closes[-5]) / closes[-5]
-
-        highs = [x[2] for x in m5[-10:] if len(x) > 5]
-        lows = [x[3] for x in m5[-10:] if len(x) > 5]
-
-        if len(highs) < 5 or len(lows) < 5:
-            return None, 0, {}, None
-
-        high = max(highs)
-        low = min(lows)
-
-        fakeout = 1
-        if closes[-1] > high and closes[-2] < high:
-            fakeout = -1
-        elif closes[-1] < low and closes[-2] > low:
-            fakeout = -1
-
-        features = {
-            "trend": trend,
-            "momentum": momentum,
-            "volume": volume_spike,
-            "volatility": volatility,
-            "fakeout": fakeout
-        }
-
-        score = sum(features[k] * ai_weights[k] for k in features)
-
-        if volume_spike:
-            score += 1
-
-        direction = "long" if trend else "short"
-        key = f"{sym}_{direction}"
-
-        mem = ai_memory.get(key, {"win":1, "loss":1})
-        winrate = mem["win"] / (mem["win"] + mem["loss"])
-
-        confidence = score * winrate
-
-        if confidence < 0.6:
-            return None, confidence, features, key
-
-        return direction, confidence, features, key
-
-    except Exception as e:
-        print("DECIDE ERROR:", e)
-        return None, 0, {}, None
-
-# ===== EXIT =====
-def exit_check(sym, pnl, open_time):
-    if time.time() - open_time < 120:
-        return False
-    if pnl < -1.5 or pnl > 2:
-        return True
-    return False
-
-# ===== SYMBOLS =====
-def symbols():
-    t = safe_api(lambda: exchange.fetch_tickers())
-    if not t:
+        t = exchange.fetch_tickers()
+        f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
+        f = [x for x in f if x[1] >= AGGR_VOLUME]
+        f.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in f[:TOP_COINS]]
+    except:
         return []
 
-    f = [(s, safe(d.get("quoteVolume"))) for s, d in t.items() if ":USDT" in s]
-    f = [x for x in f if x[1] >= AGGR_VOLUME]
-    f.sort(key=lambda x: x[1], reverse=True)
+def volume_spike(sym):
+    c = get_candles(sym, "5m", 20)
+    if len(c) < 10:
+        return False
+    v = [x[5] for x in c]
+    return v[-1] > (sum(v[:-1]) / len(v[:-1])) * 1.5
 
-    return [x[0] for x in f[:TOP_COINS]]
+def orderbook_imbalance(sym):
+    try:
+        ob = exchange.fetch_order_book(sym, 10)
+        bids = sum(b[1] for b in ob["bids"])
+        asks = sum(a[1] for a in ob["asks"])
+        return (bids - asks)/(bids + asks) if bids+asks else 0
+    except:
+        return 0
 
-# ===== ENGINE =====
+def score(sym):
+    s = 0
+    if volume_spike(sym): s += 2
+    ob = orderbook_imbalance(sym)
+    if abs(ob) > 0.1: s += 2
+    return s
+
+# ===== ENTRY =====
 def engine():
     while True:
         try:
-            if has_open_position():
-                time.sleep(5)
-                continue
-
-            for sym in symbols():
+            for sym in get_symbols():
 
                 if len(active_trades) >= MAX_TRADES:
                     break
@@ -166,58 +111,51 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                ticker = safe_api(lambda: exchange.fetch_ticker(sym))
-                if not ticker:
+                sc = score(sym)
+                if sc < 2:
                     continue
 
-                price = safe(ticker.get("last"))
-                if price <= 0:
-                    continue
+                ob = orderbook_imbalance(sym)
+                ai = ai_decision(sym, sc, ob)
 
-                direction, score, features, key = decide(sym)
-
-                if not direction:
-                    continue
+                # 🔥 FALLBACK (EN KRİTİK)
+                if ai == "SKIP":
+                    direction = "long" if ob > 0 else "short"
+                else:
+                    direction = "long" if ai == "LONG" else "short"
 
                 with lock:
-                    lev = 10
+                    price = safe(exchange.fetch_ticker(sym)["last"])
+                    if price <= 0:
+                        continue
 
-                    try:
-                        exchange.set_leverage(lev, sym)
-                    except:
-                        pass
+                    qty = float(exchange.amount_to_precision(sym, (MARGIN * LEVERAGE) / price))
 
-                    market = exchange.market(sym)
-                    min_q = market['limits']['amount']['min'] or 0.001
-
-                    qty = max((current_margin * lev) / price, min_q)
-                    qty = float(exchange.amount_to_precision(sym, qty))
-
+                    # 🔥 SYMBOL FIX
                     clean_sym = sym.replace(":USDT", "")
 
-                    print("TRY ORDER:", clean_sym, direction, qty)
+                    print("ORDER:", clean_sym, direction, qty)
 
-                    order = safe_api(lambda: exchange.create_market_order(
+                    order = exchange.create_market_order(
                         clean_sym,
-                        "buy" if direction == "long" else "sell",
+                        "buy" if direction=="long" else "sell",
                         qty
-                    ))
+                    )
 
                     if not order:
                         continue
 
                     trade_state[sym] = {
-                        "dir": direction,
-                        "time": time.time(),
-                        "key": key
+                        "entry": price,
+                        "time": time.time()
                     }
 
                     active_trades.add(sym)
 
-                    bot.send_message(CHAT_ID, f"🚀 {clean_sym} {direction}")
+                    bot.send_message(CHAT_ID, f"🤖 {clean_sym} {direction}")
                     break
 
-            time.sleep(6)
+            time.sleep(8)
 
         except Exception as e:
             print("ENGINE ERROR:", e)
@@ -227,48 +165,34 @@ def engine():
 def manage():
     while True:
         try:
-            positions = safe_api(lambda: exchange.fetch_positions())
-            if not positions:
-                time.sleep(6)
-                continue
-
-            for p in positions:
+            for p in exchange.fetch_positions():
 
                 qty = safe(p.get("contracts"))
                 if qty <= 0:
                     continue
 
-                sym = p.get("symbol")
+                sym = p["symbol"]
                 clean_sym = sym.replace(":USDT", "")
 
-                pnl = safe(p.get("unrealizedPnl"))
-
-                st = trade_state.get(sym)
-                if not st:
+                if sym not in trade_state:
                     continue
 
-                if exit_check(sym, pnl, st["time"]):
+                price = safe(exchange.fetch_ticker(sym)["last"])
+                pnl = safe(p.get("unrealizedPnl"))
+                direction = "long" if p.get("side")=="long" else "short"
 
-                    safe_api(lambda: exchange.create_market_order(
+                # basit exit
+                if pnl < -1 or pnl > 2:
+
+                    exchange.create_market_order(
                         clean_sym,
-                        "sell" if p.get("side") == "long" else "buy",
+                        "sell" if direction=="long" else "buy",
                         qty,
                         params={"reduceOnly": True}
-                    ))
+                    )
 
                     trade_state.pop(sym, None)
                     active_trades.discard(sym)
-
-                    # AI öğrenme
-                    k = st.get("key")
-                    if k:
-                        if k not in ai_memory:
-                            ai_memory[k] = {"win":1, "loss":1}
-
-                        if pnl > 0:
-                            ai_memory[k]["win"] += 1
-                        else:
-                            ai_memory[k]["loss"] += 1
 
                     bot.send_message(CHAT_ID, f"❌ {clean_sym} {round(pnl,2)}")
 
@@ -285,5 +209,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 PRO AI BOT AKTİF")
 bot.infinity_polling()
