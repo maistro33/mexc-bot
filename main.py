@@ -17,11 +17,15 @@ MAX_TRADES = 1
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# 💣 CRITICAL FIX BURADA
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS") or "Berfin33",
-    "options": {"defaultType": "swap"},
+    "options": {
+        "defaultType": "swap",
+        "createMarketBuyOrderRequiresPrice": False  # 🔥 FIX
+    },
     "enableRateLimit": True,
     "timeout": 20000
 })
@@ -118,7 +122,7 @@ def engine():
                 ob = orderbook_imbalance(sym)
                 ai = ai_decision(sym, sc, ob)
 
-                # 🔥 FALLBACK (EN KRİTİK)
+                # 🔥 FALLBACK (ASLA DURMAZ)
                 if ai == "SKIP":
                     direction = "long" if ob > 0 else "short"
                 else:
@@ -131,7 +135,6 @@ def engine():
 
                     qty = float(exchange.amount_to_precision(sym, (MARGIN * LEVERAGE) / price))
 
-                    # 🔥 SYMBOL FIX
                     clean_sym = sym.replace(":USDT", "")
 
                     print("ORDER:", clean_sym, direction, qty)
@@ -177,11 +180,9 @@ def manage():
                 if sym not in trade_state:
                     continue
 
-                price = safe(exchange.fetch_ticker(sym)["last"])
                 pnl = safe(p.get("unrealizedPnl"))
                 direction = "long" if p.get("side")=="long" else "short"
 
-                # basit exit
                 if pnl < -1 or pnl > 2:
 
                     exchange.create_market_order(
@@ -209,5 +210,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 PRO AI BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 FINAL PRO AI BOT AKTİF")
 bot.infinity_polling()
