@@ -1,1 +1,1 @@
-worker: python train_ai.py
+worker: python main.py
