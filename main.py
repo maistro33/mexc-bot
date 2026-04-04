@@ -8,6 +8,9 @@ MIN_VOL = 0.002
 BASE_USDT = 5
 MEMORY_FILE = "memory.json"
 
+TP_USDT = 1.5
+SL_USDT = -1.0
+
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -102,7 +105,6 @@ def predict(sym):
         if direction=="long" and tr!="up":return None,conf
         if direction=="short" and tr!="down":return None,conf
 
-        # 💣 whale / pump filter
         if not volume_spike(sym):
             return None,conf
 
@@ -119,35 +121,60 @@ def symbols():
     s.sort(key=lambda x:x[1],reverse=True)
     return [x[0] for x in s[:30]]
 
+# ===== RECOVERY =====
+trade_state = {}
+
+def recover_positions():
+    positions = exchange.fetch_positions()
+    for p in positions:
+        if safe(p.get("contracts")) > 0:
+            sym = p["symbol"]
+            trade_state[sym] = True
+            bot.send_message(CHAT_ID, f"♻️ RECOVERED {sym}")
+
 # ===== ENGINE =====
 def engine():
     global memory
 
     while True:
         try:
-            pos=exchange.fetch_positions()
-            open_count=sum(1 for p in pos if safe(p.get("contracts"))>0)
+            positions = exchange.fetch_positions()
+            open_count = sum(1 for p in positions if safe(p.get("contracts"))>0)
 
             for sym in symbols():
 
-                if open_count>=MAX_TRADES:break
+                if open_count >= MAX_TRADES:
+                    break
 
-                direction,conf=predict(sym)
-                if not direction:continue
+                if sym in trade_state:
+                    continue
+
+                direction,conf = predict(sym)
+                if not direction:
+                    continue
 
                 success = sum(1 for m in memory if m["win"]) / len(memory) if memory else 0.5
-
                 if success < 0.4:
                     continue
 
                 usdt = BASE_USDT * (2 if conf>0.75 else 1)
                 lev = 12 if conf>0.75 else 10
 
-                price=safe(exchange.fetch_ticker(sym)["last"])
-                qty=(usdt*lev)/price
-                qty=float(exchange.amount_to_precision(sym,qty))
+                price = safe(exchange.fetch_ticker(sym)["last"])
 
-                exchange.set_leverage(lev,sym)
+                market = exchange.market(sym)
+                qty = (usdt * lev) / price
+
+                min_qty = market.get('limits', {}).get('amount', {}).get('min', 0.001)
+                if qty < min_qty:
+                    qty = min_qty
+
+                qty = float(exchange.amount_to_precision(sym, qty))
+
+                if qty <= 0:
+                    continue
+
+                exchange.set_leverage(lev, sym)
 
                 exchange.create_market_order(
                     sym,
@@ -155,8 +182,10 @@ def engine():
                     qty
                 )
 
+                trade_state[sym] = True
+
                 bot.send_message(CHAT_ID,
-                    f"🚀 {sym}\n{direction}\nconf:{round(conf,2)}\nlev:{lev}x")
+                    f"🚀 {sym}\n{direction}\nconf:{round(conf,2)}\nlev:{lev}x\nsize:{usdt}$")
 
                 break
 
@@ -171,16 +200,18 @@ def manage():
 
     while True:
         try:
-            pos=exchange.fetch_positions()
+            positions = exchange.fetch_positions()
 
-            for p in pos:
-                qty=safe(p.get("contracts"))
-                if qty<=0:continue
+            for p in positions:
+                qty = safe(p.get("contracts"))
+                if qty <= 0:
+                    continue
 
-                pnl=safe(p.get("unrealizedPnl"))
-                sym=p["symbol"]
+                sym = p["symbol"]
+                pnl = safe(p.get("unrealizedPnl"))
 
-                if pnl>0.3 or pnl<-0.5:
+                if pnl > TP_USDT or pnl < SL_USDT:
+
                     exchange.create_market_order(
                         sym,
                         "sell" if p["side"]=="long" else "buy",
@@ -192,8 +223,10 @@ def manage():
                     memory.append({"symbol":sym,"win":win})
                     save_memory(memory)
 
+                    trade_state.pop(sym, None)
+
                     bot.send_message(CHAT_ID,
-                        f"{'✅ WIN' if win else '❌ LOSS'} {sym} {pnl}")
+                        f"{'✅ WIN' if win else '❌ LOSS'} {sym} {round(pnl,2)}")
 
             time.sleep(3)
 
@@ -203,8 +236,10 @@ def manage():
 # ===== START =====
 bot.remove_webhook()
 
+recover_positions()
+
 threading.Thread(target=engine,daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 Sadik Bot v5.0 FINAL AI AKTİF")
+bot.send_message(CHAT_ID,"🔥 Sadik Bot v5.1 FINAL STABLE AKTİF")
 bot.infinity_polling()
