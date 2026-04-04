@@ -1,28 +1,16 @@
-import os
-import time
-import ccxt
-import telebot
-import threading
+import os, time, json, ccxt, telebot, threading, joblib, numpy as np
 import pandas as pd
-import joblib
-import numpy as np
 
 # ===== SETTINGS =====
-AGGR_VOLUME = 200_000
-TOP_COINS = 30
 MAX_TRADES = 2
+AI_CONF = 0.65
+MIN_VOL = 0.002
+BASE_USDT = 5
+MEMORY_FILE = "memory.json"
 
-TP1_USDT = 0.25
-TRAIL_GAP = 0.01
-
-AI_CONFIDENCE = 0.60   # 💣 sadece güçlü sinyal
-MIN_VOLATILITY = 0.002 # 💣 düşük hareket yok
-
-# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -33,286 +21,190 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
-# ===== AUTO AI TRAIN =====
+# ===== MEMORY =====
+def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return []
+    with open(MEMORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_memory(data):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(data, f)
+
+memory = load_memory()
+
+# ===== AI TRAIN =====
 def train_model():
     from xgboost import XGBClassifier
 
-    print("🤖 MODEL YOK → TRAIN")
-
     data = []
-    symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
-
-    for sym in symbols:
+    for sym in ["BTC/USDT:USDT","ETH/USDT:USDT"]:
         ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=300)
 
         for c in ohlcv:
-            t,o,h,l,close,v = c
-            vol = (h-l)/close if close else 0
-            data.append([o,h,l,close,v,vol])
+            t,o,h,l,cl,v = c
+            vol=(h-l)/cl if cl else 0
+            data.append([o,h,l,cl,v,vol])
 
-    df = pd.DataFrame(data, columns=[
-        "open","high","low","close","volume","volatility"
-    ])
+    df = pd.DataFrame(data, columns=["o","h","l","c","v","vol"])
+    df["r"] = df["c"].pct_change()
+    df["t"] = (df["r"].shift(-1)>0).astype(int)
+    df=df.dropna()
 
-    df["return"] = df["close"].pct_change()
-    df["target"] = (df["return"].shift(-1) > 0).astype(int)
-    df = df.dropna()
+    X=df[["o","h","l","c","v","vol"]]
+    y=df["t"]
 
-    X = df[["open","high","low","close","volume","volatility"]]
-    y = df["target"]
+    model=XGBClassifier(n_estimators=150)
+    model.fit(X,y)
+    joblib.dump(model,"ai_model.pkl")
 
-    model = XGBClassifier(n_estimators=120)
-    model.fit(X, y)
-
-    joblib.dump(model, "ai_model.pkl")
-    print("✅ MODEL HAZIR")
-
-# ===== LOAD =====
 if not os.path.exists("ai_model.pkl"):
     train_model()
 
 model = joblib.load("ai_model.pkl")
 
-# ===== GLOBAL =====
-active_trades = set()
-trade_state = {}
-lock = threading.Lock()
-
-# ===== SAFE =====
+# ===== HELPERS =====
 def safe(x):
-    try: return float(x)
-    except: return 0.0
+    try:return float(x)
+    except:return 0
 
-def safe_api(call):
-    try:
-        return call()
-    except:
-        return None
+def trend(sym):
+    c=exchange.fetch_ohlcv(sym,"5m",limit=20)
+    closes=[x[4] for x in c]
+    return "up" if closes[-1]>sum(closes)/len(closes) else "down"
 
-# ===== TREND =====
-def get_trend(sym):
-    c = exchange.fetch_ohlcv(sym, "5m", limit=20)
-    closes = [x[4] for x in c]
-    avg = sum(closes)/len(closes)
-    return "up" if closes[-1] > avg else "down"
+def volume_spike(sym):
+    c=exchange.fetch_ohlcv(sym,"5m",limit=5)
+    vols=[x[5] for x in c]
+    return vols[-1] > sum(vols[:-1])/4
 
 # ===== AI =====
-def ai_predict(sym):
+def predict(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=2)
-        if not ohlcv:
-            return None, 0
+        ohlcv=exchange.fetch_ohlcv(sym,"5m",limit=2)
+        t,o,h,l,c,v=ohlcv[-1]
 
-        t,o,h,l,c,v = ohlcv[-1]
-        vol = (h-l)/c if c else 0
+        vol=(h-l)/c if c else 0
+        if vol < MIN_VOL:
+            return None,0
 
-        # 💣 volatility filter
-        if vol < MIN_VOLATILITY:
-            return None, 0
+        data=[[o,h,l,c,v,vol]]
+        p=model.predict_proba(data)[0]
+        conf=max(p)
 
-        data = [[o,h,l,c,v,vol]]
+        if conf < AI_CONF:
+            return None,conf
 
-        proba = model.predict_proba(data)[0]
-        confidence = max(proba)
+        direction="long" if p[1]>p[0] else "short"
 
-        if confidence < AI_CONFIDENCE:
-            return None, confidence
+        tr=trend(sym)
+        if direction=="long" and tr!="up":return None,conf
+        if direction=="short" and tr!="down":return None,conf
 
-        direction = "long" if proba[1] > proba[0] else "short"
+        # 💣 whale / pump filter
+        if not volume_spike(sym):
+            return None,conf
 
-        # 💣 trend filter
-        trend = get_trend(sym)
-        if direction == "long" and trend != "up":
-            return None, confidence
-        if direction == "short" and trend != "down":
-            return None, confidence
+        return direction,conf
 
-        return direction, confidence
-
-    except Exception as e:
-        print("AI ERROR:", e)
-        return None, 0
+    except:
+        return None,0
 
 # ===== SYMBOLS =====
-def get_symbols():
-    t = safe_api(lambda: exchange.fetch_tickers())
-    if not t:
-        return []
-
-    f = [(s, safe(d.get("quoteVolume"))) for s,d in t.items() if ":USDT" in s]
-    f = [x for x in f if x[1] >= AGGR_VOLUME]
-    f.sort(key=lambda x: x[1], reverse=True)
-
-    return [x[0] for x in f[:TOP_COINS]]
+def symbols():
+    t=exchange.fetch_tickers()
+    s=[(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
+    s=[x for x in s if safe(x[1])>200000]
+    s.sort(key=lambda x:x[1],reverse=True)
+    return [x[0] for x in s[:30]]
 
 # ===== ENGINE =====
 def engine():
+    global memory
+
     while True:
         try:
-            positions = safe_api(lambda: exchange.fetch_positions())
-            open_count = 0
+            pos=exchange.fetch_positions()
+            open_count=sum(1 for p in pos if safe(p.get("contracts"))>0)
 
-            if positions:
-                for p in positions:
-                    if safe(p.get("contracts")) > 0:
-                        open_count += 1
+            for sym in symbols():
 
-            for sym in get_symbols():
+                if open_count>=MAX_TRADES:break
 
-                if open_count >= MAX_TRADES:
-                    break
+                direction,conf=predict(sym)
+                if not direction:continue
 
-                if sym in trade_state:
+                success = sum(1 for m in memory if m["win"]) / len(memory) if memory else 0.5
+
+                if success < 0.4:
                     continue
 
-                ticker = safe_api(lambda: exchange.fetch_ticker(sym))
-                if not ticker:
-                    continue
+                usdt = BASE_USDT * (2 if conf>0.75 else 1)
+                lev = 12 if conf>0.75 else 10
 
-                price = safe(ticker["last"])
-                if price <= 0:
-                    continue
+                price=safe(exchange.fetch_ticker(sym)["last"])
+                qty=(usdt*lev)/price
+                qty=float(exchange.amount_to_precision(sym,qty))
 
-                direction, conf = ai_predict(sym)
-                if not direction:
-                    continue
+                exchange.set_leverage(lev,sym)
 
-                with lock:
-                    lev = 10
+                exchange.create_market_order(
+                    sym,
+                    "buy" if direction=="long" else "sell",
+                    qty
+                )
 
-                    try: exchange.set_margin_mode("cross", sym)
-                    except: pass
+                bot.send_message(CHAT_ID,
+                    f"🚀 {sym}\n{direction}\nconf:{round(conf,2)}\nlev:{lev}x")
 
-                    try: exchange.set_leverage(lev, sym)
-                    except: pass
-
-                    qty = (5 * lev) / price
-                    qty = float(exchange.amount_to_precision(sym, qty))
-
-                    safe_api(lambda: exchange.create_market_order(
-                        sym,
-                        "buy" if direction=="long" else "sell",
-                        qty
-                    ))
-
-                    trade_state[sym] = {
-                        "direction": direction,
-                        "entry": price,
-                        "tp1": False,
-                        "trail_active": False,
-                        "trail_price": price,
-                        "closing": False
-                    }
-
-                    active_trades.add(sym)
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} ({round(conf,2)})")
-                    break
+                break
 
             time.sleep(5)
 
         except Exception as e:
-            print("ENGINE ERROR:", e)
-            time.sleep(5)
+            print("ENGINE:",e)
 
 # ===== MANAGE =====
 def manage():
+    global memory
+
     while True:
         try:
-            positions = safe_api(lambda: exchange.fetch_positions())
-            if not positions:
-                time.sleep(5)
-                continue
+            pos=exchange.fetch_positions()
 
-            for p in positions:
+            for p in pos:
+                qty=safe(p.get("contracts"))
+                if qty<=0:continue
 
-                qty = safe(p.get("contracts"))
-                if qty <= 0:
-                    continue
+                pnl=safe(p.get("unrealizedPnl"))
+                sym=p["symbol"]
 
-                sym = p["symbol"]
-                if sym not in trade_state:
-                    continue
-
-                st = trade_state[sym]
-
-                if st.get("closing"):
-                    continue
-
-                direction = "long" if p["side"] == "long" else "short"
-                price = safe(exchange.fetch_ticker(sym)["last"])
-                entry = st["entry"]
-
-                # TP1
-                if not st["tp1"] and safe(p.get("unrealizedPnl")) >= TP1_USDT:
-                    part = qty * 0.4
-
-                    safe_api(lambda: exchange.create_market_order(
+                if pnl>0.3 or pnl<-0.5:
+                    exchange.create_market_order(
                         sym,
-                        "sell" if direction=="long" else "buy",
-                        part,
-                        params={"reduceOnly": True}
-                    ))
-
-                    st["tp1"] = True
-                    st["trail_active"] = True
-                    st["trail_price"] = price
-
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
-
-                # TRAILING
-                if st["trail_active"]:
-                    if direction == "long":
-                        if price > st["trail_price"]:
-                            st["trail_price"] = price
-
-                        if price <= st["trail_price"] * (1 - TRAIL_GAP):
-                            st["closing"] = True
-                            safe_api(lambda: exchange.create_market_order(
-                                sym, "sell", qty, params={"reduceOnly": True}
-                            ))
-                            active_trades.discard(sym)
-                            trade_state.pop(sym, None)
-                            bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
-
-                    else:
-                        if price < st["trail_price"]:
-                            st["trail_price"] = price
-
-                        if price >= st["trail_price"] * (1 + TRAIL_GAP):
-                            st["closing"] = True
-                            safe_api(lambda: exchange.create_market_order(
-                                sym, "buy", qty, params={"reduceOnly": True}
-                            ))
-                            active_trades.discard(sym)
-                            trade_state.pop(sym, None)
-                            bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
-
-                # STOP LOSS
-                loss_pct = abs(price - entry) / entry
-                if loss_pct >= 0.02:
-                    st["closing"] = True
-                    safe_api(lambda: exchange.create_market_order(
-                        sym,
-                        "sell" if direction=="long" else "buy",
+                        "sell" if p["side"]=="long" else "buy",
                         qty,
-                        params={"reduceOnly": True}
-                    ))
-                    active_trades.discard(sym)
-                    trade_state.pop(sym, None)
-                    bot.send_message(CHAT_ID, f"❌ STOP {sym}")
+                        params={"reduceOnly":True}
+                    )
+
+                    win = pnl > 0
+                    memory.append({"symbol":sym,"win":win})
+                    save_memory(memory)
+
+                    bot.send_message(CHAT_ID,
+                        f"{'✅ WIN' if win else '❌ LOSS'} {sym} {pnl}")
 
             time.sleep(3)
 
         except Exception as e:
-            print("MANAGE ERROR:", e)
-            time.sleep(5)
+            print("MANAGE:",e)
 
 # ===== START =====
-exchange.fetch_balance()
 bot.remove_webhook()
 
-threading.Thread(target=engine, daemon=True).start()
-threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=engine,daemon=True).start()
+threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 Sadik Bot v3.0 AI AKTİF")
+bot.send_message(CHAT_ID,"🔥 Sadik Bot v5.0 FINAL AI AKTİF")
 bot.infinity_polling()
