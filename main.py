@@ -31,7 +31,7 @@ lock = threading.Lock()
 
 current_margin = 5
 
-# ===== AI CORE =====
+# ===== AI =====
 ai_weights = {
     "trend": 1.2,
     "momentum": 1.5,
@@ -53,6 +53,16 @@ def safe_api(call):
     except Exception as e:
         print("API ERROR:", str(e))
         return None
+
+# ===== POSITION CHECK =====
+def has_open_position():
+    pos = safe_api(lambda: exchange.fetch_positions())
+    if not pos:
+        return False
+    for p in pos:
+        if safe(p.get("contracts")) > 0:
+            return True
+    return False
 
 # ===== AI DECISION =====
 def decide(sym):
@@ -121,13 +131,11 @@ def decide(sym):
         return None, 0, {}, None
 
 # ===== EXIT =====
-def exit_check(sym, pnl, direction, open_time):
+def exit_check(sym, pnl, open_time):
     if time.time() - open_time < 120:
         return False
-
     if pnl < -1.5 or pnl > 2:
         return True
-
     return False
 
 # ===== SYMBOLS =====
@@ -146,15 +154,16 @@ def symbols():
 def engine():
     while True:
         try:
+            if has_open_position():
+                time.sleep(5)
+                continue
+
             for sym in symbols():
 
                 if len(active_trades) >= MAX_TRADES:
                     break
 
                 if sym in active_trades:
-                    continue
-
-                if time.time() - last_trade_time.get(sym, 0) < 8:
                     continue
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
@@ -184,10 +193,9 @@ def engine():
                     qty = max((current_margin * lev) / price, min_q)
                     qty = float(exchange.amount_to_precision(sym, qty))
 
-                    # 🔥 SYMBOL FIX
                     clean_sym = sym.replace(":USDT", "")
 
-                    print("ORDER:", clean_sym, direction, qty)
+                    print("TRY ORDER:", clean_sym, direction, qty)
 
                     order = safe_api(lambda: exchange.create_market_order(
                         clean_sym,
@@ -201,14 +209,12 @@ def engine():
                     trade_state[sym] = {
                         "dir": direction,
                         "time": time.time(),
-                        "features": features,
                         "key": key
                     }
 
                     active_trades.add(sym)
-                    last_trade_time[sym] = time.time()
 
-                    bot.send_message(CHAT_ID, f"🚀 {clean_sym} {direction} AI:{round(score,2)}")
+                    bot.send_message(CHAT_ID, f"🚀 {clean_sym} {direction}")
                     break
 
             time.sleep(6)
@@ -233,29 +239,27 @@ def manage():
                     continue
 
                 sym = p.get("symbol")
-                if sym not in trade_state:
-                    continue
-
                 clean_sym = sym.replace(":USDT", "")
 
-                direction = "long" if p.get("side") == "long" else "short"
                 pnl = safe(p.get("unrealizedPnl"))
 
-                st = trade_state[sym]
+                st = trade_state.get(sym)
+                if not st:
+                    continue
 
-                if exit_check(sym, pnl, direction, st["time"]):
+                if exit_check(sym, pnl, st["time"]):
 
                     safe_api(lambda: exchange.create_market_order(
                         clean_sym,
-                        "sell" if direction == "long" else "buy",
+                        "sell" if p.get("side") == "long" else "buy",
                         qty,
                         params={"reduceOnly": True}
                     ))
 
-                    active_trades.discard(sym)
                     trade_state.pop(sym, None)
+                    active_trades.discard(sym)
 
-                    # AI learning
+                    # AI öğrenme
                     k = st.get("key")
                     if k:
                         if k not in ai_memory:
@@ -281,5 +285,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (FIXED FINAL)")
+bot.send_message(CHAT_ID, "🔥 FINAL AI BOT AKTİF")
 bot.infinity_polling()
