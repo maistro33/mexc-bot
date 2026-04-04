@@ -3,30 +3,48 @@ import time
 import ccxt
 import telebot
 import threading
+import pandas as pd
+
+# ===== ENV CHECK =====
+REQUIRED_ENV = [
+    "TELE_TOKEN",
+    "MY_CHAT_ID",
+    "BITGET_API",
+    "BITGET_SEC",
+    "BITGET_PASS"
+]
+
+for key in REQUIRED_ENV:
+    if not os.getenv(key):
+        raise Exception(f"❌ Missing ENV: {key}")
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 100
+TOP_COINS = 50
 MAX_TRADES = 2
 
 TP1_USDT = 0.25
 TRAIL_GAP = 0.01
 
+# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS") or "Berfin33",
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
 exchange.load_markets()
 
+# ===== GLOBAL =====
 active_trades = set()
 trade_state = {}
+ai_data = []
 lock = threading.Lock()
 
 # ===== SAFE =====
@@ -41,37 +59,6 @@ def safe_api(call):
         print("API ERROR:", e)
         return None
 
-# ===== RECOVERY =====
-def load_open_positions():
-    try:
-        positions = exchange.fetch_positions()
-
-        for p in positions:
-            qty = safe(p.get("contracts"))
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-            entry = safe(p["entryPrice"])
-            side = p["side"]
-
-            trade_state[sym] = {
-                "direction": "long" if side=="long" else "short",
-                "entry": entry,
-                "tp1": True,
-                "step": 1,
-                "trail_active": True,
-                "trail_price": entry,
-                "closing": False
-            }
-
-            active_trades.add(sym)
-
-            bot.send_message(CHAT_ID, f"♻️ RECOVER {sym}")
-
-    except Exception as e:
-        print("RECOVERY ERROR:", e)
-
 # ===== ORDERBOOK =====
 def orderbook(sym):
     ob = safe_api(lambda: exchange.fetch_order_book(sym, 5))
@@ -81,7 +68,7 @@ def orderbook(sym):
     asks = sum(a[1] for a in ob["asks"])
     return (bids - asks)/(bids + asks) if bids+asks else 0
 
-# ===== AI ENTRY =====
+# ===== DECISION =====
 def decide(sym):
     try:
         c = exchange.fetch_ohlcv(sym, "5m", limit=30)
@@ -113,7 +100,7 @@ def get_symbols():
 
     return [x[0] for x in f[:TOP_COINS]]
 
-# ===== ENTRY =====
+# ===== ENGINE =====
 def engine():
     while True:
         try:
@@ -138,7 +125,6 @@ def engine():
                     continue
 
                 with lock:
-
                     lev = 10
 
                     try: exchange.set_margin_mode("cross", sym)
@@ -160,7 +146,6 @@ def engine():
                         "direction": direction,
                         "entry": price,
                         "tp1": False,
-                        "step": 0,
                         "trail_active": False,
                         "trail_price": price,
                         "closing": False
@@ -196,7 +181,6 @@ def manage():
                     continue
 
                 st = trade_state[sym]
-
                 if st.get("closing"):
                     continue
 
@@ -205,7 +189,7 @@ def manage():
                 entry = st["entry"]
                 pnl = safe(p.get("unrealizedPnl"))
 
-                # ===== TP1 =====
+                # TP1
                 if not st["tp1"] and pnl >= TP1_USDT:
                     part = qty * 0.4
 
@@ -217,26 +201,13 @@ def manage():
                     ))
 
                     st["tp1"] = True
-                    st["sl"] = entry
                     st["trail_active"] = True
                     st["trail_price"] = price
 
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # ===== STEP =====
-                profit_pct = abs(price - entry) / entry
-
-                if profit_pct > 0.01 and st["step"] < 1:
-                    st["step"] = 1
-                    st["sl"] = entry
-
-                if profit_pct > 0.02 and st["step"] < 2:
-                    st["step"] = 2
-                    st["sl"] = entry * (1.01 if direction=="long" else 0.99)
-
-                # ===== TRAILING =====
+                # TRAILING
                 if st["trail_active"]:
-
                     if direction == "long":
                         if price > st["trail_price"]:
                             st["trail_price"] = price
@@ -252,7 +223,7 @@ def manage():
                             active_trades.discard(sym)
                             trade_state.pop(sym, None)
 
-                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
+                            bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
 
                     else:
                         if price < st["trail_price"]:
@@ -269,10 +240,11 @@ def manage():
                             active_trades.discard(sym)
                             trade_state.pop(sym, None)
 
-                            bot.send_message(CHAT_ID, f"🔒 TRAIL EXIT {sym}")
+                            bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
 
-                # ===== HARD STOP =====
-                if pnl < -0.5:
+                # HARD STOP (%2)
+                loss_pct = abs(price - entry) / entry
+                if loss_pct >= 0.02:
                     st["closing"] = True
 
                     safe_api(lambda: exchange.create_market_order(
@@ -293,15 +265,59 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(5)
 
+# ===== AI DATA COLLECTOR =====
+def collect_ai_data():
+    while True:
+        try:
+            symbols = get_symbols()[:5]
+
+            for sym in symbols:
+                try:
+                    ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
+                    if not ohlcv:
+                        continue
+
+                    timestamp, open_, high, low, close, volume = ohlcv[0]
+                    ob = orderbook(sym)
+                    volatility = (high - low) / close if close else 0
+
+                    ai_data.append({
+                        "symbol": sym,
+                        "time": timestamp,
+                        "open": open_,
+                        "high": high,
+                        "low": low,
+                        "close": close,
+                        "volume": volume,
+                        "orderbook": ob,
+                        "volatility": volatility
+                    })
+
+                    print("AI DATA:", sym)
+                    time.sleep(0.2)
+
+                except Exception as e:
+                    print("AI ERROR:", e)
+
+            if len(ai_data) >= 100:
+                df = pd.DataFrame(ai_data)
+                df.to_csv("ai_live_data.csv", index=False)
+                print("💾 AI DATA SAVED:", len(df))
+
+            time.sleep(15)
+
+        except Exception as e:
+            print("AI COLLECT ERROR:", e)
+            time.sleep(5)
+
 # ===== START =====
 exchange.fetch_balance()
 bot.remove_webhook()
 time.sleep(1)
 
-load_open_positions()
-
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=collect_ai_data, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 STABLE BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 Sadik Bot v1.5 AI AKTİF")
 bot.infinity_polling()
