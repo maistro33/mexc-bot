@@ -5,19 +5,6 @@ import telebot
 import threading
 import pandas as pd
 
-# ===== ENV CHECK =====
-REQUIRED_ENV = [
-    "TELE_TOKEN",
-    "MY_CHAT_ID",
-    "BITGET_API",
-    "BITGET_SEC",
-    "BITGET_PASS"
-]
-
-for key in REQUIRED_ENV:
-    if not os.getenv(key):
-        raise Exception(f"❌ Missing ENV: {key}")
-
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
 TOP_COINS = 50
@@ -34,7 +21,10 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    
+    # 🔥 GEÇİCİ FIX
+    "password": os.getenv("BITGET_PASS") or "Berfin33",
+    
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -187,10 +177,9 @@ def manage():
                 direction = "long" if p["side"] == "long" else "short"
                 price = safe(exchange.fetch_ticker(sym)["last"])
                 entry = st["entry"]
-                pnl = safe(p.get("unrealizedPnl"))
 
                 # TP1
-                if not st["tp1"] and pnl >= TP1_USDT:
+                if not st["tp1"] and safe(p.get("unrealizedPnl")) >= TP1_USDT:
                     part = qty * 0.4
 
                     safe_api(lambda: exchange.create_market_order(
@@ -214,15 +203,11 @@ def manage():
 
                         if price <= st["trail_price"] * (1 - TRAIL_GAP):
                             st["closing"] = True
-
                             safe_api(lambda: exchange.create_market_order(
-                                sym, "sell", qty,
-                                params={"reduceOnly": True}
+                                sym, "sell", qty, params={"reduceOnly": True}
                             ))
-
                             active_trades.discard(sym)
                             trade_state.pop(sym, None)
-
                             bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
 
                     else:
@@ -231,32 +216,25 @@ def manage():
 
                         if price >= st["trail_price"] * (1 + TRAIL_GAP):
                             st["closing"] = True
-
                             safe_api(lambda: exchange.create_market_order(
-                                sym, "buy", qty,
-                                params={"reduceOnly": True}
+                                sym, "buy", qty, params={"reduceOnly": True}
                             ))
-
                             active_trades.discard(sym)
                             trade_state.pop(sym, None)
-
                             bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
 
-                # HARD STOP (%2)
+                # HARD STOP
                 loss_pct = abs(price - entry) / entry
                 if loss_pct >= 0.02:
                     st["closing"] = True
-
                     safe_api(lambda: exchange.create_market_order(
                         sym,
                         "sell" if direction=="long" else "buy",
                         qty,
                         params={"reduceOnly": True}
                     ))
-
                     active_trades.discard(sym)
                     trade_state.pop(sym, None)
-
                     bot.send_message(CHAT_ID, f"❌ STOP {sym}")
 
             time.sleep(3)
@@ -265,59 +243,42 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(5)
 
-# ===== AI DATA COLLECTOR =====
+# ===== AI DATA =====
 def collect_ai_data():
     while True:
         try:
-            symbols = get_symbols()[:5]
+            for sym in get_symbols()[:5]:
+                ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
+                if not ohlcv:
+                    continue
 
-            for sym in symbols:
-                try:
-                    ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
-                    if not ohlcv:
-                        continue
-
-                    timestamp, open_, high, low, close, volume = ohlcv[0]
-                    ob = orderbook(sym)
-                    volatility = (high - low) / close if close else 0
-
-                    ai_data.append({
-                        "symbol": sym,
-                        "time": timestamp,
-                        "open": open_,
-                        "high": high,
-                        "low": low,
-                        "close": close,
-                        "volume": volume,
-                        "orderbook": ob,
-                        "volatility": volatility
-                    })
-
-                    print("AI DATA:", sym)
-                    time.sleep(0.2)
-
-                except Exception as e:
-                    print("AI ERROR:", e)
+                t,o,h,l,c,v = ohlcv[0]
+                ai_data.append({
+                    "symbol": sym,
+                    "time": t,
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": c,
+                    "volume": v,
+                    "volatility": (h-l)/c if c else 0
+                })
 
             if len(ai_data) >= 100:
-                df = pd.DataFrame(ai_data)
-                df.to_csv("ai_live_data.csv", index=False)
-                print("💾 AI DATA SAVED:", len(df))
+                pd.DataFrame(ai_data).to_csv("ai_live_data.csv", index=False)
 
             time.sleep(15)
 
         except Exception as e:
-            print("AI COLLECT ERROR:", e)
-            time.sleep(5)
+            print("AI ERROR:", e)
 
 # ===== START =====
 exchange.fetch_balance()
 bot.remove_webhook()
-time.sleep(1)
 
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=collect_ai_data, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 Sadik Bot v1.5 AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 BOT AKTİF")
 bot.infinity_polling()
