@@ -4,6 +4,7 @@ import ccxt
 import telebot
 import threading
 import pandas as pd
+import joblib
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
@@ -21,15 +22,15 @@ CHAT_ID = os.getenv("MY_CHAT_ID")
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    
-    # 🔥 GEÇİCİ FIX
     "password": os.getenv("BITGET_PASS") or "Berfin33",
-    
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
 exchange.load_markets()
+
+# ===== AI MODEL =====
+model = joblib.load("ai_model.pkl")
 
 # ===== GLOBAL =====
 active_trades = set()
@@ -49,6 +50,35 @@ def safe_api(call):
         print("API ERROR:", e)
         return None
 
+# ===== RECOVERY =====
+def load_open_positions():
+    try:
+        positions = exchange.fetch_positions()
+
+        for p in positions:
+            qty = safe(p.get("contracts"))
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+            entry = safe(p.get("entryPrice"))
+            side = p["side"]
+
+            trade_state[sym] = {
+                "direction": "long" if side == "long" else "short",
+                "entry": entry,
+                "tp1": True,
+                "trail_active": True,
+                "trail_price": entry,
+                "closing": False
+            }
+
+            active_trades.add(sym)
+            print(f"♻️ RECOVERED: {sym}")
+
+    except Exception as e:
+        print("RECOVERY ERROR:", e)
+
 # ===== ORDERBOOK =====
 def orderbook(sym):
     ob = safe_api(lambda: exchange.fetch_order_book(sym, 5))
@@ -58,24 +88,24 @@ def orderbook(sym):
     asks = sum(a[1] for a in ob["asks"])
     return (bids - asks)/(bids + asks) if bids+asks else 0
 
-# ===== DECISION =====
-def decide(sym):
+# ===== AI DECISION =====
+def ai_predict(sym):
     try:
-        c = exchange.fetch_ohlcv(sym, "5m", limit=30)
-        closes = [x[4] for x in c]
+        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
+        if not ohlcv:
+            return None
 
-        trend = closes[-1] > sum(closes[-10:])/10
-        momentum = closes[-1] > closes[-3]
-        ob = orderbook(sym)
+        t,o,h,l,c,v = ohlcv[0]
+        volatility = (h - l) / c if c else 0
 
-        if trend and momentum and ob > 0:
-            return "long"
+        data = [[o, h, l, c, v, volatility]]
 
-        if not trend and not momentum and ob < 0:
-            return "short"
+        pred = model.predict(data)[0]
 
-        return None
-    except:
+        return "long" if pred == 1 else "short"
+
+    except Exception as e:
+        print("AI ERROR:", e)
         return None
 
 # ===== SYMBOLS =====
@@ -94,12 +124,20 @@ def get_symbols():
 def engine():
     while True:
         try:
+            positions = safe_api(lambda: exchange.fetch_positions())
+            open_count = 0
+
+            if positions:
+                for p in positions:
+                    if safe(p.get("contracts")) > 0:
+                        open_count += 1
+
             for sym in get_symbols():
 
-                if len(active_trades) >= MAX_TRADES:
+                if open_count >= MAX_TRADES:
                     break
 
-                if sym in active_trades:
+                if sym in trade_state:
                     continue
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
@@ -110,7 +148,7 @@ def engine():
                 if price <= 0:
                     continue
 
-                direction = decide(sym)
+                direction = ai_predict(sym)
                 if not direction:
                     continue
 
@@ -142,7 +180,7 @@ def engine():
                     }
 
                     active_trades.add(sym)
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction}")
+                    bot.send_message(CHAT_ID, f"🚀 AI {sym} {direction}")
                     break
 
             time.sleep(5)
@@ -253,6 +291,7 @@ def collect_ai_data():
                     continue
 
                 t,o,h,l,c,v = ohlcv[0]
+
                 ai_data.append({
                     "symbol": sym,
                     "time": t,
@@ -274,11 +313,13 @@ def collect_ai_data():
 
 # ===== START =====
 exchange.fetch_balance()
+load_open_positions()
+
 bot.remove_webhook()
 
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=collect_ai_data, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 BOT AKTİF")
+bot.send_message(CHAT_ID, "🔥 Sadik Bot v1.6 AI AKTİF")
 bot.infinity_polling()
