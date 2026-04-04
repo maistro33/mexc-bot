@@ -8,7 +8,7 @@ import joblib
 
 # ===== SETTINGS =====
 AGGR_VOLUME = 200_000
-TOP_COINS = 50
+TOP_COINS = 30
 MAX_TRADES = 2
 
 TP1_USDT = 0.25
@@ -29,13 +29,59 @@ exchange = ccxt.bitget({
 
 exchange.load_markets()
 
-# ===== AI MODEL =====
+# ===== AUTO AI TRAIN =====
+def train_model():
+    import numpy as np
+    from xgboost import XGBClassifier
+
+    print("🤖 MODEL YOK → TRAIN BAŞLIYOR")
+
+    symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+
+    data = []
+
+    for sym in symbols:
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=300)
+
+            for c in ohlcv:
+                t,o,h,l,close,v = c
+                vol = (h-l)/close if close else 0
+
+                data.append([o,h,l,close,v,vol])
+
+        except Exception as e:
+            print("DATA ERROR:", e)
+
+    df = pd.DataFrame(data, columns=[
+        "open","high","low","close","volume","volatility"
+    ])
+
+    df["return"] = df["close"].pct_change()
+    df["target"] = (df["return"].shift(-1) > 0).astype(int)
+
+    df = df.dropna()
+
+    X = df[["open","high","low","close","volume","volatility"]]
+    y = df["target"]
+
+    model = XGBClassifier(n_estimators=100)
+
+    model.fit(X, y)
+
+    joblib.dump(model, "ai_model.pkl")
+
+    print("✅ MODEL OLUŞTURULDU")
+
+# ===== LOAD MODEL =====
+if not os.path.exists("ai_model.pkl"):
+    train_model()
+
 model = joblib.load("ai_model.pkl")
 
 # ===== GLOBAL =====
 active_trades = set()
 trade_state = {}
-ai_data = []
 lock = threading.Lock()
 
 # ===== SAFE =====
@@ -79,16 +125,7 @@ def load_open_positions():
     except Exception as e:
         print("RECOVERY ERROR:", e)
 
-# ===== ORDERBOOK =====
-def orderbook(sym):
-    ob = safe_api(lambda: exchange.fetch_order_book(sym, 5))
-    if not ob:
-        return 0
-    bids = sum(b[1] for b in ob["bids"])
-    asks = sum(a[1] for a in ob["asks"])
-    return (bids - asks)/(bids + asks) if bids+asks else 0
-
-# ===== AI DECISION =====
+# ===== AI =====
 def ai_predict(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
@@ -96,9 +133,9 @@ def ai_predict(sym):
             return None
 
         t,o,h,l,c,v = ohlcv[0]
-        volatility = (h - l) / c if c else 0
+        vol = (h-l)/c if c else 0
 
-        data = [[o, h, l, c, v, volatility]]
+        data = [[o,h,l,c,v,vol]]
 
         pred = model.predict(data)[0]
 
@@ -209,6 +246,7 @@ def manage():
                     continue
 
                 st = trade_state[sym]
+
                 if st.get("closing"):
                     continue
 
@@ -261,7 +299,7 @@ def manage():
                             trade_state.pop(sym, None)
                             bot.send_message(CHAT_ID, f"🔒 EXIT {sym}")
 
-                # HARD STOP
+                # STOP LOSS
                 loss_pct = abs(price - entry) / entry
                 if loss_pct >= 0.02:
                     st["closing"] = True
@@ -281,36 +319,6 @@ def manage():
             print("MANAGE ERROR:", e)
             time.sleep(5)
 
-# ===== AI DATA =====
-def collect_ai_data():
-    while True:
-        try:
-            for sym in get_symbols()[:5]:
-                ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=1)
-                if not ohlcv:
-                    continue
-
-                t,o,h,l,c,v = ohlcv[0]
-
-                ai_data.append({
-                    "symbol": sym,
-                    "time": t,
-                    "open": o,
-                    "high": h,
-                    "low": l,
-                    "close": c,
-                    "volume": v,
-                    "volatility": (h-l)/c if c else 0
-                })
-
-            if len(ai_data) >= 100:
-                pd.DataFrame(ai_data).to_csv("ai_live_data.csv", index=False)
-
-            time.sleep(15)
-
-        except Exception as e:
-            print("AI ERROR:", e)
-
 # ===== START =====
 exchange.fetch_balance()
 load_open_positions()
@@ -319,7 +327,6 @@ bot.remove_webhook()
 
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=collect_ai_data, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 Sadik Bot v1.6 AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 Sadik Bot v2.0 AUTO AI AKTİF")
 bot.infinity_polling()
