@@ -67,9 +67,7 @@ def elite_data(sym):
         url = f"https://open-api.coinglass.com/public/v2/open_interest?symbol={s}"
         headers = {"coinglassSecret": COINGLASS_API}
         r = requests.get(url, headers=headers, timeout=5).json()
-        if not r.get("data"):
-            return 0
-        return 1
+        return 1 if r.get("data") else 0
     except:
         return 0
 
@@ -128,7 +126,7 @@ def ai_decision(sym):
         return None
 
 # ===== INIT =====
-def init_trade(sym, entry, direction):
+def init_trade(sym, entry, direction, qty):
     trade_state[sym] = {
         "entry": entry,
         "direction": direction,
@@ -136,8 +134,24 @@ def init_trade(sym, entry, direction):
         "tp1": False,
         "step": 0,
         "sl": None,
-        "qty": None
+        "qty": qty
     }
+
+# ===== SYNC POSITIONS =====
+def sync_positions():
+    active_trades.clear()
+    positions = safe_api(lambda: exchange.fetch_positions())
+    if not positions:
+        return []
+
+    open_pos = []
+    for p in positions:
+        if safe(p.get("contracts")) > 0:
+            sym = p["symbol"]
+            active_trades.add(sym)
+            open_pos.append(p)
+
+    return open_pos
 
 # ===== ENGINE =====
 def engine():
@@ -145,16 +159,19 @@ def engine():
 
     while True:
         try:
-            for sym in get_symbols():
+            positions = sync_positions()
 
-                if len(active_trades)>=MAX_TRADES:
-                    break
+            if len(positions) >= MAX_TRADES:
+                time.sleep(3)
+                continue
+
+            for sym in get_symbols():
 
                 if sym in active_trades:
                     continue
 
-                d = ai_decision(sym)
-                if not d:
+                direction = ai_decision(sym)
+                if not direction:
                     continue
 
                 if not elite_signal(sym):
@@ -163,7 +180,7 @@ def engine():
                 if market_pressure(sym) < 0.002:
                     continue
 
-                if get_conf(sym,d) < 0.25:
+                if get_conf(sym, direction) < 0.25:
                     continue
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
@@ -175,9 +192,10 @@ def engine():
                     continue
 
                 with lock:
+
                     lev = 10
                     if elite_data(sym):
-                        lev = min(lev+3,20)
+                        lev = min(lev + 3, 20)
 
                     try: exchange.set_margin_mode("cross", sym)
                     except: pass
@@ -185,24 +203,22 @@ def engine():
                     try: exchange.set_leverage(lev, sym)
                     except: pass
 
-                    risk_cap = current_margin/(len(active_trades)+1)
-                    qty = float(exchange.amount_to_precision(sym, (risk_cap*lev)/price))
+                    risk_cap = current_margin / (len(active_trades)+1)
+                    qty = float(exchange.amount_to_precision(sym, (risk_cap * lev) / price))
 
                     order = safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "buy" if d=="long" else "sell",
+                        "buy" if direction=="long" else "sell",
                         qty
                     ))
 
                     if not order:
                         continue
 
-                    init_trade(sym, price, d)
-                    trade_state[sym]["qty"] = qty
-
+                    init_trade(sym, price, direction, qty)
                     active_trades.add(sym)
 
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {d} x{lev}")
+                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} x{lev}")
                     break
 
             time.sleep(4)
@@ -217,44 +233,22 @@ def manage():
 
     while True:
         try:
-            pos = safe_api(lambda: exchange.fetch_positions())
-            if not pos:
-                time.sleep(5)
-                continue
+            positions = sync_positions()
 
-            # RECOVER
-            for p in pos:
-                if safe(p.get("contracts")) <= 0:
-                    continue
-
-                sym = p["symbol"]
-
-                if sym not in trade_state:
-                    entry = safe(p["entryPrice"])
-                    d = "long" if p["side"]=="long" else "short"
-
-                    init_trade(sym, entry, d)
-                    trade_state[sym]["qty"] = safe(p["contracts"])
-
-                    active_trades.add(sym)
-                    print("RECOVER:", sym)
-
-            for p in pos:
+            for p in positions:
 
                 qty = safe(p.get("contracts"))
-                if qty <= 0:
-                    continue
-
                 sym = p["symbol"]
-                if sym not in trade_state:
-                    continue
 
+                entry = safe(p["entryPrice"])
+                price = safe(p.get("markPrice") or entry)
                 pnl = safe(p.get("unrealizedPnl"))
-                price = safe(p.get("markPrice") or p.get("last"))
+                direction = "long" if p["side"]=="long" else "short"
+
+                if sym not in trade_state:
+                    init_trade(sym, entry, direction, qty)
 
                 st = trade_state[sym]
-                entry = st["entry"]
-                d = st["direction"]
 
                 risk = st["risk"]
                 r = abs(price-entry)/risk if risk>0 else 0
@@ -266,7 +260,7 @@ def manage():
                     part = qty * 0.4
                     safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "sell" if d=="long" else "buy",
+                        "sell" if direction=="long" else "buy",
                         part,
                         params={"reduceOnly": True}
                     ))
@@ -275,24 +269,23 @@ def manage():
 
                 # ===== STEP =====
                 if st["tp1"]:
+                    if r >= 1 and st["step"] < 1:
+                        st["step"] = 1
+                        st["sl"] = entry
 
-                    if r>=1 and st["step"]<1:
-                        st["step"]=1
-                        st["sl"]=entry
+                    elif r >= 1.5 and st["step"] < 2:
+                        st["step"] = 2
+                        st["sl"] = entry + risk if direction=="long" else entry - risk
 
-                    elif r>=1.5 and st["step"]<2:
-                        st["step"]=2
-                        st["sl"]=entry+risk if d=="long" else entry-risk
-
-                    elif r>=2 and st["step"]<3:
-                        st["step"]=3
-                        st["sl"]=entry+2*risk if d=="long" else entry-2*risk
+                    elif r >= 2 and st["step"] < 3:
+                        st["step"] = 3
+                        st["sl"] = entry + 2*risk if direction=="long" else entry - 2*risk
 
                 # ===== STOP =====
                 if st["sl"]:
-                    if d=="long" and price <= st["sl"]:
+                    if direction=="long" and price <= st["sl"]:
                         close = True
-                    elif d=="short" and price >= st["sl"]:
+                    elif direction=="short" and price >= st["sl"]:
                         close = True
 
                 # ===== HARD STOP =====
@@ -302,12 +295,12 @@ def manage():
                 if close:
                     safe_api(lambda: exchange.create_market_order(
                         sym,
-                        "sell" if d=="long" else "buy",
+                        "sell" if direction=="long" else "buy",
                         qty,
                         params={"reduceOnly": True}
                     ))
 
-                    update_mem(sym, d, pnl)
+                    update_mem(sym, direction, pnl)
 
                     active_trades.discard(sym)
                     trade_state.pop(sym, None)
@@ -329,5 +322,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FINAL STABLE RUNNER AI AKTİF")
+bot.send_message(CHAT_ID, "🔥 ULTRA STABLE AI BOT AKTİF")
 bot.infinity_polling()
