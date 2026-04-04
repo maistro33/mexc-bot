@@ -3,7 +3,7 @@ import pandas as pd
 
 # ===== SETTINGS =====
 MAX_TRADES = 2
-AI_CONF = 0.65
+AI_CONF = 0.58          # 🔥 düşürüldü (önceden 0.65)
 MIN_VOL = 0.002
 BASE_USDT = 5
 MEMORY_FILE = "memory.json"
@@ -80,7 +80,7 @@ def trend(sym):
 def volume_spike(sym):
     c=exchange.fetch_ohlcv(sym,"5m",limit=5)
     vols=[x[5] for x in c]
-    return vols[-1] > sum(vols[:-1])/4
+    return vols[-1] > sum(vols[:-1])/6   # 🔥 yumuşatıldı
 
 # ===== AI =====
 def predict(sym):
@@ -154,11 +154,11 @@ def engine():
                     continue
 
                 success = sum(1 for m in memory if m["win"]) / len(memory) if memory else 0.5
-                if success < 0.4:
+                if success < 0.35:   # 🔥 biraz gevşetildi
                     continue
 
-                usdt = BASE_USDT * (2 if conf>0.75 else 1)
-                lev = 12 if conf>0.75 else 10
+                usdt = BASE_USDT * (2 if conf>0.70 else 1)
+                lev = 12 if conf>0.70 else 10
 
                 price = safe(exchange.fetch_ticker(sym)["last"])
 
@@ -241,5 +241,5 @@ recover_positions()
 threading.Thread(target=engine,daemon=True).start()
 threading.Thread(target=manage,daemon=True).start()
 
-bot.send_message(CHAT_ID,"🔥 Sadik Bot v5.1 FINAL STABLE AKTİF")
+bot.send_message(CHAT_ID,"🔥 Sadik Bot v5.2 FINAL BALANCED AKTİF")
 bot.infinity_polling()
