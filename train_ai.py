@@ -7,7 +7,7 @@ from sklearn.metrics import accuracy_score
 import joblib
 import time
 
-print("🚀 AI v2 TRAINING BAŞLADI")
+print("🚀 AI v2.1 TRAINING BAŞLADI")
 
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
@@ -60,6 +60,7 @@ for sym in SYMBOLS:
     except Exception as e:
         print("DATA ERROR:", e)
 
+# ===== DATAFRAME =====
 df = pd.DataFrame(data)
 
 print("📊 Veri:", len(df))
@@ -68,6 +69,9 @@ print("📊 Veri:", len(df))
 df["return"] = df["close"].pct_change()
 df["rsi"] = compute_rsi(df["close"])
 df["momentum"] = df["close"] - df["close"].shift(3)
+
+# 🔥 SYMBOL FIX
+df["symbol_code"] = df["symbol"].astype("category").cat.codes
 
 df["target"] = np.where(df["return"].shift(-1) > 0, 1, 0)
 
@@ -84,7 +88,8 @@ features = [
     "volume",
     "volatility",
     "rsi",
-    "momentum"
+    "momentum",
+    "symbol_code"
 ]
 
 X = df[features]
@@ -97,7 +102,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 # ===== MODEL =====
 model = XGBClassifier(
-    n_estimators=200,
+    n_estimators=250,
     max_depth=6,
     learning_rate=0.05
 )
@@ -113,4 +118,4 @@ print("🎯 ACCURACY:", acc)
 # ===== SAVE =====
 joblib.dump(model, "ai_model.pkl")
 
-print("✅ AI v2 MODEL HAZIR")
+print("✅ AI v2.1 MODEL HAZIR")
