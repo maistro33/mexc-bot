@@ -18,7 +18,7 @@ exchange = ccxt.bitget({
     "password": os.getenv("BITGET_PASS") or "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True,
-    "timeout": 20000  # 🔥 timeout fix
+    "timeout": 20000
 })
 
 exchange.load_markets()
@@ -31,17 +31,6 @@ memory = {}
 lock = threading.Lock()
 
 current_margin = 5
-win_streak = 0
-loss_streak = 0
-
-# ===== AI WEIGHTS =====
-ai_weights = {
-    "trend": 1.2,
-    "momentum": 1.5,
-    "volume": 2.0,
-    "volatility": 1.0,
-    "fakeout": 1.5
-}
 
 # ===== SAFE =====
 def safe(x):
@@ -55,71 +44,25 @@ def safe_api(call):
         print("API ERROR:", str(e))
         return None
 
-# ===== MEMORY =====
-def update_memory(sym, direction, pnl):
-    if sym not in memory:
-        memory[sym] = {"long_win":0,"long_loss":0,"short_win":0,"short_loss":0}
-
-    if pnl > 0:
-        memory[sym][direction + "_win"] += 1
-    else:
-        memory[sym][direction + "_loss"] += 1
-
-# ===== AI DECISION =====
+# ===== TEST DECIDE (GARANTİ TRADE) =====
 def decide(sym):
     try:
-        m5 = safe_api(lambda: exchange.fetch_ohlcv(sym, "5m", 50))
-        if not m5 or len(m5) < 20:
+        m5 = safe_api(lambda: exchange.fetch_ohlcv(sym, "5m", 20))
+        if not m5 or len(m5) < 10:
             return None, 0, {}
 
         closes = [x[4] for x in m5 if len(x) > 5]
-        volumes = [x[5] for x in m5 if len(x) > 5]
 
-        if len(closes) < 10 or len(volumes) < 10:
+        if len(closes) < 5:
             return None, 0, {}
 
-        trend = 1 if closes[-1] > sum(closes[-10:]) / 10 else 0
-        momentum = 1 if closes[-1] > closes[-3] else 0
+        # 🔥 BASİT MANTIK (HER ZAMAN SİNYAL)
+        if closes[-1] > closes[-3]:
+            direction = "long"
+        else:
+            direction = "short"
 
-        avg_vol = sum(volumes[-10:]) / 10
-        volume_spike = 1 if volumes[-1] > avg_vol * 1.3 else 0
-
-        volatility = abs(closes[-1] - closes[-5]) / closes[-5]
-
-        highs = [x[2] for x in m5[-10:] if len(x) > 5]
-        lows = [x[3] for x in m5[-10:] if len(x) > 5]
-
-        if len(highs) < 5 or len(lows) < 5:
-            return None, 0, {}
-
-        high = max(highs)
-        low = min(lows)
-
-        fakeout = 1
-        if closes[-1] > high and closes[-2] < high:
-            fakeout = -1
-        elif closes[-1] < low and closes[-2] > low:
-            fakeout = -1
-
-        features = {
-            "trend": trend,
-            "momentum": momentum,
-            "volume": volume_spike,
-            "volatility": volatility,
-            "fakeout": fakeout
-        }
-
-        score = sum(features[k] * ai_weights[k] for k in features)
-
-        if volume_spike:
-            score += 1
-
-        if score < 0.5:
-            return None, score, features
-
-        direction = "long" if trend else "short"
-
-        return direction, score, features
+        return direction, 1.5, {}
 
     except Exception as e:
         print("DECIDE ERROR:", e)
@@ -127,36 +70,13 @@ def decide(sym):
 
 # ===== EXIT =====
 def exit_check(sym, pnl, direction, open_time):
-    if time.time() - open_time < 180:
+    if time.time() - open_time < 120:
         return False
 
-    try:
-        m5 = safe_api(lambda: exchange.fetch_ohlcv(sym, "5m", 20))
-        if not m5 or len(m5) < 15:
-            return False
+    if pnl < -1 or pnl > 2:
+        return True
 
-        closes = [x[4] for x in m5 if len(x) > 5]
-        if len(closes) < 10:
-            return False
-
-        trend = closes[-1] > sum(closes[-10:]) / 10
-
-        if direction == "long" and not trend:
-            return True
-
-        if direction == "short" and trend:
-            return True
-
-        if pnl < -2:
-            return True
-
-        if pnl > 3:
-            return True
-
-        return False
-
-    except:
-        return False
+    return False
 
 # ===== SYMBOLS =====
 def symbols():
@@ -172,8 +92,6 @@ def symbols():
 
 # ===== ENGINE =====
 def engine():
-    global current_margin
-
     while True:
         try:
             for sym in symbols():
@@ -184,7 +102,7 @@ def engine():
                 if sym in active_trades:
                     continue
 
-                if time.time() - last_trade_time.get(sym, 0) < 8:
+                if time.time() - last_trade_time.get(sym, 0) < 10:
                     continue
 
                 ticker = safe_api(lambda: exchange.fetch_ticker(sym))
@@ -195,7 +113,7 @@ def engine():
                 if price <= 0:
                     continue
 
-                direction, score, features = decide(sym)
+                direction, score, _ = decide(sym)
 
                 if not direction:
                     continue
@@ -216,17 +134,14 @@ def engine():
                     market = exchange.market(sym)
                     min_q = market['limits']['amount']['min'] or 0.001
 
-                    margin = current_margin
-                    qty = max((margin * lev) / price, min_q)
+                    qty = max((current_margin * lev) / price, min_q)
                     qty = float(exchange.amount_to_precision(sym, qty))
-
-                    params = {"marginMode": "cross"}
 
                     order = safe_api(lambda: exchange.create_market_order(
                         sym,
                         "buy" if direction == "long" else "sell",
                         qty,
-                        params=params
+                        params={"marginMode": "cross"}
                     ))
 
                     if not order:
@@ -234,17 +149,16 @@ def engine():
 
                     trade_state[sym] = {
                         "dir": direction,
-                        "time": time.time(),
-                        "features": features
+                        "time": time.time()
                     }
 
                     active_trades.add(sym)
                     last_trade_time[sym] = time.time()
 
-                    bot.send_message(CHAT_ID, f"🚀 {sym} {direction} score:{round(score,2)}")
+                    bot.send_message(CHAT_ID, f"🚀 TEST TRADE: {sym} {direction}")
                     break
 
-            time.sleep(8)
+            time.sleep(6)
 
         except Exception as e:
             print("ENGINE ERROR:", e)
@@ -252,13 +166,11 @@ def engine():
 
 # ===== MANAGE =====
 def manage():
-    global current_margin, win_streak, loss_streak
-
     while True:
         try:
             positions = safe_api(lambda: exchange.fetch_positions())
             if not positions:
-                time.sleep(8)
+                time.sleep(6)
                 continue
 
             for p in positions:
@@ -268,6 +180,7 @@ def manage():
                     continue
 
                 sym = p.get("symbol")
+
                 if sym not in trade_state:
                     continue
 
@@ -288,32 +201,9 @@ def manage():
                     active_trades.discard(sym)
                     trade_state.pop(sym, None)
 
-                    update_memory(sym, direction, pnl)
+                    bot.send_message(CHAT_ID, f"❌ TEST EXIT: {sym} {round(pnl,2)}")
 
-                    features = st.get("features", {})
-                    for k, v in features.items():
-                        if pnl > 0:
-                            ai_weights[k] += 0.02 * v
-                        else:
-                            ai_weights[k] -= 0.02 * v
-
-                    for k in ai_weights:
-                        ai_weights[k] = max(0.1, min(5, ai_weights[k]))
-
-                    if pnl > 0:
-                        win_streak += 1
-                        loss_streak = 0
-                        current_margin += 1
-                    else:
-                        loss_streak += 1
-                        win_streak = 0
-                        current_margin -= 1
-
-                    current_margin = max(3, min(20, current_margin))
-
-                    bot.send_message(CHAT_ID, f"❌ {sym} PNL: {round(pnl,2)}")
-
-            time.sleep(8)
+            time.sleep(6)
 
         except Exception as e:
             print("MANAGE ERROR:", e)
@@ -326,5 +216,5 @@ time.sleep(1)
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🔥 FULL AI BOT AKTİF (STABLE + FAST)")
+bot.send_message(CHAT_ID, "🔥 TEST BOT AKTİF (GARANTİ TRADE)")
 bot.infinity_polling()
