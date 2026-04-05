@@ -10,6 +10,9 @@ LEVERAGE = 10
 AI_WEIGHT = 3
 MEMORY_FILE = "memory.json"
 
+TP1_USDT = 1.0
+TRAIL_GAP = 0.4
+
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -80,8 +83,7 @@ def market_context():
     ema20 = df["c"].ewm(span=20).mean().iloc[-1]
     ema50 = df["c"].ewm(span=50).mean().iloc[-1]
 
-    trend = "bull" if ema20 > ema50 else "bear"
-    return trend
+    return "bull" if ema20 > ema50 else "bear"
 
 # ===== ENTRY =====
 def entry_signal(f):
@@ -140,13 +142,6 @@ def ai_score(f):
     p = model.predict_proba(X)[0]
     return p[1]
 
-# ===== RISK =====
-def dynamic_risk(f):
-    vol = f["volatility"]
-    tp = vol * 120
-    sl = vol * -80
-    return tp, sl
-
 # ===== DECISION =====
 def smart_ai_decision(sym):
     market_trend = market_context()
@@ -166,14 +161,9 @@ def smart_ai_decision(sym):
     if final_score < 3:
         return None
 
-    tp, sl = dynamic_risk(f)
-
     return {
         "side": entry,
-        "tp": tp,
-        "sl": sl,
         "features": f,
-        "score": final_score,
         "conf": conf
     }
 
@@ -187,6 +177,7 @@ def symbols():
 
 # ===== STATE =====
 state = {}
+cooldown = {}
 lock = threading.Lock()
 
 # ===== ENGINE =====
@@ -197,10 +188,14 @@ def engine():
             open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
             for sym in symbols():
+
                 if open_count >= MAX_TRADES:
                     break
 
                 if sym in state:
+                    continue
+
+                if sym in cooldown and time.time() - cooldown[sym] < 60:
                     continue
 
                 decision = smart_ai_decision(sym)
@@ -222,7 +217,8 @@ def engine():
                 with lock:
                     state[sym] = {
                         "peak": 0,
-                        "features": decision["features"]
+                        "features": decision["features"],
+                        "tp1_done": False
                     }
 
                 bot.send_message(CHAT_ID, f"{sym} {decision['side']} AI:{round(decision['conf'],2)}")
@@ -253,46 +249,80 @@ def manage():
                 if sym not in state:
                     continue
 
-                if pnl > state[sym]["peak"]:
-                    state[sym]["peak"] = pnl
+                st = state[sym]
 
-                peak = state[sym]["peak"]
-                close = False
+                if pnl > st["peak"]:
+                    st["peak"] = pnl
 
-                tp, sl = dynamic_risk(state[sym]["features"])
+                # ===== TP1 =====
+                if not st["tp1_done"] and pnl >= TP1_USDT:
 
-                if pnl > tp or pnl < sl:
-                    close = True
+                    close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
 
-                if peak > 0.5 and pnl < peak - 0.3:
-                    close = True
-
-                if close:
                     side = p.get("side")
                     close_side = "sell" if side in ["long","buy"] else "buy"
 
                     exchange.create_market_order(
                         sym,
                         close_side,
-                        qty,
+                        close_qty,
                         params={"reduceOnly": True}
                     )
 
-                    f = state[sym]["features"]
-                    f["result"] = pnl
+                    st["tp1_done"] = True
 
-                    memory.append(f)
-                    save_memory(memory)
+                    bot.send_message(CHAT_ID, f"{sym} 💰 TP1 HIT +1 USDT")
 
-                    if len(memory) % 25 == 0:
-                        new_model = train()
-                        if new_model:
-                            model = new_model
-                            bot.send_message(CHAT_ID, "🧠 AI UPDATED")
+                    continue
 
-                    state.pop(sym)
+                # ===== TRAILING =====
+                if st["tp1_done"]:
+                    if pnl < st["peak"] - TRAIL_GAP:
 
-                    bot.send_message(CHAT_ID, f"{sym} CLOSED PNL: {round(pnl,2)}")
+                        side = p.get("side")
+                        close_side = "sell" if side in ["long","buy"] else "buy"
+
+                        exchange.create_market_order(
+                            sym,
+                            close_side,
+                            qty,
+                            params={"reduceOnly": True}
+                        )
+
+                        f = st["features"]
+                        f["result"] = pnl
+
+                        memory.append(f)
+                        save_memory(memory)
+
+                        if len(memory) % 25 == 0:
+                            new_model = train()
+                            if new_model:
+                                model = new_model
+                                bot.send_message(CHAT_ID, "🧠 AI UPDATED")
+
+                        state.pop(sym)
+                        cooldown[sym] = time.time()
+
+                        bot.send_message(CHAT_ID, f"{sym} 🏁 CLOSED {round(pnl,2)}")
+
+                else:
+                    # SL
+                    if pnl < -1.2:
+                        side = p.get("side")
+                        close_side = "sell" if side in ["long","buy"] else "buy"
+
+                        exchange.create_market_order(
+                            sym,
+                            close_side,
+                            qty,
+                            params={"reduceOnly": True}
+                        )
+
+                        state.pop(sym)
+                        cooldown[sym] = time.time()
+
+                        bot.send_message(CHAT_ID, f"{sym} ❌ SL")
 
             time.sleep(3)
 
@@ -305,5 +335,5 @@ bot.remove_webhook()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER AKTİF")
+bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER V3 AKTİF")
 bot.infinity_polling()
