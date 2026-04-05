@@ -1,5 +1,6 @@
 import os, time, json, ccxt, telebot, threading, joblib
 import pandas as pd
+from xgboost import XGBClassifier
 
 # ===== SETTINGS =====
 MAX_TRADES = 1
@@ -7,11 +8,10 @@ BASE_USDT = 5
 LEVERAGE = 10
 AI_CONF = 0.60
 
-TP_USDT = 1.5
-SL_USDT = -1.0
-
-TRAIL_START = 0.5
-TRAIL_GAP = 0.3
+TP_USDT = 2.0
+SL_USDT = -1.2
+TRAIL_START = 0.7
+TRAIL_GAP = 0.4
 
 MEMORY_FILE = "memory.json"
 
@@ -27,199 +27,138 @@ exchange = ccxt.bitget({
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
-
 exchange.load_markets()
 
-# ===== HELPERS =====
-def safe(x):
-    try:
-        return float(x)
-    except:
-        return 0
+# ===== MEMORY =====
+def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return []
+    return json.load(open(MEMORY_FILE))
 
-def ohlcv(sym, tf="5m", limit=50):
+def save_memory(m):
+    json.dump(m, open(MEMORY_FILE,"w"))
+
+memory = load_memory()
+
+# ===== DATA =====
+def ohlcv(sym, tf="5m", limit=60):
     return exchange.fetch_ohlcv(sym, tf, limit=limit)
 
-# ===== BTC MARKET FILTER =====
-def btc_ok():
-    try:
-        c = ohlcv("BTC/USDT:USDT","5m",20)
-        closes = [x[4] for x in c]
-        move = abs(closes[-1] - closes[0]) / closes[0]
-        return move > 0.003
-    except:
-        return False
+# ===== FEATURES =====
+def features(sym):
+    c = ohlcv(sym)
+    df = pd.DataFrame(c, columns=["t","o","h","l","c","v"])
 
-# ===== THINKING AI =====
-def thinking_ai(sym):
-    try:
-        c = ohlcv(sym, "5m", 30)
-        closes = [x[4] for x in c]
-        highs = [x[2] for x in c]
-        lows = [x[3] for x in c]
-        vols = [x[5] for x in c]
+    df["volatility"] = (df["h"] - df["l"]) / df["c"]
 
-        # VOLATILITY FILTER
-        volatility = (highs[-1] - lows[-1]) / closes[-1]
-        if volatility < 0.002:
-            return False
+    df["ema9"] = df["c"].ewm(span=9).mean()
+    df["ema21"] = df["c"].ewm(span=21).mean()
+    df["trend"] = df["ema9"] - df["ema21"]
 
-        # MARKET STRUCTURE
-        move = (closes[-1] - closes[0]) / closes[0]
-        if move < 0.003:
-            return False
-        if move > 0.08:
-            return False
+    df["momentum"] = df["c"] - df["c"].shift(5)
 
-        score = 0
+    df["vol_avg"] = df["v"].rolling(10).mean()
+    df["volume_spike"] = df["v"] / df["vol_avg"]
 
-        # TREND PHASE
-        recent = (closes[-1] - closes[-5]) / closes[-5]
-        if 0.002 < recent < 0.02:
-            score += 3
-        elif recent > 0.05:
-            return False
+    df["fake"] = (
+        (df["c"] < df["c"].shift(1)) & (df["c"].shift(1) > df["c"].shift(2))
+    ).astype(int)
 
-        # VOLUME
-        avg_vol = sum(vols[:-1]) / len(vols[:-1])
-        if vols[-1] > avg_vol * 1.5:
-            score += 2
-        else:
-            return False
+    # thinking score
+    score = 0
+    if df["volume_spike"].iloc[-1] > 1.5: score += 2
+    if df["trend"].iloc[-1] > 0: score += 1
+    if df["momentum"].iloc[-1] > 0: score += 1
 
-        # CLEAN STRUCTURE
-        if closes[-1] > closes[-2] > closes[-3]:
-            score += 1
+    last = df.iloc[-1]
 
-        # FAKE BREAKOUT
-        if closes[-1] < closes[-2] and closes[-2] > closes[-3]:
-            return False
+    return {
+        "o": last["o"],
+        "h": last["h"],
+        "l": last["l"],
+        "c": last["c"],
+        "v": last["v"],
+        "volatility": last["volatility"],
+        "trend": last["trend"],
+        "momentum": last["momentum"],
+        "volume_spike": last["volume_spike"],
+        "fake": last["fake"],
+        "thinking": score
+    }
 
-        return score >= 4
-
-    except:
-        return False
-
-# ===== SCANNER =====
-def momentum(sym):
-    try:
-        c = ohlcv(sym,"5m",10)
-        return (c[-1][4] - c[0][4]) / c[0][4]
-    except:
-        return 0
-
-def symbols():
-    try:
-        t = exchange.fetch_tickers()
-        s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
-        s = [x for x in s if safe(x[1]) > 200000]
-        s.sort(key=lambda x:x[1], reverse=True)
-        return [x[0] for x in s[:50]]
-    except:
-        return []
-
-def top_movers():
-    scores = []
-    for sym in symbols():
-        try:
-            scores.append((sym, momentum(sym)))
-        except:
-            continue
-    scores.sort(key=lambda x:x[1], reverse=True)
-    return [s[0] for s in scores[:10]]
-
-# ===== AI MODEL =====
+# ===== MODEL =====
 def train():
-    from xgboost import XGBClassifier
-    data = []
+    if len(memory) < 50:
+        return None
 
-    for s in ["BTC/USDT:USDT","ETH/USDT:USDT"]:
-        o = ohlcv(s,"5m",200)
-        for c in o:
-            t,op,h,l,cl,v = c
-            vol = (h-l)/cl if cl else 0
-            data.append([op,h,l,cl,v,vol])
+    df = pd.DataFrame(memory)
+    X = df.drop(columns=["result"])
+    y = df["result"]
 
-    df = pd.DataFrame(data,columns=["o","h","l","c","v","vol"])
-    df["r"] = df["c"].pct_change()
-    df["t"] = (df["r"].shift(-1)>0).astype(int)
-    df = df.dropna()
-
-    X = df[["o","h","l","c","v","vol"]]
-    y = df["t"]
-
-    model = XGBClassifier(n_estimators=120)
+    model = XGBClassifier(n_estimators=250)
     model.fit(X,y)
-    joblib.dump(model,"ai_model.pkl")
 
-if not os.path.exists("ai_model.pkl"):
-    train()
+    joblib.dump(model,"model.pkl")
+    return model
 
-model = joblib.load("ai_model.pkl")
+model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
 
 # ===== PREDICT =====
 def predict(sym):
-    try:
-        c = ohlcv(sym,"5m",2)
-        t,o,h,l,cl,v = c[-1]
+    global model
+    f = features(sym)
 
-        vol = (h-l)/cl if cl else 0
-        if vol < 0.002:
-            return None,0
-
-        p = model.predict_proba([[o,h,l,cl,v,vol]])[0]
+    if model:
+        X = pd.DataFrame([f])
+        p = model.predict_proba(X)[0]
         conf = max(p)
 
         if conf < AI_CONF:
-            return None,conf
+            return None, conf, f
 
         direction = "long" if p[1] > p[0] else "short"
+        return direction, conf, f
 
-        return direction,conf
+    # fallback
+    if f["trend"] > 0:
+        return "long", 0.5, f
+    else:
+        return "short", 0.5, f
 
-    except:
-        return None,0
+# ===== SYMBOLS =====
+def symbols():
+    t = exchange.fetch_tickers()
+    s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
+    s = [x for x in s if x[1] and x[1] > 200000]
+    s.sort(key=lambda x:x[1], reverse=True)
+    return [x[0] for x in s[:30]]
 
 # ===== STATE =====
-trade_state = {}
+state = {}
 
 # ===== ENGINE =====
 def engine():
     while True:
         try:
-            if not btc_ok():
-                time.sleep(5)
-                continue
-
             pos = exchange.fetch_positions()
-            open_count = sum(1 for p in pos if safe(p.get("contracts")) > 0)
+            open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
-            for sym in top_movers():
+            for sym in symbols():
 
                 if open_count >= MAX_TRADES:
                     break
 
-                if sym in trade_state:
+                if sym in state:
                     continue
 
-                direction,conf = predict(sym)
+                direction,conf,f = predict(sym)
+
                 if not direction:
                     continue
 
-                if not thinking_ai(sym):
-                    continue
-
-                ticker = exchange.fetch_ticker(sym)
-                price = safe(ticker.get("last"))
-
-                if price <= 0:
-                    continue
-
+                price = exchange.fetch_ticker(sym)["last"]
                 qty = (BASE_USDT * LEVERAGE) / price
                 qty = float(exchange.amount_to_precision(sym, qty))
-
-                if qty <= 0:
-                    continue
 
                 exchange.set_leverage(LEVERAGE, sym)
 
@@ -229,45 +168,39 @@ def engine():
                     qty
                 )
 
-                trade_state[sym] = {
-                    "peak": 0,
-                    "entry": price
-                }
+                state[sym] = {"peak":0,"features":f}
 
-                bot.send_message(
-                    CHAT_ID,
-                    f"🧠 {sym} {direction}\nconf:{round(conf,2)}"
-                )
-
+                bot.send_message(CHAT_ID,f"{sym} {direction} {round(conf,2)}")
                 break
 
             time.sleep(5)
 
         except Exception as e:
-            print("ENGINE:", e)
+            print("ENGINE:",e)
 
 # ===== MANAGE =====
 def manage():
+    global memory, model
+
     while True:
         try:
             pos = exchange.fetch_positions()
 
             for p in pos:
-                qty = safe(p.get("contracts"))
+                qty = float(p.get("contracts") or 0)
                 if qty <= 0:
                     continue
 
                 sym = p["symbol"]
-                pnl = safe(p.get("unrealizedPnl"))
+                pnl = float(p.get("unrealizedPnl") or 0)
 
-                if sym not in trade_state:
-                    trade_state[sym] = {"peak": pnl}
+                if sym not in state:
+                    continue
 
-                if pnl > trade_state[sym]["peak"]:
-                    trade_state[sym]["peak"] = pnl
+                if pnl > state[sym]["peak"]:
+                    state[sym]["peak"] = pnl
 
-                peak = trade_state[sym]["peak"]
-
+                peak = state[sym]["peak"]
                 close = False
 
                 if pnl > TP_USDT or pnl < SL_USDT:
@@ -284,17 +217,26 @@ def manage():
                         params={"reduceOnly":True}
                     )
 
-                    trade_state.pop(sym, None)
+                    f = state[sym]["features"]
+                    f["result"] = 1 if pnl > 0 else 0
 
-                    bot.send_message(
-                        CHAT_ID,
-                        f"{sym} {round(pnl,2)} USDT"
-                    )
+                    memory.append(f)
+                    save_memory(memory)
+
+                    if len(memory) % 25 == 0:
+                        new_model = train()
+                        if new_model:
+                            model = new_model
+                            bot.send_message(CHAT_ID,"AI UPDATED")
+
+                    state.pop(sym)
+
+                    bot.send_message(CHAT_ID,f"{sym} {round(pnl,2)}")
 
             time.sleep(3)
 
         except Exception as e:
-            print("MANAGE:", e)
+            print("MANAGE:",e)
 
 # ===== START =====
 bot.remove_webhook()
@@ -302,5 +244,5 @@ bot.remove_webhook()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID,"🧠 THINKING AI v11 FIXED AKTİF")
+bot.send_message(CHAT_ID,"🧠 AI HEDGE BOT AKTİF")
 bot.infinity_polling()
