@@ -3,7 +3,7 @@ import pandas as pd
 from xgboost import XGBClassifier
 
 # ===== SETTINGS =====
-MAX_TRADES = 1
+MAX_TRADES = 2
 BASE_USDT = 5
 LEVERAGE = 10
 
