@@ -6,13 +6,8 @@ from xgboost import XGBClassifier
 MAX_TRADES = 1
 BASE_USDT = 5
 LEVERAGE = 10
-AI_CONF = 0.60
 
-TP_USDT = 2.0
-SL_USDT = -1.2
-TRAIL_START = 0.7
-TRAIL_GAP = 0.4
-
+AI_WEIGHT = 3
 MEMORY_FILE = "memory.json"
 
 # ===== TELEGRAM =====
@@ -36,7 +31,7 @@ def load_memory():
     return json.load(open(MEMORY_FILE))
 
 def save_memory(m):
-    json.dump(m, open(MEMORY_FILE,"w"))
+    json.dump(m, open(MEMORY_FILE, "w"))
 
 memory = load_memory()
 
@@ -50,25 +45,17 @@ def features(sym):
     df = pd.DataFrame(c, columns=["t","o","h","l","c","v"])
 
     df["volatility"] = (df["h"] - df["l"]) / df["c"]
-
     df["ema9"] = df["c"].ewm(span=9).mean()
     df["ema21"] = df["c"].ewm(span=21).mean()
     df["trend"] = df["ema9"] - df["ema21"]
-
     df["momentum"] = df["c"] - df["c"].shift(5)
-
     df["vol_avg"] = df["v"].rolling(10).mean()
     df["volume_spike"] = df["v"] / df["vol_avg"]
 
     df["fake"] = (
-        (df["c"] < df["c"].shift(1)) & (df["c"].shift(1) > df["c"].shift(2))
+        (df["h"] > df["h"].shift(1)) &
+        (df["c"] < df["h"].shift(1))
     ).astype(int)
-
-    # thinking score
-    score = 0
-    if df["volume_spike"].iloc[-1] > 1.5: score += 2
-    if df["trend"].iloc[-1] > 0: score += 1
-    if df["momentum"].iloc[-1] > 0: score += 1
 
     last = df.iloc[-1]
 
@@ -82,48 +69,113 @@ def features(sym):
         "trend": last["trend"],
         "momentum": last["momentum"],
         "volume_spike": last["volume_spike"],
-        "fake": last["fake"],
-        "thinking": score
+        "fake": last["fake"]
     }
 
-# ===== MODEL =====
+# ===== MARKET CONTEXT =====
+def market_context():
+    btc = ohlcv("BTC/USDT:USDT", limit=50)
+    df = pd.DataFrame(btc, columns=["t","o","h","l","c","v"])
+
+    ema20 = df["c"].ewm(span=20).mean().iloc[-1]
+    ema50 = df["c"].ewm(span=50).mean().iloc[-1]
+
+    trend = "bull" if ema20 > ema50 else "bear"
+    return trend
+
+# ===== ENTRY =====
+def entry_signal(f):
+    if f["trend"] > 0 and f["momentum"] > 0 and f["volume_spike"] > 1.5:
+        return "long"
+    if f["trend"] < 0 and f["momentum"] < 0 and f["volume_spike"] > 1.5:
+        return "short"
+    return None
+
+# ===== TRADER FILTER =====
+def trader_filter(f, market_trend):
+    score = 0
+
+    if (market_trend == "bull" and f["trend"] > 0) or \
+       (market_trend == "bear" and f["trend"] < 0):
+        score += 2
+
+    if abs(f["momentum"]) > 0:
+        score += 1
+
+    if f["volume_spike"] > 1.3:
+        score += 2
+
+    if f["fake"] == 1:
+        score -= 3
+
+    if f["volatility"] < 0.002:
+        score -= 2
+
+    return score
+
+# ===== AI =====
 def train():
     if len(memory) < 50:
         return None
 
     df = pd.DataFrame(memory)
+
     X = df.drop(columns=["result"])
-    y = df["result"]
+    y = df["result"] > 0
 
-    model = XGBClassifier(n_estimators=250)
-    model.fit(X,y)
+    model = XGBClassifier(n_estimators=200)
+    model.fit(X, y)
 
-    joblib.dump(model,"model.pkl")
+    joblib.dump(model, "model.pkl")
     return model
 
 model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
 
-# ===== PREDICT =====
-def predict(sym):
+def ai_score(f):
     global model
+    if not model:
+        return 0.5
+
+    X = pd.DataFrame([f])
+    p = model.predict_proba(X)[0]
+    return p[1]
+
+# ===== RISK =====
+def dynamic_risk(f):
+    vol = f["volatility"]
+    tp = vol * 120
+    sl = vol * -80
+    return tp, sl
+
+# ===== DECISION =====
+def smart_ai_decision(sym):
+    market_trend = market_context()
     f = features(sym)
 
-    if model:
-        X = pd.DataFrame([f])
-        p = model.predict_proba(X)[0]
-        conf = max(p)
+    entry = entry_signal(f)
+    if not entry:
+        return None
 
-        if conf < AI_CONF:
-            return None, conf, f
+    t_score = trader_filter(f, market_trend)
+    if t_score < 2:
+        return None
 
-        direction = "long" if p[1] > p[0] else "short"
-        return direction, conf, f
+    conf = ai_score(f)
+    final_score = t_score + (conf * AI_WEIGHT)
 
-    # fallback
-    if f["trend"] > 0:
-        return "long", 0.5, f
-    else:
-        return "short", 0.5, f
+    if final_score < 3:
+        return None
+
+    tp, sl = dynamic_risk(f)
+
+    return {
+        "side": entry,
+        "tp": tp,
+        "sl": sl,
+        "features": f,
+        "score": final_score,
+        "conf": conf
+    }
 
 # ===== SYMBOLS =====
 def symbols():
@@ -131,10 +183,11 @@ def symbols():
     s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
     s = [x for x in s if x[1] and x[1] > 200000]
     s.sort(key=lambda x:x[1], reverse=True)
-    return [x[0] for x in s[:30]]
+    return [x[0] for x in s[:20]]
 
 # ===== STATE =====
 state = {}
+lock = threading.Lock()
 
 # ===== ENGINE =====
 def engine():
@@ -144,16 +197,14 @@ def engine():
             open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
             for sym in symbols():
-
                 if open_count >= MAX_TRADES:
                     break
 
                 if sym in state:
                     continue
 
-                direction,conf,f = predict(sym)
-
-                if not direction:
+                decision = smart_ai_decision(sym)
+                if not decision:
                     continue
 
                 price = exchange.fetch_ticker(sym)["last"]
@@ -164,19 +215,24 @@ def engine():
 
                 exchange.create_market_order(
                     sym,
-                    "buy" if direction=="long" else "sell",
+                    "buy" if decision["side"]=="long" else "sell",
                     qty
                 )
 
-                state[sym] = {"peak":0,"features":f}
+                with lock:
+                    state[sym] = {
+                        "peak": 0,
+                        "features": decision["features"]
+                    }
 
-                bot.send_message(CHAT_ID,f"{sym} {direction} {round(conf,2)}")
+                bot.send_message(CHAT_ID, f"{sym} {decision['side']} AI:{round(decision['conf'],2)}")
+
                 break
 
             time.sleep(5)
 
         except Exception as e:
-            print("ENGINE:",e)
+            print("ENGINE:", e)
 
 # ===== MANAGE =====
 def manage():
@@ -203,22 +259,27 @@ def manage():
                 peak = state[sym]["peak"]
                 close = False
 
-                if pnl > TP_USDT or pnl < SL_USDT:
+                tp, sl = dynamic_risk(state[sym]["features"])
+
+                if pnl > tp or pnl < sl:
                     close = True
 
-                if peak > TRAIL_START and pnl < peak - TRAIL_GAP:
+                if peak > 0.5 and pnl < peak - 0.3:
                     close = True
 
                 if close:
+                    side = p.get("side")
+                    close_side = "sell" if side in ["long","buy"] else "buy"
+
                     exchange.create_market_order(
                         sym,
-                        "sell" if p["side"]=="long" else "buy",
+                        close_side,
                         qty,
-                        params={"reduceOnly":True}
+                        params={"reduceOnly": True}
                     )
 
                     f = state[sym]["features"]
-                    f["result"] = 1 if pnl > 0 else 0
+                    f["result"] = pnl
 
                     memory.append(f)
                     save_memory(memory)
@@ -227,16 +288,16 @@ def manage():
                         new_model = train()
                         if new_model:
                             model = new_model
-                            bot.send_message(CHAT_ID,"AI UPDATED")
+                            bot.send_message(CHAT_ID, "🧠 AI UPDATED")
 
                     state.pop(sym)
 
-                    bot.send_message(CHAT_ID,f"{sym} {round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"{sym} CLOSED PNL: {round(pnl,2)}")
 
             time.sleep(3)
 
         except Exception as e:
-            print("MANAGE:",e)
+            print("MANAGE:", e)
 
 # ===== START =====
 bot.remove_webhook()
@@ -244,5 +305,5 @@ bot.remove_webhook()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID,"🧠 AI HEDGE BOT AKTİF")
+bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER AKTİF")
 bot.infinity_polling()
