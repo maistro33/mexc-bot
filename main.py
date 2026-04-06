@@ -172,24 +172,39 @@ lock = threading.Lock()
 def engine():
     while True:
         try:
-            open_count = sum(1 for p in exchange.fetch_positions() if float(p.get("contracts") or 0) > 0)
+            pos = exchange.fetch_positions()
 
             for sym in symbols():
-                if open_count >= MAX_TRADES or sym in state or (sym in cooldown and time.time() - cooldown[sym] < 60):
+
+                # duplicate fix
+                already_open = any(p["symbol"] == sym and float(p.get("contracts") or 0) > 0 for p in pos)
+                if already_open:
                     continue
 
-                d = smart_ai_decision(sym)
-                if not d:
+                if sym in state:
+                    continue
+
+                if sym in cooldown and time.time() - cooldown[sym] < 60:
+                    continue
+
+                decision = smart_ai_decision(sym)
+                if not decision:
                     continue
 
                 price = exchange.fetch_ticker(sym)["last"]
                 qty = float(exchange.amount_to_precision(sym, (BASE_USDT * LEVERAGE) / price))
 
                 exchange.set_leverage(LEVERAGE, sym)
-                exchange.create_market_order(sym, "buy" if d["side"]=="long" else "sell", qty)
+                exchange.create_market_order(sym, "buy" if decision["side"]=="long" else "sell", qty)
 
-                state[sym] = {"peak":0,"features":d["features"],"tp1_done":False}
-                bot.send_message(CHAT_ID, f"{sym} {d['side']} AI:{round(d['conf'],2)}")
+                state[sym] = {
+                    "peak": 0,
+                    "features": decision["features"],
+                    "tp1_done": False,
+                    "warned": False
+                }
+
+                bot.send_message(CHAT_ID, f"{sym} {decision['side']} AI:{round(decision['conf'],2)}")
                 break
 
             time.sleep(5)
@@ -199,16 +214,29 @@ def engine():
 
 # ===== MANAGE =====
 def manage():
+    global memory, model
+
     while True:
         try:
-            for p in exchange.fetch_positions():
+            pos = exchange.fetch_positions()
+
+            for p in pos:
                 qty = float(p.get("contracts") or 0)
-                if qty <= 0: continue
+                if qty <= 0:
+                    continue
 
                 sym = p["symbol"]
-                if sym not in state: continue
-
                 pnl = float(p.get("unrealizedPnl") or 0)
+
+                # state yoksa oluştur (KRİTİK FIX)
+                if sym not in state:
+                    state[sym] = {
+                        "peak": pnl,
+                        "features": features(sym),
+                        "tp1_done": False,
+                        "warned": False
+                    }
+
                 st = state[sym]
 
                 f = features(sym)
@@ -218,31 +246,45 @@ def manage():
                 reverse = (side in ["long","buy"] and trend < 0 and mom < 0) or (side in ["short","sell"] and trend > 0 and mom > 0)
                 weak = vol < 1.0
 
-                # 🧠 LOSS EXIT (daha sabırlı)
+                # ANALİZ MESAJI
+                if (reverse or weak) and not st["warned"]:
+                    st["warned"] = True
+                    bot.send_message(CHAT_ID, f"{sym} ⚠️ ANALİZ\ntrend:{round(trend,5)} mom:{round(mom,5)} pnl:{round(pnl,2)}")
+
+                # LOSS EXIT
                 if (reverse and pnl < -0.3) or (weak and pnl < -0.8):
                     exchange.create_market_order(sym, "sell" if side in ["long","buy"] else "buy", qty, params={"reduceOnly": True})
-                    
-                    f0 = st["features"]; f0["result"] = pnl
-                    with memory_lock:
-                        memory.append(f0); save_memory(memory)
 
-                    state.pop(sym); cooldown[sym] = time.time()
+                    st["features"]["result"] = pnl
+                    with memory_lock:
+                        memory.append(st["features"])
+                        save_memory(memory)
+                        print("MEMORY:", len(memory))
+                        bot.send_message(CHAT_ID, f"📊 MEMORY: {len(memory)}")
+
+                    state.pop(sym)
+                    cooldown[sym] = time.time()
                     bot.send_message(CHAT_ID, f"{sym} 🧠 LOSS EXIT {round(pnl,2)}")
                     continue
 
-                # 💰 PROFIT KORUMA
+                # PROFIT PROTECT
                 if pnl > 0.8 and (reverse or weak):
                     exchange.create_market_order(sym, "sell" if side in ["long","buy"] else "buy", qty, params={"reduceOnly": True})
-                    
-                    f0 = st["features"]; f0["result"] = pnl
-                    with memory_lock:
-                        memory.append(f0); save_memory(memory)
 
-                    state.pop(sym); cooldown[sym] = time.time()
+                    st["features"]["result"] = pnl
+                    with memory_lock:
+                        memory.append(st["features"])
+                        save_memory(memory)
+                        print("MEMORY:", len(memory))
+                        bot.send_message(CHAT_ID, f"📊 MEMORY: {len(memory)}")
+
+                    state.pop(sym)
+                    cooldown[sym] = time.time()
                     bot.send_message(CHAT_ID, f"{sym} 💰 PROFIT PROTECT {round(pnl,2)}")
                     continue
 
-                if pnl > st["peak"]: st["peak"] = pnl
+                if pnl > st["peak"]:
+                    st["peak"] = pnl
 
                 if not st["tp1_done"] and pnl >= TP1_USDT:
                     exchange.create_market_order(sym, "sell" if side in ["long","buy"] else "buy", float(qty*0.5), params={"reduceOnly": True})
@@ -252,13 +294,29 @@ def manage():
 
                 if st["tp1_done"] and pnl < st["peak"] - TRAIL_GAP:
                     exchange.create_market_order(sym, "sell" if side in ["long","buy"] else "buy", qty, params={"reduceOnly": True})
-                    state.pop(sym); cooldown[sym] = time.time()
+
+                    st["features"]["result"] = pnl
+                    with memory_lock:
+                        memory.append(st["features"])
+                        save_memory(memory)
+                        bot.send_message(CHAT_ID, f"📊 MEMORY: {len(memory)}")
+
+                    state.pop(sym)
+                    cooldown[sym] = time.time()
                     bot.send_message(CHAT_ID, f"{sym} 🏁 CLOSE")
                     continue
 
                 if pnl < -1.2:
                     exchange.create_market_order(sym, "sell" if side in ["long","buy"] else "buy", qty, params={"reduceOnly": True})
-                    state.pop(sym); cooldown[sym] = time.time()
+
+                    st["features"]["result"] = pnl
+                    with memory_lock:
+                        memory.append(st["features"])
+                        save_memory(memory)
+                        bot.send_message(CHAT_ID, f"📊 MEMORY: {len(memory)}")
+
+                    state.pop(sym)
+                    cooldown[sym] = time.time()
                     bot.send_message(CHAT_ID, f"{sym} ❌ SL")
 
             time.sleep(3)
@@ -270,5 +328,5 @@ def manage():
 bot.remove_webhook()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
-bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER V8 FINAL")
+bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER V9 FINAL AKTİF")
 bot.infinity_polling()
