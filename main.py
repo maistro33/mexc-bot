@@ -4,15 +4,18 @@ from xgboost import XGBClassifier
 
 # ===== SETTINGS =====
 MAX_TRADES = 2
-BASE_USDT = 5
-LEVERAGE = 10
+RISK_PER_TRADE = 0.03
+LEVERAGE = 5
+
+TP1_USDT = 1.5
+TRAIL_GAP = 0.6
+
+AI_THRESHOLD = 0.55
 MEMORY_FILE = "memory.json"
 
-TP1_USDT = 1.2
-TRAIL_GAP = 0.5
-
-TRAIN_EVERY = 10
-AI_THRESHOLD = 0.40
+# GLOBAL RISK
+MAX_TOTAL_LOSS = -3.0
+MAX_DAILY_LOSS = -5.0
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -59,8 +62,8 @@ def ai_confidence(f):
     return model.predict_proba(pd.DataFrame([f]))[0][1]
 
 # ===== DATA =====
-def ohlcv(sym):
-    return exchange.fetch_ohlcv(sym, "5m", limit=120)
+def ohlcv(sym, tf="5m", limit=120):
+    return exchange.fetch_ohlcv(sym, tf, limit=limit)
 
 # ===== FEATURES =====
 def features(sym):
@@ -78,8 +81,6 @@ def features(sym):
 
     df["range"] = (df["h"] - df["l"]) / df["c"]
 
-    df["fake"] = ((df["h"] > df["h"].shift(1)) & (df["c"] < df["h"].shift(1))).astype(int)
-
     last = df.iloc[-1]
 
     return {
@@ -88,46 +89,40 @@ def features(sym):
         "momentum": float(last["momentum"]),
         "momentum2": float(last["momentum2"]),
         "volume_spike": float(last["volume_spike"]),
-        "range": float(last["range"]),
-        "fake": int(last["fake"])
+        "range": float(last["range"])
     }
 
-# ===== INSTITUTIONAL FILTER =====
-def institutional_filter(f):
+# ===== MULTI TIMEFRAME =====
+def multi_tf_trend(sym):
+    df = pd.DataFrame(ohlcv(sym, "15m"), columns=["t","o","h","l","c","v"])
+    ema20 = df["c"].ewm(span=20).mean().iloc[-1]
+    ema50 = df["c"].ewm(span=50).mean().iloc[-1]
+    return "bull" if ema20 > ema50 else "bear"
 
-    # Fake pump
+# ===== SMART FILTER =====
+def smart_filter(f):
+    if abs(f["momentum"]) / f["c"] > 0.005:
+        return False  # geç kaldı
+
     if f["volume_spike"] > 3 and abs(f["momentum"]) < 0.001:
-        return False
+        return False  # fake
 
-    # Stop hunt / likidite avı
-    if f["range"] > 0.015 and f["volume_spike"] > 2:
-        return False
-
-    # Trend zayıf
-    if abs(f["trend"]) < 0.0005:
-        return False
+    if f["range"] > 0.015:
+        return False  # volatil
 
     return True
 
 # ===== ENTRY =====
-def entry_signal(f):
-
-    if not institutional_filter(f):
+def entry_signal(sym, f):
+    if not smart_filter(f):
         return None
 
-    if abs(f["momentum"]) / f["c"] > 0.004:
-        return None
+    higher = multi_tf_trend(sym)
 
-    if f["volume_spike"] < 1.1:
-        return None
-
-    if f["momentum"] * f["momentum2"] < 0:
-        return None
-
-    if f["trend"] > 0 and f["momentum"] > 0:
+    if f["trend"] > 0 and f["momentum"] > 0 and higher == "bull":
         return "long"
 
-    if f["trend"] < 0 and f["momentum"] < 0:
+    if f["trend"] < 0 and f["momentum"] < 0 and higher == "bear":
         return "short"
 
     return None
@@ -138,28 +133,47 @@ def symbols():
     s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
     s = [x for x in s if x[1] and x[1] > 200000]
     s.sort(key=lambda x:x[1], reverse=True)
-    return [x[0] for x in s[:20]]
+    return [x[0] for x in s[:15]]
 
 # ===== STATE =====
 state = {}
 cooldown = {}
+
+# ===== BALANCE =====
+def get_balance():
+    try:
+        bal = exchange.fetch_balance()
+        return bal["total"]["USDT"]
+    except:
+        return 100
 
 # ===== ENGINE =====
 def engine():
     while True:
         try:
             pos = exchange.fetch_positions()
+            open_positions = [p for p in pos if float(p.get("contracts") or 0) > 0]
+
+            if len(open_positions) >= MAX_TRADES:
+                time.sleep(5)
+                continue
 
             for sym in symbols():
+
+                pos = exchange.fetch_positions()
+                open_positions = [p for p in pos if float(p.get("contracts") or 0) > 0]
+
+                if len(open_positions) >= MAX_TRADES:
+                    break
 
                 if any(p["symbol"] == sym and float(p.get("contracts") or 0) > 0 for p in pos):
                     continue
 
-                if sym in cooldown and time.time() - cooldown[sym] < 90:
+                if sym in cooldown and time.time() - cooldown[sym] < 60:
                     continue
 
                 f = features(sym)
-                side = entry_signal(f)
+                side = entry_signal(sym, f)
 
                 if not side:
                     continue
@@ -169,25 +183,27 @@ def engine():
                     continue
 
                 price = exchange.fetch_ticker(sym)["last"]
-                qty = (BASE_USDT * LEVERAGE) / price
 
-                market = exchange.market(sym)
-                if market["limits"]["cost"]["min"] and qty * price < market["limits"]["cost"]["min"]:
-                    continue
+                balance = get_balance()
+                risk_amount = balance * RISK_PER_TRADE
 
+                qty = (risk_amount * LEVERAGE) / price
                 qty = float(exchange.amount_to_precision(sym, qty))
 
                 exchange.set_leverage(LEVERAGE, sym)
+
                 exchange.create_market_order(sym, "buy" if side=="long" else "sell", qty)
 
-                bot.send_message(CHAT_ID, f"📈 {sym} {side.upper()} OPEN")
+                bot.send_message(
+                    CHAT_ID,
+                    f"📈 {sym} {side.upper()} OPEN\nAI:{round(conf,2)}"
+                )
 
                 state[sym] = {
                     "peak": 0,
                     "features": f,
-                    "tp1": False,
-                    "warned": False,
-                    "strong_msg": False
+                    "tp": False,
+                    "warned": False
                 }
 
                 break
@@ -205,6 +221,18 @@ def manage():
         try:
             pos = exchange.fetch_positions()
 
+            total_pnl = sum(float(p.get("unrealizedPnl") or 0) for p in pos)
+
+            if total_pnl <= MAX_TOTAL_LOSS:
+                bot.send_message(CHAT_ID, "🚨 GLOBAL STOP")
+                for p in pos:
+                    qty = float(p.get("contracts") or 0)
+                    if qty > 0:
+                        sym = p["symbol"]
+                        side = str(p.get("side")).lower()
+                        exchange.create_market_order(sym, "sell" if side=="long" else "buy", qty, params={"reduceOnly": True})
+                continue
+
             for p in pos:
                 qty = float(p.get("contracts") or 0)
                 if qty <= 0:
@@ -215,58 +243,46 @@ def manage():
                 side = str(p.get("side")).lower()
 
                 if sym not in state:
-                    state[sym] = {
-                        "peak": pnl,
-                        "features": features(sym),
-                        "tp1": False,
-                        "warned": False,
-                        "strong_msg": False
-                    }
+                    state[sym] = {"peak": pnl, "features": features(sym), "tp": False}
 
                 st = state[sym]
 
                 f_live = features(sym)
-                trend_now = f_live["trend"]
-                momentum_now = f_live["momentum"]
-                volume_now = f_live["volume_spike"]
 
-                reverse = (trend_now < 0 and momentum_now < 0) if side in ["long","buy"] else (trend_now > 0 and momentum_now > 0)
-                weak = volume_now < 1.0
-                strong = not reverse and volume_now > 1.3
+                reverse = (f_live["trend"] < 0 and f_live["momentum"] < 0) if side=="long" else (f_live["trend"] > 0 and f_live["momentum"] > 0)
 
-                if (reverse or weak) and not st["warned"]:
-                    st["warned"] = True
-                    bot.send_message(CHAT_ID, f"⚠️ {sym} Trend zayıflıyor")
-
-                if reverse and pnl < -0.7:
+                if reverse and pnl < -0.9:
                     bot.send_message(CHAT_ID, f"❌ SMART EXIT {sym}")
                     exchange.create_market_order(sym, "sell" if side=="long" else "buy", qty, params={"reduceOnly": True})
-                    state.pop(sym)
-                    cooldown[sym] = time.time()
-                    continue
+                    st["features"]["result"] = pnl
 
-                if strong and pnl > 0.3 and not st["strong_msg"]:
-                    st["strong_msg"] = True
-                    bot.send_message(CHAT_ID, f"✅ {sym} TREND STRONG")
+                    memory.append(st["features"])
+                    save_memory(memory)
+
+                    if len(memory) % 10 == 0:
+                        new_model = train_model()
+                        if new_model:
+                            model = new_model
+
+                    state.pop(sym)
+                    continue
 
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
-                if pnl > TP1_USDT and not st["tp1"]:
-                    st["tp1"] = True
-                    bot.send_message(CHAT_ID, f"💰 {sym} TP HIT")
+                if pnl > TP1_USDT and not st["tp"]:
+                    st["tp"] = True
+                    bot.send_message(CHAT_ID, f"💰 TP {sym}")
 
-                if st["tp1"] and pnl < st["peak"] - TRAIL_GAP:
-                    bot.send_message(CHAT_ID, f"📉 {sym} TRAILING EXIT")
+                if st["tp"] and pnl < st["peak"] - TRAIL_GAP:
+                    bot.send_message(CHAT_ID, f"📉 TRAIL {sym}")
                     exchange.create_market_order(sym, "sell" if side=="long" else "buy", qty, params={"reduceOnly": True})
                     state.pop(sym)
-                    cooldown[sym] = time.time()
 
                 if pnl < -1.2:
-                    bot.send_message(CHAT_ID, f"❌ {sym} SL")
+                    bot.send_message(CHAT_ID, f"❌ SL {sym}")
                     exchange.create_market_order(sym, "sell" if side=="long" else "buy", qty, params={"reduceOnly": True})
                     state.pop(sym)
-                    cooldown[sym] = time.time()
 
             time.sleep(4)
 
@@ -275,8 +291,9 @@ def manage():
 
 # ===== START =====
 bot.remove_webhook()
+
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🚀 V14 INSTITUTIONAL AKTİF")
+bot.send_message(CHAT_ID, "🚀 SMART AI TRADER AKTİF")
 bot.infinity_polling()
