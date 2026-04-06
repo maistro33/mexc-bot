@@ -1,6 +1,7 @@
 import os, time, json, ccxt, telebot, threading, joblib
 import pandas as pd
 from xgboost import XGBClassifier
+import requests, base64
 
 # ===== SETTINGS =====
 MAX_TRADES = 2
@@ -12,6 +13,11 @@ MEMORY_FILE = "memory.json"
 
 TP1_USDT = 1.0
 TRAIL_GAP = 0.4
+
+# ===== GITHUB =====
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO = "maistro33/mexc-bot"
+FILE_PATH = "memory.json"
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -29,12 +35,56 @@ exchange.load_markets()
 
 # ===== MEMORY =====
 def load_memory():
-    if not os.path.exists(MEMORY_FILE):
+    try:
+        url = f"https://api.github.com/repos/{REPO}/contents/{FILE_PATH}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+        r = requests.get(url, headers=headers)
+
+        if r.status_code != 200:
+            print("LOAD ERROR:", r.text)
+            return []
+
+        data = r.json()
+        content = base64.b64decode(data["content"]).decode()
+        return json.loads(content)
+
+    except Exception as e:
+        print("LOAD EXCEPTION:", e)
         return []
-    return json.load(open(MEMORY_FILE))
 
 def save_memory(m):
-    json.dump(m, open(MEMORY_FILE, "w"))
+    try:
+        url = f"https://api.github.com/repos/{REPO}/contents/{FILE_PATH}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            print("GET ERROR:", r.text)
+            return
+
+        file_data = r.json()
+        sha = file_data["sha"]
+
+        content = base64.b64encode(json.dumps(m, indent=2).encode()).decode()
+
+        data = {
+            "message": "update memory",
+            "content": content,
+            "sha": sha
+        }
+
+        r2 = requests.put(url, headers=headers, json=data)
+
+        if r2.status_code not in [200, 201]:
+            print("SAVE ERROR:", r2.text)
+        else:
+            print("MEMORY SAVED")
+
+    except Exception as e:
+        print("SAVE EXCEPTION:", e)
 
 memory = load_memory()
 
@@ -251,6 +301,46 @@ def manage():
 
                 st = state[sym]
 
+                # ===== LIVE AI ANALYSIS =====
+                try:
+                    f_live = features(sym)
+
+                    trend_now = f_live["trend"]
+                    momentum_now = f_live["momentum"]
+                    volume_now = f_live["volume_spike"]
+
+                    reverse_signal = False
+
+                    if p.get("side") in ["long", "buy"]:
+                        if trend_now < 0 and momentum_now < 0:
+                            reverse_signal = True
+
+                    if p.get("side") in ["short", "sell"]:
+                        if trend_now > 0 and momentum_now > 0:
+                            reverse_signal = True
+
+                    weak_signal = volume_now < 1.0
+
+                    if reverse_signal or weak_signal:
+
+                        bot.send_message(
+                            CHAT_ID,
+                            f"{sym} ⚠️ ZAYIFLAMA\ntrend:{round(trend_now,5)} mom:{round(momentum_now,5)}"
+                        )
+
+                        memory.append({
+                            "trend": trend_now,
+                            "momentum": momentum_now,
+                            "volume_spike": volume_now,
+                            "fake": f_live["fake"],
+                            "result": pnl
+                        })
+
+                        save_memory(memory)
+
+                except Exception as e:
+                    print("LIVE ANALYSIS:", e)
+
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
@@ -307,7 +397,6 @@ def manage():
                         bot.send_message(CHAT_ID, f"{sym} 🏁 CLOSED {round(pnl,2)}")
 
                 else:
-                    # SL
                     if pnl < -1.2:
                         side = p.get("side")
                         close_side = "sell" if side in ["long","buy"] else "buy"
@@ -335,5 +424,5 @@ bot.remove_webhook()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER V3 AKTİF")
+bot.send_message(CHAT_ID, "🚀 SADIK AI TRADER V4 AKTİF")
 bot.infinity_polling()
