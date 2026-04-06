@@ -12,7 +12,7 @@ TP1_USDT = 1.2
 TRAIL_GAP = 0.5
 
 TRAIN_EVERY = 10
-AI_THRESHOLD = 0.45
+AI_THRESHOLD = 0.40
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
