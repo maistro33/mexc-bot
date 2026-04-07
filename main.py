@@ -80,67 +80,83 @@ def train():
 model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
 
 def ai_score(f):
-    if not model:
+    try:
+        if not model:
+            return 0.5
+        return model.predict_proba(pd.DataFrame([f]))[0][1]
+    except:
         return 0.5
-    return model.predict_proba(pd.DataFrame([f]))[0][1]
 
 # ===== DATA =====
 def ohlcv(sym, tf="5m", limit=100):
-    return exchange.fetch_ohlcv(sym, tf, limit=limit)
+    try:
+        return exchange.fetch_ohlcv(sym, tf, limit=limit)
+    except:
+        return []
 
 # ===== MARKET MODE =====
 def market_mode():
-    df = pd.DataFrame(ohlcv("BTC/USDT:USDT", limit=50), columns=["t","o","h","l","c","v"])
-    ema20 = df["c"].ewm(span=20).mean().iloc[-1]
-    ema50 = df["c"].ewm(span=50).mean().iloc[-1]
+    try:
+        df = pd.DataFrame(ohlcv("BTC/USDT:USDT", limit=50), columns=["t","o","h","l","c","v"])
+        ema20 = df["c"].ewm(span=20).mean().iloc[-1]
+        ema50 = df["c"].ewm(span=50).mean().iloc[-1]
+        diff = abs(ema20 - ema50) / df["c"].iloc[-1]
 
-    diff = abs(ema20 - ema50) / df["c"].iloc[-1]
-
-    if diff > 0.003:
-        return "strong"
-    elif diff > 0.0015:
+        if diff > 0.003:
+            return "strong"
+        elif diff > 0.0015:
+            return "trend"
+        else:
+            return "chop"
+    except:
         return "trend"
-    else:
-        return "chop"
 
 # ===== FEATURES =====
 def features(sym):
-    df = pd.DataFrame(ohlcv(sym), columns=["t","o","h","l","c","v"])
+    try:
+        data = ohlcv(sym)
+        if not data:
+            return None
 
-    df["ema9"] = df["c"].ewm(span=9).mean()
-    df["ema21"] = df["c"].ewm(span=21).mean()
-    df["trend"] = df["ema9"] - df["ema21"]
+        df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
 
-    df["momentum"] = df["c"] - df["c"].shift(5)
+        df["ema9"] = df["c"].ewm(span=9).mean()
+        df["ema21"] = df["c"].ewm(span=21).mean()
+        df["trend"] = df["ema9"] - df["ema21"]
 
-    df["vol_avg"] = df["v"].rolling(10).mean()
-    df["volume_spike"] = df["v"] / df["vol_avg"]
+        df["momentum"] = df["c"] - df["c"].shift(5)
 
-    df["price_change"] = (df["c"] - df["c"].shift(3)) / df["c"]
+        df["vol_avg"] = df["v"].rolling(10).mean()
+        df["volume_spike"] = df["v"] / df["vol_avg"]
 
-    df["fake"] = ((df["h"] > df["h"].shift(1)) & (df["c"] < df["h"].shift(1))).astype(int)
+        df["price_change"] = (df["c"] - df["c"].shift(3)) / df["c"]
 
-    df = df.fillna(0)
-    last = df.iloc[-1]
+        df["fake"] = ((df["h"] > df["h"].shift(1)) & (df["c"] < df["h"].shift(1))).astype(int)
 
-    return {
-        "trend": float(last["trend"]),
-        "momentum": float(last["momentum"]),
-        "volume_spike": float(last["volume_spike"]),
-        "price_change": float(last["price_change"]),
-        "fake": int(last["fake"])
-    }
+        df = df.fillna(0)
+        last = df.iloc[-1]
+
+        return {
+            "trend": float(last["trend"]),
+            "momentum": float(last["momentum"]),
+            "volume_spike": float(last["volume_spike"]),
+            "price_change": float(last["price_change"]),
+            "fake": int(last["fake"])
+        }
+    except:
+        return None
 
 # ===== DECISION =====
 def decision(sym):
     f = features(sym)
-    mode = market_mode()
+    if not f:
+        return None
 
+    mode = market_mode()
     if mode == "chop":
         return None
 
     score = 0
-
     side = "long" if f["trend"] > 0 else "short"
     score += 2
 
@@ -151,10 +167,10 @@ def decision(sym):
         score += 2
 
     if f["volume_spike"] > 2 and abs(f["price_change"]) > 0.003:
-        score += 3  # pump
+        score += 3
 
     if f["volume_spike"] > 3:
-        score += 2  # whale
+        score += 2
 
     if f["fake"] == 1:
         score -= 3
@@ -172,11 +188,14 @@ def decision(sym):
 
 # ===== SYMBOLS =====
 def symbols():
-    t = exchange.fetch_tickers()
-    s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
-    s = [x for x in s if x[1] and 20000 < x[1] < 2000000]
-    s.sort(key=lambda x:x[1], reverse=True)
-    return [x[0] for x in s[:25]]
+    try:
+        t = exchange.fetch_tickers()
+        s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
+        s = [x for x in s if x[1] and 20000 < x[1] < 2000000]
+        s.sort(key=lambda x:x[1], reverse=True)
+        return [x[0] for x in s[:25]]
+    except:
+        return []
 
 # ===== STATE =====
 state = {}
@@ -254,6 +273,36 @@ def manage():
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
+                # AI LIVE EXIT
+                f_live = features(sym)
+                if f_live:
+                    reverse = (f_live["trend"] < 0 and p.get("side") in ["long","buy"]) or \
+                              (f_live["trend"] > 0 and p.get("side") in ["short","sell"])
+
+                    weak = abs(f_live["momentum"]) < 0.0008
+                    low_vol = f_live["volume_spike"] < 0.8
+                    ai_conf = ai_score(f_live)
+
+                    if reverse or (weak and low_vol and ai_conf < 0.4):
+                        close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
+                        exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
+
+                        f = st["features"]
+                        f["result"] = pnl
+                        save_trade_db(f)
+
+                        memory.append(f)
+
+                        if len(memory) % 25 == 0:
+                            new_model = train()
+                            if new_model:
+                                model = new_model
+
+                        state.pop(sym)
+                        cooldown[sym] = time.time()
+                        daily_pnl += pnl
+                        continue
+
                 # TP
                 if not st["tp"] and pnl >= TP1_USDT:
                     close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
@@ -264,9 +313,8 @@ def manage():
                     st["tp"] = True
                     st["peak"] = pnl
 
-                # AI EXIT
-                f_live = features(sym)
-                if st["tp"] and abs(f_live["momentum"]) < 0.001:
+                # TRAILING
+                if st["tp"] and pnl < st["peak"] - TRAIL_GAP:
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
 
@@ -275,6 +323,7 @@ def manage():
                     save_trade_db(f)
 
                     memory.append(f)
+
                     if len(memory) % 25 == 0:
                         new_model = train()
                         if new_model:
@@ -283,7 +332,6 @@ def manage():
                     state.pop(sym)
                     cooldown[sym] = time.time()
                     daily_pnl += pnl
-                    continue
 
                 # SL
                 if pnl <= SL_USDT:
@@ -303,5 +351,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 LEVEL 4 PRO AKTİF")
+bot.send_message(CHAT_ID, "💣 FINAL AI BOT AKTİF")
 bot.infinity_polling()
