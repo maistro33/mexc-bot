@@ -11,8 +11,8 @@ TP1_USDT = 1.2
 TRAIL_GAP = 0.5
 SL_PERCENT = 0.02
 
-AI_THRESHOLD = 0.45
-AI_WEIGHT = 2.5
+AI_THRESHOLD = 0.4
+AI_WEIGHT = 3
 
 MAX_DAILY_LOSS = -5
 COOLDOWN_TIME = 30
@@ -105,8 +105,11 @@ def indicators(df):
     df["volume_spike"] = df["v"] / df["vol_avg"]
 
     df["range"] = (df["h"] - df["l"]) / df["c"]
-
     df["fake"] = ((df["h"] > df["h"].shift(1)) & (df["c"] < df["h"].shift(1))).astype(int)
+
+    df["price_change"] = (df["c"] - df["c"].shift(3)) / df["c"]
+
+    df = df.fillna(0)  # 🔥 FIX
 
     return df
 
@@ -116,6 +119,7 @@ def features(sym):
         data = ohlcv(sym)
         if not data:
             return None
+
         df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
         df = indicators(df)
         last = df.iloc[-1]
@@ -127,8 +131,10 @@ def features(sym):
             "macd": float(last["macd"]),
             "volume_spike": float(last["volume_spike"]),
             "range": float(last["range"]),
-            "fake": int(last["fake"])
+            "fake": int(last["fake"]),
+            "price_change": float(last["price_change"])
         }
+
     except:
         return None
 
@@ -142,6 +148,18 @@ def market_mode():
         return "bull" if ema20 > ema50 else "bear"
     except:
         return "bull"
+
+# ===== SYMBOLS =====
+def symbols():
+    try:
+        t = exchange.fetch_tickers()
+        s = [(k, v["quoteVolume"]) for k, v in t.items() if ":USDT" in k]
+        s = [x for x in s if x[1] and 20000 < x[1] < 5000000]
+        s = [x for x in s if "BTC" not in x[0] and "ETH" not in x[0]]
+        s.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in s[:30]]
+    except:
+        return []
 
 # ===== DECISION =====
 def decision(sym):
@@ -164,29 +182,30 @@ def decision(sym):
     if f["fake"] == 1:
         score -= 2
 
-    conf = ai_score(f)
-    final = score + conf * AI_WEIGHT
+    pump = f["volume_spike"] > 2 and abs(f["price_change"]) > 0.003
+    whale = f["volume_spike"] > 3
+    liquidation = abs(f["price_change"]) > 0.01 and f["volume_spike"] > 2.5
 
-    if conf < AI_THRESHOLD and final < 2:
-        return None
+    if pump:
+        score += 3
+    if whale:
+        score += 2
+    if liquidation:
+        score += 4
+
+    conf = ai_score(f)
+    final = score + (conf * AI_WEIGHT)
+
+    if not (pump or liquidation):
+        if conf < AI_THRESHOLD and final < 2:
+            return None
 
     if f["trend"] > 0:
         return "long", f
-    if f["trend"] < 0:
+    elif f["trend"] < 0:
         return "short", f
 
     return None
-
-# ===== SYMBOLS =====
-def symbols():
-    try:
-        t = exchange.fetch_tickers()
-        s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
-        s = [x for x in s if x[1] and x[1] > 200000]
-        s.sort(key=lambda x:x[1], reverse=True)
-        return [x[0] for x in s[:25]]
-    except:
-        return []
 
 # ===== STATE =====
 state = {}
@@ -194,7 +213,7 @@ cooldown = {}
 daily_pnl = 0
 
 # ===== CLOSE ALL =====
-def close_all_positions():
+def close_all():
     try:
         pos = exchange.fetch_positions()
         for p in pos:
@@ -216,7 +235,7 @@ def engine():
     while True:
         try:
             if daily_pnl <= MAX_DAILY_LOSS:
-                close_all_positions()
+                close_all()
                 time.sleep(60)
                 continue
 
@@ -239,7 +258,6 @@ def engine():
                     continue
 
                 side, f = d
-
                 price = exchange.fetch_ticker(sym)["last"]
 
                 qty = (BASE_USDT * LEVERAGE) / price
@@ -283,12 +301,15 @@ def manage():
                 pnl = float(p.get("unrealizedPnl") or 0)
                 side = str(p.get("side")).lower()
 
-                # STATE RECOVERY
+                f_data = features(sym)
+                if not f_data:
+                    continue
+
                 if sym not in state:
                     state[sym] = {
                         "entry": exchange.fetch_ticker(sym)["last"],
                         "peak": pnl,
-                        "features": features(sym),
+                        "features": f_data,
                         "tp": False
                     }
 
@@ -300,7 +321,6 @@ def manage():
                 entry = st["entry"]
                 price = exchange.fetch_ticker(sym)["last"]
 
-                # SL
                 if side == "long" and price <= entry * (1 - SL_PERCENT):
                     close_side = "sell"
                 elif side == "short" and price >= entry * (1 + SL_PERCENT):
@@ -315,7 +335,6 @@ def manage():
                     cooldown[sym] = time.time()
                     continue
 
-                # TP1
                 if pnl >= TP1_USDT and not st["tp"]:
                     close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
                     exchange.create_market_order(sym,
@@ -324,7 +343,6 @@ def manage():
                         params={"reduceOnly": True})
                     st["tp"] = True
 
-                # TRAIL
                 if st["tp"] and pnl < st["peak"] - TRAIL_GAP:
                     exchange.create_market_order(sym,
                         "sell" if side=="long" else "buy",
@@ -356,5 +374,5 @@ bot.remove_webhook()
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "🧠 SADIK BOT V4.1 STABLE AKTİF")
+bot.send_message(CHAT_ID, "🚀 SADIK BOT V5.1 ULTRA FINAL AKTİF")
 bot.infinity_polling()
