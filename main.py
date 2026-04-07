@@ -46,8 +46,8 @@ def save_trade_db(data):
             },
             json=data
         )
-    except:
-        pass
+    except Exception as e:
+        print("DB ERROR:", e)
 
 def load_memory_db():
     try:
@@ -63,6 +63,18 @@ def load_memory_db():
         return []
 
 memory = load_memory_db()
+
+# ===== TEST DB =====
+def test_db():
+    data = {
+        "trend": 1.1,
+        "momentum": 0.5,
+        "volume_spike": 2.0,
+        "price_change": 0.01,
+        "fake": 0,
+        "result": 0.99
+    }
+    save_trade_db(data)
 
 # ===== AI =====
 def train():
@@ -94,7 +106,7 @@ def ohlcv(sym, tf="5m", limit=100):
     except:
         return []
 
-# ===== MARKET MODE =====
+# ===== MARKET =====
 def market_mode():
     try:
         df = pd.DataFrame(ohlcv("BTC/USDT:USDT", limit=50), columns=["t","o","h","l","c","v"])
@@ -348,8 +360,10 @@ def manage():
             print("MANAGE:", e)
 
 # ===== START =====
+test_db()
+
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 FINAL AI BOT AKTİF")
+bot.send_message(CHAT_ID, "💣 FINAL AI BOT + TEST AKTİF")
 bot.infinity_polling()
