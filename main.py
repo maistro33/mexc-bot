@@ -156,7 +156,6 @@ def decision(sym):
     if mode == "chop":
         return None
 
-    # geç kalma filtresi
     if abs(f["price_change"]) > 0.004:
         return None
 
@@ -215,6 +214,35 @@ state = {}
 cooldown = {}
 daily_pnl = 0
 
+# ===== SYNC (KRİTİK) =====
+def sync_positions():
+    try:
+        pos = exchange.fetch_positions()
+
+        for p in pos:
+            qty = float(p.get("contracts") or 0)
+            if qty <= 0:
+                continue
+
+            sym = p["symbol"]
+
+            if sym not in state:
+                state[sym] = {
+                    "peak": 0,
+                    "features": features(sym) or {
+                        "trend": 0,
+                        "momentum": 0,
+                        "volume_spike": 0,
+                        "price_change": 0,
+                        "fake": 0
+                    },
+                    "tp": False
+                }
+
+                bot.send_message(CHAT_ID, f"♻️ SYNC {sym}")
+    except:
+        pass
+
 # ===== ENGINE =====
 def engine():
     global daily_pnl
@@ -271,6 +299,8 @@ def manage():
 
     while True:
         try:
+            sync_positions()  # 💣 KRİTİK
+
             pos = exchange.fetch_positions()
 
             for p in pos:
@@ -289,7 +319,7 @@ def manage():
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
-                # TP1 önce
+                # ===== TP1 =====
                 if not st["tp"] and pnl >= TP1_USDT:
                     close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
@@ -301,7 +331,7 @@ def manage():
 
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
-                # AI analiz
+                # ===== AI =====
                 f_live = features(sym)
                 if f_live:
                     reverse = (f_live["trend"] < 0 and p.get("side") in ["long","buy"]) or \
@@ -311,7 +341,6 @@ def manage():
                     low_vol = f_live["volume_spike"] < 0.9
                     ai_conf = ai_score(f_live)
 
-                    # para basan mod (TP sonrası)
                     if st["tp"] and pnl > 0.5 and ai_conf > 0.6:
                         continue
 
@@ -340,7 +369,7 @@ def manage():
                         daily_pnl += pnl
                         continue
 
-                # trailing
+                # ===== TRAILING =====
                 if st["tp"] and pnl < st["peak"] - TRAIL_GAP:
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
@@ -363,7 +392,7 @@ def manage():
                     cooldown[sym] = time.time()
                     daily_pnl += pnl
 
-                # SL
+                # ===== SL =====
                 if pnl <= SL_USDT:
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
@@ -384,5 +413,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 LEVEL 7 FINAL AKTİF")
+bot.send_message(CHAT_ID, "💣 FINAL AI BOT AKTİF")
 bot.infinity_polling()
