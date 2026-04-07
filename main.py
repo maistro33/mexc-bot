@@ -3,9 +3,11 @@ import pandas as pd
 from xgboost import XGBClassifier
 import joblib
 
+# ===== ENV =====
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+# ===== SETTINGS =====
 MAX_TRADES = 2
 BASE_USDT = 3
 LEVERAGE = 10
@@ -18,9 +20,11 @@ AI_WEIGHT = 3
 COOLDOWN = 60
 MAX_DAILY_LOSS = -5
 
+# ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
+# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -30,6 +34,7 @@ exchange = ccxt.bitget({
 })
 exchange.load_markets()
 
+# ===== DATABASE =====
 def save_trade_db(data):
     try:
         requests.post(
@@ -59,6 +64,7 @@ def load_memory_db():
 
 memory = load_memory_db()
 
+# ===== AI =====
 def train():
     global memory
     if len(memory) < 50:
@@ -81,12 +87,14 @@ def ai_score(f):
     except:
         return 0.5
 
+# ===== DATA =====
 def ohlcv(sym, tf="5m", limit=100):
     try:
         return exchange.fetch_ohlcv(sym, tf, limit=limit)
     except:
         return []
 
+# ===== MARKET =====
 def market_mode():
     try:
         df = pd.DataFrame(ohlcv("BTC/USDT:USDT", limit=50), columns=["t","o","h","l","c","v"])
@@ -103,6 +111,7 @@ def market_mode():
     except:
         return "trend"
 
+# ===== FEATURES =====
 def features(sym):
     try:
         data = ohlcv(sym)
@@ -110,13 +119,18 @@ def features(sym):
             return None
 
         df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
+
         df["ema9"] = df["c"].ewm(span=9).mean()
         df["ema21"] = df["c"].ewm(span=21).mean()
         df["trend"] = df["ema9"] - df["ema21"]
+
         df["momentum"] = df["c"] - df["c"].shift(5)
+
         df["vol_avg"] = df["v"].rolling(10).mean()
         df["volume_spike"] = df["v"] / df["vol_avg"]
+
         df["price_change"] = (df["c"] - df["c"].shift(3)) / df["c"]
+
         df["fake"] = ((df["h"] > df["h"].shift(1)) & (df["c"] < df["h"].shift(1))).astype(int)
 
         df = df.fillna(0)
@@ -132,6 +146,7 @@ def features(sym):
     except:
         return None
 
+# ===== DECISION =====
 def decision(sym):
     f = features(sym)
     if not f:
@@ -141,7 +156,7 @@ def decision(sym):
     if mode == "chop":
         return None
 
-    # 💣 GEÇ KALMA FİLTRESİ
+    # geç kalma filtresi
     if abs(f["price_change"]) > 0.004:
         return None
 
@@ -184,6 +199,7 @@ def decision(sym):
 
     return side, f, conf, reason
 
+# ===== SYMBOLS =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
@@ -194,10 +210,12 @@ def symbols():
     except:
         return []
 
+# ===== STATE =====
 state = {}
 cooldown = {}
 daily_pnl = 0
 
+# ===== ENGINE =====
 def engine():
     global daily_pnl
 
@@ -247,6 +265,7 @@ def engine():
         except Exception as e:
             print("ENGINE:", e)
 
+# ===== MANAGE =====
 def manage():
     global memory, model, daily_pnl
 
@@ -270,6 +289,19 @@ def manage():
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
+                # TP1 önce
+                if not st["tp"] and pnl >= TP1_USDT:
+                    close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
+                    close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
+
+                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly": True})
+
+                    st["tp"] = True
+                    st["peak"] = pnl
+
+                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+
+                # AI analiz
                 f_live = features(sym)
                 if f_live:
                     reverse = (f_live["trend"] < 0 and p.get("side") in ["long","buy"]) or \
@@ -279,8 +311,8 @@ def manage():
                     low_vol = f_live["volume_spike"] < 0.9
                     ai_conf = ai_score(f_live)
 
-                    # 💣 PARA BASAN MOD
-                    if pnl > 0.5 and ai_conf > 0.6:
+                    # para basan mod (TP sonrası)
+                    if st["tp"] and pnl > 0.5 and ai_conf > 0.6:
                         continue
 
                     if reverse or (weak and low_vol) or (pnl < -0.3 and ai_conf < 0.45):
@@ -308,17 +340,7 @@ def manage():
                         daily_pnl += pnl
                         continue
 
-                if not st["tp"] and pnl >= TP1_USDT:
-                    close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
-                    close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-
-                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly": True})
-
-                    st["tp"] = True
-                    st["peak"] = pnl
-
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
-
+                # trailing
                 if st["tp"] and pnl < st["peak"] - TRAIL_GAP:
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
@@ -341,6 +363,7 @@ def manage():
                     cooldown[sym] = time.time()
                     daily_pnl += pnl
 
+                # SL
                 if pnl <= SL_USDT:
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
@@ -352,13 +375,14 @@ def manage():
                     cooldown[sym] = time.time()
                     daily_pnl += pnl
 
-            time.sleep(3)
+            time.sleep(1)
 
         except Exception as e:
             print("MANAGE:", e)
 
+# ===== START =====
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 LEVEL 7 PRO MAX AKTİF")
+bot.send_message(CHAT_ID, "💣 LEVEL 7 FINAL AKTİF")
 bot.infinity_polling()
