@@ -4,10 +4,10 @@ from xgboost import XGBClassifier
 
 # ===== SETTINGS =====
 MAX_TRADES = 2
-BASE_USDT = 3
+BASE_USDT = 5
 LEVERAGE = 10
 
-TP1_USDT = 1.2
+TP1_USDT = 1.1
 TRAIL_GAP = 0.5
 SL_PERCENT = 0.02
 
