@@ -167,7 +167,7 @@ def decision(sym):
         score += 1
         reason.append("momentum")
 
-    if f["volume_spike"] > 1.5:
+    if f["volume_spike"] > 1.2:
         score += 2
         reason.append("volume")
 
@@ -190,7 +190,7 @@ def decision(sym):
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
 
-    if final < 3:
+    if final < 2:
         return None
 
     return side, f, conf, reason
