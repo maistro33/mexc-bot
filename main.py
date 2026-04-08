@@ -12,13 +12,15 @@ LEVERAGE = 10
 
 TP1 = 0.6
 TRAIL_GAP = 0.25
-SL_USDT = -1.2
+SL_USDT = -1
 
 MIN_HOLD = 20
 GLOBAL_COOLDOWN = 30
 
 AI_WEIGHT = 3
 COOLDOWN = 60
+
+MIN_PNL_LEARN = 0.02
 
 last_trade_time = 0
 
@@ -69,9 +71,16 @@ def train():
     global memory
     if len(memory) < 25:
         return None
+
     df = pd.DataFrame(memory)
+
+    # 💣 FIX: strategy encode
+    if "strategy" in df.columns:
+        df["strategy"] = df["strategy"].astype("category").cat.codes
+
     X = df.drop(columns=["result"])
     y = df["result"] > 0
+
     model = XGBClassifier(n_estimators=200)
     model.fit(X, y)
     joblib.dump(model, "model.pkl")
@@ -102,10 +111,8 @@ def whale_score(sym):
         change = abs(t["percentage"] or 0)
 
         score = 0
-        if vol > 500000:
-            score += 2
-        if change > 2:
-            score += 2
+        if vol > 500000: score += 2
+        if change > 2: score += 2
 
         return score
     except:
@@ -117,14 +124,13 @@ def funding_score(sym):
         f = exchange.fetch_funding_rate(sym)
         rate = f["fundingRate"]
 
-        if rate > 0.01:
-            return -2
-        elif rate < -0.01:
-            return 2
+        if rate > 0.01: return -2
+        elif rate < -0.01: return 2
         return 0
     except:
         return 0
 
+# ===== FEATURES =====
 def features(sym):
     try:
         data = ohlcv(sym)
@@ -170,33 +176,33 @@ def strat_breakout(f):
 def best_strategy():
     best = "trend"
     best_wr = 0
+
     for k,v in strategy_stats.items():
         t = v["win"]+v["loss"]
-        if t < 5:
-            continue
+        if t < 5: continue
+
         wr = v["win"]/t
         if wr > best_wr:
             best_wr = wr
             best = k
+
     return best
 
 # ===== DECISION =====
 def decision(sym):
     f = features(sym)
-    if not f:
-        return None
+    if not f: return None
 
     strat = best_strategy()
-    score = strat_trend(f) if strat=="trend" else strat_breakout(f)
 
+    score = strat_trend(f) if strat=="trend" else strat_breakout(f)
     score += whale_score(sym)
     score += funding_score(sym)
 
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
 
-    if final < 2:
-        return None
+    if final < 2: return None
 
     side = "long" if f["trend"] > 0 else "short"
 
@@ -219,8 +225,7 @@ def sync_positions():
     try:
         pos = exchange.fetch_positions()
         for p in pos:
-            qty = float(p.get("contracts") or 0)
-            if qty <= 0:
+            if float(p.get("contracts") or 0) <= 0:
                 continue
 
             sym = p["symbol"]
@@ -233,7 +238,7 @@ def sync_positions():
                     "tp_done": False,
                     "features": features(sym) or {},
                     "open_time": (ts/1000 if ts else time.time()),
-                    "strategy": best_strategy()  # FIX
+                    "strategy": best_strategy()
                 }
 
                 bot.send_message(CHAT_ID, f"♻️ SYNC {sym}")
@@ -251,21 +256,13 @@ def engine():
 
             for sym in symbols():
 
-                if open_count >= MAX_TRADES:
-                    break
-
-                if time.time() - last_trade_time < GLOBAL_COOLDOWN:
-                    continue
-
-                if sym in state:
-                    continue
-
-                if sym in cooldown and time.time() - cooldown[sym] < COOLDOWN:
-                    continue
+                if open_count >= MAX_TRADES: break
+                if time.time() - last_trade_time < GLOBAL_COOLDOWN: continue
+                if sym in state: continue
+                if sym in cooldown and time.time() - cooldown[sym] < COOLDOWN: continue
 
                 d = decision(sym)
-                if not d:
-                    continue
+                if not d: continue
 
                 side, f, strat = d
 
@@ -276,15 +273,14 @@ def engine():
                 exchange.create_market_order(sym, "buy" if side=="long" else "sell", qty)
 
                 state[sym] = {
-                    "peak": 0,
-                    "tp_done": False,
-                    "features": f,
-                    "open_time": time.time(),
-                    "strategy": strat
+                    "peak":0,
+                    "tp_done":False,
+                    "features":f,
+                    "open_time":time.time(),
+                    "strategy":strat
                 }
 
                 last_trade_time = time.time()
-
                 bot.send_message(CHAT_ID, f"🚀 {sym} {side} STRAT:{strat}")
                 break
 
@@ -300,20 +296,16 @@ def manage():
     while True:
         try:
             sync_positions()
-
             pos = exchange.fetch_positions()
 
             for p in pos:
                 qty = float(p.get("contracts") or 0)
-                if qty <= 0:
-                    continue
+                if qty <= 0: continue
 
                 sym = p["symbol"]
                 pnl = float(p.get("unrealizedPnl") or 0)
 
-                if sym not in state:
-                    continue
-
+                if sym not in state: continue
                 st = state[sym]
 
                 if pnl > st["peak"]:
@@ -339,29 +331,47 @@ def manage():
                     if pnl < st["peak"] - TRAIL_GAP:
                         exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
-                        f = st["features"]
-                        f["result"] = pnl
-                        save_trade_db(f)
-                        memory.append(f)
+                        if abs(pnl) >= MIN_PNL_LEARN:
+                            f = st["features"]
+                            f["result"] = pnl
+                            f["strategy"] = st["strategy"]
 
-                        if len(memory)%25==0:
-                            new = train()
-                            if new:
-                                model = new
+                            # 💣 strategy stats update
+                            if pnl > 0:
+                                strategy_stats[st["strategy"]]["win"] += 1
+                            else:
+                                strategy_stats[st["strategy"]]["loss"] += 1
+
+                            save_trade_db(f)
+                            memory.append(f)
+
+                            if len(memory)%10==0:
+                                new = train()
+                                if new:
+                                    model = new
 
                         state.pop(sym)
+                        cooldown[sym] = time.time()
 
                 # SL
                 if pnl <= SL_USDT:
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
-                    # FIX learning
-                    f = st["features"]
-                    f["result"] = pnl
-                    save_trade_db(f)
-                    memory.append(f)
+                    if abs(pnl) >= MIN_PNL_LEARN:
+                        f = st["features"]
+                        f["result"] = pnl
+                        f["strategy"] = st["strategy"]
+
+                        if pnl > 0:
+                            strategy_stats[st["strategy"]]["win"] += 1
+                        else:
+                            strategy_stats[st["strategy"]]["loss"] += 1
+
+                        save_trade_db(f)
+                        memory.append(f)
 
                     state.pop(sym)
+                    cooldown[sym] = time.time()
 
             time.sleep(1)
 
@@ -371,5 +381,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 FINAL LEVEL 10 (FIXED) AKTİF")
+bot.send_message(CHAT_ID, "💣 LEVEL 10 ULTIMATE AKTİF")
 bot.infinity_polling()
