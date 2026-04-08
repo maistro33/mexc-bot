@@ -10,15 +10,19 @@ MAX_TRADES = 2
 BASE_USDT = 3
 LEVERAGE = 10
 
-TP1_USDT = 0.6
+# 💣 TP STRUCTURE
+TP1 = 0.6
+TP2 = 0.9
+TP3 = 1.2
+TP4 = 1.6
+
 SL_USDT = -1.2
 
 MIN_HOLD = 20
-GLOBAL_COOLDOWN = 45
+GLOBAL_COOLDOWN = 30
 
 AI_WEIGHT = 3
 COOLDOWN = 60
-MAX_DAILY_LOSS = -5
 
 last_trade_time = 0
 
@@ -34,14 +38,14 @@ exchange = ccxt.bitget({
 })
 exchange.load_markets()
 
-# ===== DB =====
+# ================= DB =================
 def save_trade_db(data):
     try:
         requests.post(
             f"{SUPABASE_URL}/rest/v1/trades",
             headers={
                 "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",  # ✅ FIX 1
+                "Authorization": f"Bearer {SUPABASE_KEY}",
                 "Content-Type": "application/json"
             },
             json=data
@@ -64,7 +68,7 @@ def load_memory_db():
 
 memory = load_memory_db()
 
-# ===== AI =====
+# ================= AI =================
 def train():
     global memory
     if len(memory) < 25:
@@ -87,43 +91,60 @@ def ai_score(f):
     except:
         return 0.5
 
-# ===== DATA =====
-def ohlcv(sym, tf="5m", limit=100):
+# ================= DATA =================
+def ohlcv(sym):
     try:
-        return exchange.fetch_ohlcv(sym, tf, limit=limit)
+        return exchange.fetch_ohlcv(sym, "5m", limit=100)
     except:
         return []
 
-def market_mode():
+# 💣 WHALE DETECTION
+def whale_score(sym):
     try:
-        df = pd.DataFrame(ohlcv("BTC/USDT:USDT", limit=50), columns=["t","o","h","l","c","v"])
-        ema20 = df["c"].ewm(span=20).mean().iloc[-1]
-        ema50 = df["c"].ewm(span=50).mean().iloc[-1]
-        diff = abs(ema20 - ema50) / df["c"].iloc[-1]
+        ticker = exchange.fetch_ticker(sym)
+        vol = ticker["quoteVolume"] or 0
+        change = abs(ticker["percentage"] or 0)
 
-        if diff > 0.003:
-            return "strong"
-        elif diff > 0.0015:
-            return "trend"
-        else:
-            return "chop"
+        score = 0
+        if vol > 500000:
+            score += 2
+        if change > 2:
+            score += 2
+
+        return score
     except:
-        return "trend"
+        return 0
+
+# 💣 FUNDING RATE SQUEEZE
+def funding_score(sym):
+    try:
+        f = exchange.fetch_funding_rate(sym)
+        rate = f["fundingRate"]
+
+        if rate > 0.01:
+            return -2   # long crowded
+        elif rate < -0.01:
+            return 2    # short squeeze
+        return 0
+    except:
+        return 0
 
 def features(sym):
     try:
         data = ohlcv(sym)
-        if not data:
-            return None
-
         df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
+
         df["ema9"] = df["c"].ewm(span=9).mean()
         df["ema21"] = df["c"].ewm(span=21).mean()
+
         df["trend"] = df["ema9"] - df["ema21"]
         df["momentum"] = df["c"] - df["c"].shift(5)
+
         df["vol_avg"] = df["v"].rolling(10).mean()
         df["volume_spike"] = df["v"] / df["vol_avg"]
+
         df["price_change"] = (df["c"] - df["c"].shift(3)) / df["c"]
+
         df["fake"] = ((df["h"] > df["h"].shift(1)) & (df["c"] < df["h"].shift(1))).astype(int)
 
         df = df.fillna(0)
@@ -139,100 +160,77 @@ def features(sym):
     except:
         return None
 
-# ===== DECISION =====
+# ================= STRATEGY =================
+strategy_stats = {
+    "trend": {"win":0,"loss":0},
+    "breakout": {"win":0,"loss":0}
+}
+
+def strat_trend(f):
+    return (f["trend"] > 0)*2 + (abs(f["momentum"])>0)
+
+def strat_breakout(f):
+    return (f["volume_spike"]>1.5)*3 + (abs(f["price_change"])>0.002)
+
+def best_strategy():
+    best = "trend"
+    best_wr = 0
+    for k,v in strategy_stats.items():
+        t = v["win"]+v["loss"]
+        if t < 5:
+            continue
+        wr = v["win"]/t
+        if wr > best_wr:
+            best_wr = wr
+            best = k
+    return best
+
+# ================= DECISION =================
 def decision(sym):
     f = features(sym)
     if not f:
         return None
 
-    mode = market_mode()
-    if mode == "chop":
-        return None
+    strat = best_strategy()
+    score = strat_trend(f) if strat=="trend" else strat_breakout(f)
 
-    if abs(f["price_change"]) > 0.004:
-        return None
-
-    score = 0
-
-    side = "long" if f["trend"] > 0 else "short"
-    score += 2
-
-    if abs(f["momentum"]) > 0:
-        score += 1
-
-    if f["volume_spike"] > 1.2:
-        score += 2
-
-    if f["volume_spike"] > 2:
-        score += 3
-
-    if f["fake"] == 1:
-        score -= 3
-
-    if mode == "strong":
-        score += 2
+    # 💣 NEW LOGIC
+    score += whale_score(sym)
+    score += funding_score(sym)
 
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
 
-    if final < 2.2:
+    if final < 2:
         return None
 
-    return side, f, conf
+    side = "long" if f["trend"] > 0 else "short"
 
+    return side, f, strat
+
+# ================= SYMBOLS =================
 def symbols():
-    try:
-        t = exchange.fetch_tickers()
-        s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
-        s = [x for x in s if x[1] and 20000 < x[1] < 2000000]
-        s.sort(key=lambda x:x[1], reverse=True)
-        return [x[0] for x in s[:25]]
-    except:
-        return []
+    t = exchange.fetch_tickers()
+    s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
+    s = [x for x in s if x[1] and 20000 < x[1] < 2000000]
+    s.sort(key=lambda x:x[1], reverse=True)
+    return [x[0] for x in s[:20]]
 
+# ================= STATE =================
 state = {}
 cooldown = {}
-daily_pnl = 0
 
-# ===== SYNC =====
-def sync_positions():
-    try:
-        pos = exchange.fetch_positions()
-        for p in pos:
-            qty = float(p.get("contracts") or 0)
-            if qty <= 0:
-                continue
-
-            sym = p["symbol"]
-
-            if sym not in state:
-                ts = p.get("timestamp")
-
-                state[sym] = {
-                    "peak": 0,
-                    "features": features(sym) or {},
-                    "tp": False,
-                    "open_time": (ts/1000 if ts else time.time())
-                }
-
-                bot.send_message(CHAT_ID, f"♻️ SYNC {sym}")
-    except:
-        pass
-
-# ===== ENGINE =====
+# ================= ENGINE =================
 def engine():
-    global last_trade_time, daily_pnl
+    global last_trade_time
 
     while True:
         try:
-            if daily_pnl <= MAX_DAILY_LOSS:
-                time.sleep(60)
-                continue
-
             pos = exchange.fetch_positions()
             open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
             for sym in symbols():
+
                 if open_count >= MAX_TRADES:
                     break
 
@@ -249,24 +247,25 @@ def engine():
                 if not d:
                     continue
 
-                side, f, conf = d
+                side, f, strat = d
 
                 price = exchange.fetch_ticker(sym)["last"]
-                qty = float(exchange.amount_to_precision(sym, (BASE_USDT * LEVERAGE) / price))
+                qty = float(exchange.amount_to_precision(sym, (BASE_USDT*LEVERAGE)/price))
 
                 exchange.set_leverage(LEVERAGE, sym)
                 exchange.create_market_order(sym, "buy" if side=="long" else "sell", qty)
 
                 state[sym] = {
-                    "peak": 0,
-                    "features": f,
-                    "tp": False,
-                    "open_time": time.time()
+                    "peak":0,
+                    "tp_step":0,
+                    "features":f,
+                    "open_time":time.time(),
+                    "strategy":strat
                 }
 
                 last_trade_time = time.time()
 
-                bot.send_message(CHAT_ID, f"🚀 {sym} {side} AI:{round(conf,2)}")
+                bot.send_message(CHAT_ID,f"🚀 {sym} {side} STRAT:{strat}")
                 break
 
             time.sleep(5)
@@ -274,14 +273,12 @@ def engine():
         except Exception as e:
             print("ENGINE:", e)
 
-# ===== MANAGE =====
+# ================= MANAGE =================
 def manage():
-    global memory, model, daily_pnl
+    global memory, model
 
     while True:
         try:
-            sync_positions()
-
             pos = exchange.fetch_positions()
 
             for p in pos:
@@ -303,68 +300,40 @@ def manage():
                 if time.time() - st["open_time"] < MIN_HOLD:
                     continue
 
-                # TP
-                if not st["tp"] and pnl >= (TP1_USDT - 0.1):
-                    close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
-                    close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly": True})
-                    st["tp"] = True
-                    st["peak"] = pnl
-                    bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
+                close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
-                # SMART EXIT (FIX 2 EKLENDİ)
-                f_live = features(sym)
-                if f_live:
-                    weak = abs(f_live["momentum"]) < 0.0007
-                    ai_conf = ai_score(f_live)
+                # 💣 TP1 + STEP
+                if st["tp_step"] == 0 and pnl >= TP1:
+                    exchange.create_market_order(sym, close_side, qty*0.25, params={"reduceOnly":True})
+                    st["tp_step"] = 1
 
-                    if pnl > 0.3 and weak:
-                        close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-                        exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
+                elif st["tp_step"] == 1 and pnl >= TP2:
+                    exchange.create_market_order(sym, close_side, qty*0.25, params={"reduceOnly":True})
+                    st["tp_step"] = 2
 
-                        # ✅ AI öğrenme kaydı eklendi
-                        f = st["features"]
-                        f["result"] = pnl
-                        save_trade_db(f)
-                        memory.append(f)
+                elif st["tp_step"] == 2 and pnl >= TP3:
+                    exchange.create_market_order(sym, close_side, qty*0.25, params={"reduceOnly":True})
+                    st["tp_step"] = 3
 
-                        bot.send_message(CHAT_ID, f"🧠 SMART EXIT {sym}")
+                elif st["tp_step"] == 3 and pnl >= TP4:
+                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
-                        state.pop(sym)
-                        continue
+                    f = st["features"]
+                    f["result"] = pnl
+                    save_trade_db(f)
+                    memory.append(f)
 
-                # TRAILING
-                if st["tp"]:
-                    if pnl > 1:
-                        gap = 0.15
-                    elif pnl > 0.5:
-                        gap = 0.2
-                    else:
-                        gap = 0.3
+                    if len(memory)%25==0:
+                        new = train()
+                        if new:
+                            model = new
 
-                    if pnl < st["peak"] - gap:
-                        close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-                        exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
-
-                        f = st["features"]
-                        f["result"] = pnl
-                        save_trade_db(f)
-                        memory.append(f)
-
-                        bot.send_message(CHAT_ID, f"🏁 CLOSE {sym} pnl:{round(pnl,2)}")
-
-                        state.pop(sym)
-                        daily_pnl += pnl
+                    state.pop(sym)
 
                 # SL
                 if pnl <= SL_USDT:
-                    close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
-
-                    bot.send_message(CHAT_ID, f"❌ SL {sym}")
-
+                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
                     state.pop(sym)
-                    daily_pnl += pnl
 
             time.sleep(1)
 
@@ -374,5 +343,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 FINAL V2 (FIXED) AKTİF")
+bot.send_message(CHAT_ID,"💣 LEVEL 10 PLUS AKTİF")
 bot.infinity_polling()
