@@ -6,16 +6,15 @@ import joblib
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-MAX_TRADES = 3
+MAX_TRADES = 2
 BASE_USDT = 3
 LEVERAGE = 10
 
 TP1_USDT = 0.6
-TRAIL_GAP = 0.25
 SL_USDT = -1.2
 
 MIN_HOLD = 20
-GLOBAL_COOLDOWN = 60
+GLOBAL_COOLDOWN = 45
 
 AI_WEIGHT = 3
 COOLDOWN = 60
@@ -35,15 +34,14 @@ exchange = ccxt.bitget({
 })
 exchange.load_markets()
 
-# ================= DATABASE =================
-
+# ===== DB =====
 def save_trade_db(data):
     try:
         requests.post(
             f"{SUPABASE_URL}/rest/v1/trades",
             headers={
                 "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Authorization": f"Bearer {SUPABASE_KEY}",  # ✅ FIX 1
                 "Content-Type": "application/json"
             },
             json=data
@@ -66,8 +64,7 @@ def load_memory_db():
 
 memory = load_memory_db()
 
-# ================= AI =================
-
+# ===== AI =====
 def train():
     global memory
     if len(memory) < 25:
@@ -90,8 +87,7 @@ def ai_score(f):
     except:
         return 0.5
 
-# ================= DATA =================
-
+# ===== DATA =====
 def ohlcv(sym, tf="5m", limit=100):
     try:
         return exchange.fetch_ohlcv(sym, tf, limit=limit)
@@ -143,59 +139,46 @@ def features(sym):
     except:
         return None
 
-# ================= DECISION =================
-
+# ===== DECISION =====
 def decision(sym):
     f = features(sym)
     if not f:
         return None
 
     mode = market_mode()
-
-    # 🚫 chop kesin yasak
     if mode == "chop":
         return None
 
-    # 🚫 zayıf volume yasak
-    if f["volume_spike"] < 1.1:
-        return None
-
-    # 🚫 geç kalma
     if abs(f["price_change"]) > 0.004:
         return None
 
     score = 0
-    reason = []
 
     side = "long" if f["trend"] > 0 else "short"
     score += 2
-    reason.append("trend")
 
     if abs(f["momentum"]) > 0:
         score += 1
-        reason.append("momentum")
 
-    if f["volume_spike"] > 1.5:
+    if f["volume_spike"] > 1.2:
         score += 2
-        reason.append("volume")
+
+    if f["volume_spike"] > 2:
+        score += 3
 
     if f["fake"] == 1:
         score -= 3
-        reason.append("fake")
 
     if mode == "strong":
         score += 2
-        reason.append("strong")
 
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
 
-    if final < 2.5:
+    if final < 2.2:
         return None
 
-    return side, f, conf, reason
-
-# ================= SYMBOLS =================
+    return side, f, conf
 
 def symbols():
     try:
@@ -203,22 +186,18 @@ def symbols():
         s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
         s = [x for x in s if x[1] and 20000 < x[1] < 2000000]
         s.sort(key=lambda x:x[1], reverse=True)
-        return [x[0] for x in s[:20]]
+        return [x[0] for x in s[:25]]
     except:
         return []
-
-# ================= STATE =================
 
 state = {}
 cooldown = {}
 daily_pnl = 0
 
-# ================= SYNC FIX =================
-
+# ===== SYNC =====
 def sync_positions():
     try:
         pos = exchange.fetch_positions()
-
         for p in pos:
             qty = float(p.get("contracts") or 0)
             if qty <= 0:
@@ -240,8 +219,7 @@ def sync_positions():
     except:
         pass
 
-# ================= ENGINE =================
-
+# ===== ENGINE =====
 def engine():
     global last_trade_time, daily_pnl
 
@@ -255,7 +233,6 @@ def engine():
             open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
             for sym in symbols():
-
                 if open_count >= MAX_TRADES:
                     break
 
@@ -272,7 +249,7 @@ def engine():
                 if not d:
                     continue
 
-                side, f, conf, reason = d
+                side, f, conf = d
 
                 price = exchange.fetch_ticker(sym)["last"]
                 qty = float(exchange.amount_to_precision(sym, (BASE_USDT * LEVERAGE) / price))
@@ -289,10 +266,7 @@ def engine():
 
                 last_trade_time = time.time()
 
-                bot.send_message(CHAT_ID,
-                    f"🚀 {sym} {side}\nAI:{round(conf,2)}\nMode:{market_mode()}\nReason:{','.join(reason)}"
-                )
-
+                bot.send_message(CHAT_ID, f"🚀 {sym} {side} AI:{round(conf,2)}")
                 break
 
             time.sleep(5)
@@ -300,8 +274,7 @@ def engine():
         except Exception as e:
             print("ENGINE:", e)
 
-# ================= MANAGE =================
-
+# ===== MANAGE =====
 def manage():
     global memory, model, daily_pnl
 
@@ -327,87 +300,70 @@ def manage():
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
-                # 🚫 sabır (fix)
                 if time.time() - st["open_time"] < MIN_HOLD:
                     continue
 
-                # 💰 TP
+                # TP
                 if not st["tp"] and pnl >= (TP1_USDT - 0.1):
                     close_qty = float(exchange.amount_to_precision(sym, qty * 0.5))
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-
                     exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly": True})
-
                     st["tp"] = True
                     st["peak"] = pnl
-
                     bot.send_message(CHAT_ID, f"💰 TP1 {sym}")
 
+                # SMART EXIT (FIX 2 EKLENDİ)
                 f_live = features(sym)
-
                 if f_live:
-                    reverse = (f_live["trend"] < 0 and p.get("side") in ["long","buy"]) or \
-                              (f_live["trend"] > 0 and p.get("side") in ["short","sell"])
-
-                    weak = abs(f_live["momentum"]) < 0.0004
-                    low_vol = f_live["volume_spike"] < 0.7
+                    weak = abs(f_live["momentum"]) < 0.0007
                     ai_conf = ai_score(f_live)
 
-                    # 🧠 gerçek trader exit
-                    if pnl > 0.2 and weak and low_vol:
-                        reverse = True
-
-                    if reverse or (pnl < -0.5 and ai_conf < 0.45):
+                    if pnl > 0.3 and weak:
                         close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-
                         exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
 
-                        bot.send_message(CHAT_ID,
-                            f"🧠 EXIT {sym}\nPnL:{round(pnl,2)}\nAI:{round(ai_conf,2)}"
-                        )
+                        # ✅ AI öğrenme kaydı eklendi
+                        f = st["features"]
+                        f["result"] = pnl
+                        save_trade_db(f)
+                        memory.append(f)
+
+                        bot.send_message(CHAT_ID, f"🧠 SMART EXIT {sym}")
+
+                        state.pop(sym)
+                        continue
+
+                # TRAILING
+                if st["tp"]:
+                    if pnl > 1:
+                        gap = 0.15
+                    elif pnl > 0.5:
+                        gap = 0.2
+                    else:
+                        gap = 0.3
+
+                    if pnl < st["peak"] - gap:
+                        close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
+                        exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
 
                         f = st["features"]
                         f["result"] = pnl
                         save_trade_db(f)
                         memory.append(f)
 
-                        if len(memory) % 25 == 0:
-                            new_model = train()
-                            if new_model:
-                                model = new_model
+                        bot.send_message(CHAT_ID, f"🏁 CLOSE {sym} pnl:{round(pnl,2)}")
 
                         state.pop(sym)
-                        cooldown[sym] = time.time()
                         daily_pnl += pnl
-                        continue
 
-                # 🏁 trailing
-                if st["tp"] and pnl < st["peak"] - TRAIL_GAP:
-                    close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-
-                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
-
-                    bot.send_message(CHAT_ID, f"🏁 CLOSE {sym} pnl:{round(pnl,2)}")
-
-                    f = st["features"]
-                    f["result"] = pnl
-                    save_trade_db(f)
-                    memory.append(f)
-
-                    state.pop(sym)
-                    cooldown[sym] = time.time()
-                    daily_pnl += pnl
-
-                # ❌ SL
+                # SL
                 if pnl <= SL_USDT:
                     close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
-
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly": True})
 
-                    bot.send_message(CHAT_ID, f"❌ SL {sym} pnl:{round(pnl,2)}")
+                    bot.send_message(CHAT_ID, f"❌ SL {sym}")
 
                     state.pop(sym)
-                    cooldown[sym] = time.time()
                     daily_pnl += pnl
 
             time.sleep(1)
@@ -415,10 +371,8 @@ def manage():
         except Exception as e:
             print("MANAGE:", e)
 
-# ================= START =================
-
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💣 FINAL STABLE AI BOT AKTİF")
+bot.send_message(CHAT_ID, "💣 FINAL V2 (FIXED) AKTİF")
 bot.infinity_polling()
