@@ -27,7 +27,6 @@ last_trade_time = 0
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
-# 💣 SAFE SEND
 def send(msg):
     try:
         bot.send_message(CHAT_ID, msg)
@@ -43,9 +42,10 @@ exchange = ccxt.bitget({
 })
 exchange.load_markets()
 
+# 💣 FIXED DB DEBUG
 def save_trade_db(data):
     try:
-        requests.post(
+        res = requests.post(
             f"{SUPABASE_URL}/rest/v1/trades",
             headers={
                 "apikey": SUPABASE_KEY,
@@ -54,8 +54,12 @@ def save_trade_db(data):
             },
             json=data
         )
-    except:
-        pass
+
+        print("DB STATUS:", res.status_code)
+        print("DB RESPONSE:", res.text)
+
+    except Exception as e:
+        print("DB ERROR:", e)
 
 def load_memory_db():
     try:
@@ -197,7 +201,6 @@ def decision(sym):
 
     side = "long" if f["trend"] > 0 else "short"
 
-    # 💣 SİNYAL
     send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nStrat:{strat}")
 
     return side, f, strat
@@ -298,16 +301,13 @@ def manage():
 
                 close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
-                # TP1
                 if not st["tp_done"] and pnl >= TP1:
                     close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
                     exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
                     st["tp_done"] = True
                     st["peak"] = pnl
-
                     send(f"🟢 TP1 {sym}\nPnL:{round(pnl,2)}$")
 
-                # TRAILING
                 if st["tp_done"]:
                     if pnl > st["peak"]:
                         st["peak"] = pnl
@@ -341,7 +341,6 @@ def manage():
                         state.pop(sym)
                         cooldown[sym] = time.time()
 
-                # SL
                 if pnl <= SL_USDT:
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
@@ -372,5 +371,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 LEVEL 10 ULTIMATE + LOG AKTİF")
+send("💣 LEVEL 10 ULTIMATE + DB DEBUG AKTİF")
 bot.infinity_polling()
