@@ -20,7 +20,7 @@ GLOBAL_COOLDOWN = 30
 AI_WEIGHT = 3
 COOLDOWN = 60
 
-MIN_PNL_LEARN = 0
+MIN_PNL_LEARN = 0.1
 
 last_trade_time = 0
 
