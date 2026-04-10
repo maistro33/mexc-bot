@@ -6,7 +6,7 @@ import joblib
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-MAX_TRADES = 2
+MAX_TRADES = 3
 BASE_USDT = 3
 LEVERAGE = 10
 
