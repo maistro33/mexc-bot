@@ -42,7 +42,6 @@ exchange = ccxt.bitget({
 })
 exchange.load_markets()
 
-# 💣 FIXED DB DEBUG
 def save_trade_db(data):
     try:
         res = requests.post(
@@ -54,10 +53,8 @@ def save_trade_db(data):
             },
             json=data
         )
-
         print("DB STATUS:", res.status_code)
         print("DB RESPONSE:", res.text)
-
     except Exception as e:
         print("DB ERROR:", e)
 
@@ -196,6 +193,10 @@ def decision(sym):
 
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
+
+    # 💣 AI FILTER (EKLENDİ)
+    if conf < 0.48:
+        return None
 
     if final < 2: return None
 
@@ -371,5 +372,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 LEVEL 10 ULTIMATE + DB DEBUG AKTİF")
+send("💣 LEVEL 10 ULTIMATE + AI FILTER AKTİF")
 bot.infinity_polling()
