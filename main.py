@@ -1,4 +1,4 @@
-import os, time, requests, ccxt, telebot, threading
+import os, time, requests, ccxt, telebot, threading, random
 import pandas as pd
 from xgboost import XGBClassifier
 import joblib
@@ -21,6 +21,13 @@ AI_WEIGHT = 3
 COOLDOWN = 60
 
 MIN_PNL_LEARN = 0.1
+
+# 🔥 EKLENENLER
+ai_conf_log = []
+total_trades = 0
+wins = 0
+losses = 0
+last_report = 0
 
 last_trade_time = 0
 
@@ -97,7 +104,9 @@ def ai_score(f):
     try:
         if not model:
             return 0.5
-        return model.predict_proba(pd.DataFrame([f]))[0][1]
+        conf = model.predict_proba(pd.DataFrame([f]))[0][1]
+        ai_conf_log.append(conf)
+        return conf
     except:
         return 0.5
 
@@ -182,11 +191,44 @@ def best_strategy():
             best = k
     return best
 
+# 💣 AI RAPOR (FIXED)
+def ai_report():
+    global last_report
+
+    if total_trades < 10:
+        return
+
+    if total_trades % 10 != 0:
+        return
+
+    if total_trades == last_report:
+        return
+
+    last_report = total_trades
+
+    wr = (wins / total_trades) * 100 if total_trades else 0
+    avg_ai = sum(ai_conf_log)/len(ai_conf_log) if ai_conf_log else 0
+
+    send(f"""🤖 AI RAPOR
+
+Toplam trade: {total_trades}
+Win rate: %{round(wr,2)}
+
+Trend:
+✔ {strategy_stats['trend']['win']} / ❌ {strategy_stats['trend']['loss']}
+
+Breakout:
+✔ {strategy_stats['breakout']['win']} / ❌ {strategy_stats['breakout']['loss']}
+
+AI ortalama güven: {round(avg_ai,2)}
+""")
+
 def decision(sym):
     f = features(sym)
     if not f: return None
 
-    strat = best_strategy()
+    strat = "breakout" if random.random() < 0.2 else best_strategy()
+
     score = strat_trend(f) if strat=="trend" else strat_breakout(f)
     score += whale_score(sym)
     score += funding_score(sym)
@@ -194,7 +236,6 @@ def decision(sym):
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
 
-    # 💣 AI FILTER (EKLENDİ)
     if conf < 0.48:
         return None
 
@@ -278,7 +319,7 @@ def engine():
             print("ENGINE:", e)
 
 def manage():
-    global memory, model
+    global memory, model, total_trades, wins, losses
     while True:
         try:
             sync_positions()
@@ -321,6 +362,10 @@ def manage():
 
                         send(f"{icon} CLOSE {sym}\nPnL:{round(pnl,2)}$ ({percent}%)\nPeak:{round(st['peak'],2)}\nStrat:{st['strategy']}")
 
+                        total_trades += 1
+                        if pnl > 0: wins += 1
+                        else: losses += 1
+
                         if abs(pnl) >= MIN_PNL_LEARN:
                             f = st["features"]
                             f["result"] = pnl
@@ -339,6 +384,8 @@ def manage():
                                 if new:
                                     model = new
 
+                        ai_report()
+
                         state.pop(sym)
                         cooldown[sym] = time.time()
 
@@ -347,6 +394,10 @@ def manage():
 
                     icon = "🟢" if pnl > 0 else "🔴"
                     send(f"{icon} SL {sym}\nPnL:{round(pnl,2)}$")
+
+                    total_trades += 1
+                    if pnl > 0: wins += 1
+                    else: losses += 1
 
                     if abs(pnl) >= MIN_PNL_LEARN:
                         f = st["features"]
@@ -361,6 +412,8 @@ def manage():
                         save_trade_db(f)
                         memory.append(f)
 
+                    ai_report()
+
                     state.pop(sym)
                     cooldown[sym] = time.time()
 
@@ -372,5 +425,5 @@ def manage():
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 LEVEL 10 ULTIMATE + AI FILTER AKTİF")
+send("💣 LEVEL 10 FINAL AI AKTİF")
 bot.infinity_polling()
