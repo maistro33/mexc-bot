@@ -2,6 +2,7 @@ import os, time, requests, ccxt, telebot, threading, random
 import pandas as pd
 from xgboost import XGBClassifier
 import joblib
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -28,6 +29,8 @@ total_trades = 0
 wins = 0
 losses = 0
 last_report = 0
+
+bot_active = True
 
 last_trade_time = 0
 
@@ -60,10 +63,8 @@ def save_trade_db(data):
             },
             json=data
         )
-        print("DB STATUS:", res.status_code)
-        print("DB RESPONSE:", res.text)
-    except Exception as e:
-        print("DB ERROR:", e)
+    except:
+        pass
 
 def load_memory_db():
     try:
@@ -191,18 +192,11 @@ def best_strategy():
             best = k
     return best
 
-# 💣 AI RAPOR (FIXED)
 def ai_report():
     global last_report
-
-    if total_trades < 10:
-        return
-
-    if total_trades % 10 != 0:
-        return
-
-    if total_trades == last_report:
-        return
+    if total_trades < 10: return
+    if total_trades % 10 != 0: return
+    if total_trades == last_report: return
 
     last_report = total_trades
 
@@ -236,14 +230,18 @@ def decision(sym):
     conf = ai_score(f)
     final = score + (conf * AI_WEIGHT)
 
-    if conf < 0.48:
-        return None
-
+    if conf < 0.48: return None
     if final < 2: return None
 
-    side = "long" if f["trend"] > 0 else "short"
+    # 💣 AI YÖN
+    if conf > 0.60:
+        side = "long" if f["momentum"] > 0 else "short"
+        mode = "AI"
+    else:
+        side = "long" if f["trend"] > 0 else "short"
+        mode = "TREND"
 
-    send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nStrat:{strat}")
+    send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nMode:{mode}\nStrat:{strat}")
 
     return side, f, strat
 
@@ -281,6 +279,10 @@ def engine():
     global last_trade_time
     while True:
         try:
+            if not bot_active:
+                time.sleep(5)
+                continue
+
             pos = exchange.fetch_positions()
             open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
@@ -309,7 +311,6 @@ def engine():
                 }
 
                 last_trade_time = time.time()
-
                 send(f"🚀 OPEN {sym}\nYön:{side}\nFiyat:{price}\nStrat:{strat}")
                 break
 
@@ -422,8 +423,74 @@ def manage():
         except Exception as e:
             print("MANAGE:", e)
 
+def panel_menu():
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("📊 Durum", callback_data="status"),
+        InlineKeyboardButton("📈 Pozisyon", callback_data="positions")
+    )
+    markup.add(
+        InlineKeyboardButton("🤖 AI", callback_data="ai"),
+        InlineKeyboardButton("🛑 Stop", callback_data="stop")
+    )
+    markup.add(
+        InlineKeyboardButton("▶️ Start", callback_data="start")
+    )
+    return markup
+
+@bot.message_handler(commands=['panel'])
+def panel(msg):
+    bot.send_message(msg.chat.id, "🤖 BOT PANEL", reply_markup=panel_menu())
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback(call):
+    global bot_active
+
+    if call.data == "status":
+        pos = exchange.fetch_positions()
+        open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
+        wr = (wins / total_trades * 100) if total_trades else 0
+
+        bot.send_message(call.message.chat.id,
+f"""📊 DURUM
+
+Açık işlem: {open_count}
+Toplam trade: {total_trades}
+Win rate: %{round(wr,2)}
+""")
+
+    elif call.data == "positions":
+        pos = exchange.fetch_positions()
+        text = "📈 POZİSYONLAR\n\n"
+        for p in pos:
+            qty = float(p.get("contracts") or 0)
+            if qty <= 0: continue
+            pnl = float(p.get("unrealizedPnl") or 0)
+            text += f"{p['symbol']} → {round(pnl,2)}$\n"
+
+        bot.send_message(call.message.chat.id, text)
+
+    elif call.data == "ai":
+        avg_ai = sum(ai_conf_log)/len(ai_conf_log) if ai_conf_log else 0
+
+        bot.send_message(call.message.chat.id,
+f"""🤖 AI DURUM
+
+Ortalama: {round(avg_ai,2)}
+Trend: {strategy_stats['trend']}
+Breakout: {strategy_stats['breakout']}
+""")
+
+    elif call.data == "stop":
+        bot_active = False
+        bot.send_message(call.message.chat.id, "🛑 BOT DURDURULDU")
+
+    elif call.data == "start":
+        bot_active = True
+        bot.send_message(call.message.chat.id, "▶️ BOT BAŞLATILDI")
+
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 LEVEL 10 FINAL AI AKTİF")
+send("💣 FINAL AI + PANEL + AI YÖN AKTİF")
 bot.infinity_polling()
