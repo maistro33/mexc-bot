@@ -185,7 +185,7 @@ def features(sym):
         return None
 
 def market_mode(f):
-    if f["volatility"] > 0.8 and f["volume_spike"] > 1.2:
+    if f["volatility"] > 0.8 and f["volume_spike"] > 1.1:
         return "SNIPER"
     return "SCALP"
 
@@ -253,12 +253,12 @@ def decision(sym):
     avg_ai = sum(ai_conf_log)/len(ai_conf_log) if ai_conf_log else 0.5
 
     if mode == "SCALP":
-        if conf < 0.55: return None
+        if conf < 0.50: return None
     else:
-        if conf < 0.68: return None
+        if conf < 0.65: return None
 
-    if conf < avg_ai:
-        return None
+    if conf < avg_ai - 0.03:
+       return None
 
     if f["fake"] == 1 and abs(f["momentum"]) < 0.1:
         return None
