@@ -102,7 +102,14 @@ def train():
     return model
 
 model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
-model = train() if model is None else model
+
+# 🔥 SAFE AI INIT
+try:
+    if model is None:
+        model = train()
+except Exception as e:
+    print("TRAIN ERROR:", e)
+    model = None
 
 def ai_score(f):
     try:
