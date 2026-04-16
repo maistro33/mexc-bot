@@ -36,7 +36,6 @@ last_report = 0
 bot_active = True
 last_trade_time = 0
 
-# === YENİ EKLENEN KORUMA ===
 last_traded_symbol = None
 symbol_lock = {}
 
@@ -284,13 +283,10 @@ def decision(sym):
     send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nMode:{mode}\nStrat:{strat}")
     return side, f, strat
 
-# === VOLUME FİLTRELİ SYMBOLS ===
 def symbols():
     t = exchange.fetch_tickers()
     s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
-
     s = [x for x in s if x[1] and 1500000 <= x[1] <= 15000000]
-
     s = [x for x in s if not any(ex in x[0] for ex in EXCLUDED_COINS)]
     s.sort(key=lambda x:x[1], reverse=True)
     return [x[0] for x in s[:20]]
@@ -335,12 +331,8 @@ def engine():
                 if time.time() - last_trade_time < GLOBAL_COOLDOWN: continue
                 if sym in state: continue
                 if sym in cooldown and time.time() - cooldown[sym] < COOLDOWN: continue
-
-                if sym == last_traded_symbol:
-                    continue
-
-                if sym in symbol_lock and time.time() - symbol_lock[sym] < 120:
-                    continue
+                if sym == last_traded_symbol: continue
+                if sym in symbol_lock and time.time() - symbol_lock[sym] < 120: continue
 
                 d = decision(sym)
                 if not d: continue
@@ -353,9 +345,7 @@ def engine():
 
                 raw_qty = (usdt_size * LEVERAGE) / price
                 qty = float(exchange.amount_to_precision(sym, raw_qty))
-
-                if qty <= 0:
-                    continue
+                if qty <= 0: continue
 
                 exchange.set_leverage(LEVERAGE, sym)
                 exchange.create_market_order(sym, "buy" if side=="long" else "sell", qty)
@@ -401,10 +391,9 @@ def manage():
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
-                if time.time() - st["open_time"] < MIN_HOLD:
-                    continue
-
                 close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
+
+                hold_passed = time.time() - st["open_time"] >= MIN_HOLD
 
                 def safe_close(percent):
                     close_qty = st["remaining_qty"] * percent
@@ -473,6 +462,8 @@ def manage():
                     cooldown[sym] = time.time()
 
                 if pnl <= SL_USDT:
+                    if not hold_passed:
+                        continue
                     if st["remaining_qty"] > 0:
                         exchange.create_market_order(sym, close_side, st["remaining_qty"], params={"reduceOnly":True})
                     state.pop(sym)
