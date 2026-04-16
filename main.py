@@ -90,8 +90,15 @@ def train():
 
     df = pd.DataFrame(memory)
 
+    # 🔥 CRASH FIX (EKLENEN)
+    df = df.select_dtypes(include=["number"])
+
     if "strategy" in df.columns:
         df["strategy"] = df["strategy"].astype("category").cat.codes
+
+    # 🔥 EKSTRA GÜVENLİK (EKLENEN)
+    if "result" not in df.columns:
+        return None
 
     X = df.drop(columns=["result"])
     y = df["result"] > 0
