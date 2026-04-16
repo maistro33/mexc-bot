@@ -102,6 +102,7 @@ def train():
     return model
 
 model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
+model = train() if model is None else model
 
 def ai_score(f):
     try:
