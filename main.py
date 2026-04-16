@@ -1,4 +1,3 @@
-
 import os, time, requests, ccxt, telebot, threading, random
 import pandas as pd
 from xgboost import XGBClassifier
@@ -16,6 +15,10 @@ TP1 = 0.6
 TRAIL_GAP = 0.25
 SL_USDT = -1
 
+STEP1 = 0.9
+STEP2 = 1.2
+ai_warned = {}
+
 MIN_HOLD = 20
 GLOBAL_COOLDOWN = 30
 
@@ -24,7 +27,6 @@ COOLDOWN = 60
 
 MIN_PNL_LEARN = 0.1
 
-# 🔥 EKLENENLER
 ai_conf_log = []
 total_trades = 0
 wins = 0
@@ -32,7 +34,6 @@ losses = 0
 last_report = 0
 
 bot_active = True
-
 last_trade_time = 0
 
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -55,7 +56,7 @@ exchange.load_markets()
 
 def save_trade_db(data):
     try:
-        res = requests.post(
+        requests.post(
             f"{SUPABASE_URL}/rest/v1/trades",
             headers={
                 "apikey": SUPABASE_KEY,
@@ -170,6 +171,67 @@ def features(sym):
     except:
         return None
 
+# ===== PRO AI EKLE =====
+
+def pro_ai_brain(f, sym):
+    if abs(f["trend"]) < 0.0004:
+        return False
+    if abs(f["momentum"]) < 0.0008:
+        return False
+    if f["volume_spike"] < 1.2:
+        return False
+    if f["fake"] == 1:
+        return False
+    if abs(f["price_change"]) < 0.0005:
+        return False
+    return True
+
+def orderbook_power(sym):
+    try:
+        ob = exchange.fetch_order_book(sym, limit=20)
+        bids = sum([b[1] for b in ob["bids"]])
+        asks = sum([a[1] for a in ob["asks"]])
+
+        if bids > asks * 1.2:
+            return 2
+        elif asks > bids * 1.2:
+            return -2
+        return 0
+    except:
+        return 0
+
+def pump_score(sym):
+    try:
+        data = ohlcv(sym)
+        df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        score = 0
+
+        if (last["c"] - prev["c"]) / prev["c"] > 0.01:
+            score += 2
+
+        if last["v"] > df["v"].rolling(10).mean().iloc[-1] * 2:
+            score += 2
+
+        return score
+    except:
+        return 0
+
+def live_fake_filter(sym):
+    try:
+        data = ohlcv(sym)
+        df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
+
+        last = df.iloc[-1]
+        prev_high = df["h"].iloc[-2]
+
+        return last["h"] > prev_high and last["c"] < prev_high
+    except:
+        return False
+
 strategy_stats = {
     "trend": {"win":0,"loss":0},
     "breakout": {"win":0,"loss":0}
@@ -222,19 +284,34 @@ def decision(sym):
     f = features(sym)
     if not f: return None
 
+    if not pro_ai_brain(f, sym):
+        return None
+
+    if live_fake_filter(sym):
+        return None
+
+    ob = orderbook_power(sym)
+    pump = pump_score(sym)
+
     strat = "breakout" if random.random() < 0.2 else best_strategy()
 
     score = strat_trend(f) if strat=="trend" else strat_breakout(f)
     score += whale_score(sym)
     score += funding_score(sym)
 
+    score += ob
+    score += pump
+
     conf = ai_score(f)
+
+    if model and conf < 0.55:
+        return None
+
     final = score + (conf * AI_WEIGHT)
 
     if conf < 0.48: return None
     if final < 2: return None
 
-    # 💣 AI YÖN
     if conf > 0.60:
         side = "long" if f["momentum"] > 0 else "short"
         mode = "AI"
@@ -242,8 +319,14 @@ def decision(sym):
         side = "long" if f["trend"] > 0 else "short"
         mode = "TREND"
 
-    send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nMode:{mode}\nStrat:{strat}")
+    side = "long" if f["trend"] > 0 else "short"
 
+    if ob > 0 and side == "short":
+        return None
+    if ob < 0 and side == "long":
+        return None
+
+    send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nMode:{mode}\nStrat:{strat}")
     return side, f, strat
 
 def symbols():
@@ -353,66 +436,69 @@ def manage():
                     send(f"🟢 TP1 {sym}\nPnL:{round(pnl,2)}$")
 
                 if st["tp_done"]:
-                    if pnl > st["peak"]:
-                        st["peak"] = pnl
+                    if "step1" not in st:
+                        st["step1"] = False
+                        st["step2"] = False
 
-                    if pnl < st["peak"] - TRAIL_GAP:
-                        exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
+                    if not st["step1"] and pnl >= STEP1:
+                        close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
+                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
+                        st["step1"] = True
+                        send(f"🟡 STEP1 {sym}")
 
-                        icon = "🟢" if pnl > 0 else "🔴"
-                        percent = round((pnl / BASE_USDT) * 100, 2)
+                    if not st["step2"] and pnl >= STEP2:
+                        close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
+                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
+                        st["step2"] = True
+                        send(f"🟠 STEP2 {sym}")
 
-                        send(f"{icon} CLOSE {sym}\nPnL:{round(pnl,2)}$ ({percent}%)\nPeak:{round(st['peak'],2)}\nStrat:{st['strategy']}")
+                if sym not in ai_warned:
+                    if pnl > 0.3 and ai_score(st["features"]) < 0.45:
+                        markup = InlineKeyboardMarkup()
+                        markup.add(
+                            InlineKeyboardButton("❌ KAPAT", callback_data=f"close_{sym}"),
+                            InlineKeyboardButton("✅ DEVAM", callback_data=f"keep_{sym}")
+                        )
+                        bot.send_message(CHAT_ID, f"⚠️ {sym} kapat?", reply_markup=markup)
+                        ai_warned[sym] = True
 
-                        total_trades += 1
-                        if pnl > 0: wins += 1
-                        else: losses += 1
-
-                        if abs(pnl) >= MIN_PNL_LEARN:
-                            f = st["features"]
-                            f["result"] = pnl
-                            f["strategy"] = st["strategy"]
-
-                            if pnl > 0:
-                                strategy_stats[st["strategy"]]["win"] += 1
-                            else:
-                                strategy_stats[st["strategy"]]["loss"] += 1
-
-                            save_trade_db(f)
-                            memory.append(f)
-
-                            if len(memory)%10==0:
-                                new = train()
-                                if new:
-                                    model = new
-
-                        ai_report()
-
-                        state.pop(sym)
-                        cooldown[sym] = time.time()
-
-                if pnl <= SL_USDT:
+                if st["tp_done"] and pnl < st["peak"] - TRAIL_GAP:
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
-                    icon = "🟢" if pnl > 0 else "🔴"
-                    send(f"{icon} SL {sym}\nPnL:{round(pnl,2)}$")
+                    f = st["features"]
+                    f["result"] = pnl
+                    f["strategy"] = st["strategy"]
+
+                    save_trade_db(f)
+                    memory.append(f)
 
                     total_trades += 1
                     if pnl > 0: wins += 1
                     else: losses += 1
 
-                    if abs(pnl) >= MIN_PNL_LEARN:
-                        f = st["features"]
-                        f["result"] = pnl
-                        f["strategy"] = st["strategy"]
+                    ai_report()
 
-                        if pnl > 0:
-                            strategy_stats[st["strategy"]]["win"] += 1
-                        else:
-                            strategy_stats[st["strategy"]]["loss"] += 1
+                    state.pop(sym)
+                    cooldown[sym] = time.time()
 
-                        save_trade_db(f)
-                        memory.append(f)
+                if pnl <= SL_USDT:
+                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
+
+                    f = st["features"]
+                    f["result"] = pnl
+                    f["strategy"] = st["strategy"]
+
+                    save_trade_db(f)
+                    memory.append(f)
+
+                    if len(memory)%10==0:
+                        new = train()
+                        if new:
+                            model = new
+
+                    total_trades += 1
+                    if pnl > 0: wins += 1
+                    else: losses += 1
 
                     ai_report()
 
@@ -490,8 +576,22 @@ Breakout: {strategy_stats['breakout']}
         bot_active = True
         bot.send_message(call.message.chat.id, "▶️ BOT BAŞLATILDI")
 
+    elif call.data.startswith("close_"):
+        sym = call.data.split("_")[1]
+        pos = exchange.fetch_positions()
+        for p in pos:
+            if p["symbol"] == sym:
+                qty = float(p.get("contracts") or 0)
+                if qty <= 0: continue
+                close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
+                exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
+                bot.send_message(call.message.chat.id, f"❌ {sym} KAPATILDI")
+
+    elif call.data.startswith("keep_"):
+        bot.send_message(call.message.chat.id, "DEVAM")
+
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 FINAL AI + PANEL + AI YÖN AKTİF")
+send("💣 FINAL MASTER AKTİF")
 bot.infinity_polling()
