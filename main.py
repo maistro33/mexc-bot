@@ -36,6 +36,10 @@ last_report = 0
 bot_active = True
 last_trade_time = 0
 
+# === YENİ EKLENEN KORUMA ===
+last_traded_symbol = None
+symbol_lock = {}
+
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -280,10 +284,13 @@ def decision(sym):
     send(f"⚡ SİNYAL {sym}\nYön:{side}\nAI:{round(conf,2)}\nMode:{mode}\nStrat:{strat}")
     return side, f, strat
 
+# === VOLUME FİLTRELİ SYMBOLS ===
 def symbols():
     t = exchange.fetch_tickers()
     s = [(k,v["quoteVolume"]) for k,v in t.items() if ":USDT" in k]
-    s = [x for x in s if x[1] and x[1] > 100000]
+
+    s = [x for x in s if x[1] and 1500000 <= x[1] <= 15000000]
+
     s = [x for x in s if not any(ex in x[0] for ex in EXCLUDED_COINS)]
     s.sort(key=lambda x:x[1], reverse=True)
     return [x[0] for x in s[:20]]
@@ -313,7 +320,7 @@ def sync_positions():
         pass
 
 def engine():
-    global last_trade_time
+    global last_trade_time, last_traded_symbol
     while True:
         try:
             if not bot_active:
@@ -328,6 +335,12 @@ def engine():
                 if time.time() - last_trade_time < GLOBAL_COOLDOWN: continue
                 if sym in state: continue
                 if sym in cooldown and time.time() - cooldown[sym] < COOLDOWN: continue
+
+                if sym == last_traded_symbol:
+                    continue
+
+                if sym in symbol_lock and time.time() - symbol_lock[sym] < 120:
+                    continue
 
                 d = decision(sym)
                 if not d: continue
@@ -357,6 +370,9 @@ def engine():
                 }
 
                 last_trade_time = time.time()
+                last_traded_symbol = sym
+                symbol_lock[sym] = time.time()
+
                 send(f"🚀 OPEN {sym}\nYön:{side}\nFiyat:{price}\nMode:{mode}\nStrat:{strat}")
                 break
 
@@ -390,13 +406,21 @@ def manage():
 
                 close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
+                def safe_close(percent):
+                    close_qty = st["remaining_qty"] * percent
+                    close_qty = float(exchange.amount_to_precision(sym, close_qty))
+                    if close_qty <= 0:
+                        return 0
+                    return close_qty
+
                 if not st["tp_done"] and pnl >= TP1:
-                    close_qty = float(exchange.amount_to_precision(sym, st["remaining_qty"] * 0.25))
-                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
-                    st["remaining_qty"] -= close_qty
-                    st["tp_done"] = True
-                    st["peak"] = pnl
-                    send(f"🟢 TP1 {sym}")
+                    close_qty = safe_close(0.25)
+                    if close_qty > 0:
+                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
+                        st["remaining_qty"] -= close_qty
+                        st["tp_done"] = True
+                        st["peak"] = pnl
+                        send(f"🟢 TP1 {sym}")
 
                 if st["tp_done"]:
                     if "step1" not in st:
@@ -404,21 +428,24 @@ def manage():
                         st["step2"] = False
 
                     if not st["step1"] and pnl >= STEP1:
-                        close_qty = float(exchange.amount_to_precision(sym, st["remaining_qty"] * 0.25))
-                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
-                        st["remaining_qty"] -= close_qty
-                        st["step1"] = True
-                        send(f"🟡 STEP1 {sym}")
+                        close_qty = safe_close(0.25)
+                        if close_qty > 0:
+                            exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
+                            st["remaining_qty"] -= close_qty
+                            st["step1"] = True
+                            send(f"🟡 STEP1 {sym}")
 
                     if not st["step2"] and pnl >= STEP2:
-                        close_qty = float(exchange.amount_to_precision(sym, st["remaining_qty"] * 0.25))
-                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
-                        st["remaining_qty"] -= close_qty
-                        st["step2"] = True
-                        send(f"🟠 STEP2 {sym}")
+                        close_qty = safe_close(0.25)
+                        if close_qty > 0:
+                            exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
+                            st["remaining_qty"] -= close_qty
+                            st["step2"] = True
+                            send(f"🟠 STEP2 {sym}")
 
                 if st["tp_done"] and pnl < st["peak"] - TRAIL_GAP:
-                    exchange.create_market_order(sym, close_side, st["remaining_qty"], params={"reduceOnly":True})
+                    if st["remaining_qty"] > 0:
+                        exchange.create_market_order(sym, close_side, st["remaining_qty"], params={"reduceOnly":True})
 
                     f = st["features"]
                     f["result"] = pnl
@@ -446,7 +473,8 @@ def manage():
                     cooldown[sym] = time.time()
 
                 if pnl <= SL_USDT:
-                    exchange.create_market_order(sym, close_side, st["remaining_qty"], params={"reduceOnly":True})
+                    if st["remaining_qty"] > 0:
+                        exchange.create_market_order(sym, close_side, st["remaining_qty"], params={"reduceOnly":True})
                     state.pop(sym)
 
             time.sleep(1)
