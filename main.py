@@ -1,8 +1,14 @@
+
 import os, time, requests, ccxt, telebot, threading, random
 import pandas as pd
 from xgboost import XGBClassifier
 import joblib
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ===== 🔥 PRO EKLENEN GLOBAL =====
+BTC_SYMBOL = "BTC/USDT:USDT"
+MIN_AI_CONF = 0.45
+AI_OVERRIDE = 0.60
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -89,14 +95,11 @@ def train():
         return None
 
     df = pd.DataFrame(memory)
-
-    # 🔥 CRASH FIX (EKLENEN)
     df = df.select_dtypes(include=["number"])
 
     if "strategy" in df.columns:
         df["strategy"] = df["strategy"].astype("category").cat.codes
 
-    # 🔥 EKSTRA GÜVENLİK (EKLENEN)
     if "result" not in df.columns:
         return None
 
@@ -110,7 +113,6 @@ def train():
 
 model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
 
-# 🔥 SAFE AI INIT
 try:
     if model is None:
         model = train()
@@ -186,8 +188,6 @@ def features(sym):
     except:
         return None
 
-# ===== PRO AI EKLE =====
-
 def pro_ai_brain(f, sym):
     if abs(f["trend"]) < 0.0002:
         return False
@@ -206,11 +206,8 @@ def orderbook_power(sym):
         ob = exchange.fetch_order_book(sym, limit=20)
         bids = sum([b[1] for b in ob["bids"]])
         asks = sum([a[1] for a in ob["asks"]])
-
-        if bids > asks * 1.2:
-            return 2
-        elif asks > bids * 1.2:
-            return -2
+        if bids > asks * 1.2: return 2
+        elif asks > bids * 1.2: return -2
         return 0
     except:
         return 0
@@ -219,18 +216,11 @@ def pump_score(sym):
     try:
         data = ohlcv(sym)
         df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
-
         last = df.iloc[-1]
         prev = df.iloc[-2]
-
         score = 0
-
-        if (last["c"] - prev["c"]) / prev["c"] > 0.01:
-            score += 2
-
-        if last["v"] > df["v"].rolling(10).mean().iloc[-1] * 2:
-            score += 2
-
+        if (last["c"] - prev["c"]) / prev["c"] > 0.01: score += 2
+        if last["v"] > df["v"].rolling(10).mean().iloc[-1] * 2: score += 2
         return score
     except:
         return 0
@@ -239,13 +229,92 @@ def live_fake_filter(sym):
     try:
         data = ohlcv(sym)
         df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
-
         last = df.iloc[-1]
         prev_high = df["h"].iloc[-2]
-
         return last["h"] > prev_high and last["c"] < prev_high
     except:
         return False
+
+def market_direction():
+    try:
+        data = exchange.fetch_ohlcv(BTC_SYMBOL, "5m", limit=50)
+        df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
+        ema9 = df["c"].ewm(span=9).mean()
+        ema21 = df["c"].ewm(span=21).mean()
+        return "bull" if ema9.iloc[-1] > ema21.iloc[-1] else "bear"
+    except:
+        return "neutral"
+
+def fast_symbols():
+    try:
+        tickers = exchange.fetch_tickers()
+        pairs = []
+        for k,v in tickers.items():
+            if ":USDT" not in k: continue
+            if "BTC" in k or "ETH" in k: continue
+            vol = v.get("quoteVolume") or 0
+            change = abs(v.get("percentage") or 0)
+            score = 0
+            if vol > 50000: score += 1
+            if change > 1: score += 1
+            if change > 3: score += 2
+            if score >= 2:
+                pairs.append((k, score))
+        pairs.sort(key=lambda x:x[1], reverse=True)
+        return [p[0] for p in pairs[:10]]
+    except:
+        return symbols()
+
+def position_ai(sym, st):
+    try:
+        f_new = features(sym)
+        if not f_new: return False
+        conf_now = ai_score(f_new)
+        conf_old = st.get("ai_conf", 0.5)
+        if conf_now < conf_old - 0.08: return True
+        if f_new["momentum"] * st["features"]["momentum"] < 0: return True
+        if abs(f_new["trend"]) < abs(st["features"]["trend"]) * 0.5: return True
+        return False
+    except:
+        return False
+
+def decision_pro(sym):
+    f = features(sym)
+    if not f: return None
+    if not pro_ai_brain(f, sym): return None
+    if live_fake_filter(sym): return None
+
+    conf = ai_score(f)
+    ob = orderbook_power(sym)
+    pump = pump_score(sym)
+    market = market_direction()
+    strat = best_strategy()
+
+    score = strat_trend(f)
+    score += whale_score(sym)
+    score += funding_score(sym)
+    score += ob + pump
+
+    if conf > AI_OVERRIDE:
+        side = "long" if f["momentum"] > 0 else "short"
+        send(f"🧠 AI OVERRIDE {sym}")
+        return side, f, "ai_override"
+
+    if market == "bear" and f["trend"] > 0: return None
+    if market == "bull" and f["trend"] < 0: return None
+
+    final = score + (conf * AI_WEIGHT)
+
+    if conf < MIN_AI_CONF and score < 2: return None
+    if final < 1: return None
+
+    side = "long" if f["trend"] > 0 else "short"
+
+    if conf < 0.5 and score >= 3:
+        send(f"⚡ FALLBACK {sym}")
+        return side, f, "fallback"
+
+    return side, f, "pro"
 
 strategy_stats = {
     "trend": {"win":0,"loss":0},
@@ -313,7 +382,6 @@ def decision(sym):
     score = strat_trend(f) if strat=="trend" else strat_breakout(f)
     score += whale_score(sym)
     score += funding_score(sym)
-
     score += ob
     score += pump
 
@@ -368,12 +436,14 @@ def sync_positions():
                     "tp_done": False,
                     "features": features(sym) or {},
                     "open_time": (ts/1000 if ts else time.time()),
-                    "strategy": best_strategy()
+                    "strategy": best_strategy(),
+                    "ai_conf": 0.5
                 }
                 send(f"♻️ SYNC {sym}")
     except:
         pass
 
+# ===== 🔥 ENGINE =====
 def engine():
     global last_trade_time
     while True:
@@ -385,13 +455,18 @@ def engine():
             pos = exchange.fetch_positions()
             open_count = sum(1 for p in pos if float(p.get("contracts") or 0) > 0)
 
-            for sym in symbols():
+            for sym in fast_symbols():
+
                 if open_count >= MAX_TRADES: break
                 if time.time() - last_trade_time < GLOBAL_COOLDOWN: continue
                 if sym in state: continue
                 if sym in cooldown and time.time() - cooldown[sym] < COOLDOWN: continue
 
-                d = decision(sym)
+                d = decision_pro(sym)
+
+                if not d:
+                    d = decision(sym)
+
                 if not d: continue
 
                 side, f, strat = d
@@ -406,18 +481,20 @@ def engine():
                     "tp_done":False,
                     "features":f,
                     "open_time":time.time(),
-                    "strategy":strat
+                    "strategy":strat,
+                    "ai_conf": ai_score(f)
                 }
 
                 last_trade_time = time.time()
-                send(f"🚀 OPEN {sym}\nYön:{side}\nFiyat:{price}\nStrat:{strat}")
+                send(f"🚀 V7 OPEN {sym}\nMode:{strat}")
                 break
 
-            time.sleep(5)
+            time.sleep(7)
 
         except Exception as e:
             print("ENGINE:", e)
 
+# ===== 🔥 MANAGE =====
 def manage():
     global memory, model, total_trades, wins, losses
     while True:
@@ -434,6 +511,15 @@ def manage():
 
                 if sym not in state: continue
                 st = state[sym]
+
+                # 🔥 AI EXIT
+                if position_ai(sym, st):
+                    close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
+                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
+                    send(f"🧠 AI EXIT {sym}")
+                    state.pop(sym)
+                    cooldown[sym] = time.time()
+                    continue
 
                 if pnl > st["peak"]:
                     st["peak"] = pnl
@@ -608,5 +694,5 @@ Breakout: {strategy_stats['breakout']}
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 FINAL MASTER AKTİF")
+send("💣 V7 MASTER AKTİF")
 bot.infinity_polling()
