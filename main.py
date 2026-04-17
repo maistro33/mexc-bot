@@ -319,13 +319,13 @@ def decision(sym):
 
     conf = ai_score(f)
 
-    if model and conf < 0.55:
+    if model and conf < 0.52:
         return None
 
     final = score + (conf * AI_WEIGHT)
 
     if conf < 0.48: return None
-    if final < 2: return None
+    if final < 1.5: return None
 
     if conf > 0.60:
         side = "long" if f["momentum"] > 0 else "short"
