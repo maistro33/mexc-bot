@@ -1,4 +1,3 @@
-
 import os, time, requests, ccxt, telebot, threading
 import pandas as pd
 from xgboost import XGBClassifier
@@ -55,7 +54,7 @@ def send(msg):
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
+    "password": os.getenv("BITGET_PASS") or "Berfin33",
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
@@ -263,12 +262,10 @@ def position_ai(sym, st):
         if conf_now < conf_old - 0.15:
             return True
 
-        # 🔥 SAFE momentum check
         if "momentum" in f_new and "momentum" in st["features"]:
             if f_new["momentum"] * st["features"]["momentum"] < 0:
                 return True
 
-        # 🔥 SAFE trend check
         if "trend" in f_new and "trend" in st["features"]:
             if abs(f_new["trend"]) < abs(st["features"]["trend"]) * 0.4:
                 return True
@@ -416,7 +413,6 @@ def engine():
                 price = exchange.fetch_ticker(sym)["last"]
                 qty = float(exchange.amount_to_precision(sym, (BASE_USDT * LEVERAGE) / price))
 
-                # 🔥 qty safety fix
                 if qty <= 0:
                     continue
 
@@ -492,7 +488,6 @@ def manage():
                 st = state[sym]
                 close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
-                # ===== AI EXIT =====
                 if position_ai(sym, st):
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
@@ -503,14 +498,12 @@ def manage():
                     cooldown[sym] = time.time()
                     continue
 
-                # ===== PEAK =====
                 if pnl > st["peak"]:
                     st["peak"] = pnl
 
                 if time.time() - st["open_time"] < MIN_HOLD:
                     continue
 
-                # ===== TP1 =====
                 if not st["tp_done"] and pnl >= TP1:
                     close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
                     exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
@@ -520,7 +513,6 @@ def manage():
 
                     send(f"🟢 TP1 {sym}\nPnL:{round(pnl,2)}$")
 
-                # ===== STEP SYSTEM =====
                 if st["tp_done"]:
                     if "step1" not in st:
                         st["step1"] = False
@@ -538,7 +530,6 @@ def manage():
                         st["step2"] = True
                         send(f"🟠 STEP2 {sym}")
 
-                # ===== TRAIL CLOSE =====
                 if st["tp_done"] and pnl < st["peak"] - TRAIL_GAP:
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
@@ -568,7 +559,6 @@ def manage():
                     state.pop(sym, None)
                     cooldown[sym] = time.time()
 
-                # ===== STOP LOSS =====
                 if pnl <= SL_USDT:
                     exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
 
