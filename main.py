@@ -189,11 +189,11 @@ def features(sym):
 # ===== PRO AI EKLE =====
 
 def pro_ai_brain(f, sym):
-    if abs(f["trend"]) < 0.0004:
+    if abs(f["trend"]) < 0.0002:
         return False
-    if abs(f["momentum"]) < 0.0008:
+    if abs(f["momentum"]) < 0.0005:
         return False
-    if f["volume_spike"] < 1.2:
+    if f["volume_spike"] < 1.0:
         return False
     if f["fake"] == 1:
         return False
