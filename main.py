@@ -8,7 +8,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ===== GLOBAL =====
 BTC_SYMBOL = "BTC/USDT:USDT"
 
-MIN_AI_CONF = 0.35
+MIN_AI_CONF = 0.25
 MAX_TRADES = 3
 BASE_USDT = 3
 LEVERAGE = 10
@@ -280,7 +280,7 @@ def smart_volume_filter(sym):
         short_vol = df["v"].tail(5).mean()
         long_vol = df["v"].mean()
 
-        return short_vol > long_vol * 1.1
+        return short_vol > long_vol * 1.05
 
     except:
         return False
@@ -408,7 +408,7 @@ def fast_symbols():
             vol = v.get("quoteVolume") or 0
             change = abs(v.get("percentage") or 0)
 
-            if vol > 30000 and change > 0.8:
+            if vol > 20000 and change > 0.5:
                 pairs.append((k, change))
 
         pairs.sort(key=lambda x: x[1], reverse=True)
