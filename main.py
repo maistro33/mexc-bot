@@ -7,7 +7,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ===== GLOBAL =====
 BTC_SYMBOL = "BTC/USDT:USDT"
 
-MIN_AI_CONF = 0.30
+MIN_AI_CONF = 0.25
 MAX_TRADES = 3
 BASE_USDT = 3
 LEVERAGE = 10
@@ -289,7 +289,7 @@ def smart_volume_filter(sym):
         short_vol = df["v"].tail(5).mean()
         long_vol = df["v"].mean()
 
-        return short_vol > long_vol * 1.1
+        return short_vol > long_vol * 1.0
 
     except:
         return False
@@ -359,7 +359,7 @@ def decision_v9(sym):
         if conf < MIN_AI_CONF:
             return None
 
-        if final_score < 1.5:
+        if final_score < 1:
             return None
 
         side = "long" if f["trend"] > 0 else "short"
