@@ -318,7 +318,7 @@ def decision_v9(sym):
         if not smart_volume_filter(sym):
             return None
 
-        market = market_pro()
+        market = "chop"
 
         if market == "strong_bull" and f["trend"] <= 0:
             return None
@@ -352,7 +352,7 @@ def decision_v9(sym):
         if conf < MIN_AI_CONF:
             return None
 
-        if final_score < 2:
+        if final_score < 1:
             return None
 
         side = "long" if f["trend"] > 0 else "short"
