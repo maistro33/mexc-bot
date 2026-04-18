@@ -175,14 +175,14 @@ while True:
 
                 qty = (BASE_USDT * LEVERAGE) / price
 
-                if conf > 0.55:
+                if conf > 0.52:
                     exchange.create_market_order(sym, "buy", qty)
                     position = {"sym": sym, "side": "long"}
                     entry_price = price
                     send(f"🚀 LONG {sym}\nAI: {round(conf,2)}")
                     break
 
-                elif conf < 0.45:
+                elif conf < 0.48:
                     exchange.create_market_order(sym, "sell", qty)
                     position = {"sym": sym, "side": "short"}
                     entry_price = price
