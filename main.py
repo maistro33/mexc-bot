@@ -101,6 +101,41 @@ def get_features(sym):
     except:
         return None
 
+# ===== 🧠 BRAIN SYSTEM (YENİ) =====
+def brain_filter(f):
+    try:
+        # sert dump → long yasak
+        if f["price_change"] < -0.5 and f["volume"] > 50000:
+            return "avoid_long"
+
+        # sert pump → short yasak
+        if f["price_change"] > 0.5 and f["volume"] > 50000:
+            return "avoid_short"
+
+        # sağlıklı hareket
+        if abs(f["price_change"]) < 0.2:
+            return "neutral"
+
+        return "ok"
+    except:
+        return "neutral"
+
+# ===== 🧠 TREND ANALİZ (YENİ) =====
+def get_trend(sym):
+    try:
+        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=50)
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+
+        ema20 = df["c"].ewm(span=20).mean().iloc[-1]
+        ema50 = df["c"].ewm(span=50).mean().iloc[-1]
+
+        if ema20 > ema50:
+            return "up"
+        else:
+            return "down"
+    except:
+        return None
+
 # ===== TRAIN =====
 def train_model(dataset):
     if len(dataset) < 20:
@@ -153,7 +188,7 @@ position = None
 entry_price = 0
 qty = 0
 
-send("🤖 AI BOT AKTİF")
+send("🤖 AI BOT V10 AKTİF")
 
 # ===== LOOP =====
 while True:
@@ -170,23 +205,27 @@ while True:
                 if not f:
                     continue
 
+                brain = brain_filter(f)
+                trend = get_trend(sym)
+
                 conf = ai_decision(f)
                 price = exchange.fetch_ticker(sym)["last"]
 
                 qty = (BASE_USDT * LEVERAGE) / price
 
-                if conf > 0.52:
+                # ===== SMART ENTRY =====
+                if conf > 0.55 and trend == "up" and brain != "avoid_long":
                     exchange.create_market_order(sym, "buy", qty)
                     position = {"sym": sym, "side": "long"}
                     entry_price = price
-                    send(f"🚀 LONG {sym}\nAI: {round(conf,2)}")
+                    send(f"🚀 LONG {sym}\nAI: {round(conf,2)}\nBRAIN:{brain}")
                     break
 
-                elif conf < 0.48:
+                elif conf < 0.45 and trend == "down" and brain != "avoid_short":
                     exchange.create_market_order(sym, "sell", qty)
                     position = {"sym": sym, "side": "short"}
                     entry_price = price
-                    send(f"🚀 SHORT {sym}\nAI: {round(conf,2)}")
+                    send(f"🚀 SHORT {sym}\nAI: {round(conf,2)}\nBRAIN:{brain}")
                     break
 
         # ===== POZİSYON VARSA =====
@@ -202,9 +241,11 @@ while True:
             conf = ai_decision(f)
             price = exchange.fetch_ticker(sym)["last"]
 
-            pnl = (price - entry_price) if side == "long" else (entry_price - price)
+            # ===== GERÇEK PNL =====
+            pnl = ((price - entry_price) / entry_price) * 100 * LEVERAGE if side == "long" else ((entry_price - price) / entry_price) * 100 * LEVERAGE
 
-            if abs(conf - 0.5) < 0.05 or pnl > 1 or pnl < -1:
+            # ===== SMART EXIT =====
+            if (side == "long" and conf < 0.48) or (side == "short" and conf > 0.52) or pnl > 3 or pnl < -2:
 
                 close_side = "sell" if side == "long" else "buy"
                 exchange.create_market_order(sym, close_side, qty)
@@ -216,7 +257,7 @@ while True:
                 if len(data) % 10 == 0:
                     model = train_model(data)
 
-                send(f"❌ CLOSE {sym}\nPnL: {round(pnl,2)}\nAI: {round(conf,2)}")
+                send(f"❌ CLOSE {sym}\nPnL: {round(pnl,2)}%\nAI: {round(conf,2)}")
 
                 position = None
 
