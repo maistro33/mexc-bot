@@ -364,8 +364,8 @@ def decision_v9(sym):
 
         side = "long" if f["trend"] > 0 else "short"
 
-        if not double_check(sym, side):
-            return None
+        #if not double_check(sym, side):
+        #    return None
 
         return side, f
 
