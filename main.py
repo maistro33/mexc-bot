@@ -7,7 +7,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ===== GLOBAL =====
 BTC_SYMBOL = "BTC/USDT:USDT"
 
-MIN_AI_CONF = 0.25
+MIN_AI_CONF = 0.0
 MAX_TRADES = 3
 BASE_USDT = 3
 LEVERAGE = 10
