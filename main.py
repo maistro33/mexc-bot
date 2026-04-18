@@ -280,7 +280,7 @@ def smart_volume_filter(sym):
         short_vol = df["v"].tail(5).mean()
         long_vol = df["v"].mean()
 
-        return short_vol > long_vol * 1.3
+        return short_vol > long_vol * 1.2
 
     except:
         return False
@@ -408,7 +408,7 @@ def fast_symbols():
             vol = v.get("quoteVolume") or 0
             change = abs(v.get("percentage") or 0)
 
-            if vol > 100000 and change > 1.5:
+            if vol > 50000 and change > 1.2:
                 pairs.append((k, change))
 
         pairs.sort(key=lambda x: x[1], reverse=True)
