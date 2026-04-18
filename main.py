@@ -316,9 +316,13 @@ def decision_v9(sym):
              return None
 
        if not smart_volume_filter(sym):
-             return None
-
+          return None
+       try:
         market = market_pro()
+       except:
+        market = "chop"
+
+        
 
         if market == "strong_bull" and f["trend"] <= 0:
             return None
