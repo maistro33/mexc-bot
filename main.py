@@ -1,3 +1,4 @@
+
 import os, time, requests, ccxt, telebot, threading
 import pandas as pd
 from xgboost import XGBClassifier
@@ -13,11 +14,12 @@ BASE_USDT = 3
 LEVERAGE = 10
 
 TP1 = 0.6
+TP2 = 1.0
+TP3 = 1.5
+TP4 = 2.0
+
 TRAIL_GAP = 0.25
 SL_USDT = -1
-
-STEP1 = 0.9
-STEP2 = 1.2
 
 MIN_HOLD = 20
 GLOBAL_COOLDOWN = 30
@@ -54,10 +56,11 @@ def send(msg):
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS") or "Berfin33",
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
+
 exchange.load_markets()
 
 # ===== DB =====
@@ -101,6 +104,8 @@ def train():
         return None
 
     df = pd.DataFrame(memory)
+
+    # sadece numeric kolonlar
     df = df.select_dtypes(include=["number"])
 
     if "result" not in df.columns:
@@ -115,24 +120,29 @@ def train():
     joblib.dump(model, "model.pkl")
     return model
 
-model = joblib.load("model.pkl") if os.path.exists("model.pkl") else None
+# ===== MODEL LOAD =====
+model = None
 
 try:
-    if model is None:
+    if os.path.exists("model.pkl"):
+        model = joblib.load("model.pkl")
+    else:
         model = train()
 except:
     model = None
 
-# ===== AI SCORE (FIXED) =====
+# ===== AI SCORE =====
 def ai_score(f):
     global last_ai_conf
 
     try:
-        if not model:
+        if model is None:
             last_ai_conf = 0.5
             return 0.5
 
-        conf = model.predict_proba(pd.DataFrame([f]))[0][1]
+        df = pd.DataFrame([f])
+
+        conf = model.predict_proba(df)[0][1]
 
         ai_conf_log.append(conf)
         last_ai_conf = conf
@@ -141,6 +151,7 @@ def ai_score(f):
             ai_conf_log.pop(0)
 
         return conf
+
     except:
         last_ai_conf = 0.5
         return 0.5
@@ -184,8 +195,10 @@ def features(sym):
             "price_change": float(last["price_change"]),
             "fake": int(last["fake"])
         }
+
     except:
         return None
+
 
 # ===== MARKET AI =====
 def market_pro():
@@ -204,37 +217,37 @@ def market_pro():
             return "strong_bear"
 
         return "chop"
+
     except:
         return "chop"
+
 
 # ===== WHALE =====
 def whale_pro(sym):
     try:
         t = exchange.fetch_ticker(sym)
-        vol = t["quoteVolume"] or 0
-        change = abs(t["percentage"] or 0)
+        vol = t.get("quoteVolume") or 0
+        change = abs(t.get("percentage") or 0)
 
         score = 0
-        if vol > 300000: score += 1
-        if change > 2: score += 1
-        if change > 4: score += 2
+        if vol > 300000:
+            score += 1
+        if change > 2:
+            score += 1
+        if change > 4:
+            score += 2
 
         return score
+
     except:
         return 0
 
-# ===== PUMP FILTER =====
-def pump_killer(sym):
-    try:
-        t = exchange.fetch_ticker(sym)
-        return abs(t["percentage"] or 0) > 6
-    except:
-        return False
 
 # ===== ORDERBOOK =====
 def orderbook_power(sym):
     try:
         ob = exchange.fetch_order_book(sym, limit=20)
+
         bids = sum([b[1] for b in ob["bids"]])
         asks = sum([a[1] for a in ob["asks"]])
 
@@ -242,11 +255,117 @@ def orderbook_power(sym):
             return 2
         elif asks > bids * 1.2:
             return -2
+
         return 0
+
     except:
         return 0
 
-# ===== AI EXIT (SAFE FIXED) =====
+
+# ===== PUMP FILTER =====
+def pump_killer(sym):
+    try:
+        t = exchange.fetch_ticker(sym)
+        return abs(t.get("percentage") or 0) > 6
+    except:
+        return False
+
+
+# ===== V9 SMART VOLUME =====
+def smart_volume_filter(sym):
+    try:
+        data = exchange.fetch_ohlcv(sym, "1m", limit=20)
+        df = pd.DataFrame(data, columns=["t","o","h","l","c","v"])
+
+        short_vol = df["v"].tail(5).mean()
+        long_vol = df["v"].mean()
+
+        return short_vol > long_vol * 1.3
+
+    except:
+        return False
+
+
+# ===== V9 DOUBLE CHECK =====
+def double_check(sym, side):
+    try:
+        f = features(sym)
+        if not f:
+            return False
+
+        if side == "long" and f["trend"] <= 0:
+            return False
+
+        if side == "short" and f["trend"] >= 0:
+            return False
+
+        return True
+
+    except:
+        return False
+
+
+# ===== V9 DECISION =====
+def decision_v9(sym):
+    try:
+        f = features(sym)
+        if not f:
+            return None
+
+        if pump_killer(sym):
+            return None
+
+        if not smart_volume_filter(sym):
+            return None
+
+        market = market_pro()
+
+        if market == "strong_bull" and f["trend"] <= 0:
+            return None
+
+        if market == "strong_bear" and f["trend"] >= 0:
+            return None
+
+        conf = ai_score(f)
+        whale = whale_pro(sym)
+        ob = orderbook_power(sym)
+
+        score = 0
+
+        # trend
+        score += (f["trend"] > 0) * 2
+
+        # momentum
+        score += (abs(f["momentum"]) > 0)
+
+        # volume
+        score += (f["volume_spike"] > 1.2)
+
+        # fake breakout ceza
+        score -= (f["fake"] == 1) * 2
+
+        # whale + orderbook
+        score += whale + ob
+
+        final_score = score + (conf * AI_WEIGHT)
+
+        if conf < MIN_AI_CONF:
+            return None
+
+        if final_score < 2:
+            return None
+
+        side = "long" if f["trend"] > 0 else "short"
+
+        if not double_check(sym, side):
+            return None
+
+        return side, f
+
+    except:
+        return None
+
+# ===== AI EXIT =====
 def position_ai(sym, st):
     try:
         if not st.get("features"):
@@ -259,20 +378,20 @@ def position_ai(sym, st):
         conf_now = ai_score(f_new)
         conf_old = st.get("ai_conf", 0.5)
 
-        if conf_now < conf_old - 0.15:
+        # güvenli AI exit
+        if conf_now < conf_old - 0.25:
             return True
 
+        # güvenli momentum kontrolü
         if "momentum" in f_new and "momentum" in st["features"]:
             if f_new["momentum"] * st["features"]["momentum"] < 0:
                 return True
 
-        if "trend" in f_new and "trend" in st["features"]:
-            if abs(f_new["trend"]) < abs(st["features"]["trend"]) * 0.4:
-                return True
-
         return False
+
     except:
         return False
+
 
 # ===== SYMBOL SCAN =====
 def fast_symbols():
@@ -280,7 +399,7 @@ def fast_symbols():
         tickers = exchange.fetch_tickers()
         pairs = []
 
-        for k,v in tickers.items():
+        for k, v in tickers.items():
             if ":USDT" not in k:
                 continue
             if "BTC" in k or "ETH" in k:
@@ -289,68 +408,29 @@ def fast_symbols():
             vol = v.get("quoteVolume") or 0
             change = abs(v.get("percentage") or 0)
 
-            score = 0
-            if vol > 50000: score += 1
-            if change > 1: score += 1
-            if change > 3: score += 2
+            if vol > 100000 and change > 1.5:
+                pairs.append((k, change))
 
-            if score >= 2:
-                pairs.append((k, score))
-
-        pairs.sort(key=lambda x:x[1], reverse=True)
+        pairs.sort(key=lambda x: x[1], reverse=True)
         return [p[0] for p in pairs[:10]]
 
     except:
         return []
 
-# ===== DECISION =====
-def decision(sym):
-    f = features(sym)
-    if not f:
-        return None
-
-    if pump_killer(sym):
-        return None
-
-    market = market_pro()
-
-    if market == "strong_bear" and f["trend"] > 0:
-        return None
-
-    if market == "strong_bull" and f["trend"] < 0:
-        return None
-
-    conf = ai_score(f)
-    whale = whale_pro(sym)
-    ob = orderbook_power(sym)
-
-    score = 0
-    score += (f["trend"] > 0) * 2
-    score += (abs(f["momentum"]) > 0)
-    score += whale + ob
-
-    final = score + (conf * AI_WEIGHT)
-
-    if conf < MIN_AI_CONF and score < 2:
-        return None
-
-    if final < 1:
-        return None
-
-    side = "long" if f["trend"] > 0 else "short"
-
-    return side, f
 
 # ===== STATE =====
 state = {}
 cooldown = {}
 
+
+# ===== SYNC POSITIONS =====
 def sync_positions():
     try:
         pos = exchange.fetch_positions() or []
 
         for p in pos:
-            if float(p.get("contracts") or 0) <= 0:
+            qty = float(p.get("contracts") or 0)
+            if qty <= 0:
                 continue
 
             sym = p["symbol"]
@@ -362,17 +442,26 @@ def sync_positions():
                 if not f:
                     continue
 
+                # 🔥 GERÇEK SIDE FIX
+                side = "long" if p.get("side") in ["long","buy"] else "short"
+
                 state[sym] = {
                     "peak": 0,
-                    "tp_done": False,
                     "features": f,
                     "open_time": (ts/1000 if ts else time.time()),
-                    "ai_conf": ai_score(f)
+                    "ai_conf": ai_score(f),
+                    "side": side,
+                    "tp1": False,
+                    "tp2": False,
+                    "tp3": False,
+                    "tp4": False
                 }
 
                 send(f"♻️ SYNC {sym}")
+
     except:
         pass
+
 
 # ===== ENGINE =====
 def engine():
@@ -404,34 +493,51 @@ def engine():
                 if sym in recent_closed and time.time() - recent_closed[sym] < 300:
                     continue
 
-                d = decision(sym)
+                d = decision_v9(sym)
                 if not d:
                     continue
 
                 side, f = d
 
                 price = exchange.fetch_ticker(sym)["last"]
-                qty = float(exchange.amount_to_precision(sym, (BASE_USDT * LEVERAGE) / price))
 
+                qty = float(exchange.amount_to_precision(
+                    sym,
+                    (BASE_USDT * LEVERAGE) / price
+                ))
+
+                # 🔥 qty güvenlik
                 if qty <= 0:
                     continue
 
                 exchange.set_leverage(LEVERAGE, sym)
-                exchange.create_market_order(sym, "buy" if side=="long" else "sell", qty)
+
+                exchange.create_market_order(
+                    sym,
+                    "buy" if side == "long" else "sell",
+                    qty
+                )
 
                 conf = ai_score(f)
 
                 state[sym] = {
                     "peak": 0,
-                    "tp_done": False,
                     "features": f,
                     "open_time": time.time(),
-                    "ai_conf": conf
+                    "ai_conf": conf,
+                    "side": side,
+                    "tp1": False,
+                    "tp2": False,
+                    "tp3": False,
+                    "tp4": False
                 }
 
                 last_trade_time = time.time()
 
-                send(f"🚀 V8 OPEN {sym}\nSide:{side}\nAI:{round(conf,2)}")
+                send(f"🚀 V9 OPEN {sym}\nSide:{side}\nAI:{round(conf,2)}")
+
+                # 🔥 open_count fix
+                open_count += 1
 
                 break
 
@@ -465,9 +571,41 @@ Win rate: %{round(wr,2)}
 AI ortalama güven: {round(avg_ai,2)}
 """)
 
+
+# ===== CLOSE HELPER =====
+def close_trade(sym, st, pnl, close_side, qty):
+    global memory, total_trades, wins, losses, model
+
+    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
+
+    f = dict(st["features"])
+    f["result"] = pnl
+
+    save_trade_db(f)
+    memory.append(f)
+
+    total_trades += 1
+    if pnl > 0:
+        wins += 1
+    else:
+        losses += 1
+
+    # AI öğrenme
+    if len(memory) % 10 == 0:
+        new_model = train()
+        if new_model:
+            model = new_model
+
+    ai_report()
+
+    recent_closed[sym] = time.time()
+    state.pop(sym, None)
+    cooldown[sym] = time.time()
+
+
 # ===== MANAGE =====
 def manage():
-    global memory, total_trades, wins, losses, model
+    global memory
 
     while True:
         try:
@@ -488,110 +626,69 @@ def manage():
                 st = state[sym]
                 close_side = "sell" if p.get("side") in ["long","buy"] else "buy"
 
-                if position_ai(sym, st):
-                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
-
-                    send(f"🧠 AI EXIT {sym}\nPnL:{round(pnl,2)}$")
-
-                    recent_closed[sym] = time.time()
-                    state.pop(sym, None)
-                    cooldown[sym] = time.time()
-                    continue
-
-                if pnl > st["peak"]:
-                    st["peak"] = pnl
-
+                # ===== MIN HOLD =====
                 if time.time() - st["open_time"] < MIN_HOLD:
                     continue
 
-                if not st["tp_done"] and pnl >= TP1:
-                    close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
-                    exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
-
-                    st["tp_done"] = True
+                # ===== PEAK =====
+                if pnl > st["peak"]:
                     st["peak"] = pnl
 
-                    send(f"🟢 TP1 {sym}\nPnL:{round(pnl,2)}$")
+                # ===== LIVE TREND KORUMA =====
+                f_live = features(sym)
+                if f_live:
+                    if st["side"] == "long" and f_live["trend"] <= 0:
+                        if position_ai(sym, st):
+                            close_trade(sym, st, pnl, close_side, qty)
+                            continue
 
-                if st["tp_done"]:
-                    if "step1" not in st:
-                        st["step1"] = False
-                        st["step2"] = False
+                    elif st["side"] == "short" and f_live["trend"] >= 0:
+                        if position_ai(sym, st):
+                            close_trade(sym, st, pnl, close_side, qty)
+                            continue
 
-                    if not st["step1"] and pnl >= STEP1:
-                        close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
-                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
-                        st["step1"] = True
-                        send(f"🟡 STEP1 {sym}")
+                # ===== AI EXIT =====
+                if position_ai(sym, st):
+                    close_trade(sym, st, pnl, close_side, qty)
+                    continue
 
-                    if not st["step2"] and pnl >= STEP2:
-                        close_qty = float(exchange.amount_to_precision(sym, qty * 0.25))
-                        exchange.create_market_order(sym, close_side, close_qty, params={"reduceOnly":True})
-                        st["step2"] = True
-                        send(f"🟠 STEP2 {sym}")
+                # ===== TP SYSTEM =====
+                if not st["tp1"] and pnl >= TP1:
+                    part = float(exchange.amount_to_precision(sym, qty * 0.25))
+                    exchange.create_market_order(sym, close_side, part, params={"reduceOnly":True})
+                    st["tp1"] = True
+                    st["peak"] = pnl
 
-                if st["tp_done"] and pnl < st["peak"] - TRAIL_GAP:
-                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
+                if not st["tp2"] and pnl >= TP2:
+                    part = float(exchange.amount_to_precision(sym, qty * 0.25))
+                    exchange.create_market_order(sym, close_side, part, params={"reduceOnly":True})
+                    st["tp2"] = True
 
-                    send(f"🏁 TRAIL CLOSE {sym}\nPnL:{round(pnl,2)}$")
+                if not st["tp3"] and pnl >= TP3:
+                    part = float(exchange.amount_to_precision(sym, qty * 0.25))
+                    exchange.create_market_order(sym, close_side, part, params={"reduceOnly":True})
+                    st["tp3"] = True
 
-                    recent_closed[sym] = time.time()
+                if not st["tp4"] and pnl >= TP4:
+                    part = float(exchange.amount_to_precision(sym, qty * 0.25))
+                    exchange.create_market_order(sym, close_side, part, params={"reduceOnly":True})
+                    st["tp4"] = True
 
-                    f = dict(st["features"]) if st.get("features") else {}
-                    f["result"] = pnl
+                # ===== TRAILING (SADECE KARDA) =====
+                if st["tp1"] and pnl < st["peak"] - TRAIL_GAP:
+                    close_trade(sym, st, pnl, close_side, qty)
+                    continue
 
-                    save_trade_db(f)
-                    memory.append(f)
-
-                    if len(memory) % 10 == 0:
-                        new = train()
-                        if new:
-                            model = new
-
-                    total_trades += 1
-                    if pnl > 0:
-                        wins += 1
-                    else:
-                        losses += 1
-
-                    ai_report()
-
-                    state.pop(sym, None)
-                    cooldown[sym] = time.time()
-
+                # ===== STOP LOSS =====
                 if pnl <= SL_USDT:
-                    exchange.create_market_order(sym, close_side, qty, params={"reduceOnly":True})
-
-                    send(f"🔴 STOP {sym}\nPnL:{round(pnl,2)}$")
-
-                    recent_closed[sym] = time.time()
-
-                    f = dict(st["features"]) if st.get("features") else {}
-                    f["result"] = pnl
-
-                    save_trade_db(f)
-                    memory.append(f)
-
-                    if len(memory) % 10 == 0:
-                        new = train()
-                        if new:
-                            model = new
-
-                    total_trades += 1
-                    if pnl > 0:
-                        wins += 1
-                    else:
-                        losses += 1
-
-                    ai_report()
-
-                    state.pop(sym, None)
-                    cooldown[sym] = time.time()
+                    close_trade(sym, st, pnl, close_side, qty)
+                    continue
 
             time.sleep(1)
 
         except Exception as e:
             print("MANAGE:", e)
+
 
 # ===== PANEL =====
 def panel_menu():
@@ -609,9 +706,11 @@ def panel_menu():
     )
     return markup
 
+
 @bot.message_handler(commands=['panel'])
 def panel(msg):
-    bot.send_message(msg.chat.id, "🤖 V8 PANEL", reply_markup=panel_menu())
+    bot.send_message(msg.chat.id, "🤖 V9 FINAL PANEL", reply_markup=panel_menu())
+
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -668,9 +767,10 @@ Loss: {losses}
         bot_active = True
         bot.send_message(call.message.chat.id, "▶️ BOT BAŞLADI")
 
+
 # ===== START =====
 threading.Thread(target=engine, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-send("💣 V8 FINAL AKTİF")
+send("💣 V9 FINAL AKTİF")
 bot.infinity_polling()
