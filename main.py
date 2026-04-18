@@ -312,13 +312,13 @@ def decision_v9(sym):
         if not f:
             return None
 
-       # if pump_killer(sym):
-       #     return None
+         if pump_killer(sym):
+             return None
 
-       # if not smart_volume_filter(sym):
-       #     return None
+       if not smart_volume_filter(sym):
+             return None
 
-        market = "chop"
+        market = market_pro()
 
         if market == "strong_bull" and f["trend"] <= 0:
             return None
