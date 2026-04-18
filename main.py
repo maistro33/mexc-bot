@@ -289,7 +289,7 @@ def smart_volume_filter(sym):
         short_vol = df["v"].tail(5).mean()
         long_vol = df["v"].mean()
 
-        return short_vol > long_vol * 1.0
+        return short_vol > long_vol * 0.7
 
     except:
         return False
