@@ -289,7 +289,7 @@ while True:
                 if min_qty and qty < min_qty:
                     continue
 
-                if conf > 0.56 and ob == "buy":
+                if conf > 0.53 and ob == "buy":
                     if sym in last_side and last_side[sym] == "long":
                         continue
 
@@ -305,7 +305,7 @@ while True:
                     send(f"🚀 LONG {sym}\n💰 {price}\n⚡ {LEVERAGE}x")
                     break
 
-                elif conf < 0.44 and ob == "sell":
+                elif conf < 0.47 and ob == "sell":
                     if sym in last_side and last_side[sym] == "short":
                         continue
 
