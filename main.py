@@ -1,13 +1,21 @@
-import os, time, ccxt, requests, telebot
+import os, time, ccxt, telebot, requests
 import pandas as pd
-from xgboost import XGBClassifier
 
 # ===== CONFIG =====
 LEVERAGE = 10
 BASE_USDT = 5
-MAX_POSITIONS = 3
-MODE = os.getenv("MODE", "PAPER")
-COOLDOWN = 90
+MAX_POSITIONS = 2
+COOLDOWN = 60
+MODE = "PAPER"
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json"
+}
 
 # ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -23,10 +31,8 @@ def send(msg):
     except:
         print(msg)
 
-# ===== TELEGRAM PRO =====
 def send_open(sym, direction, price):
-    try:
-        send(f"""
+    send(f"""
 🚀 TRADE AÇILDI
 
 📊 {sym}
@@ -36,13 +42,10 @@ def send_open(sym, direction, price):
 💵 Margin: {BASE_USDT} USDT
 ⚡ Kaldıraç: {LEVERAGE}x
 """)
-    except:
-        pass
 
 def send_close(sym, side, entry, price, pnl, usdt):
-    try:
-        emoji = "🟢 KAR" if usdt > 0 else "🔴 ZARAR"
-        send(f"""
+    emoji = "🟢 KAR" if usdt > 0 else "🔴 ZARAR"
+    send(f"""
 ❌ TRADE KAPANDI
 
 📊 {sym}
@@ -54,8 +57,6 @@ def send_close(sym, side, entry, price, pnl, usdt):
 📊 PnL: {round(pnl,2)}%
 💵 Sonuç: {round(usdt,3)} USDT {emoji}
 """)
-    except:
-        pass
 
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
@@ -66,21 +67,18 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-try:
-    exchange.load_markets()
-except:
-    pass
+exchange.load_markets()
 
 # ===== SUPABASE =====
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "resolution=merge-duplicates"
-}
+def load_data():
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/trades?select=*&order=id.desc&limit=100",
+            headers=HEADERS
+        )
+        return r.json()
+    except:
+        return []
 
 def save_trade(data):
     try:
@@ -88,148 +86,134 @@ def save_trade(data):
     except:
         pass
 
-def load_data():
-    try:
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/trades?select=*", headers=HEADERS)
-        return r.json()
-    except:
-        return []
-
 data = load_data()
 
-# ===== MEMORY =====
-def load_memory():
+# ===== ANALYSIS =====
+def analyze(sym):
     try:
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/learning?select=*", headers=HEADERS)
-        return {d["key"]: d["score"] for d in r.json()}
-    except:
-        return {}
-
-memory = load_memory()
-
-def save_memory(key, score):
-    try:
-        requests.post(
-            f"{SUPABASE_URL}/rest/v1/learning?on_conflict=key",
-            headers=HEADERS,
-            json={"key": key, "score": score}
-        )
-    except:
-        pass
-
-def pattern_key(f):
-    return f"{round(f['momentum'],3)}_{round(f['vol_change'],0)}"
-
-def is_bad(f):
-    return memory.get(pattern_key(f), 0) < -3
-
-def learn(f, pnl):
-    k = pattern_key(f)
-    if k not in memory:
-        memory[k] = 0
-
-    if pnl < -3:
-        memory[k] -= 2
-    elif pnl < 0:
-        memory[k] -= 1
-    elif pnl > 3:
-        memory[k] += 2
-    else:
-        memory[k] += 1
-
-    save_memory(k, memory[k])
-
-# ===== AI =====
-model = None
-
-def train():
-    global model
-    if len(data) < 20:
-        return
-    try:
-        df = pd.DataFrame(data)
-        if not all(col in df.columns for col in ["momentum","volume","vol_change","result"]):
-            return
-
-        X = df[["momentum","volume","vol_change"]]
-        y = df["result"] > 0
-
-        model = XGBClassifier(n_estimators=50).fit(X, y)
-    except:
-        model = None
-
-def ai(f):
-    if model is None:
-        return 0.5
-    try:
-        return model.predict_proba(pd.DataFrame([f]))[0][1]
-    except:
-        return 0.5
-
-# ===== FEATURES =====
-def features(sym):
-    try:
-        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=20)
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
 
+        momentum = df["c"].iloc[-1] - df["c"].iloc[-3]
+        volume = df["v"].iloc[-1]
+        vol_avg = df["v"].rolling(10).mean().iloc[-1]
+
+        volatility = (df["h"].max() - df["l"].min()) / df["c"].iloc[-1]
+
+        ma5 = df["c"].rolling(5).mean().iloc[-1]
+        ma20 = df["c"].rolling(20).mean().iloc[-1]
+
+        trend = "LONG" if ma5 > ma20 else "SHORT" if ma5 < ma20 else "NONE"
+
         return {
-            "momentum": float(df["c"].iloc[-1] - df["c"].iloc[-3]),
-            "volume": float(df["v"].iloc[-1]),
-            "vol_change": float(df["v"].iloc[-1] - df["v"].iloc[-3]),
+            "momentum": momentum,
+            "volume": volume,
+            "vol_avg": vol_avg,
+            "volatility": volatility,
+            "trend": trend
         }
     except:
         return None
+
+# ===== HYBRID AI =====
+def ai_score(f):
+    if len(data) < 20:
+        return 0
+
+    df = pd.DataFrame(data)
+
+    # 🔥 FIX: result kontrol
+    if "result" not in df.columns:
+        return 0
+
+    try:
+        recent = df.tail(100)
+
+        score = 0
+
+        avg_result = recent["result"].mean()
+
+        if avg_result > 0:
+            score += 1
+        else:
+            score -= 1
+
+        if f["momentum"] > 0:
+            score += 1
+        else:
+            score -= 1
+
+        return score
+    except:
+        return 0
+
+# ===== DECISION =====
+def decision(f):
+    score = 0
+
+    if f["momentum"] > 0:
+        score += 1
+    else:
+        score -= 1
+
+    if f["volume"] > f["vol_avg"] * 2:
+        score -= 1
+
+    if f["volatility"] > 0.02:
+        score -= 1
+
+    if abs(f["momentum"]) < 0.0001:
+        score -= 1
+
+    score += ai_score(f)
+
+    return score
 
 # ===== SYMBOLS =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
 
-        BAD_COINS = ["PEPE","FLOKI","SHIB"]
+        BAD = ["PEPE","FLOKI","SHIB","XRP"]
 
-        pairs = [(s, x.get("quoteVolume")) for s, x in t.items()
+        pairs = [(s, x.get("quoteVolume")) for s,x in t.items()
                  if ":USDT" in s
                  and x.get("quoteVolume")
-                 and "BTC" not in s
-                 and "ETH" not in s
-                 and not any(bad in s for bad in BAD_COINS)
-                 ]
+                 and not any(b in s for b in BAD)]
 
         pairs.sort(key=lambda x: x[1], reverse=True)
 
-        return [p[0] for p in pairs[:10]]
-
+        return [p[0] for p in pairs[:6]]
     except:
-        return ["XRP/USDT:USDT"]
+        return []
 
 # ===== ORDER =====
 def place_order(sym, side, qty):
-    try:
-        if MODE == "REAL":
-            try:
-                exchange.set_leverage(LEVERAGE, sym)
-            except:
-                pass
+    if MODE == "REAL":
+        try:
+            exchange.set_leverage(LEVERAGE, sym)
+        except:
+            pass
+        try:
             return exchange.create_market_order(sym, side, qty)
-        else:
-            print(f"PAPER {side} {sym} {qty}")
-            return {"ok": True}
-    except:
-        return None
+        except:
+            return None
+    else:
+        print(f"PAPER {side} {sym} {qty}")
+        return {"paper": True}
 
 # ===== STATE =====
 positions = []
 last_trade = {}
-last_side = {}
+loss_streak = 0
 
-send(f"🤖 V900 FINAL MODE: {MODE}")
+send("🤖 V1200 HYBRID FINAL BAŞLADI")
 
 # ===== LOOP =====
 while True:
     try:
 
-        train()
-
+        # ENTRY
         for sym in symbols():
 
             if len(positions) >= MAX_POSITIONS:
@@ -241,14 +225,14 @@ while True:
             if any(p["sym"] == sym for p in positions):
                 continue
 
-            f = features(sym)
-            if not f:
+            f = analyze(sym)
+            if not f or f["trend"] == "NONE":
                 continue
 
-            if is_bad(f):
-                continue
+            score = decision(f)
 
-            if f["volume"] < 10000:
+            threshold = 2 if loss_streak >= 3 else 1
+            if score < threshold:
                 continue
 
             ticker = exchange.fetch_ticker(sym)
@@ -258,47 +242,24 @@ while True:
                 continue
 
             qty = (BASE_USDT * LEVERAGE) / price
+            side = "buy" if f["trend"] == "LONG" else "sell"
 
-            try:
-                market = exchange.market(sym)
-                min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
-                if min_qty and qty < min_qty:
-                    continue
-            except:
-                pass
-
-            conf = ai(f)
-
-            if conf > 0.55:
-                side, direction = "buy", "LONG"
-            elif conf < 0.45:
-                side, direction = "sell", "SHORT"
-            else:
-                side = "buy" if f["momentum"] > 0 else "sell"
-                direction = "LONG" if side=="buy" else "SHORT"
-
-            if sym in last_side:
-                if last_side[sym] != direction:
-                    if time.time() - last_trade.get(sym, 0) < COOLDOWN:
-                        continue
-
-            order = place_order(sym, side, qty)
-            if not order:
+            if not place_order(sym, side, qty):
                 continue
 
             positions.append({
                 "sym": sym,
-                "side": direction,
+                "side": f["trend"],
                 "entry": price,
                 "qty": qty,
-                "f": f
+                "f": f,
+                "peak": price
             })
 
             last_trade[sym] = time.time()
-            last_side[sym] = direction
+            send_open(sym, f["trend"], price)
 
-            send_open(sym, direction, price)
-
+        # EXIT
         for pos in positions[:]:
 
             sym = pos["sym"]
@@ -307,29 +268,52 @@ while True:
             qty = pos["qty"]
             f = pos["f"]
 
-            if not entry or entry <= 0:
-                positions.remove(pos)
-                continue
-
             ticker = exchange.fetch_ticker(sym)
             price = ticker.get("last")
 
-            if not price or price <= 0:
+            if not price:
                 continue
 
+            if side == "LONG" and price > pos["peak"]:
+                pos["peak"] = price
+            elif side == "SHORT" and price < pos["peak"]:
+                pos["peak"] = price
+
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
-            usdt = ((price - entry) * qty) if side=="LONG" else ((entry - price) * qty)
+            usdt = ((price-entry)*qty) if side=="LONG" else ((entry-price)*qty)
 
-            if pnl > 3 or pnl < -5:
+            new_f = analyze(sym)
+            trend = new_f["trend"] if new_f else "NONE"
 
+            exit_flag = False
+
+            if side == "LONG" and trend == "SHORT":
+                exit_flag = True
+            if side == "SHORT" and trend == "LONG":
+                exit_flag = True
+
+            if pnl > 3:
+                if side == "LONG" and price < pos["peak"] * 0.995:
+                    exit_flag = True
+                if side == "SHORT" and price > pos["peak"] * 1.005:
+                    exit_flag = True
+
+            if pnl > 8 or pnl < -4:
+                exit_flag = True
+
+            if exit_flag:
                 place_order(sym, "sell" if side=="LONG" else "buy", qty)
 
                 f["result"] = pnl
                 data.append(f)
                 save_trade(f)
-                learn(f, pnl)
 
                 send_close(sym, side, entry, price, pnl, usdt)
+
+                if pnl < 0:
+                    loss_streak += 1
+                else:
+                    loss_streak = 0
 
                 positions.remove(pos)
 
