@@ -23,6 +23,38 @@ def send(msg):
     except:
         print(msg)
 
+# ===== PANEL (FIXED) =====
+PANEL_MSG_ID = None
+LAST_PANEL_UPDATE = 0
+
+def update_panel():
+    global PANEL_MSG_ID, LAST_PANEL_UPDATE
+
+    # Flood koruması
+    if time.time() - LAST_PANEL_UPDATE < 10:
+        return
+
+    LAST_PANEL_UPDATE = time.time()
+
+    try:
+        text = f"""🤖 AI BOT PANEL
+
+📊 Açık İşlem: {len(positions)}
+💰 Margin: {BASE_USDT} USDT
+⚡ Kaldıraç: {LEVERAGE}x
+
+🧠 Pattern: {len(memory)}
+"""
+
+        if bot and CHAT_ID:
+            if PANEL_MSG_ID is None:
+                msg = bot.send_message(CHAT_ID, text)
+                PANEL_MSG_ID = msg.message_id
+            else:
+                bot.edit_message_text(chat_id=CHAT_ID, message_id=PANEL_MSG_ID, text=text)
+    except:
+        pass
+
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
@@ -48,7 +80,6 @@ HEADERS = {
     "Prefer": "resolution=merge-duplicates"
 }
 
-# ===== TRADE DATA =====
 def save_trade(data):
     try:
         requests.post(f"{SUPABASE_URL}/rest/v1/trades", headers=HEADERS, json=data)
@@ -152,13 +183,30 @@ def features(sym):
     except:
         return None
 
-# ===== SYMBOLS =====
+# ===== SYMBOLS (FIXED) =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
+        pairs = []
 
-        pairs = [(s,x["quoteVolume"]) for s,x in t.items()
-                 if ":USDT" in s and x["quoteVolume"] and "BTC" not in s and "ETH" not in s]
+        for s, x in t.items():
+
+            if ":USDT" not in s:
+                continue
+
+            if any(bad in s for bad in ["BTC","ETH","XRP","ADA","DOGE"]):
+                continue
+
+            vol = x.get("quoteVolume", 0)
+            change = x.get("percentage", 0)
+
+            if not vol or vol < 5_000_000:
+                continue
+
+            if abs(change) < 1:  # FIXED (daha stabil)
+                continue
+
+            pairs.append((s, vol))
 
         pairs.sort(key=lambda x: x[1], reverse=True)
 
@@ -187,25 +235,23 @@ positions = []
 last_trade = {}
 last_side = {}
 
-send(f"🤖 V600 AI MODE: {MODE}")
+send(f"🤖 V701 ULTRA MODE: {MODE}")
 
 # ===== LOOP =====
 while True:
     try:
 
+        update_panel()
         train()
 
-        # ===== ENTRY =====
         for sym in symbols():
 
             if len(positions) >= MAX_POSITIONS:
                 break
 
-            # cooldown
             if sym in last_trade and time.time() - last_trade[sym] < COOLDOWN:
                 continue
 
-            # already open
             if any(p["sym"] == sym for p in positions):
                 continue
 
@@ -213,18 +259,15 @@ while True:
             if not f:
                 continue
 
-            # learning filter
             if is_bad(f):
                 continue
 
-            # volume filter
             if f["volume"] < 10000:
                 continue
 
             price = exchange.fetch_ticker(sym)["last"]
             qty = (BASE_USDT * LEVERAGE) / price
 
-            # min qty
             try:
                 market = exchange.market(sym)
                 min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
@@ -235,18 +278,14 @@ while True:
 
             conf = ai(f)
 
-            # decision
             if conf > 0.55:
-                side = "buy"
-                direction = "LONG"
+                side, direction = "buy", "LONG"
             elif conf < 0.45:
-                side = "sell"
-                direction = "SHORT"
+                side, direction = "sell", "SHORT"
             else:
                 side = "buy" if f["momentum"] > 0 else "sell"
                 direction = "LONG" if side=="buy" else "SHORT"
 
-            # direction lock (fixed)
             if sym in last_side:
                 if last_side[sym] != direction:
                     if time.time() - last_trade.get(sym, 0) < COOLDOWN:
@@ -267,17 +306,19 @@ while True:
             last_trade[sym] = time.time()
             last_side[sym] = direction
 
-            send(f"🚀 {direction} {sym} @ {round(price,4)}")
+            send(f"""🚀 TRADE AÇILDI
 
-        # ===== EXIT =====
+📊 {sym}
+📈 Yön: {direction}
+
+💰 Giriş: {round(price,4)}
+💵 Margin: {BASE_USDT} USDT
+⚡ Kaldıraç: {LEVERAGE}x
+""")
+
         for pos in positions[:]:
 
-            sym = pos["sym"]
-            side = pos["side"]
-            entry = pos["entry"]
-            qty = pos["qty"]
-            f = pos["f"]
-
+            sym, side, entry, qty, f = pos["sym"], pos["side"], pos["entry"], pos["qty"], pos["f"]
             price = exchange.fetch_ticker(sym)["last"]
 
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
@@ -292,7 +333,19 @@ while True:
                 save_trade(f)
                 learn(f, pnl)
 
-                send(f"❌ {sym} {round(pnl,2)}% ({round(usdt,3)} USDT)")
+                result = "🟢 KAR" if usdt > 0 else "🔴 ZARAR"
+
+                send(f"""❌ TRADE KAPANDI
+
+📊 {sym}
+📈 Yön: {side}
+
+💰 Giriş: {round(entry,4)}
+💰 Çıkış: {round(price,4)}
+
+📊 PnL: {round(pnl,2)}%
+💵 Sonuç: {round(usdt,3)} USDT {result}
+""")
 
                 positions.remove(pos)
 
