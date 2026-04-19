@@ -2,12 +2,10 @@ import os, time, ccxt, requests, telebot
 import pandas as pd
 from xgboost import XGBClassifier
 
-# ===== CONFIG =====
 LEVERAGE = 5
 BASE_USDT = 3
 MODE = os.getenv("MODE", "REAL")
 
-# ===== TELEGRAM SAFE =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -22,7 +20,6 @@ def send(msg):
     except:
         pass
 
-# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -36,7 +33,6 @@ try:
 except:
     pass
 
-# ===== SAFE ORDER =====
 def place_order(sym, side, qty, price):
     try:
         if MODE == "REAL":
@@ -48,12 +44,13 @@ def place_order(sym, side, qty, price):
         print("ORDER ERROR:", e)
         return None
 
-# ===== SUPABASE =====
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 def save_trade(data):
     try:
+        if not data or "result" not in data:
+            return
         requests.post(
             f"{SUPABASE_URL}/rest/v1/trades",
             headers={
@@ -79,97 +76,22 @@ def load_data():
     except:
         return []
 
-def load_learning():
-    try:
-        res = requests.get(
-            f"{SUPABASE_URL}/rest/v1/learning?select=*",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}"
-            }
-        )
-        return {d["key"]: d["score"] for d in res.json()}
-    except:
-        return {}
-
-def save_learning(key, score):
-    try:
-        if abs(score) < 8:
-            requests.post(
-                f"{SUPABASE_URL}/rest/v1/learning",
-                headers={
-                    "apikey": SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={"key": key, "score": score}
-            )
-    except:
-        pass
-
 data = load_data()
-learning_memory = load_learning()
 
-# ===== FEATURES =====
-def get_features(sym):
-    try:
-        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=30)
-        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-
-        return {
-            "price_change": float(df["c"].iloc[-1] - df["c"].iloc[-2]),
-            "volume": float(df["v"].iloc[-1]),
-            "range": float(df["h"].iloc[-1] - df["l"].iloc[-1]),
-            "momentum": float(df["c"].iloc[-1] - df["c"].iloc[-5]),
-            "vol_change": float(df["v"].iloc[-1] - df["v"].iloc[-5])
-        }
-    except:
-        return None
-
-# ===== LEARNING =====
-def get_key(f):
-    return f"{round(f['price_change'],2)}_{round(f['momentum'],2)}_{round(f['volume'],-3)}"
-
-def get_score(f):
-    return learning_memory.get(get_key(f), 0)
-
-def update_learning(f, pnl):
-    key = get_key(f)
-
-    if key not in learning_memory:
-        learning_memory[key] = 0
-
-    if pnl > 3:
-        learning_memory[key] += 3
-    elif pnl > 1:
-        learning_memory[key] += 2
-    elif pnl > 0:
-        learning_memory[key] += 1
-    elif pnl < -3:
-        learning_memory[key] -= 3
-    elif pnl < -1:
-        learning_memory[key] -= 2
-    else:
-        learning_memory[key] -= 1
-
-    save_learning(key, learning_memory[key])
-
-# ===== AI =====
 model = None
+last_update = 0
+last_train = 0
 
 def train_model():
     global model
     if len(data) < 10:
         return
-
     try:
         df = pd.DataFrame(data).select_dtypes(include=["number"])
         if "result" not in df.columns:
             return
-
         X = df.drop(columns=["result"])
         y = df["result"] > 0
-
         model = XGBClassifier(n_estimators=50).fit(X, y)
     except:
         model = None
@@ -182,102 +104,86 @@ def ai(f):
     except:
         return 0.5
 
-# ===== ORDERBOOK CACHE =====
-orderbook_cache = {}
-
-def orderbook(sym):
+def get_features(sym):
     try:
-        now = time.time()
-
-        if sym in orderbook_cache and now - orderbook_cache[sym]["t"] < 10:
-            return orderbook_cache[sym]["v"]
-
-        ob = exchange.fetch_order_book(sym, limit=20)
-        bids = sum([b[1] for b in ob["bids"]])
-        asks = sum([a[1] for a in ob["asks"]])
-
-        if bids > asks * 1.3:
-            val = "buy"
-        elif asks > bids * 1.3:
-            val = "sell"
-        else:
-            val = "neutral"
-
-        orderbook_cache[sym] = {"v": val, "t": now}
-        return val
-
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=30)
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+        return {
+            "price_change": float(df["c"].iloc[-1] - df["c"].iloc[-2]),
+            "volume": float(df["v"].iloc[-1]),
+            "range": float(df["h"].iloc[-1] - df["l"].iloc[-1]),
+            "momentum": float(df["c"].iloc[-1] - df["c"].iloc[-5]),
+            "vol_change": float(df["v"].iloc[-1] - df["v"].iloc[-5])
+        }
     except:
-        return "neutral"
+        return None
 
-# ===== SYMBOLS =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
         pairs = [(s, x["quoteVolume"]) for s,x in t.items()
                  if ":USDT" in s and "BTC" not in s and "ETH" not in s and x["quoteVolume"]]
-
         pairs.sort(key=lambda x: x[1], reverse=True)
-
-        if not pairs:
-            return ["XRP/USDT:USDT"]
-
-        return [p[0] for p in pairs[:5]]
-
+        return [p[0] for p in pairs[:5]] if pairs else ["XRP/USDT:USDT"]
     except:
         return ["XRP/USDT:USDT"]
 
-# ===== STATE =====
 pos = None
 entry = 0
 qty = 0
-last_train = 0
 
-send(f"🤖 V152 MODE: {MODE}")
+send(f"🤖 V153 PRO MODE: {MODE}")
 
-if MODE != "REAL":
-    print("🛑 SAFE MODE AKTİF - GERÇEK TRADE YOK")
-
-# ===== LOOP =====
 while True:
     try:
 
-        if time.time() - last_train > 150:
+        if time.time() - last_train > 120:
             train_model()
             last_train = time.time()
 
         if pos is None:
 
             for sym in symbols():
-
                 f = get_features(sym)
                 if not f:
                     continue
 
-                score = get_score(f)
-                if score < -3:
-                    continue
-
-                ob = orderbook(sym)
-                if ob == "neutral":
-                    continue
-
-                conf = ai(f) + (score * 0.03)
-
+                conf = ai(f)
                 price = exchange.fetch_ticker(sym)["last"]
                 qty = (BASE_USDT * LEVERAGE) / price
 
-                if conf > 0.52 and ob == "buy":
+                if conf > 0.52:
                     place_order(sym, "buy", qty, price)
                     pos = {"sym": sym, "side": "long"}
                     entry = price
-                    send(f"🚀 LONG {sym} AI:{round(conf,2)}")
+                    last_update = time.time()  # reset
+
+                    send(f"""🚀 TRADE AÇILDI
+
+📊 {sym}
+📈 LONG
+💰 Fiyat: {round(price,4)}
+💵 Margin: {BASE_USDT}
+⚡ Lev: {LEVERAGE}x
+🤖 AI: {round(conf,2)}
+""")
                     break
 
-                elif conf < 0.48 and ob == "sell":
+                elif conf < 0.48:
                     place_order(sym, "sell", qty, price)
                     pos = {"sym": sym, "side": "short"}
                     entry = price
-                    send(f"🚀 SHORT {sym} AI:{round(conf,2)}")
+                    last_update = time.time()
+
+                    send(f"""🚀 TRADE AÇILDI
+
+📊 {sym}
+📉 SHORT
+💰 Fiyat: {round(price,4)}
+💵 Margin: {BASE_USDT}
+⚡ Lev: {LEVERAGE}x
+🤖 AI: {round(conf,2)}
+""")
                     break
 
         else:
@@ -291,24 +197,41 @@ while True:
             price = exchange.fetch_ticker(sym)["last"]
 
             pnl = ((price - entry)/entry)*100*LEVERAGE if side=="long" else ((entry-price)/entry)*100*LEVERAGE
+            profit_usdt = (BASE_USDT * pnl) / 100
 
-            if pnl < -5:
-                decision = "panic"
-            elif pnl > 4:
-                decision = "profit"
-            else:
-                decision = "hold"
+            if time.time() - last_update > 60:
+                send(f"""📡 AKTİF TRADE
 
-            if decision != "hold":
+📊 {sym}
+📈 {side.upper()}
 
-                place_order(sym, "sell" if side=="long" else "buy", qty, price)
+💰 Giriş: {round(entry,4)}
+💰 Şu an: {round(price,4)}
+
+📊 PnL: {round(pnl,2)}%
+💵 {round(profit_usdt,2)} USDT
+""")
+                last_update = time.time()
+
+            if pnl < -5 or pnl > 4:
+
+                order = place_order(sym, "sell" if side=="long" else "buy", qty, price)
 
                 f["result"] = pnl
                 data.append(f)
                 save_trade(f)
-                update_learning(f, pnl)
 
-                send(f"❌ CLOSE {sym} PnL:{round(pnl,2)}% {decision}")
+                send(f"""❌ TRADE KAPANDI
+
+📊 {sym}
+📈 {side.upper()}
+
+💰 Giriş: {round(entry,4)}
+💰 Çıkış: {round(price,4)}
+
+📊 PnL: {round(pnl,2)}%
+💵 {round(profit_usdt,2)} USDT
+""")
 
                 pos = None
 
