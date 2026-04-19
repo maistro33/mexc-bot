@@ -23,35 +23,37 @@ def send(msg):
     except:
         print(msg)
 
-# ===== PANEL (FIXED) =====
-PANEL_MSG_ID = None
-LAST_PANEL_UPDATE = 0
-
-def update_panel():
-    global PANEL_MSG_ID, LAST_PANEL_UPDATE
-
-    # Flood koruması
-    if time.time() - LAST_PANEL_UPDATE < 10:
-        return
-
-    LAST_PANEL_UPDATE = time.time()
-
+# ===== TELEGRAM PRO =====
+def send_open(sym, direction, price):
     try:
-        text = f"""🤖 AI BOT PANEL
+        send(f"""
+🚀 TRADE AÇILDI
 
-📊 Açık İşlem: {len(positions)}
-💰 Margin: {BASE_USDT} USDT
+📊 {sym}
+📈 Yön: {direction}
+
+💰 Giriş: {round(price,4)}
+💵 Margin: {BASE_USDT} USDT
 ⚡ Kaldıraç: {LEVERAGE}x
+""")
+    except:
+        pass
 
-🧠 Pattern: {len(memory)}
-"""
+def send_close(sym, side, entry, price, pnl, usdt):
+    try:
+        emoji = "🟢 KAR" if usdt > 0 else "🔴 ZARAR"
+        send(f"""
+❌ TRADE KAPANDI
 
-        if bot and CHAT_ID:
-            if PANEL_MSG_ID is None:
-                msg = bot.send_message(CHAT_ID, text)
-                PANEL_MSG_ID = msg.message_id
-            else:
-                bot.edit_message_text(chat_id=CHAT_ID, message_id=PANEL_MSG_ID, text=text)
+📊 {sym}
+📈 Yön: {side}
+
+💰 Giriş: {round(entry,4)}
+💰 Çıkış: {round(price,4)}
+
+📊 PnL: {round(pnl,2)}%
+💵 Sonuç: {round(usdt,3)} USDT {emoji}
+""")
     except:
         pass
 
@@ -123,7 +125,6 @@ def is_bad(f):
 
 def learn(f, pnl):
     k = pattern_key(f)
-
     if k not in memory:
         memory[k] = 0
 
@@ -143,13 +144,10 @@ model = None
 
 def train():
     global model
-
     if len(data) < 20:
         return
-
     try:
         df = pd.DataFrame(data)
-
         if not all(col in df.columns for col in ["momentum","volume","vol_change","result"]):
             return
 
@@ -157,7 +155,6 @@ def train():
         y = df["result"] > 0
 
         model = XGBClassifier(n_estimators=50).fit(X, y)
-
     except:
         model = None
 
@@ -183,30 +180,20 @@ def features(sym):
     except:
         return None
 
-# ===== SYMBOLS (FIXED) =====
+# ===== SYMBOLS =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
-        pairs = []
 
-        for s, x in t.items():
+        BAD_COINS = ["PEPE","FLOKI","SHIB"]
 
-            if ":USDT" not in s:
-                continue
-
-            if any(bad in s for bad in ["BTC","ETH","XRP","ADA","DOGE"]):
-                continue
-
-            vol = x.get("quoteVolume", 0)
-            change = x.get("percentage", 0)
-
-            if not vol or vol < 5_000_000:
-                continue
-
-            if abs(change) < 1:  # FIXED (daha stabil)
-                continue
-
-            pairs.append((s, vol))
+        pairs = [(s, x.get("quoteVolume")) for s, x in t.items()
+                 if ":USDT" in s
+                 and x.get("quoteVolume")
+                 and "BTC" not in s
+                 and "ETH" not in s
+                 and not any(bad in s for bad in BAD_COINS)
+                 ]
 
         pairs.sort(key=lambda x: x[1], reverse=True)
 
@@ -235,13 +222,12 @@ positions = []
 last_trade = {}
 last_side = {}
 
-send(f"🤖 V701 ULTRA MODE: {MODE}")
+send(f"🤖 V900 FINAL MODE: {MODE}")
 
 # ===== LOOP =====
 while True:
     try:
 
-        update_panel()
         train()
 
         for sym in symbols():
@@ -265,7 +251,12 @@ while True:
             if f["volume"] < 10000:
                 continue
 
-            price = exchange.fetch_ticker(sym)["last"]
+            ticker = exchange.fetch_ticker(sym)
+            price = ticker.get("last")
+
+            if not price or price <= 0:
+                continue
+
             qty = (BASE_USDT * LEVERAGE) / price
 
             try:
@@ -306,20 +297,25 @@ while True:
             last_trade[sym] = time.time()
             last_side[sym] = direction
 
-            send(f"""🚀 TRADE AÇILDI
-
-📊 {sym}
-📈 Yön: {direction}
-
-💰 Giriş: {round(price,4)}
-💵 Margin: {BASE_USDT} USDT
-⚡ Kaldıraç: {LEVERAGE}x
-""")
+            send_open(sym, direction, price)
 
         for pos in positions[:]:
 
-            sym, side, entry, qty, f = pos["sym"], pos["side"], pos["entry"], pos["qty"], pos["f"]
-            price = exchange.fetch_ticker(sym)["last"]
+            sym = pos["sym"]
+            side = pos["side"]
+            entry = pos["entry"]
+            qty = pos["qty"]
+            f = pos["f"]
+
+            if not entry or entry <= 0:
+                positions.remove(pos)
+                continue
+
+            ticker = exchange.fetch_ticker(sym)
+            price = ticker.get("last")
+
+            if not price or price <= 0:
+                continue
 
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
             usdt = ((price - entry) * qty) if side=="LONG" else ((entry - price) * qty)
@@ -333,19 +329,7 @@ while True:
                 save_trade(f)
                 learn(f, pnl)
 
-                result = "🟢 KAR" if usdt > 0 else "🔴 ZARAR"
-
-                send(f"""❌ TRADE KAPANDI
-
-📊 {sym}
-📈 Yön: {side}
-
-💰 Giriş: {round(entry,4)}
-💰 Çıkış: {round(price,4)}
-
-📊 PnL: {round(pnl,2)}%
-💵 Sonuç: {round(usdt,3)} USDT {result}
-""")
+                send_close(sym, side, entry, price, pnl, usdt)
 
                 positions.remove(pos)
 
