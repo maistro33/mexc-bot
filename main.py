@@ -185,7 +185,7 @@ while True:
 
             score = ai_score(f)
 
-            if abs(score) < 0.1:
+            if abs(score) < 0.02:
                 continue
 
             side = "buy" if score > 0 else "sell"
