@@ -1,11 +1,11 @@
 import os, time, ccxt, requests, telebot
 import pandas as pd
 from xgboost import XGBClassifier
-import joblib
 
 # ===== CONFIG =====
 LEVERAGE = 5
 BASE_USDT = 3
+MODE = os.getenv("MODE", "REAL")  # REAL / PAPER
 
 # ===== TELEGRAM =====
 bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
@@ -26,10 +26,15 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-try:
-    exchange.load_markets()
-except:
-    pass
+exchange.load_markets()
+
+# ===== SAFE ORDER SYSTEM =====
+def place_order(sym, side, qty, price):
+    if MODE == "REAL":
+        return exchange.create_market_order(sym, side, qty)
+    else:
+        print(f"📊 PAPER {side} {sym} qty:{qty} price:{price}")
+        return {"price": price}
 
 # ===== SUPABASE =====
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -62,207 +67,201 @@ def load_data():
     except:
         return []
 
-data = load_data()
-
-# ===== COIN SEÇİCİ =====
-def get_best_symbols():
+def load_learning():
     try:
-        tickers = exchange.fetch_tickers()
-        pairs = []
-
-        for sym, t in tickers.items():
-            if ":USDT" not in sym:
-                continue
-            if "BTC" in sym or "ETH" in sym:
-                continue
-
-            vol = t.get("quoteVolume") or 0
-
-            if vol > 100000:
-                pairs.append((sym, vol))
-
-        pairs.sort(key=lambda x: x[1], reverse=True)
-        return [p[0] for p in pairs[:5]]
-
+        res = requests.get(
+            f"{SUPABASE_URL}/rest/v1/learning?select=*",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}"
+            }
+        )
+        return {d["key"]: d["score"] for d in res.json()}
     except:
-        return []
+        return {}
+
+def save_learning(key, score):
+    try:
+        requests.post(
+            f"{SUPABASE_URL}/rest/v1/learning",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={"key": key, "score": score}
+        )
+    except:
+        pass
+
+data = load_data()
+learning_memory = load_learning()
 
 # ===== FEATURES =====
 def get_features(sym):
-    try:
-        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=30)
-        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+    ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=30)
+    df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
 
-        return {
-            "price_change": float(df["c"].iloc[-1] - df["c"].iloc[-2]),
-            "volume": float(df["v"].iloc[-1]),
-            "range": float(df["h"].iloc[-1] - df["l"].iloc[-1])
-        }
-    except:
-        return None
+    return {
+        "price_change": float(df["c"].iloc[-1] - df["c"].iloc[-2]),
+        "volume": float(df["v"].iloc[-1]),
+        "range": float(df["h"].iloc[-1] - df["l"].iloc[-1]),
+        "momentum": float(df["c"].iloc[-1] - df["c"].iloc[-5]),
+        "vol_change": float(df["v"].iloc[-1] - df["v"].iloc[-5])
+    }
 
-# ===== 🧠 BRAIN SYSTEM (YENİ) =====
-def brain_filter(f):
-    try:
-        # sert dump → long yasak
-        if f["price_change"] < -0.5 and f["volume"] > 50000:
-            return "avoid_long"
+# ===== LEARNING =====
+def get_key(f):
+    return f"{round(f['price_change'],2)}_{round(f['momentum'],2)}_{round(f['volume'],-3)}"
 
-        # sert pump → short yasak
-        if f["price_change"] > 0.5 and f["volume"] > 50000:
-            return "avoid_short"
+def get_score(f):
+    return learning_memory.get(get_key(f), 0)
 
-        # sağlıklı hareket
-        if abs(f["price_change"]) < 0.2:
-            return "neutral"
+def update_learning(f, pnl):
+    key = get_key(f)
 
-        return "ok"
-    except:
-        return "neutral"
+    if key not in learning_memory:
+        learning_memory[key] = 0
 
-# ===== 🧠 TREND ANALİZ (YENİ) =====
-def get_trend(sym):
-    try:
-        ohlcv = exchange.fetch_ohlcv(sym, "5m", limit=50)
-        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-
-        ema20 = df["c"].ewm(span=20).mean().iloc[-1]
-        ema50 = df["c"].ewm(span=50).mean().iloc[-1]
-
-        if ema20 > ema50:
-            return "up"
-        else:
-            return "down"
-    except:
-        return None
-
-# ===== TRAIN =====
-def train_model(dataset):
-    if len(dataset) < 20:
-        return None
-
-    try:
-        df = pd.DataFrame(dataset)
-        df = df.select_dtypes(include=["number"])
-
-        if "result" not in df.columns:
-            return None
-
-        X = df.drop(columns=["result"])
-        y = df["result"] > 0
-
-        model = XGBClassifier(n_estimators=100)
-        model.fit(X, y)
-
-        joblib.dump(model, "model.pkl")
-        return model
-    except:
-        return None
-
-# ===== MODEL =====
-model = None
-
-try:
-    if os.path.exists("model.pkl"):
-        model = joblib.load("model.pkl")
+    if pnl > 2:
+        learning_memory[key] += 2
+    elif pnl > 0:
+        learning_memory[key] += 1
+    elif pnl < -2:
+        learning_memory[key] -= 2
     else:
-        model = train_model(data)
-except:
-    model = None
+        learning_memory[key] -= 1
+
+    save_learning(key, learning_memory[key])
 
 # ===== AI =====
-def ai_decision(f):
-    global model
+model = None
 
+def train_model():
+    global model
+    if len(data) < 30:
+        return
+    df = pd.DataFrame(data).select_dtypes(include=["number"])
+    if "result" not in df.columns:
+        return
+    X = df.drop(columns=["result"])
+    y = df["result"] > 0
+    model = XGBClassifier().fit(X, y)
+
+def ai(f):
     if model is None:
         return 0.5
+    return model.predict_proba(pd.DataFrame([f]))[0][1]
 
-    try:
-        df = pd.DataFrame([f])
-        return model.predict_proba(df)[0][1]
-    except:
-        return 0.5
+# ===== ORDERBOOK CACHE =====
+orderbook_cache = {}
+
+def orderbook(sym):
+    now = time.time()
+    if sym in orderbook_cache and now - orderbook_cache[sym]["t"] < 10:
+        return orderbook_cache[sym]["v"]
+
+    ob = exchange.fetch_order_book(sym, limit=20)
+    bids = sum([b[1] for b in ob["bids"]])
+    asks = sum([a[1] for a in ob["asks"]])
+
+    if bids > asks * 1.3:
+        val = "buy"
+    elif asks > bids * 1.3:
+        val = "sell"
+    else:
+        val = "neutral"
+
+    orderbook_cache[sym] = {"v": val, "t": now}
+    return val
+
+# ===== SYMBOLS =====
+def symbols():
+    t = exchange.fetch_tickers()
+    pairs = [(s, x["quoteVolume"]) for s,x in t.items()
+             if ":USDT" in s and "BTC" not in s and "ETH" not in s and x["quoteVolume"]]
+    pairs.sort(key=lambda x: x[1], reverse=True)
+    return [p[0] for p in pairs[:5]]
 
 # ===== STATE =====
-position = None
-entry_price = 0
+pos = None
+entry = 0
 qty = 0
+last_train = 0
 
-send("🤖 AI BOT V10 AKTİF")
+send("🤖 V150 PAPER MODE AKTİF")
 
 # ===== LOOP =====
 while True:
     try:
 
-        # ===== POZİSYON YOKSA =====
-        if position is None:
+        if time.time() - last_train > 300:
+            train_model()
+            last_train = time.time()
 
-            symbols = get_best_symbols()
+        if pos is None:
 
-            for sym in symbols:
+            for sym in symbols():
 
                 f = get_features(sym)
-                if not f:
+                sc = get_score(f)
+                if sc < -3:
                     continue
 
-                brain = brain_filter(f)
-                trend = get_trend(sym)
+                ob = orderbook(sym)
+                if ob == "neutral":
+                    continue
 
-                conf = ai_decision(f)
+                conf = ai(f) + (sc * 0.03)
+
                 price = exchange.fetch_ticker(sym)["last"]
+                size = BASE_USDT
+                qty = (size * LEVERAGE) / price
 
-                qty = (BASE_USDT * LEVERAGE) / price
-
-                # ===== SMART ENTRY =====
-                if conf > 0.55 and trend == "up" and brain != "avoid_long":
-                    exchange.create_market_order(sym, "buy", qty)
-                    position = {"sym": sym, "side": "long"}
-                    entry_price = price
-                    send(f"🚀 LONG {sym}\nAI: {round(conf,2)}\nBRAIN:{brain}")
+                if conf > 0.55 and ob == "buy":
+                    place_order(sym, "buy", qty, price)
+                    pos = {"sym": sym, "side": "long"}
+                    entry = price
+                    send(f"🚀 LONG {sym} AI:{round(conf,2)}")
                     break
 
-                elif conf < 0.45 and trend == "down" and brain != "avoid_short":
-                    exchange.create_market_order(sym, "sell", qty)
-                    position = {"sym": sym, "side": "short"}
-                    entry_price = price
-                    send(f"🚀 SHORT {sym}\nAI: {round(conf,2)}\nBRAIN:{brain}")
+                elif conf < 0.45 and ob == "sell":
+                    place_order(sym, "sell", qty, price)
+                    pos = {"sym": sym, "side": "short"}
+                    entry = price
+                    send(f"🚀 SHORT {sym} AI:{round(conf,2)}")
                     break
 
-        # ===== POZİSYON VARSA =====
         else:
-            sym = position["sym"]
-            side = position["side"]
+            sym = pos["sym"]
+            side = pos["side"]
 
             f = get_features(sym)
-            if not f:
-                time.sleep(5)
-                continue
-
-            conf = ai_decision(f)
             price = exchange.fetch_ticker(sym)["last"]
 
-            # ===== GERÇEK PNL =====
-            pnl = ((price - entry_price) / entry_price) * 100 * LEVERAGE if side == "long" else ((entry_price - price) / entry_price) * 100 * LEVERAGE
+            pnl = ((price - entry)/entry)*100*LEVERAGE if side=="long" else ((entry-price)/entry)*100*LEVERAGE
 
-            # ===== SMART EXIT =====
-            if (side == "long" and conf < 0.48) or (side == "short" and conf > 0.52) or pnl > 3 or pnl < -2:
+            if pnl < -5:
+                decision = "panic"
+            elif pnl > 3:
+                decision = "profit"
+            else:
+                decision = "hold"
 
-                close_side = "sell" if side == "long" else "buy"
-                exchange.create_market_order(sym, close_side, qty)
+            if decision != "hold":
+                place_order(sym, "sell" if side=="long" else "buy", qty, price)
 
                 f["result"] = pnl
-                save_trade(f)
                 data.append(f)
+                save_trade(f)
+                update_learning(f, pnl)
 
-                if len(data) % 10 == 0:
-                    model = train_model(data)
+                send(f"❌ CLOSE {sym} PnL:{round(pnl,2)}% {decision}")
 
-                send(f"❌ CLOSE {sym}\nPnL: {round(pnl,2)}%\nAI: {round(conf,2)}")
-
-                position = None
+                pos = None
 
         time.sleep(10)
 
     except Exception as e:
-        print("ERROR:", e)
+        print("ERR:", e)
         time.sleep(5)
