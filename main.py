@@ -8,6 +8,8 @@ BASE_USDT = 5
 MAX_POSITIONS = 3
 MODE = os.getenv("MODE", "PAPER")
 
+COOLDOWN = 90  # lock süresi
+
 # ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -83,7 +85,6 @@ def train():
         y = df["result"] > 0
 
         model = XGBClassifier(n_estimators=50).fit(X, y)
-
     except:
         model = None
 
@@ -113,7 +114,8 @@ def symbols():
     try:
         t = exchange.fetch_tickers()
         pairs = [(s,x["quoteVolume"]) for s,x in t.items()
-                 if ":USDT" in s and x["quoteVolume"]]
+                 if ":USDT" in s and x["quoteVolume"] and "BTC" not in s and "ETH" not in s]
+
         pairs.sort(key=lambda x: x[1], reverse=True)
         return [p[0] for p in pairs[:10]]
     except:
@@ -137,9 +139,9 @@ def place_order(sym, side, qty):
 # ===== STATE =====
 positions = []
 last_trade = {}
-COOLDOWN = 60
+last_side = {}
 
-send(f"🤖 V203 FINAL MODE: {MODE}")
+send(f"🤖 V300 FINAL MODE: {MODE}")
 
 # ===== LOOP =====
 while True:
@@ -153,14 +155,23 @@ while True:
             if len(positions) >= MAX_POSITIONS:
                 break
 
+            # cooldown lock
             if sym in last_trade and time.time() - last_trade[sym] < COOLDOWN:
                 continue
 
+            # açık pozisyon varsa geç
             if any(p["sym"] == sym for p in positions):
                 continue
 
             f = features(sym)
             if not f:
+                continue
+
+            # ===== VOLUME FILTER =====
+            if f["volume"] < 10000:
+                continue
+
+            if abs(f["momentum"]) < 0.001:
                 continue
 
             conf = ai(f)
@@ -185,6 +196,10 @@ while True:
                 else:
                     continue
 
+            # ===== DIRECTION LOCK =====
+            if sym in last_side and last_side[sym] != direction:
+                continue
+
             order = place_order(sym, side, qty)
             if not order:
                 continue
@@ -197,6 +212,7 @@ while True:
             })
 
             last_trade[sym] = time.time()
+            last_side[sym] = direction
 
             send(
 f"""🚀 TRADE AÇILDI
@@ -219,7 +235,8 @@ f"""🚀 TRADE AÇILDI
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
             usdt = ((price - entry) * qty) if side=="LONG" else ((entry - price) * qty)
 
-            if pnl > 3 or pnl < -4:
+            # ===== EXIT RULE =====
+            if pnl > 3 or pnl < -5:
 
                 place_order(sym, "sell" if side=="LONG" else "buy", qty)
 
