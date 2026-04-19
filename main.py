@@ -8,7 +8,7 @@ BASE_USDT = 5
 MAX_POSITIONS = 3
 MODE = os.getenv("MODE", "PAPER")
 
-# ===== TELEGRAM SAFE =====
+# ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 bot = telebot.TeleBot(TOKEN) if TOKEN else None
@@ -31,30 +31,7 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-try:
-    exchange.load_markets()
-except Exception as e:
-    print("MARKET ERROR:", e)
-
-# ===== ORDER =====
-def place_order(sym, side, qty):
-    try:
-        if qty <= 0:
-            return None
-
-        if MODE == "REAL":
-            try:
-                exchange.set_leverage(LEVERAGE, sym)
-            except:
-                pass
-            return exchange.create_market_order(sym, side, qty)
-        else:
-            print(f"PAPER {side} {sym} {qty}")
-            return {"ok": True}
-
-    except Exception as e:
-        print("ORDER ERROR:", e)
-        return None
+exchange.load_markets()
 
 # ===== SUPABASE =====
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -71,8 +48,8 @@ def save_trade(data):
             },
             json=data
         )
-    except Exception as e:
-        print("SUPABASE ERROR:", e)
+    except:
+        pass
 
 def load_data():
     try:
@@ -98,11 +75,15 @@ def train():
         return
     try:
         df = pd.DataFrame(data)
-        if "result" not in df.columns:
+
+        if not all(col in df.columns for col in ["momentum","volume","vol_change","result"]):
             return
-        X = df.drop(columns=["result"])
+
+        X = df[["momentum","volume","vol_change"]]
         y = df["result"] > 0
+
         model = XGBClassifier(n_estimators=50).fit(X, y)
+
     except:
         model = None
 
@@ -138,11 +119,27 @@ def symbols():
     except:
         return ["XRP/USDT:USDT"]
 
+# ===== ORDER =====
+def place_order(sym, side, qty):
+    try:
+        if MODE == "REAL":
+            try:
+                exchange.set_leverage(LEVERAGE, sym)
+            except:
+                pass
+            return exchange.create_market_order(sym, side, qty)
+        else:
+            print(f"PAPER {side} {sym} {qty}")
+            return {"ok": True}
+    except:
+        return None
+
 # ===== STATE =====
 positions = []
 last_trade = {}
+COOLDOWN = 60
 
-send(f"🤖 V201 HYBRID AI MODE: {MODE}")
+send(f"🤖 V203 FINAL MODE: {MODE}")
 
 # ===== LOOP =====
 while True:
@@ -156,7 +153,10 @@ while True:
             if len(positions) >= MAX_POSITIONS:
                 break
 
-            if sym in last_trade and time.time() - last_trade[sym] < 15:
+            if sym in last_trade and time.time() - last_trade[sym] < COOLDOWN:
+                continue
+
+            if any(p["sym"] == sym for p in positions):
                 continue
 
             f = features(sym)
@@ -168,25 +168,20 @@ while True:
             price = exchange.fetch_ticker(sym)["last"]
             qty = (BASE_USDT * LEVERAGE) / price
 
-            # ===== MIN QTY CHECK =====
-            try:
-                market = exchange.market(sym)
-                min_qty = market.get("limits", {}).get("amount", {}).get("min", 0)
-                if min_qty and qty < min_qty:
-                    continue
-            except:
-                pass
-
-            # ===== HYBRID LOGIC =====
+            # ===== LOGIC =====
             if conf > 0.55:
                 side = "buy"
+                direction = "LONG"
             elif conf < 0.45:
                 side = "sell"
+                direction = "SHORT"
             else:
                 if f["momentum"] > 0 and f["vol_change"] > 0:
                     side = "buy"
+                    direction = "LONG"
                 elif f["momentum"] < 0 and f["vol_change"] > 0:
                     side = "sell"
+                    direction = "SHORT"
                 else:
                     continue
 
@@ -196,14 +191,20 @@ while True:
 
             positions.append({
                 "sym": sym,
-                "side": "long" if side=="buy" else "short",
+                "side": direction,
                 "entry": price,
                 "qty": qty
             })
 
             last_trade[sym] = time.time()
 
-            send(f"🚀 {side.upper()} {sym}\n💰 {round(price,4)}\n⚡ {LEVERAGE}x")
+            send(
+f"""🚀 TRADE AÇILDI
+📊 {sym}
+📈 {direction}
+💰 Giriş: {round(price,4)}
+⚡ Kaldıraç: {LEVERAGE}x"""
+            )
 
         # ===== EXIT =====
         for pos in positions[:]:
@@ -215,13 +216,12 @@ while True:
 
             price = exchange.fetch_ticker(sym)["last"]
 
-            pnl = ((price-entry)/entry)*100*LEVERAGE if side=="long" else ((entry-price)/entry)*100*LEVERAGE
+            pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
+            usdt = ((price - entry) * qty) if side=="LONG" else ((entry - price) * qty)
 
             if pnl > 3 or pnl < -4:
 
-                order = place_order(sym, "sell" if side=="long" else "buy", qty)
-                if not order:
-                    continue
+                place_order(sym, "sell" if side=="LONG" else "buy", qty)
 
                 f = features(sym)
                 if f:
@@ -229,7 +229,16 @@ while True:
                     data.append(f)
                     save_trade(f)
 
-                send(f"❌ CLOSE {sym}\nPnL: {round(pnl,2)}%")
+                send(
+f"""❌ TRADE KAPANDI
+📊 {sym}
+📈 {side}
+💰 Giriş: {round(entry,4)}
+💰 Çıkış: {round(price,4)}
+
+📊 PnL: {round(pnl,2)}%
+💵 {round(usdt,3)} USDT"""
+                )
 
                 positions.remove(pos)
 
