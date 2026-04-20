@@ -37,7 +37,7 @@ exchange.load_markets()
 # ===== AI =====
 agent = DQNAgent(state_size=8, action_size=3)
 agent.epsilon = 1.0
-agent.epsilon_decay = 0.997
+agent.epsilon_decay = 0.996
 
 # ===== SUPABASE =====
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -45,7 +45,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 def load_trades():
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("No Supabase config")
         return []
     try:
         headers = {
@@ -120,30 +119,52 @@ def send_report():
 # ===== BTC TREND =====
 def btc_trend():
     try:
-        ohlcv = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=20)
+        ohlcv = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=50)
         df = pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
-        ema_fast=df["c"].ewm(span=9).mean()
-        ema_slow=df["c"].ewm(span=21).mean()
-        return 1 if ema_fast.iloc[-1]>ema_slow.iloc[-1] else 0
+        ema20=df["c"].ewm(span=20).mean()
+        ema50=df["c"].ewm(span=50).mean()
+        return 1 if ema20.iloc[-1]>ema50.iloc[-1] else 0
     except:
         return 1
+
+# ===== RSI =====
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
 
 # ===== FEATURES =====
 def features(sym):
     try:
-        ohlcv=exchange.fetch_ohlcv(sym,"1m",limit=30)
+        ohlcv=exchange.fetch_ohlcv(sym,"1m",limit=50)
         df=pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
 
+        momentum=float(df["c"].iloc[-1]-df["c"].iloc[-3])
+        volume=float(df["v"].iloc[-1])
+        vol_change=float(df["v"].iloc[-1]-df["v"].iloc[-3])
+
+        ema9=df["c"].ewm(span=9).mean()
+        ema21=df["c"].ewm(span=21).mean()
+        trend=1 if ema9.iloc[-1]>ema21.iloc[-1] else 0
+
+        rsi=float(compute_rsi(df["c"]).iloc[-1])
+        volatility=float(df["h"].iloc[-1]-df["l"].iloc[-1])
+
+        fake=1 if (df["h"].iloc[-1]>df["h"].iloc[-5:-1].max() and df["c"].iloc[-1]<df["h"].iloc[-1]*0.995) else 0
+        whale=1 if df["v"].iloc[-1]>df["v"].iloc[-3]*2 else 0
+
         return {
-            "momentum":float(df["c"].iloc[-1]-df["c"].iloc[-3]),
-            "volume":float(df["v"].iloc[-1]),
-            "vol_change":float(df["v"].iloc[-1]-df["v"].iloc[-3]),
-            "trend":1 if df["c"].ewm(span=9).mean().iloc[-1] > df["c"].ewm(span=21).mean().iloc[-1] else 0,
-            "rsi":50,
-            "volatility":float(df["h"].iloc[-1]-df["l"].iloc[-1]),
-            "fake":0,
-            "whale":1 if df["v"].iloc[-1]>df["v"].iloc[-3]*2 else 0,
-            "btc":btc_trend()
+            "momentum":momentum,
+            "volume":volume,
+            "vol_change":vol_change,
+            "trend":trend,
+            "rsi":rsi,
+            "volatility":volatility,
+            "fake":fake,
+            "whale":whale,
+            "btc": btc_trend()
         }
     except:
         return None
@@ -162,7 +183,7 @@ def symbols():
     except:
         return ["BTC/USDT:USDT"]
 
-# ===== SAFE PRICE =====
+# ===== PRICE FIX =====
 def get_price(sym):
     try:
         ticker = exchange.fetch_ticker(sym)
@@ -189,7 +210,7 @@ positions=[]
 last_trade={}
 last_side={}
 
-send("🤖 V1700 FINAL PRO BAŞLADI")
+send("🤖 V1800 FINAL PRO BAŞLADI")
 load_ai_memory()
 
 # ===== LOOP =====
@@ -214,20 +235,27 @@ while True:
             if not price:
                 continue
 
+            # FILTERS
+            if f["fake"] == 1:
+                continue
+            if f["rsi"] > 80 or f["rsi"] < 20:
+                continue
+
             qty=(BASE_USDT*LEVERAGE)/price
 
             state=make_state(f)
             action=agent.act(state)
 
-            if action==0 and random.random()<0.4:
+            if action==0 and random.random()<0.3:
                 action=random.choice([1,2])
 
             direction = "LONG" if action==1 else "SHORT"
             side = "buy" if action==1 else "sell"
 
-            if f["btc"]==1 and direction=="SHORT":
+            # BTC FILTER
+            if f["btc"] == 1 and direction == "SHORT":
                 continue
-            if f["btc"]==0 and direction=="LONG":
+            if f["btc"] == 0 and direction == "LONG":
                 continue
 
             if sym in last_side and last_side[sym]!=direction:
@@ -274,7 +302,6 @@ while True:
                 agent.remember(pos["state"],pos["action"],pnl,pos["state"],True)
                 agent.train(32)
 
-                # 🔥 SUPABASE SAVE
                 save_trade({
                     "momentum": float(pos["state"][0][0]),
                     "volume": float(pos["state"][0][1]),
