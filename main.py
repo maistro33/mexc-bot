@@ -1,4 +1,4 @@
-import os, time, ccxt, requests, telebot
+import os, time, ccxt, requests, telebot, random
 import pandas as pd
 from xgboost import XGBClassifier
 
@@ -41,11 +41,9 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "resolution=merge-duplicates"
+    "Content-Type": "application/json"
 }
 
-# ===== DATA =====
 def save_trade(data):
     try:
         requests.post(f"{SUPABASE_URL}/rest/v1/trades", headers=HEADERS, json=data)
@@ -62,27 +60,7 @@ def load_data():
 data = load_data()
 
 # ===== MEMORY =====
-def load_memory():
-    try:
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/learning?select=*", headers=HEADERS)
-        mem = {}
-        for d in r.json():
-            mem[d["key"]] = d["score"]
-        return mem
-    except:
-        return {}
-
-memory = load_memory()
-
-def save_memory(key, score):
-    try:
-        requests.post(
-            f"{SUPABASE_URL}/rest/v1/learning?on_conflict=key",
-            headers=HEADERS,
-            json={"key": key, "score": score}
-        )
-    except:
-        pass
+memory = {}
 
 def pattern_key(f):
     return f"{round(f['momentum'],3)}_{round(f['vol_change'],0)}"
@@ -101,8 +79,6 @@ def learn(f, pnl):
     else:
         memory[k] += 1
 
-    save_memory(k, memory[k])
-
 # ===== AI =====
 model = None
 
@@ -112,8 +88,6 @@ def train():
         return
     try:
         df = pd.DataFrame(data)
-        if not all(col in df.columns for col in ["momentum","volume","vol_change","result"]):
-            return
         X = df[["momentum","volume","vol_change"]]
         y = df["result"] > 0
         model = XGBClassifier(n_estimators=50).fit(X, y)
@@ -142,14 +116,20 @@ def features(sym):
     except:
         return None
 
-# ===== SYMBOLS =====
+# ===== SYMBOL SELECTION (ÇEŞİTLİLİK) =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
-        pairs = [(s,x["quoteVolume"]) for s,x in t.items()
+
+        pairs = [(s, x["quoteVolume"]) for s, x in t.items()
                  if ":USDT" in s and x["quoteVolume"]]
+
         pairs.sort(key=lambda x: x[1], reverse=True)
-        return [p[0] for p in pairs[:20]]
+
+        top = [p[0] for p in pairs[:30]]
+
+        return random.sample(top, 10)
+
     except:
         return ["BTC/USDT:USDT"]
 
@@ -168,7 +148,7 @@ def place_order(sym, side, qty):
 positions = []
 last_trade = {}
 
-send(f"🤖 V1300 TRUE AI BAŞLADI")
+send("🤖 V1300 TRUE AI BAŞLADI")
 
 # ===== LOOP =====
 while True:
@@ -199,7 +179,7 @@ while True:
 
             score = ai_score(f)
 
-            # AGGRESSIVE
+            # AGGRESSIVE MODE
             if abs(score) < 0.0:
                 continue
 
@@ -243,7 +223,7 @@ while True:
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
             usdt = ((price-entry)*qty) if side=="LONG" else ((entry-price)*qty)
 
-            # TRAILING
+            # ===== TRAILING =====
             if pnl > pos["peak"]:
                 pos["peak"] = pnl
 
