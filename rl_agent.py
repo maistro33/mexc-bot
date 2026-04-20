@@ -1,7 +1,6 @@
 import numpy as np
 import random
 from collections import deque
-from tensorflow.keras import models, layers
 
 class DQNAgent:
     def __init__(self, state_size, action_size):
@@ -14,40 +13,36 @@ class DQNAgent:
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.997
 
-        self.model = self._build_model()
+        # Basit model (weights)
+        self.q_table = {}
 
-    def _build_model(self):
-        model = models.Sequential()
-        model.add(layers.Dense(128, input_dim=self.state_size, activation='relu'))
-        model.add(layers.Dense(128, activation='relu'))
-        model.add(layers.Dense(self.action_size, activation='linear'))
-        model.compile(loss='mse', optimizer='adam')
-        return model
+    def _get_q(self, state):
+        key = tuple(state.flatten())
+        if key not in self.q_table:
+            self.q_table[key] = np.zeros(self.action_size)
+        return self.q_table[key]
 
     def act(self, state):
-        if np.random.rand() < self.epsilon:
+        if random.random() < self.epsilon:
             return random.randrange(self.action_size)
-        q = self.model.predict(state, verbose=0)
-        return np.argmax(q[0])
+        q_values = self._get_q(state)
+        return np.argmax(q_values)
 
     def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        key = tuple(state.flatten())
+        next_key = tuple(next_state.flatten())
+
+        if key not in self.q_table:
+            self.q_table[key] = np.zeros(self.action_size)
+        if next_key not in self.q_table:
+            self.q_table[next_key] = np.zeros(self.action_size)
+
+        target = reward
+        if not done:
+            target += self.gamma * np.max(self.q_table[next_key])
+
+        self.q_table[key][action] += 0.1 * (target - self.q_table[key][action])
 
     def train(self, batch_size=32):
-        if len(self.memory) < batch_size:
-            return
-
-        batch = random.sample(self.memory, batch_size)
-
-        for state, action, reward, next_state, done in batch:
-            target = reward
-            if not done:
-                target += self.gamma * np.max(self.model.predict(next_state, verbose=0)[0])
-
-            target_f = self.model.predict(state, verbose=0)
-            target_f[0][action] = target
-
-            self.model.fit(state, target_f, epochs=1, verbose=0)
-
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
