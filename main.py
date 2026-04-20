@@ -67,14 +67,37 @@ def save_trade(data):
 
 def load_ai_memory():
     trades = load_trades()
+    count = 0
     for t in trades:
         try:
             state = np.array([[t["momentum"],t["volume"],t["vol_change"],t["trend"],t["rsi"],t["volatility"],t["fake"],t["whale"]]])
             reward = t["result"]
             action = 1 if reward > 0 else 2
             agent.remember(state, action, reward, state, True)
+            count += 1
         except:
             continue
+
+    send(f"🧠 AI memory loaded: {count}")
+
+# ===== STATS =====
+stats = {"total":0,"win":0,"loss":0,"pnl_total":0}
+
+def send_report():
+    if stats["total"] < 10:
+        return
+    winrate = (stats["win"]/stats["total"])*100
+    avg_pnl = stats["pnl_total"]/stats["total"]
+
+    send(f"""🧠 AI RAPOR
+
+📊 Trade: {stats["total"]}
+🟢 Kazanç: {stats["win"]}
+🔴 Zarar: {stats["loss"]}
+
+📈 Winrate: {round(winrate,2)}%
+💵 Avg PnL: {round(avg_pnl,2)}%
+""")
 
 # ===== RSI =====
 def compute_rsi(series, period=14):
@@ -143,7 +166,7 @@ positions=[]
 last_trade={}
 symbol_count={}
 
-send("🤖 V1900.1 CLEAN FINAL BAŞLADI")
+send("🤖 V1900 ULTIMATE BAŞLADI")
 load_ai_memory()
 
 # ===== LOOP =====
@@ -193,7 +216,15 @@ while True:
             symbol_count[sym]=symbol_count.get(sym,0)+1
             last_trade[sym]=time.time()
 
-            send(f"🚀 TRADE AÇILDI\n📊 {sym}\n📈 {direction}\n💰 {round(price,6)}")
+            send(f"""🚀 TRADE AÇILDI
+
+📊 {sym}
+📈 Yön: {direction}
+
+💰 Giriş: {round(price,6)}
+💵 Margin: {BASE_USDT} USDT
+⚡ Kaldıraç: {LEVERAGE}x
+""")
 
         for pos in positions[:]:
             sym=pos["sym"]
@@ -218,6 +249,30 @@ while True:
 
             if close:
                 place_order(sym,"sell" if pos["side"]=="LONG" else "buy",pos["qty"])
+
+                result_usdt = (price-entry)*pos["qty"] if pos["side"]=="LONG" else (entry-price)*pos["qty"]
+
+                send(f"""❌ TRADE KAPANDI
+
+📊 {sym}
+📈 Yön: {pos["side"]}
+
+💰 Giriş: {round(entry,6)}
+💰 Çıkış: {round(price,6)}
+
+📊 PnL: {round(pnl,2)}%
+💵 Sonuç: {round(result_usdt,3)} USDT {"🟢 KAR" if pnl>0 else "🔴 ZARAR"}
+""")
+
+                stats["total"] += 1
+                stats["pnl_total"] += pnl
+                if pnl > 0:
+                    stats["win"] += 1
+                else:
+                    stats["loss"] += 1
+
+                if stats["total"] % 10 == 0:
+                    send_report()
 
                 agent.remember(pos["state"],pos["action"],pnl,pos["state"],True)
                 agent.train(32)
