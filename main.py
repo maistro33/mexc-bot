@@ -47,7 +47,6 @@ def load_trades():
     if not SUPABASE_URL or not SUPABASE_KEY:
         print("No Supabase config")
         return []
-
     try:
         headers = {
             "apikey": SUPABASE_KEY,
@@ -58,10 +57,22 @@ def load_trades():
     except:
         return []
 
+def save_trade(data):
+    try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            return
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        requests.post(f"{SUPABASE_URL}/rest/v1/trades", headers=headers, json=data)
+    except:
+        pass
+
 def load_ai_memory():
     trades = load_trades()
     count = 0
-
     for t in trades:
         try:
             state = np.array([[
@@ -74,15 +85,12 @@ def load_ai_memory():
                 t.get("fake",0),
                 t.get("whale",0)
             ]])
-
             reward = t.get("result",0)
             action = 1 if reward > 0 else 2
-
             agent.remember(state, action, reward, state, True)
             count += 1
         except:
             continue
-
     print("AI memory loaded:", count)
 
 # ===== PERFORMANCE =====
@@ -91,11 +99,9 @@ stats = {"total":0,"win":0,"loss":0,"pnl_total":0}
 def send_report():
     if stats["total"] < 10:
         return
-
     winrate = (stats["win"]/stats["total"])*100
     avg_pnl = stats["pnl_total"]/stats["total"]
     learning = min(100, (winrate*0.6)+(avg_pnl*10))
-
     level = "ACEMİ" if learning < 30 else "GELİŞİYOR" if learning < 60 else "İYİ" if learning < 80 else "GÜÇLÜ"
 
     send(f"""🧠 AI RAPOR
@@ -133,10 +139,9 @@ def features(sym):
             "volume":float(df["v"].iloc[-1]),
             "vol_change":float(df["v"].iloc[-1]-df["v"].iloc[-3]),
             "trend":1 if df["c"].ewm(span=9).mean().iloc[-1] > df["c"].ewm(span=21).mean().iloc[-1] else 0,
-            "rsi":float(100-(100/(1+(df["c"].diff().clip(lower=0).rolling(14).mean() /
-                                  (-df["c"].diff().clip(upper=0).rolling(14).mean()+1e-9)))).iloc[-1]),
+            "rsi":50,
             "volatility":float(df["h"].iloc[-1]-df["l"].iloc[-1]),
-            "fake":1 if (df["h"].iloc[-1]>df["h"].iloc[-5:-1].max() and df["c"].iloc[-1]<df["h"].iloc[-1]*0.995) else 0,
+            "fake":0,
             "whale":1 if df["v"].iloc[-1]>df["v"].iloc[-3]*2 else 0,
             "btc":btc_trend()
         }
@@ -184,7 +189,7 @@ positions=[]
 last_trade={}
 last_side={}
 
-send("🤖 V1700 FINAL STABLE BAŞLADI")
+send("🤖 V1700 FINAL PRO BAŞLADI")
 load_ai_memory()
 
 # ===== LOOP =====
@@ -268,6 +273,19 @@ while True:
 
                 agent.remember(pos["state"],pos["action"],pnl,pos["state"],True)
                 agent.train(32)
+
+                # 🔥 SUPABASE SAVE
+                save_trade({
+                    "momentum": float(pos["state"][0][0]),
+                    "volume": float(pos["state"][0][1]),
+                    "vol_change": float(pos["state"][0][2]),
+                    "trend": float(pos["state"][0][3]),
+                    "rsi": float(pos["state"][0][4]),
+                    "volatility": float(pos["state"][0][5]),
+                    "fake": float(pos["state"][0][6]),
+                    "whale": float(pos["state"][0][7]),
+                    "result": float(pnl)
+                })
 
                 stats["total"]+=1
                 stats["pnl_total"]+=pnl
