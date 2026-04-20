@@ -7,7 +7,8 @@ LEVERAGE = 10
 BASE_USDT = 5
 MAX_POSITIONS = 4
 MODE = os.getenv("MODE", "PAPER")
-COOLDOWN = 60
+
+COOLDOWN_SYMBOL = 600  # 10 dk
 
 # ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -58,26 +59,6 @@ def load_data():
         return []
 
 data = load_data()
-
-# ===== MEMORY =====
-memory = {}
-
-def pattern_key(f):
-    return f"{round(f['momentum'],3)}_{round(f['vol_change'],0)}"
-
-def learn(f, pnl):
-    k = pattern_key(f)
-    if k not in memory:
-        memory[k] = 0
-
-    if pnl < -3:
-        memory[k] -= 2
-    elif pnl < 0:
-        memory[k] -= 1
-    elif pnl > 3:
-        memory[k] += 2
-    else:
-        memory[k] += 1
 
 # ===== AI =====
 model = None
@@ -147,6 +128,7 @@ def place_order(sym, side, qty):
 # ===== STATE =====
 positions = []
 last_trade = {}
+last_side = {}
 
 send("🤖 V1300 TRUE AI BAŞLADI")
 
@@ -161,9 +143,11 @@ while True:
             if len(positions) >= MAX_POSITIONS:
                 break
 
-            if sym in last_trade and time.time() - last_trade[sym] < COOLDOWN:
+            # cooldown (aynı coin)
+            if sym in last_trade and time.time() - last_trade[sym] < COOLDOWN_SYMBOL:
                 continue
 
+            # aynı coin açık mı
             if any(p["sym"] == sym for p in positions):
                 continue
 
@@ -179,12 +163,12 @@ while True:
 
             score = ai_score(f)
 
-            # AGGRESSIVE MODE
-            if abs(score) < 0.0:
-                continue
-
             side = "buy" if score > 0.5 else "sell"
             direction = "LONG" if side == "buy" else "SHORT"
+
+            # FLIP ENGELLE
+            if sym in last_side and last_side[sym] != direction:
+                continue
 
             order = place_order(sym, side, qty)
             if not order:
@@ -200,6 +184,7 @@ while True:
             })
 
             last_trade[sym] = time.time()
+            last_side[sym] = direction
 
             send(f"""🚀 TRADE AÇILDI
 
@@ -223,7 +208,7 @@ while True:
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
             usdt = ((price-entry)*qty) if side=="LONG" else ((entry-price)*qty)
 
-            # ===== TRAILING =====
+            # ===== TRAILING (YUMUŞAK) =====
             if pnl > pos["peak"]:
                 pos["peak"] = pnl
 
@@ -234,7 +219,6 @@ while True:
                 f["result"] = pnl
                 data.append(f)
                 save_trade(f)
-                learn(f, pnl)
 
                 send(f"""❌ TRADE KAPANDI
 
@@ -247,6 +231,7 @@ while True:
 📊 PnL: {round(pnl,2)}%
 💵 Sonuç: {round(usdt,3)} USDT {"🟢 KAR" if pnl>0 else "🔴 ZARAR"}""")
 
+                last_trade[sym] = time.time()
                 positions.remove(pos)
 
         time.sleep(5)
