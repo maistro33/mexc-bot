@@ -8,7 +8,7 @@ BASE_USDT = 5
 MAX_POSITIONS = 4
 MODE = os.getenv("MODE", "PAPER")
 
-COOLDOWN_SYMBOL = 600  # 10 dk
+COOLDOWN_SYMBOL = 600
 
 # ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -97,7 +97,7 @@ def features(sym):
     except:
         return None
 
-# ===== SYMBOL SELECTION (ÇEŞİTLİLİK) =====
+# ===== SYMBOLS (ÇEŞİTLİLİK) =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
@@ -143,11 +143,9 @@ while True:
             if len(positions) >= MAX_POSITIONS:
                 break
 
-            # cooldown (aynı coin)
             if sym in last_trade and time.time() - last_trade[sym] < COOLDOWN_SYMBOL:
                 continue
 
-            # aynı coin açık mı
             if any(p["sym"] == sym for p in positions):
                 continue
 
@@ -208,11 +206,12 @@ while True:
             pnl = ((price-entry)/entry)*100*LEVERAGE if side=="LONG" else ((entry-price)/entry)*100*LEVERAGE
             usdt = ((price-entry)*qty) if side=="LONG" else ((entry-price)*qty)
 
-            # ===== TRAILING (YUMUŞAK) =====
+            # TRAILING
             if pnl > pos["peak"]:
                 pos["peak"] = pnl
 
-            if pnl < -5 or (pos["peak"] > 3 and pnl < pos["peak"] - 4):
+            # EXIT LOGIC (FIXED)
+            if pnl < -5 or (pnl > 2 and pos["peak"] > 3 and pnl < pos["peak"] - 4):
 
                 place_order(sym, "sell" if side=="LONG" else "buy", qty)
 
