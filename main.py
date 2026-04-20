@@ -97,7 +97,7 @@ def features(sym):
     except:
         return None
 
-# ===== SYMBOLS (ÇEŞİTLİLİK) =====
+# ===== SYMBOLS =====
 def symbols():
     try:
         t = exchange.fetch_tickers()
@@ -130,7 +130,7 @@ positions = []
 last_trade = {}
 last_side = {}
 
-send("🤖 V1300 TRUE AI BAŞLADI")
+send("🛡️ V1300 SAFE MODE BAŞLADI")
 
 # ===== LOOP =====
 while True:
@@ -210,8 +210,8 @@ while True:
             if pnl > pos["peak"]:
                 pos["peak"] = pnl
 
-            # EXIT LOGIC (FIXED)
-            if pnl < -5 or (pnl > 2 and pos["peak"] > 3 and pnl < pos["peak"] - 4):
+            # SAFE EXIT
+            if pnl < -3 or (pnl > 2 and pos["peak"] > 2 and pnl < pos["peak"] - 3):
 
                 place_order(sym, "sell" if side=="LONG" else "buy", qty)
 
