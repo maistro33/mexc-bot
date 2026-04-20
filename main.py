@@ -227,7 +227,7 @@ while True:
             if pnl > pos["peak"]:
                 pos["peak"] = pnl
 
-            if pnl < -5 or (pos["peak"] > 3 and pnl < pos["peak"] - 2):
+            if pnl < -5 or (pos["peak"] > 3 and pnl < pos["peak"] - 4):
 
                 place_order(sym, "sell" if side=="LONG" else "buy", qty)
 
