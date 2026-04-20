@@ -10,6 +10,9 @@ MODE = os.getenv("MODE", "PAPER")
 
 COOLDOWN_SYMBOL = 600
 
+CONF_LONG = 0.7
+CONF_SHORT = 0.3
+
 # ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -71,7 +74,7 @@ def train():
         df = pd.DataFrame(data)
         X = df[["momentum","volume","vol_change"]]
         y = df["result"] > 0
-        model = XGBClassifier(n_estimators=50).fit(X, y)
+        model = XGBClassifier(n_estimators=80).fit(X, y)
     except:
         model = None
 
@@ -130,7 +133,7 @@ positions = []
 last_trade = {}
 last_side = {}
 
-send("🛡️ V1300 SAFE MODE BAŞLADI")
+send("🤖 V1400 TRUE AI BAŞLADI")
 
 # ===== LOOP =====
 while True:
@@ -161,10 +164,17 @@ while True:
 
             score = ai_score(f)
 
-            side = "buy" if score > 0.5 else "sell"
-            direction = "LONG" if side == "buy" else "SHORT"
+            # 💣 CONFIDENCE FILTER
+            if score > CONF_LONG:
+                side = "buy"
+                direction = "LONG"
+            elif score < CONF_SHORT:
+                side = "sell"
+                direction = "SHORT"
+            else:
+                continue
 
-            # FLIP ENGELLE
+            # FLIP ENGEL
             if sym in last_side and last_side[sym] != direction:
                 continue
 
