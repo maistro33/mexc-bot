@@ -1,6 +1,5 @@
 import os, time, ccxt, telebot, threading
 import pandas as pd
-import numpy as np
 from openai import OpenAI
 
 # ===== CONFIG =====
@@ -33,12 +32,24 @@ exchange = ccxt.bitget({
 pending = {}
 position = None
 
-# ===== SYMBOL FIX =====
+# ===== SYMBOL FIX (AKILLI) =====
 def fix_symbol(raw):
-    raw = raw.upper()
-    if "/" in raw:
-        return raw
-    return raw + "/USDT:USDT"
+    raw = raw.upper().replace(" ", "")
+
+    options = [
+        raw,
+        raw + "/USDT",
+        raw + "/USDT:USDT"
+    ]
+
+    for sym in options:
+        try:
+            exchange.fetch_ticker(sym)
+            return sym
+        except:
+            continue
+
+    return None
 
 # ===== FEATURES =====
 def features(sym):
@@ -57,7 +68,7 @@ def features(sym):
 # ===== AI ANALYSIS =====
 def ai_analyze(sym, f):
     prompt = f"""
-You are a pro trader.
+You are a professional trader.
 
 Coin: {sym}
 Price: {f['price']}
@@ -75,10 +86,10 @@ Short answer.
         messages=[{"role":"user","content":prompt}],
         temperature=0.4
     )
-    text = res.choices[0].message.content
 
-    # basit parse
+    text = res.choices[0].message.content
     direction = "LONG" if "LONG" in text.upper() else "SHORT"
+
     return text, direction
 
 # ===== AI LIVE =====
@@ -116,11 +127,15 @@ def handle(m):
         raw = txt.split(" ")[1]
         sym = fix_symbol(raw)
 
-        send(f"🔍 analiz ediliyor: {sym}")
+        if not sym:
+            send("❌ coin bulunamadı")
+            return
+
+        send(f"🔍 analiz: {sym}")
 
         f = features(sym)
         if not f:
-            send("❌ veri alınamadı (coin yanlış olabilir)")
+            send("❌ veri alınamadı")
             return
 
         result, direction = ai_analyze(sym, f)
@@ -132,7 +147,7 @@ def handle(m):
 
     # ===== AI COIN =====
     elif txt == "AI":
-        sym = "BTC/USDT:USDT"
+        sym = "BTC/USDT"
 
         f = features(sym)
         result, direction = ai_analyze(sym, f)
@@ -225,5 +240,5 @@ def loop():
 # ===== START =====
 threading.Thread(target=loop, daemon=True).start()
 
-send("💀 V12000 FINAL AKTİF")
+send("💀 V13000 FINAL AKTİF")
 bot.infinity_polling()
