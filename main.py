@@ -181,7 +181,20 @@ def compute_rsi(series, period=14):
 # ===== FEATURES =====
 def features(sym):
     try:
-        df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),columns=["t","o","h","l","c","v"])
+        # ✅ FIX (RAVE ve benzeri coinler için)
+        ohlcv = None
+
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym,"1m",50)
+        except:
+            try:
+                alt = sym.replace(":USDT","")
+                ohlcv = exchange.fetch_ohlcv(alt,"1m",50)
+            except:
+                return None
+
+        df = pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
+
         return {
             "momentum":float(df["c"].iloc[-1]-df["c"].iloc[-3]),
             "volume":float(df["v"].iloc[-1]),
@@ -263,7 +276,6 @@ def close_trade_manual(chat_id):
 
     send("❌ MANUEL KAPANDI")
 
-    # ===== MANUEL LEARNING EKLENDİ =====
     entry = pos["entry"]
 
     pnl = ((price - entry) / entry) * 100 * LEVERAGE \
