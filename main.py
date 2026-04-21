@@ -1,6 +1,5 @@
 import ccxt
 import pandas as pd
-import numpy as np
 import time
 import os
 import requests
@@ -36,18 +35,28 @@ exchange = ccxt.bitget({
 })
 
 # =====================
-# 📩 TELEGRAM (PROXY BYPASS FIX)
+# 📩 TELEGRAM (ULTRA FIX)
 # =====================
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(
+
+        session = requests.Session()
+        session.trust_env = False  # 💀 ENV proxy tamamen kapat
+
+        response = session.post(
             url,
-            data={"chat_id": CHAT_ID, "text": msg},
-            proxies={"http": None, "https": None}  # 💀 FIX
+            data={
+                "chat_id": CHAT_ID,
+                "text": msg
+            },
+            timeout=10
         )
+
+        print("📩 Telegram gönderildi:", response.status_code)
+
     except Exception as e:
-        print("Telegram hata:", e)
+        print("❌ Telegram hata:", e)
 
 # =====================
 # 📊 VERİ ÇEK
@@ -62,7 +71,7 @@ def get_data():
         return None
 
 # =====================
-# 🧠 ANALİZ (DAHA SAĞLAM)
+# 🧠 ANALİZ
 # =====================
 def analyze(df):
     df["ema"] = df["close"].ewm(span=20).mean()
@@ -90,7 +99,6 @@ last_signal = None
 def trade(signal, price, confidence):
     global last_signal
 
-    # aynı sinyali tekrar açma
     if signal == last_signal:
         return
 
@@ -119,7 +127,8 @@ def trade(signal, price, confidence):
 # =====================
 def run():
     print("💀 V13000 FINAL AKTİF")
-    send("🚀 BOT BAŞLADI")
+
+    send("🚀 BOT BAŞLADI")  # 🔥 TEST
 
     while True:
         df = get_data()
@@ -134,7 +143,6 @@ def run():
 
         print(f"🔍 {SYMBOL} → {trend} ({confidence:.2f})")
 
-        # minimum filtre
         if confidence > 10:
             trade(trend, price, confidence)
 
