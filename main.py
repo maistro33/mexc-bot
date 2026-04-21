@@ -20,19 +20,24 @@ def send(msg):
 # ===== OPENAI =====
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ===== EXCHANGE =====
+# ===== EXCHANGE (FIXED) =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
-    "options": {"defaultType": "swap"}
+    "options": {"defaultType": "swap"},
+    "enableRateLimit": True,
+    "rateLimit": 1200
 })
+
+# 🔥 KRİTİK FIX
+exchange.options['fetchOHLCV'] = {'method': 'public'}
 
 # ===== STATE =====
 pending = {}
 position = None
 
-# ===== SYMBOL FIX (SADECE GERÇEK VERİ) =====
+# ===== SYMBOL FIX =====
 def fix_symbol(raw):
     raw = raw.upper().replace(" ", "")
 
@@ -43,19 +48,18 @@ def fix_symbol(raw):
 
     for sym in options:
         try:
-            # 💀 SADECE OHLCV TEST
-            exchange.fetch_ohlcv(sym, "1m", 10)
+            exchange.fetch_ohlcv(sym, "5m", 5)  # 🔥 5m FIX
             return sym
         except:
             continue
 
     return None
 
-# ===== FEATURES (NO FAKE DATA) =====
+# ===== FEATURES (REAL DATA ONLY) =====
 def features(sym):
     try:
         df = pd.DataFrame(
-            exchange.fetch_ohlcv(sym, "1m", 50),
+            exchange.fetch_ohlcv(sym, "5m", 50),  # 🔥 FIX
             columns=["t","o","h","l","c","v"]
         )
 
@@ -69,7 +73,7 @@ def features(sym):
         }
 
     except:
-        return None  # ❗ veri yoksa STOP
+        return None
 
 # ===== AI ANALYSIS =====
 def ai_analyze(sym, f):
@@ -135,14 +139,14 @@ def handle(m):
         sym = fix_symbol(raw)
 
         if not sym:
-            send("❌ Bu coin için gerçek veri yok (trade yapılmaz)")
+            send("❌ Bu coin için veri yok (Bitget sınırlaması)")
             return
 
         send(f"🔍 analiz: {sym}")
 
         f = features(sym)
         if not f:
-            send("❌ veri yok → trade iptal")
+            send("❌ veri çekilemedi")
             return
 
         result, direction = ai_analyze(sym, f)
@@ -156,13 +160,15 @@ def handle(m):
     elif txt == "AI":
         coins = ["BTC","ETH","SOL","XRP"]
 
+        sym = None
         for c in coins:
-            sym = fix_symbol(c)
-            if sym:
+            s = fix_symbol(c)
+            if s:
+                sym = s
                 break
 
         if not sym:
-            send("❌ uygun coin bulunamadı")
+            send("❌ uygun coin yok")
             return
 
         f = features(sym)
@@ -256,5 +262,5 @@ def loop():
 # ===== START =====
 threading.Thread(target=loop, daemon=True).start()
 
-send("💀 V15000 GERÇEK VERİ AKTİF")
+send("💀 V16000 GERÇEK VERİ FIX AKTİF")
 bot.infinity_polling()
