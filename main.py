@@ -2,6 +2,7 @@ import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from openai import OpenAI
 
+# ===== CONFIG =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
@@ -20,6 +21,7 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
+# ===== STATE =====
 positions = []
 last_analysis = {}
 MAX_TRADES = 3
@@ -46,7 +48,8 @@ def save_trade(sym, pnl):
             "Authorization": f"Bearer {SUPA_KEY}",
             "Content-Type": "application/json"
         }
-        requests.post(f"{SUPA_URL}/rest/v1/trades", headers=headers,
+        requests.post(f"{SUPA_URL}/rest/v1/trades",
+                      headers=headers,
                       json={"symbol": sym, "result": pnl})
     except:
         pass
@@ -54,8 +57,10 @@ def save_trade(sym, pnl):
 # ===== DATA =====
 def get_data(sym):
     try:
-        df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),
-                          columns=["t","o","h","l","c","v"])
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
+        if not ohlcv or len(ohlcv) < 10:
+            return None
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
     except:
@@ -64,7 +69,8 @@ def get_data(sym):
 # ===== AI ANALYZE =====
 def analyze(sym, cid):
     df = get_data(sym)
-    if df is None or df.empty:
+    if df is None:
+        send(f"❌ Veri yok: {sym}", cid)
         return
 
     last = df.iloc[-1]
@@ -72,7 +78,7 @@ def analyze(sym, cid):
     signal = "LONG" if trend=="UP" else "SHORT"
     price = float(last["c"])
 
-    prompt = f"{sym} {trend} Türkçe kısa karar ver GIR/BEKLE % ver"
+    prompt = f"{sym} {trend} Türkçe kısa yaz GIR/BEKLE % ver"
 
     try:
         r = client.chat.completions.create(
@@ -106,12 +112,16 @@ def analyze(sym, cid):
 ━━━━━━━━━━━━━━━
 """, cid)
 
-    last_analysis.update({"sym":sym,"signal":signal,"price":price})
+    last_analysis.update({
+        "sym": sym,
+        "signal": signal,
+        "price": price
+    })
 
 # ===== TRADE =====
 def open_trade(cid):
     if len(positions) >= MAX_TRADES:
-        send("⚠️ Max trade dolu", cid)
+        send("⚠️ Max 3 trade", cid)
         return
 
     sym = last_analysis["sym"]
@@ -119,7 +129,6 @@ def open_trade(cid):
     price = last_analysis["price"]
 
     size = 50
-
     sl = price*0.99 if signal=="LONG" else price*1.01
 
     positions.append({
@@ -130,72 +139,81 @@ def open_trade(cid):
         "sl": sl,
         "peak": 0,
         "chat": cid,
-        "last_alert": 0
+        "alert_time": 0,
+        "exit_flag": False,
+        "exit_time": 0
     })
 
     send(f"""
-🚀 <b>TRADE</b>
+🚀 <b>TRADE AÇILDI</b>
 
 📊 {sym}
-📈 {signal}
+📈 {signal} {icon(signal)}
 
-💰 {price}
-💵 {size} USDT
+💰 Entry: {round(price,4)}
+💵 Size: {size} USDT
 🛑 SL: {round(sl,4)}
 """, cid)
 
 # ===== MANAGEMENT =====
 def manage():
-    for p in positions[:]:
-        try:
-            price = exchange.fetch_ticker(p["sym"])["last"]
-        except:
-            continue
+    while True:
+        for p in positions[:]:
+            try:
+                price = exchange.fetch_ticker(p["sym"])["last"]
+            except:
+                continue
 
-        entry = p["entry"]
-        size = p["size"]
+            entry = p["entry"]
+            size = p["size"]
 
-        pnl = (price-entry)*size if p["side"]=="LONG" else (entry-price)*size
-        pct = (pnl/(entry*size))*100
+            pnl = (price-entry)*size if p["side"]=="LONG" else (entry-price)*size
+            pct = (pnl/(entry*size))*100
 
-        p["peak"] = max(p["peak"], pct)
-        cid = p["chat"]
+            p["peak"] = max(p["peak"], pct)
+            cid = p["chat"]
 
-        # TP1
-        if pct > 1 and p["sl"] != entry:
-            p["sl"] = entry
-            send(f"🎯 TP1 {p['sym']} +{round(pnl,2)} USDT\n🛡 SL entry", cid)
+            # TP1
+            if pct > 1 and p["sl"] != entry:
+                p["sl"] = entry
+                send(f"🎯 TP1 {p['sym']} +{round(pnl,2)} USDT\n🛡 SL entry", cid)
 
-        # trailing
-        if pct > 1:
-            new_sl = entry + (p["peak"]/100)*entry*0.5 if p["side"]=="LONG" else entry - (p["peak"]/100)*entry*0.5
-            if (p["side"]=="LONG" and new_sl > p["sl"]) or (p["side"]=="SHORT" and new_sl < p["sl"]):
-                p["sl"] = new_sl
-                send(f"🔼 SL → {round(new_sl,4)}", cid)
+            # trailing
+            if pct > 1:
+                new_sl = entry + (p["peak"]/100)*entry*0.5 if p["side"]=="LONG" else entry - (p["peak"]/100)*entry*0.5
+                if (p["side"]=="LONG" and new_sl > p["sl"]) or (p["side"]=="SHORT" and new_sl < p["sl"]):
+                    p["sl"] = new_sl
+                    send(f"🔼 SL → {round(new_sl,4)}", cid)
 
-        # AI LIVE DECISION
-        df = get_data(p["sym"])
-        if df is None: continue
+            # trend check
+            df = get_data(p["sym"])
+            if df is None:
+                continue
 
-        trend = "UP" if df.iloc[-1]["c"] > df.iloc[-1]["ema"] else "DOWN"
+            trend = "UP" if df.iloc[-1]["c"] > df.iloc[-1]["ema"] else "DOWN"
 
-        now = time.time()
+            now = time.time()
 
-        # risk warning
-        if now - p["last_alert"] > 20:
-            p["last_alert"] = now
+            # risk uyarı
+            if now - p["alert_time"] > 20:
+                p["alert_time"] = now
 
-            if pct > 0:
-                send(f"📊 {p['sym']} +{round(pnl,2)} USDT\n👉 Devam?", cid)
+                if pct > 0:
+                    send(f"📊 {p['sym']} +{round(pnl,2)} USDT\n👉 Devam?", cid)
 
-            if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
-                send(f"⚠️ Trend ters\n👉 Çıkalım mı?", cid)
+                if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
+                    send(f"⚠️ Trend ters {p['sym']}\n👉 Çık?", cid)
+                    p["exit_flag"] = True
+                    p["exit_time"] = now
 
-                # otomatik çıkış (cevap yoksa)
-                time.sleep(10)
-                send(f"🚨 AI ÇIKIŞ {p['sym']} {round(pnl,2)} USDT", cid)
-                save_trade(p["sym"], pnl)
-                positions.remove(p)
+            # non-blocking exit
+            if p["exit_flag"]:
+                if now - p["exit_time"] > 10:
+                    send(f"🚨 AI ÇIKIŞ {p['sym']} {round(pnl,2)} USDT", cid)
+                    save_trade(p["sym"], pnl)
+                    positions.remove(p)
+
+        time.sleep(5)
 
 # ===== SCANNER =====
 def scanner():
@@ -208,11 +226,13 @@ def scanner():
             tickers = exchange.fetch_tickers()
             coins = [c for c in tickers if ":USDT" in c]
 
-            for sym in coins[:50]:
+            for sym in coins[:40]:
                 df = get_data(sym)
-                if df is None: continue
+                if df is None:
+                    continue
 
                 last = df.iloc[-1]
+
                 if last["c"] > df["ema"].iloc[-1]:
                     send(f"""
 💀 <b>FIRSAT</b>
@@ -234,21 +254,18 @@ def handle(msg):
     text = msg.text.lower()
     cid = msg.chat.id
 
+    print("GELEN:", text)
+
     if "analiz" in text:
-        coin = text.split(" ")[0].upper()
-        analyze(coin+"/USDT:USDT", cid)
+        coin = text.replace("analiz","").strip().upper()
+        analyze(coin + "/USDT:USDT", cid)
 
     elif text == "gir":
         open_trade(cid)
 
-# ===== LOOP =====
-def loop():
-    while True:
-        manage()
-        time.sleep(3)
-
-threading.Thread(target=loop, daemon=True).start()
+# ===== THREADS =====
+threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-send("💀 MASTER AI AKTİF")
+send("💀 MASTER AI STABLE AKTİF")
 bot.infinity_polling()
