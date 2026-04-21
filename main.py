@@ -17,7 +17,7 @@ exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
-    "options": {"defaultType": "swap"},
+    "options": {"defaultType":"swap"},
     "enableRateLimit": True
 })
 
@@ -28,17 +28,17 @@ MAX_TRADES = 3
 # ===== UI =====
 def bar(p):
     p = max(0, min(100, p))
-    f = int(p / 10)
-    return "█" * f + "░" * (10 - f)
+    f = int(p/10)
+    return "█"*f + "░"*(10-f)
 
 def icon(sig):
-    return "🟢" if sig == "LONG" else "🔴"
+    return "🟢" if sig=="LONG" else "🔴"
 
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
-    except Exception as e:
-        print("SEND ERROR:", e)
+    except:
+        print(msg)
 
 # ===== SUPABASE =====
 def save_trade(sym, pnl):
@@ -53,10 +53,10 @@ def save_trade(sym, pnl):
         requests.post(f"{SUPA_URL}/rest/v1/trades",
                       headers=headers,
                       json={"symbol": sym, "result": pnl})
-    except Exception as e:
-        print("SUPA ERROR:", e)
+    except:
+        pass
 
-# ===== DATA (RETRY) =====
+# ===== DATA =====
 def get_data(sym):
     for _ in range(3):
         try:
@@ -69,12 +69,11 @@ def get_data(sym):
             df["ema"] = df["c"].ewm(20).mean()
             return df
 
-        except Exception as e:
-            print("DATA ERR:", sym, e)
+        except:
             time.sleep(0.5)
     return None
 
-# ===== AI =====
+# ===== AI ANALYZE =====
 def analyze(sym, cid):
     df = get_data(sym)
     if df is None:
@@ -82,28 +81,46 @@ def analyze(sym, cid):
 
     last = df.iloc[-1]
     trend = "UP" if last["c"] > last["ema"] else "DOWN"
-    signal = "LONG" if trend == "UP" else "SHORT"
+    signal = "LONG" if trend=="UP" else "SHORT"
     price = float(last["c"])
 
     try:
-        prompt = f"{sym} {trend} Türkçe kısa: GIR/BEKLE ve %"
+        prompt = f"""
+Sadece Türkçe yaz.
+
+GÜÇ: %??
+KARAR: GİR veya BEKLE
+
+Coin: {sym}
+Trend: {trend}
+"""
         r = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role":"user","content":prompt}]
         )
         txt = r.choices[0].message.content
-    except Exception as e:
-        print("AI ERR:", e)
-        txt = "BEKLE %50"
+    except:
+        txt = "GÜÇ: %50\nKARAR: BEKLE"
 
     conf = 50
-    if "%" in txt:
-        try:
-            conf = int(''.join(filter(str.isdigit, txt)))
-        except:
-            pass
+    decision = "BEKLE"
 
-    decision = "GİR" if "GIR" in txt.upper() else "BEKLE"
+    for line in txt.splitlines():
+        if "GÜÇ" in line.upper():
+            try:
+                conf = int(line.split("%")[1].strip())
+            except:
+                pass
+        if "KARAR" in line.upper():
+            if "GİR" in line.upper():
+                decision = "GİR"
+
+    conf = max(0, min(conf, 100))
+
+    if conf < 65:
+        decision = "BEKLE"
+
+    status = "✅ GİR" if decision=="GİR" else "⏳ BEKLE"
 
     send(f"""
 💀 <b>AI ANALİZ</b>
@@ -115,20 +132,25 @@ def analyze(sym, cid):
 📊 %{conf} {bar(conf)}
 
 ━━━━━━━━━━━━━━━
-{'✅ GİR' if decision=='GİR' else '⏳ BEKLE'}
+{status}
 ━━━━━━━━━━━━━━━
 """, cid)
 
     last_analysis.update({
         "sym": sym,
         "signal": signal,
-        "price": price
+        "price": price,
+        "conf": conf
     })
 
 # ===== TRADE =====
 def open_trade(cid):
     if len(positions) >= MAX_TRADES:
         send("⚠️ Max trade dolu", cid)
+        return
+
+    if last_analysis.get("conf", 0) < 65:
+        send("⚠️ Güç düşük, işlem açılmaz", cid)
         return
 
     sym = last_analysis["sym"]
@@ -145,7 +167,10 @@ def open_trade(cid):
         "size": size,
         "sl": sl,
         "peak": 0,
-        "chat": cid
+        "chat": cid,
+        "last_ai": 0,
+        "exit_flag": False,
+        "exit_time": 0
     })
 
     send(f"""
@@ -159,7 +184,7 @@ def open_trade(cid):
 🛑 SL: {round(sl,4)}
 """, cid)
 
-# ===== MANAGEMENT =====
+# ===== MANAGEMENT + LIVE AI =====
 def manage():
     while True:
         for p in positions[:]:
@@ -182,16 +207,57 @@ def manage():
                 p["sl"] = entry
                 send(f"🎯 TP1 {p['sym']} +{round(pnl,2)} USDT", cid)
 
-            # trailing
+            # TRAILING
             if pct > 1:
                 new_sl = entry + (p["peak"]/100)*entry*0.5 if p["side"]=="LONG" else entry - (p["peak"]/100)*entry*0.5
                 if (p["side"]=="LONG" and new_sl > p["sl"]) or (p["side"]=="SHORT" and new_sl < p["sl"]):
                     p["sl"] = new_sl
                     send(f"🔼 SL → {round(new_sl,4)}", cid)
 
+            # ===== LIVE AI =====
+            now = time.time()
+
+            if now - p["last_ai"] > 20:
+                p["last_ai"] = now
+
+                df = get_data(p["sym"])
+                if df is None:
+                    continue
+
+                trend = "UP" if df.iloc[-1]["c"] > df.iloc[-1]["ema"] else "DOWN"
+
+                if pct > 0.5:
+                    send(f"""
+📊 {p['sym']}
+
+💰 +{round(pnl,2)} USDT
+📈 Trend: {'Güçlü' if trend=='UP' else 'Zayıf'}
+
+👉 Devam edelim mi?
+""", cid)
+
+                if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
+                    send(f"""
+⚠️ {p['sym']}
+
+Trend ters
+
+👉 Çıkalım mı?
+""", cid)
+
+                    p["exit_flag"] = True
+                    p["exit_time"] = now
+
+            # AUTO EXIT
+            if p["exit_flag"]:
+                if now - p["exit_time"] > 10:
+                    send(f"🚨 AI ÇIKIŞ {p['sym']} {round(pnl,2)} USDT", cid)
+                    save_trade(p["sym"], pnl)
+                    positions.remove(p)
+
         time.sleep(5)
 
-# ===== ULTRA SCANNER =====
+# ===== SMART SCANNER =====
 def scanner():
     while True:
         try:
@@ -199,74 +265,53 @@ def scanner():
 
             pairs = []
             for sym, data in tickers.items():
-
                 if ":USDT" not in sym:
                     continue
-
-                # ağır coinleri çıkar
                 if any(x in sym for x in ["BTC","ETH","XRP","BNB"]):
                     continue
 
                 vol = data.get("quoteVolume", 0)
-
-                if vol and vol > 3_000_000:
+                if vol and vol > 5_000_000:
                     pairs.append((sym, vol))
 
             pairs.sort(key=lambda x: x[1], reverse=True)
-
-            sample = random.sample(pairs[:100], min(25, len(pairs)))
+            sample = random.sample(pairs[:80], min(20, len(pairs)))
 
             for sym, vol in sample:
-
                 df = get_data(sym)
                 if df is None:
                     continue
 
                 price = df["c"].iloc[-1]
+                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 2
+                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
 
-                # ===== VOLUME SPIKE =====
-                vol_now = df["v"].iloc[-1]
-                vol_prev = df["v"].iloc[-5]
-                vol_spike = vol_now > vol_prev * 2
-
-                # ===== MOMENTUM =====
-                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5])
-                momentum = move > price * 0.003
-
-                # ===== WHALE =====
                 whale = False
                 try:
                     ob = exchange.fetch_order_book(sym, limit=20)
-                    bids = sum([b[1] for b in ob["bids"]])
-                    asks = sum([a[1] for a in ob["asks"]])
+                    bids = sum(b[1] for b in ob["bids"])
+                    asks = sum(a[1] for a in ob["asks"])
                     whale = bids > asks * 1.5
                 except:
                     pass
 
-                # ===== PUMP DETECTOR =====
-                pump = (df["c"].iloc[-1] > df["c"].iloc[-3] * 1.005)
-
-                if vol_spike and momentum and (whale or pump):
-
+                if whale and vol_spike and move:
                     send(f"""
-💀 <b>ULTRA FIRSAT</b>
+💀 <b>SMART FIRSAT</b>
 
 📊 {sym}
-💰 Vol: {round(vol/1e6,1)}M
+💰 {round(vol/1e6,1)}M
 
-🐋 Whale: {'EVET' if whale else 'YOK'}
+🐋 Whale: EVET
 ⚡ Spike: EVET
-🚀 Pump: {'EVET' if pump else 'YOK'}
 
 👉 analiz yaz
 """, CHAT_ID)
-
                     break
 
-            time.sleep(20)
+            time.sleep(25)
 
-        except Exception as e:
-            print("SCAN ERR:", e)
+        except:
             time.sleep(10)
 
 # ===== TELEGRAM =====
@@ -286,5 +331,5 @@ def handle(msg):
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-send("💀 ULTRA MASTER AI AKTİF")
+send("💀 FINAL AI AKTİF")
 bot.infinity_polling()
