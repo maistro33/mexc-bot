@@ -1,4 +1,4 @@
-import os, time, ccxt, telebot, threading, requests
+import os, time, ccxt, telebot, threading, requests, random
 import pandas as pd
 from openai import OpenAI
 
@@ -6,9 +6,6 @@ from openai import OpenAI
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-
-SUPA_URL = os.getenv("SUPABASE_URL")
-SUPA_KEY = os.getenv("SUPABASE_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 client = OpenAI(api_key=OPENAI_KEY)
@@ -21,7 +18,6 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-# ===== STATE =====
 positions = []
 last_analysis = {}
 MAX_TRADES = 3
@@ -40,27 +36,13 @@ def send(msg, cid=None):
     except:
         print(msg)
 
-# ===== SUPABASE =====
-def save_trade(sym, pnl):
-    try:
-        headers = {
-            "apikey": SUPA_KEY,
-            "Authorization": f"Bearer {SUPA_KEY}",
-            "Content-Type": "application/json"
-        }
-        requests.post(f"{SUPA_URL}/rest/v1/trades",
-                      headers=headers,
-                      json={"symbol": sym, "result": pnl})
-    except:
-        pass
-
 # ===== DATA =====
 def get_data(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
-        if not ohlcv or len(ohlcv) < 10:
+        df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),
+                          columns=["t","o","h","l","c","v"])
+        if len(df) < 20:
             return None
-        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
     except:
@@ -78,21 +60,29 @@ def analyze(sym, cid):
     signal = "LONG" if trend=="UP" else "SHORT"
     price = float(last["c"])
 
-    prompt = f"{sym} {trend} Türkçe kısa yaz GIR/BEKLE % ver"
-
     try:
+        prompt = f"""
+Coin: {sym}
+Trend: {trend}
+
+Türkçe kısa yaz:
+GIR veya BEKLE
+Güç yüzdesi ver
+"""
         r = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role":"user","content":prompt}]
         )
         txt = r.choices[0].message.content
-    except:
-        txt = "GIR %60"
+        print("AI:", txt)
+    except Exception as e:
+        print("AI ERROR:", e)
+        txt = "BEKLE %50"
 
-    conf = 60
+    conf = 50
     if "%" in txt:
         try:
-            conf = int(txt.split("%")[1][:2])
+            conf = int(''.join(filter(str.isdigit, txt)))
         except:
             pass
 
@@ -138,20 +128,17 @@ def open_trade(cid):
         "size": size,
         "sl": sl,
         "peak": 0,
-        "chat": cid,
-        "alert_time": 0,
-        "exit_flag": False,
-        "exit_time": 0
+        "chat": cid
     })
 
     send(f"""
-🚀 <b>TRADE AÇILDI</b>
+🚀 <b>TRADE</b>
 
 📊 {sym}
 📈 {signal} {icon(signal)}
 
-💰 Entry: {round(price,4)}
-💵 Size: {size} USDT
+💰 {round(price,4)}
+💵 {size} USDT
 🛑 SL: {round(sl,4)}
 """, cid)
 
@@ -173,79 +160,54 @@ def manage():
             p["peak"] = max(p["peak"], pct)
             cid = p["chat"]
 
-            # TP1
             if pct > 1 and p["sl"] != entry:
                 p["sl"] = entry
-                send(f"🎯 TP1 {p['sym']} +{round(pnl,2)} USDT\n🛡 SL entry", cid)
-
-            # trailing
-            if pct > 1:
-                new_sl = entry + (p["peak"]/100)*entry*0.5 if p["side"]=="LONG" else entry - (p["peak"]/100)*entry*0.5
-                if (p["side"]=="LONG" and new_sl > p["sl"]) or (p["side"]=="SHORT" and new_sl < p["sl"]):
-                    p["sl"] = new_sl
-                    send(f"🔼 SL → {round(new_sl,4)}", cid)
-
-            # trend check
-            df = get_data(p["sym"])
-            if df is None:
-                continue
-
-            trend = "UP" if df.iloc[-1]["c"] > df.iloc[-1]["ema"] else "DOWN"
-
-            now = time.time()
-
-            # risk uyarı
-            if now - p["alert_time"] > 20:
-                p["alert_time"] = now
-
-                if pct > 0:
-                    send(f"📊 {p['sym']} +{round(pnl,2)} USDT\n👉 Devam?", cid)
-
-                if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
-                    send(f"⚠️ Trend ters {p['sym']}\n👉 Çık?", cid)
-                    p["exit_flag"] = True
-                    p["exit_time"] = now
-
-            # non-blocking exit
-            if p["exit_flag"]:
-                if now - p["exit_time"] > 10:
-                    send(f"🚨 AI ÇIKIŞ {p['sym']} {round(pnl,2)} USDT", cid)
-                    save_trade(p["sym"], pnl)
-                    positions.remove(p)
+                send(f"🎯 TP1 {p['sym']} +{round(pnl,2)} USDT", cid)
 
         time.sleep(5)
 
-# ===== SCANNER =====
+# ===== SMART SCANNER =====
 def scanner():
     while True:
         try:
-            if len(positions) >= MAX_TRADES:
-                time.sleep(10)
-                continue
-
             tickers = exchange.fetch_tickers()
-            coins = [c for c in tickers if ":USDT" in c]
 
-            for sym in coins[:40]:
+            # 🔥 TOP VOLUME + RANDOM
+            pairs = [(s, x['quoteVolume']) for s,x in tickers.items()
+                     if ":USDT" in s and x.get('quoteVolume')]
+
+            pairs.sort(key=lambda x: x[1], reverse=True)
+
+            # BTC ETH XRP çıkar
+            filtered = [p[0] for p in pairs if not any(x in p[0] for x in ["BTC","ETH","XRP"])]
+
+            sample = random.sample(filtered[:100], min(20, len(filtered)))
+
+            for sym in sample:
                 df = get_data(sym)
                 if df is None:
                     continue
 
                 last = df.iloc[-1]
 
-                if last["c"] > df["ema"].iloc[-1]:
+                # 🔥 VOLATILITY + TREND
+                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5])
+
+                if move > df["c"].iloc[-1]*0.002:
                     send(f"""
 💀 <b>FIRSAT</b>
 
 📊 {sym}
-📈 LONG
+📈 HAREKET VAR
 
 👉 analiz yaz
 """, CHAT_ID)
                     break
 
-            time.sleep(30)
-        except:
+            time.sleep(20)
+
+        except Exception as e:
+            print("SCAN ERR:", e)
             time.sleep(10)
 
 # ===== TELEGRAM =====
@@ -253,8 +215,6 @@ def scanner():
 def handle(msg):
     text = msg.text.lower()
     cid = msg.chat.id
-
-    print("GELEN:", text)
 
     if "analiz" in text:
         coin = text.replace("analiz","").strip().upper()
@@ -267,5 +227,5 @@ def handle(msg):
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-send("💀 MASTER AI STABLE AKTİF")
+send("💀 MASTER AI FIXED AKTİF")
 bot.infinity_polling()
