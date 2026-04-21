@@ -1,7 +1,39 @@
-import os, time, ccxt, requests, telebot, random
+import os, time, ccxt, requests, telebot, random, threading
 import pandas as pd
 import numpy as np
 from rl_agent import DQNAgent
+from openai import OpenAI
+
+# ===== CHAT AI =====
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+def chat_ai(sym, f, confidence, action):
+    try:
+        direction = "LONG" if action==1 else "SHORT" if action==2 else "WAIT"
+
+        prompt = f"""
+You are a professional crypto trader.
+
+Coin: {sym}
+Trend: {"UP" if f["trend"]==1 else "DOWN"}
+RSI: {f["rsi"]}
+Volume: {f["volume"]}
+Momentum: {f["momentum"]}
+Confidence: {confidence}
+Decision: {direction}
+
+Explain briefly like a human trader.
+"""
+
+        res = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.7
+        )
+        return res.choices[0].message.content
+
+    except Exception as e:
+        return f"AI error: {e}"
 
 # ===== CONFIG =====
 LEVERAGE = 10
@@ -24,6 +56,51 @@ def send(msg):
     except:
         print(msg)
 
+# ===== INTERACTIVE MEMORY =====
+user_last_analysis = {}
+
+# ===== TELEGRAM THREAD =====
+def telegram_loop():
+    if not bot:
+        return
+
+    @bot.message_handler(func=lambda m: True)
+    def handle_message(message):
+        text = message.text.upper()
+
+        if "ANALIZ" in text:
+            try:
+                sym = text.split(" ")[0] + "/USDT:USDT"
+                f = features(sym)
+                if not f:
+                    send("❌ Veri yok")
+                    return
+
+                state = make_state(f)
+                action = agent.act(state)
+                confidence = get_confidence(state)
+
+                reply = chat_ai(sym, f, confidence, action)
+                send(reply)
+
+                user_last_analysis[message.chat.id] = {
+                    "sym": sym,
+                    "features": f,
+                    "confidence": confidence,
+                    "action": action
+                }
+
+            except Exception as e:
+                send(f"Hata: {e}")
+
+        elif text == "GIR":
+            open_trade_manual(message.chat.id)
+
+        elif text == "KAPAT":
+            close_trade_manual(message.chat.id)
+
+    bot.infinity_polling()
+
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
@@ -45,12 +122,8 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 def load_trades():
     try:
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}"
-        }
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/trades?select=*", headers=headers)
-        return r.json()
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+        return requests.get(f"{SUPABASE_URL}/rest/v1/trades?select=*", headers=headers).json()
     except:
         return []
 
@@ -62,13 +135,12 @@ def save_trade(data):
             "Content-Type": "application/json"
         }
         requests.post(f"{SUPABASE_URL}/rest/v1/trades", headers=headers, json=data)
-    except Exception as e:
-        print("SUPABASE ERROR:", e)
+    except:
+        pass
 
-# ===== RESET =====
 def load_ai_memory():
     trades = load_trades()
-    send(f"🧠 AI RESET ACTIVE — eski veri kullanılmıyor ({len(trades)} kayıt arşivde)")
+    send(f"🧠 AI RESET ACTIVE — ({len(trades)} kayıt arşivde)")
 
 # ===== STATS =====
 stats = {"total":0,"win":0,"loss":0,"pnl_total":0}
@@ -94,9 +166,7 @@ def btc_trend():
     try:
         ohlcv = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=50)
         df = pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
-        ema9 = df["c"].ewm(span=9).mean().iloc[-1]
-        ema21 = df["c"].ewm(span=21).mean().iloc[-1]
-        return 1 if ema9 > ema21 else 0
+        return 1 if df["c"].ewm(9).mean().iloc[-1] > df["c"].ewm(21).mean().iloc[-1] else 0
     except:
         return 1
 
@@ -111,14 +181,12 @@ def compute_rsi(series, period=14):
 # ===== FEATURES =====
 def features(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(sym,"1m",limit=50)
-        df = pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
-
+        df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),columns=["t","o","h","l","c","v"])
         return {
             "momentum":float(df["c"].iloc[-1]-df["c"].iloc[-3]),
             "volume":float(df["v"].iloc[-1]),
             "vol_change":float(df["v"].iloc[-1]-df["v"].iloc[-3]),
-            "trend":1 if df["c"].ewm(span=9).mean().iloc[-1] > df["c"].ewm(span=21).mean().iloc[-1] else 0,
+            "trend":1 if df["c"].ewm(9).mean().iloc[-1] > df["c"].ewm(21).mean().iloc[-1] else 0,
             "rsi":float(compute_rsi(df["c"]).iloc[-1]),
             "volatility":float(df["h"].iloc[-1]-df["l"].iloc[-1]),
             "fake":1 if (df["h"].iloc[-1]>df["h"].iloc[-5:-1].max() and df["c"].iloc[-1]<df["h"].iloc[-1]*0.995) else 0,
@@ -130,36 +198,17 @@ def features(sym):
 def make_state(f):
     return np.array([[f["momentum"],f["volume"],f["vol_change"],f["trend"],f["rsi"],f["volatility"],f["fake"],f["whale"]]])
 
-# ===== AI CONFIDENCE =====
 def get_confidence(state):
     try:
-        q_values = agent.model.predict(state, verbose=0)[0]
-        return float(np.max(q_values))
+        return float(np.max(agent.model.predict(state, verbose=0)[0]))
     except:
         return 0.5
-
-# ===== SYMBOLS (120 COIN) =====
-def symbols():
-    try:
-        t=exchange.fetch_tickers()
-        pairs=[(s,x["quoteVolume"]) for s,x in t.items() if ":USDT" in s and x["quoteVolume"]]
-        pairs.sort(key=lambda x:x[1],reverse=True)
-
-        top = [p[0] for p in pairs[:120]]
-        filtered = [s for s in top if t[s]["quoteVolume"] > 50000]
-
-        return random.sample(filtered, min(20, len(filtered)))
-    except:
-        return ["BTC/USDT:USDT"]
 
 # ===== PRICE =====
 def get_price(sym):
     try:
         ticker = exchange.fetch_ticker(sym)
-        price = ticker.get("last") or ticker.get("close") or ticker.get("bid") or ticker.get("ask")
-        if not price or price <= 0:
-            return None
-        return price
+        return ticker.get("last") or ticker.get("close")
     except:
         return None
 
@@ -169,18 +218,95 @@ def place_order(sym,side,qty):
         if MODE=="REAL":
             exchange.set_leverage(LEVERAGE,sym)
             return exchange.create_market_order(sym,side,qty)
-        else:
-            return {"ok":True}
+        return {"ok":True}
     except:
         return None
+
+# ===== MANUAL TRADE =====
+def open_trade_manual(chat_id):
+    data = user_last_analysis.get(chat_id)
+    if not data:
+        send("❌ Önce analiz yap")
+        return
+
+    sym = data["sym"]
+    action = data["action"]
+    confidence = data["confidence"]
+
+    if action == 0 or confidence < 0.55:
+        send("❌ Uygun değil")
+        return
+
+    price = get_price(sym)
+    qty = (BASE_USDT*LEVERAGE)/price
+    side = "buy" if action==1 else "sell"
+
+    place_order(sym,side,qty)
+
+    positions.append({
+        "sym":sym,"side":"LONG" if action==1 else "SHORT",
+        "entry":price,"qty":qty,"peak":0,
+        "state":make_state(data["features"]),"action":action
+    })
+
+    send(f"🚀 MANUEL TRADE AÇILDI {sym}")
+
+def close_trade_manual(chat_id):
+    if not positions:
+        send("❌ Pozisyon yok")
+        return
+
+    pos = positions[0]
+    price = get_price(pos["sym"])
+
+    place_order(pos["sym"],"sell" if pos["side"]=="LONG" else "buy",pos["qty"])
+
+    send("❌ MANUEL KAPANDI")
+
+    # ===== MANUEL LEARNING EKLENDİ =====
+    entry = pos["entry"]
+
+    pnl = ((price - entry) / entry) * 100 * LEVERAGE \
+        if pos["side"] == "LONG" else \
+        ((entry - price) / entry) * 100 * LEVERAGE
+
+    agent.remember(pos["state"], pos.get("action",1), pnl, pos["state"], True)
+    agent.train(32)
+
+    save_trade({
+        "momentum": float(pos["state"][0][0]),
+        "volume": float(pos["state"][0][1]),
+        "vol_change": float(pos["state"][0][2]),
+        "trend": float(pos["state"][0][3]),
+        "rsi": float(pos["state"][0][4]),
+        "volatility": float(pos["state"][0][5]),
+        "fake": float(pos["state"][0][6]),
+        "whale": float(pos["state"][0][7]),
+        "result": float(pnl)
+    })
+
+    positions.clear()
+
+# ===== SYMBOLS =====
+def symbols():
+    try:
+        t=exchange.fetch_tickers()
+        pairs=[(s,x["quoteVolume"]) for s,x in t.items() if ":USDT" in s and x["quoteVolume"]]
+        pairs.sort(key=lambda x:x[1],reverse=True)
+        top=[p[0] for p in pairs[:120]]
+        return random.sample(top,min(20,len(top)))
+    except:
+        return ["BTC/USDT:USDT"]
 
 # ===== STATE =====
 positions=[]
 last_trade={}
 symbol_count={}
 
-send("🤖 V3000 PRO AI BAŞLADI")
+send("🤖 V3000 FINAL %100 AKTİF")
 load_ai_memory()
+
+threading.Thread(target=telegram_loop,daemon=True).start()
 
 # ===== LOOP =====
 while True:
@@ -239,88 +365,7 @@ while True:
             symbol_count[sym]=symbol_count.get(sym,0)+1
             last_trade[sym]=time.time()
 
-            send(f"""🚀 TRADE AÇILDI
-
-📊 {sym}
-📈 Yön: {direction}
-🧠 Güven: {round(confidence,2)}
-
-💰 Giriş: {round(price,6)}
-💵 Margin: {BASE_USDT} USDT
-⚡ Kaldıraç: {LEVERAGE}x
-""")
-
-        for pos in positions[:]:
-            sym=pos["sym"]
-            price=get_price(sym)
-            if not price:
-                continue
-
-            entry=pos["entry"]
-            pnl=((price-entry)/entry)*100*LEVERAGE if pos["side"]=="LONG" else ((entry-price)/entry)*100*LEVERAGE
-
-            if pnl>pos["peak"]:
-                pos["peak"]=pnl
-
-            close=False
-
-            if pnl < -4:
-                close = True
-            elif pnl < 1.2:
-                continue
-            elif pos["peak"] > 5 and pnl < pos["peak"] - 3:
-                close = True
-            elif pos["peak"] > 3 and pnl < pos["peak"] - 2:
-                close = True
-
-            if close:
-                place_order(sym,"sell" if pos["side"]=="LONG" else "buy",pos["qty"])
-
-                result_usdt = (price-entry)*pos["qty"] if pos["side"]=="LONG" else (entry-price)*pos["qty"]
-
-                send(f"""❌ TRADE KAPANDI
-
-📊 {sym}
-📈 Yön: {pos["side"]}
-
-💰 Giriş: {round(entry,6)}
-💰 Çıkış: {round(price,6)}
-
-📊 PnL: {round(pnl,2)}%
-💵 Sonuç: {round(result_usdt,3)} USDT {"🟢 KAR" if pnl>0 else "🔴 ZARAR"}
-""")
-
-                stats["total"] += 1
-                stats["pnl_total"] += pnl
-                if pnl > 0:
-                    stats["win"] += 1
-                else:
-                    stats["loss"] += 1
-
-                if stats["total"] % 10 == 0:
-                    send_report()
-
-                agent.remember(pos["state"],pos["action"],pnl,pos["state"],True)
-                agent.train(32)
-
-                save_trade({
-                    "momentum": float(pos["state"][0][0]),
-                    "volume": float(pos["state"][0][1]),
-                    "vol_change": float(pos["state"][0][2]),
-                    "trend": float(pos["state"][0][3]),
-                    "rsi": float(pos["state"][0][4]),
-                    "volatility": float(pos["state"][0][5]),
-                    "fake": float(pos["state"][0][6]),
-                    "whale": float(pos["state"][0][7]),
-                    "result": float(pnl)
-                })
-
-                symbol_count[sym] = max(0, symbol_count.get(sym,1)-1)
-
-                if pnl < 0:
-                    last_trade[sym] = time.time() + 1800
-
-                positions.remove(pos)
+            send(f"🚀 TRADE AÇILDI {sym}")
 
         time.sleep(5)
 
