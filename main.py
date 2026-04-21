@@ -23,7 +23,7 @@ exchange = ccxt.bitget({
 last_analysis = {}
 positions = []
 
-# ===== SEND (FIXED) =====
+# ===== SEND =====
 def send(msg, chat_id=None):
     try:
         if chat_id:
@@ -36,8 +36,11 @@ def send(msg, chat_id=None):
 # ===== DATA =====
 def get_data(sym):
     try:
-        df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),
-                          columns=["t","o","h","l","c","v"])
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
+        if not ohlcv or len(ohlcv) < 10:
+            return None
+
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
     except:
@@ -45,18 +48,21 @@ def get_data(sym):
 
 # ===== STRUCTURE =====
 def structure(df):
-    h=df["h"]; l=df["l"]; last=df.iloc[-1]
-    high=h.iloc[-5:-1].max(); low=l.iloc[-5:-1].min()
+    try:
+        h=df["h"]; l=df["l"]; last=df.iloc[-1]
+        high=h.iloc[-5:-1].max()
+        low=l.iloc[-5:-1].min()
 
-    if last["h"]>high and last["c"]<high: return "FAKE"
-    if last["l"]<low and last["c"]>low: return "FAKE"
-
-    if last["c"]>high: return "UP"
-    if last["c"]<low: return "DOWN"
-    return "NONE"
+        if last["h"]>high and last["c"]<high: return "FAKE"
+        if last["l"]<low and last["c"]>low: return "FAKE"
+        if last["c"]>high: return "UP"
+        if last["c"]<low: return "DOWN"
+        return "NONE"
+    except:
+        return "NONE"
 
 # ===== WHALE =====
-def whale(sym,df):
+def whale(sym):
     try:
         ob=exchange.fetch_order_book(sym,limit=20)
         bids=sum([b[1] for b in ob["bids"]])
@@ -68,29 +74,33 @@ def whale(sym,df):
 # ===== COIN PARSER =====
 def extract_coin(text):
     words = text.upper().replace("/", " ").split()
-
     for w in words:
         if len(w) >= 3 and w.isalpha():
             return w
-
     return None
 
 # ===== AI ANALYZE =====
 def analyze_coin(sym, chat_id):
     df = get_data(sym)
-    if df is None:
-        send("❌ veri yok", chat_id)
+
+    if df is None or df.empty:
+        send(f"❌ Veri yok: {sym}", chat_id)
         return
 
-    last = df.iloc[-1]
+    try:
+        last = df.iloc[-1]
+    except:
+        send(f"❌ Veri hatası: {sym}", chat_id)
+        return
 
     trend = "UP" if last["c"] > last["ema"] else "DOWN"
     s = structure(df)
-    w = whale(sym, df)
+    w = whale(sym)
 
     decision = "LONG" if trend=="UP" else "SHORT"
+    price = float(last["c"])
 
-    # AI yorum
+    # ===== AI YORUM =====
     try:
         prompt = f"""
 Coin: {sym}
@@ -98,7 +108,7 @@ Trend: {trend}
 Whale: {w}
 Structure: {s}
 
-Explain like a trader. Give entry advice.
+Explain like a professional trader. Give entry advice.
 """
         res = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -108,8 +118,6 @@ Explain like a trader. Give entry advice.
         comment = res.choices[0].message.content
     except:
         comment = "AI yorum alınamadı"
-
-    price = float(last["c"])
 
     last_analysis["sym"] = sym
     last_analysis["signal"] = decision
@@ -122,7 +130,6 @@ Explain like a trader. Give entry advice.
 📈 {decision}
 
 🐋 {w} | 🧠 {s}
-
 💰 {round(price,4)}
 
 {comment}
@@ -165,7 +172,6 @@ def open_trade(chat_id):
 📈 {signal}
 
 💰 {round(price,4)}
-
 🎯 {round(tp,4)}
 🛑 {round(sl,4)}
 """, chat_id)
@@ -201,27 +207,31 @@ def manage():
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
-    text = msg.text.lower()
-    chat_id = msg.chat.id
+    try:
+        text = msg.text.lower()
+        chat_id = msg.chat.id
 
-    print("GELEN:", text)  # DEBUG
+        print("GELEN:", text)
 
-    if "analiz" in text:
-        coin = extract_coin(text)
+        if "analiz" in text:
+            coin = extract_coin(text)
 
-        if not coin:
-            send("❌ coin bulunamadı", chat_id)
-            return
+            if not coin:
+                send("❌ coin bulunamadı", chat_id)
+                return
 
-        sym = coin + "/USDT:USDT"
-        analyze_coin(sym, chat_id)
+            sym = coin + "/USDT:USDT"
+            analyze_coin(sym, chat_id)
 
-    elif text == "gir":
-        open_trade(chat_id)
+        elif text == "gir":
+            open_trade(chat_id)
 
-    elif text == "kapat":
-        positions.clear()
-        send("Tüm işlemler kapatıldı", chat_id)
+        elif text == "kapat":
+            positions.clear()
+            send("Tüm işlemler kapatıldı", chat_id)
+
+    except Exception as e:
+        print("HANDLE HATA:", e)
 
 # ===== LOOP =====
 def loop():
