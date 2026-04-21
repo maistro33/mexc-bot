@@ -2,7 +2,6 @@ import os, time, ccxt, telebot, threading
 import pandas as pd
 from openai import OpenAI
 
-# ===== CONFIG =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
@@ -10,7 +9,6 @@ OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 bot = telebot.TeleBot(TOKEN)
 client = OpenAI(api_key=OPENAI_KEY)
 
-# ===== EXCHANGE =====
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
@@ -19,135 +17,84 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-# ===== STATE =====
-last_analysis = {}
 positions = []
+last_analysis = {}
 
-# ===== SEND =====
 def send(msg, chat_id=None):
     try:
-        if chat_id:
-            bot.send_message(chat_id, msg, parse_mode="HTML")
-        else:
-            bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+        bot.send_message(chat_id or CHAT_ID, msg)
     except:
         print(msg)
 
-# ===== DATA =====
 def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
-        if not ohlcv or len(ohlcv) < 10:
-            return None
-
+        if not ohlcv: return None
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
     except:
         return None
 
-# ===== STRUCTURE =====
-def structure(df):
-    try:
-        h=df["h"]; l=df["l"]; last=df.iloc[-1]
-        high=h.iloc[-5:-1].max()
-        low=l.iloc[-5:-1].min()
-
-        if last["h"]>high and last["c"]<high: return "FAKE"
-        if last["l"]<low and last["c"]>low: return "FAKE"
-        if last["c"]>high: return "UP"
-        if last["c"]<low: return "DOWN"
-        return "NONE"
-    except:
-        return "NONE"
-
-# ===== WHALE =====
-def whale(sym):
-    try:
-        ob=exchange.fetch_order_book(sym,limit=20)
-        bids=sum([b[1] for b in ob["bids"]])
-        asks=sum([a[1] for a in ob["asks"]])
-        return "BUY" if bids>asks else "SELL"
-    except:
-        return "NEUTRAL"
-
-# ===== COIN PARSER =====
-def extract_coin(text):
-    words = text.upper().replace("/", " ").split()
-    for w in words:
-        if len(w) >= 3 and w.isalpha():
-            return w
-    return None
-
-# ===== AI ANALYZE =====
-def analyze_coin(sym, chat_id):
+def analyze(sym, chat_id):
     df = get_data(sym)
-
-    if df is None or df.empty:
-        send(f"❌ Veri yok: {sym}", chat_id)
+    if df is None:
+        send("❌ Veri yok", chat_id)
         return
 
-    try:
-        last = df.iloc[-1]
-    except:
-        send(f"❌ Veri hatası: {sym}", chat_id)
-        return
-
+    last = df.iloc[-1]
     trend = "UP" if last["c"] > last["ema"] else "DOWN"
-    s = structure(df)
-    w = whale(sym)
-
     decision = "LONG" if trend=="UP" else "SHORT"
     price = float(last["c"])
 
-    # ===== AI YORUM =====
-    try:
-        prompt = f"""
+    prompt = f"""
 Coin: {sym}
 Trend: {trend}
-Whale: {w}
-Structure: {s}
 
-Explain like a professional trader. Give entry advice.
+Türkçe kısa yaz.
+GIR / BEKLE yaz.
+Güç yüzdesi ver.
 """
+
+    try:
         res = client.chat.completions.create(
             model="gpt-4.1-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.7
+            messages=[{"role":"user","content":prompt}]
         )
         comment = res.choices[0].message.content
     except:
-        comment = "AI yorum alınamadı"
+        comment = "AI hata"
 
-    last_analysis["sym"] = sym
-    last_analysis["signal"] = decision
-    last_analysis["price"] = price
+    last_analysis["sym"]=sym
+    last_analysis["signal"]=decision
+    last_analysis["price"]=price
 
     send(f"""
-💀 <b>AI ANALİZ</b>
+💀 AI ANALİZ
 
-📊 {sym}
-📈 {decision}
-
-🐋 {w} | 🧠 {s}
-💰 {round(price,4)}
+{sym}
+{decision}
+{price}
 
 {comment}
 
-👉 'gir' yaz
+👉 gir
 """, chat_id)
 
-# ===== TRADE =====
 def open_trade(chat_id):
     if not last_analysis:
-        send("❌ önce analiz yap", chat_id)
+        send("Analiz yok", chat_id)
         return
 
     sym = last_analysis["sym"]
     signal = last_analysis["signal"]
     price = last_analysis["price"]
 
-    if signal == "LONG":
+    margin = 5
+    leverage = 10
+    size = margin * leverage
+
+    if signal=="LONG":
         tp = price * 1.01
         sl = price * 0.99
     else:
@@ -158,25 +105,24 @@ def open_trade(chat_id):
         "sym": sym,
         "side": signal,
         "entry": price,
+        "size": size,
         "tp": tp,
         "sl": sl,
         "peak": 0,
-        "tp1": False,
-        "chat_id": chat_id
+        "chat_id": chat_id,
+        "last_alert": 0
     })
 
     send(f"""
-💀 <b>TRADE AÇILDI</b>
+💀 TRADE AÇILDI
 
-📊 {sym}
-📈 {signal}
+{sym} {signal}
+Entry: {price}
 
-💰 {round(price,4)}
-🎯 {round(tp,4)}
-🛑 {round(sl,4)}
+TP: {tp}
+SL: {sl}
 """, chat_id)
 
-# ===== MANAGEMENT =====
 def manage():
     for p in positions[:]:
         try:
@@ -185,64 +131,63 @@ def manage():
             continue
 
         entry = p["entry"]
+        size = p["size"]
 
-        pnl = ((price-entry)/entry)*100 if p["side"]=="LONG" else ((entry-price)/entry)*100
-        p["peak"] = max(p["peak"], pnl)
+        pnl = (price-entry)*size if p["side"]=="LONG" else (entry-price)*size
+        pnl_pct = (pnl/(entry*size))*100
+
+        p["peak"] = max(p["peak"], pnl_pct)
 
         chat_id = p["chat_id"]
 
-        if not p["tp1"] and pnl > 1:
-            p["tp1"] = True
-            send(f"🎯 TP1 {p['sym']} %{round(pnl,2)}", chat_id)
+        # TP1
+        if pnl_pct > 1 and p["sl"] != entry:
+            p["sl"] = entry
+            send(f"🎯 TP1 geldi\n🛡 SL girişe çekildi\n💰 {round(pnl,2)} USDT", chat_id)
 
-        if pnl < -1:
-            send(f"❌ SL {p['sym']} %{round(pnl,2)}", chat_id)
-            positions.remove(p)
-            continue
+        # TRAILING
+        if pnl_pct > 1:
+            new_sl = entry + (p["peak"]/100)*entry*0.5 if p["side"]=="LONG" else entry - (p["peak"]/100)*entry*0.5
+            if (p["side"]=="LONG" and new_sl > p["sl"]) or (p["side"]=="SHORT" and new_sl < p["sl"]):
+                p["sl"] = new_sl
+                send(f"🔼 SL güncellendi: {round(new_sl,4)}", chat_id)
 
-        if p["tp1"] and pnl < p["peak"] - 0.5:
-            send(f"📊 EXIT {p['sym']} %{round(pnl,2)}", chat_id)
-            positions.remove(p)
+        # RISK ANALYSIS
+        df = get_data(p["sym"])
+        if df is None: continue
 
-# ===== TELEGRAM =====
-@bot.message_handler(func=lambda m: True)
+        last = df.iloc[-1]
+        trend = "UP" if last["c"] > last["ema"] else "DOWN"
+
+        now = time.time()
+
+        # TEHLİKE
+        if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
+            if now - p["last_alert"] > 10:
+                p["last_alert"] = now
+                send(f"🚨 Trend ters! Çıkılıyor\n💰 {round(pnl,2)} USDT", chat_id)
+                positions.remove(p)
+
 def handle(msg):
-    try:
-        text = msg.text.lower()
-        chat_id = msg.chat.id
+    text = msg.text.lower()
+    chat_id = msg.chat.id
 
-        print("GELEN:", text)
+    if "analiz" in text:
+        coin = text.split(" ")[0].upper()
+        sym = coin + "/USDT:USDT"
+        analyze(sym, chat_id)
 
-        if "analiz" in text:
-            coin = extract_coin(text)
+    elif text == "gir":
+        open_trade(chat_id)
 
-            if not coin:
-                send("❌ coin bulunamadı", chat_id)
-                return
+bot.message_handler(func=lambda m: True)(handle)
 
-            sym = coin + "/USDT:USDT"
-            analyze_coin(sym, chat_id)
-
-        elif text == "gir":
-            open_trade(chat_id)
-
-        elif text == "kapat":
-            positions.clear()
-            send("Tüm işlemler kapatıldı", chat_id)
-
-    except Exception as e:
-        print("HANDLE HATA:", e)
-
-# ===== LOOP =====
 def loop():
     while True:
-        try:
-            manage()
-            time.sleep(5)
-        except:
-            time.sleep(5)
+        manage()
+        time.sleep(3)
 
 threading.Thread(target=loop, daemon=True).start()
 
-send("💀 AI CHAT MODE AKTİF")
+send("💀 AI TRADER AKTİF")
 bot.infinity_polling()
