@@ -1,5 +1,6 @@
 import os, time, ccxt, telebot
 import pandas as pd
+import numpy as np
 
 # ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -10,12 +11,11 @@ bot = telebot.TeleBot(TOKEN) if TOKEN else None
 def send(msg):
     try:
         if bot and CHAT_ID:
-            bot.send_message(CHAT_ID, msg)
-            print("📩 gönderildi")
+            bot.send_message(CHAT_ID, msg, parse_mode="HTML")
         else:
-            print("Telegram yok:", msg)
-    except Exception as e:
-        print("Telegram hata:", e)
+            print(msg)
+    except:
+        print(msg)
 
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
@@ -26,99 +26,196 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-SYMBOL = "BTC/USDT:USDT"
+# ===== MULTI COIN =====
+BLACKLIST = ["BTC/USDT:USDT","ETH/USDT:USDT","XRP/USDT:USDT"]
+
+def get_symbols():
+    try:
+        t = exchange.fetch_tickers()
+        pairs = [(s,x["quoteVolume"]) for s,x in t.items()
+                 if ":USDT" in s and s not in BLACKLIST and x["quoteVolume"]]
+
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        return [p[0] for p in pairs[:20]]
+    except:
+        return ["BTC/USDT:USDT"]
+
+# ===== RSI =====
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
 
 # ===== DATA =====
-def get_data():
+def get_data(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(SYMBOL, "5m", limit=50)
-
-        if not ohlcv or len(ohlcv) == 0:
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
+        if not ohlcv:
             return None
 
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-
-        if len(df) < 5:
+        if len(df) < 20:
             return None
 
-        return df
+        df["ema"] = df["c"].ewm(span=20).mean()
+        df["rsi"] = compute_rsi(df["c"])
 
-    except Exception as e:
-        print("Veri hata:", e)
+        return df
+    except:
         return None
 
-# ===== ANALİZ (CRASH FIX) =====
-def analyze(df):
+# ===== 🐋 WHALE =====
+def whale_signal(sym, df):
     try:
-        if df is None or len(df) < 5:
-            return None, None
+        ob = exchange.fetch_order_book(sym, limit=20)
 
-        df["ema"] = df["c"].ewm(span=20).mean()
+        bids = sum([b[1] for b in ob["bids"]])
+        asks = sum([a[1] for a in ob["asks"]])
 
+        ratio = bids / (asks + 1e-9)
+
+        # volume spike
+        vol_spike = df["v"].iloc[-1] > df["v"].iloc[-3:].mean() * 2
+
+        if ratio > 1.2 and vol_spike:
+            return "BUY"
+        elif ratio < 0.8 and vol_spike:
+            return "SELL"
+        else:
+            return "NEUTRAL"
+    except:
+        return "NEUTRAL"
+
+# ===== AI ANALYZE =====
+def analyze(sym, df):
+    try:
         last = df.iloc[-1]
 
-        trend = "LONG" if last["c"] > last["ema"] else "SHORT"
-        price = float(last["c"])
+        trend_up = last["c"] > last["ema"]
+        rsi = last["rsi"]
 
-        return trend, price
+        if trend_up and rsi < 70:
+            signal = "LONG"
+        elif not trend_up and rsi > 30:
+            signal = "SHORT"
+        else:
+            return None, None, None
 
-    except Exception as e:
-        print("Analyze hata:", e)
-        return None, None
+        whale = whale_signal(sym, df)
 
-# ===== TRADE =====
-last_signal = None
+        # 🐋 FILTER
+        if signal == "LONG" and whale != "BUY":
+            return None, None, None
 
-def check_trade(signal, price):
-    global last_signal
+        if signal == "SHORT" and whale != "SELL":
+            return None, None, None
 
-    if signal is None:
-        return
+        volatility = (last["h"] - last["l"]) / last["c"]
+        confidence = volatility * 10000
 
-    if signal == last_signal:
-        return
+        # whale boost
+        if whale != "NEUTRAL":
+            confidence += 5
 
-    last_signal = signal
+        return signal, float(last["c"]), confidence
 
-    msg = f"""
-💀 TRADE
+    except:
+        return None, None, None
 
-📊 {SYMBOL}
+# ===== TRADE STATE =====
+last_signal = {}
+positions = []
+
+# ===== OPEN TRADE =====
+def open_trade(sym, signal, price, conf):
+    positions.append({
+        "sym": sym,
+        "side": signal,
+        "entry": price,
+        "peak": 0,
+        "tp1_hit": False
+    })
+
+    send(f"""
+💀 <b>AI + WHALE TRADE</b>
+
+📊 {sym}
 📈 {signal}
-💰 {price}
-"""
-    print(msg)
-    send(msg)
+💰 {round(price,4)}
+
+🐋 Onaylandı
+📊 Güç: %{round(conf,2)}
+
+🎯 TP1: {round(price*1.01,4)}
+🛑 SL: {round(price*0.99,4)}
+""")
+
+# ===== TRADE MANAGEMENT =====
+def manage_positions():
+    for pos in positions[:]:
+        price = exchange.fetch_ticker(pos["sym"])["last"]
+        entry = pos["entry"]
+
+        pnl = ((price - entry) / entry) * 100 if pos["side"] == "LONG" \
+            else ((entry - price) / entry) * 100
+
+        pos["peak"] = max(pos["peak"], pnl)
+
+        if not pos["tp1_hit"] and pnl > 1:
+            pos["tp1_hit"] = True
+            send(f"🎯 TP1 {pos['sym']} → %{round(pnl,2)}")
+
+        if not pos["tp1_hit"] and pnl < -1:
+            send(f"❌ SL {pos['sym']} → %{round(pnl,2)}")
+            positions.remove(pos)
+            continue
+
+        if pos["tp1_hit"] and pnl < pos["peak"] - 0.5:
+            send(f"📊 EXIT {pos['sym']} → %{round(pnl,2)}")
+            positions.remove(pos)
+
+# ===== TRADE CHECK =====
+def check_trade(sym, signal, price, conf):
+    if signal is None or conf < 5:
+        return
+
+    if sym in last_signal and last_signal[sym] == signal:
+        return
+
+    last_signal[sym] = signal
+
+    if not any(p["sym"] == sym for p in positions):
+        open_trade(sym, signal, price, conf)
 
 # ===== MAIN =====
 def run():
-    print("💀 BOT AKTİF")
+    send("💀 AI + WHALE AKTİF")
 
     while True:
         try:
-            df = get_data()
+            manage_positions()
 
-            if df is None:
-                print("❌ veri yok → bekleniyor")
-                time.sleep(10)
-                continue
+            for sym in get_symbols():
+                df = get_data(sym)
+                if df is None:
+                    continue
 
-            signal, price = analyze(df)
+                signal, price, conf = analyze(sym, df)
+                if signal is None:
+                    continue
 
-            if signal is None:
-                print("❌ analiz yok")
-                time.sleep(5)
-                continue
+                print("🔍", sym, signal, conf)
 
-            print("🔍", signal, price)
+                check_trade(sym, signal, price, conf)
 
-            check_trade(signal, price)
+                time.sleep(1)
 
-            time.sleep(20)
-
-        except Exception as e:
-            print("💀 CRASH ENGELLENDİ:", e)
             time.sleep(5)
 
-# ===== START =====
+        except Exception as e:
+            print("ERR:", e)
+            time.sleep(5)
+
 run()
