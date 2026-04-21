@@ -23,10 +23,13 @@ exchange = ccxt.bitget({
 last_analysis = {}
 positions = []
 
-# ===== SEND =====
-def send(msg):
+# ===== SEND (FIXED) =====
+def send(msg, chat_id=None):
     try:
-        bot.send_message(CHAT_ID, msg, parse_mode="HTML")
+        if chat_id:
+            bot.send_message(chat_id, msg, parse_mode="HTML")
+        else:
+            bot.send_message(CHAT_ID, msg, parse_mode="HTML")
     except:
         print(msg)
 
@@ -62,7 +65,7 @@ def whale(sym,df):
     except:
         return "NEUTRAL"
 
-# ===== COIN PARSER (FIX) =====
+# ===== COIN PARSER =====
 def extract_coin(text):
     words = text.upper().replace("/", " ").split()
 
@@ -73,10 +76,10 @@ def extract_coin(text):
     return None
 
 # ===== AI ANALYZE =====
-def analyze_coin(sym):
+def analyze_coin(sym, chat_id):
     df = get_data(sym)
     if df is None:
-        send("❌ veri yok")
+        send("❌ veri yok", chat_id)
         return
 
     last = df.iloc[-1]
@@ -95,7 +98,7 @@ Trend: {trend}
 Whale: {w}
 Structure: {s}
 
-Explain like a short-term crypto trader. Give entry opinion.
+Explain like a trader. Give entry advice.
 """
         res = client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -125,12 +128,12 @@ Explain like a short-term crypto trader. Give entry opinion.
 {comment}
 
 👉 'gir' yaz
-""")
+""", chat_id)
 
 # ===== TRADE =====
-def open_trade():
+def open_trade(chat_id):
     if not last_analysis:
-        send("❌ önce analiz yap")
+        send("❌ önce analiz yap", chat_id)
         return
 
     sym = last_analysis["sym"]
@@ -151,7 +154,8 @@ def open_trade():
         "tp": tp,
         "sl": sl,
         "peak": 0,
-        "tp1": False
+        "tp1": False,
+        "chat_id": chat_id
     })
 
     send(f"""
@@ -164,7 +168,7 @@ def open_trade():
 
 🎯 {round(tp,4)}
 🛑 {round(sl,4)}
-""")
+""", chat_id)
 
 # ===== MANAGEMENT =====
 def manage():
@@ -179,40 +183,45 @@ def manage():
         pnl = ((price-entry)/entry)*100 if p["side"]=="LONG" else ((entry-price)/entry)*100
         p["peak"] = max(p["peak"], pnl)
 
+        chat_id = p["chat_id"]
+
         if not p["tp1"] and pnl > 1:
             p["tp1"] = True
-            send(f"🎯 TP1 {p['sym']} %{round(pnl,2)}")
+            send(f"🎯 TP1 {p['sym']} %{round(pnl,2)}", chat_id)
 
         if pnl < -1:
-            send(f"❌ SL {p['sym']} %{round(pnl,2)}")
+            send(f"❌ SL {p['sym']} %{round(pnl,2)}", chat_id)
             positions.remove(p)
             continue
 
         if p["tp1"] and pnl < p["peak"] - 0.5:
-            send(f"📊 EXIT {p['sym']} %{round(pnl,2)}")
+            send(f"📊 EXIT {p['sym']} %{round(pnl,2)}", chat_id)
             positions.remove(p)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
     text = msg.text.lower()
+    chat_id = msg.chat.id
+
+    print("GELEN:", text)  # DEBUG
 
     if "analiz" in text:
         coin = extract_coin(text)
 
         if not coin:
-            send("❌ coin bulunamadı")
+            send("❌ coin bulunamadı", chat_id)
             return
 
         sym = coin + "/USDT:USDT"
-        analyze_coin(sym)
+        analyze_coin(sym, chat_id)
 
     elif text == "gir":
-        open_trade()
+        open_trade(chat_id)
 
     elif text == "kapat":
         positions.clear()
-        send("Tüm işlemler kapatıldı")
+        send("Tüm işlemler kapatıldı", chat_id)
 
 # ===== LOOP =====
 def loop():
