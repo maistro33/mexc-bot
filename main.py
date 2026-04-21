@@ -33,6 +33,13 @@ exchange = ccxt.bitget({
 pending = {}
 position = None
 
+# ===== SYMBOL FIX =====
+def fix_symbol(raw):
+    raw = raw.upper()
+    if "/" in raw:
+        return raw
+    return raw + "/USDT:USDT"
+
 # ===== FEATURES =====
 def features(sym):
     try:
@@ -41,7 +48,6 @@ def features(sym):
 
         return {
             "price": float(df["c"].iloc[-1]),
-            "rsi": float(50),
             "trend": int(df["c"].ewm(9).mean().iloc[-1] > df["c"].ewm(21).mean().iloc[-1]),
             "volume": float(df["v"].iloc[-1])
         }
@@ -51,17 +57,17 @@ def features(sym):
 # ===== AI ANALYSIS =====
 def ai_analyze(sym, f):
     prompt = f"""
-You are a professional trader.
+You are a pro trader.
 
 Coin: {sym}
 Price: {f['price']}
 Trend: {"UP" if f["trend"]==1 else "DOWN"}
-Volume: {f['volume']}
 
 Give:
-1. LONG or SHORT
-2. Confidence (0-1)
-3. TP and SL suggestion
+Direction: LONG or SHORT
+Confidence: 0-1
+TP and SL
+
 Short answer.
 """
     res = client.chat.completions.create(
@@ -69,24 +75,23 @@ Short answer.
         messages=[{"role":"user","content":prompt}],
         temperature=0.4
     )
-    return res.choices[0].message.content
+    text = res.choices[0].message.content
 
-# ===== AI LIVE THINK =====
+    # basit parse
+    direction = "LONG" if "LONG" in text.upper() else "SHORT"
+    return text, direction
+
+# ===== AI LIVE =====
 def ai_live(sym, pnl):
-    prompt = f"""
-Trade running.
-
-Coin: {sym}
-PnL: {pnl} USDT
-
-Should we continue or exit?
-Short answer.
-"""
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role":"user","content":prompt}]
-    )
-    return res.choices[0].message.content
+    try:
+        prompt = f"PnL: {pnl} USDT. Continue or exit?"
+        res = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role":"user","content":prompt}]
+        )
+        return res.choices[0].message.content
+    except:
+        return ""
 
 # ===== PRICE =====
 def price(sym):
@@ -106,55 +111,60 @@ def handle(m):
 
     txt = m.text.upper()
 
-    # ===== MANUEL ANALİZ =====
+    # ===== ANALIZ =====
     if "ANALIZ" in txt:
-        sym = txt.split(" ")[1] + "/USDT:USDT"
+        raw = txt.split(" ")[1]
+        sym = fix_symbol(raw)
+
+        send(f"🔍 analiz ediliyor: {sym}")
 
         f = features(sym)
         if not f:
-            send("❌ veri yok")
+            send("❌ veri alınamadı (coin yanlış olabilir)")
             return
 
-        result = ai_analyze(sym, f)
+        result, direction = ai_analyze(sym, f)
 
         send(result)
         send("Girelim mi? EVET / HAYIR")
 
-        pending = {"sym": sym, "f": f}
+        pending = {"sym": sym, "dir": direction}
 
-    # ===== AI AUTO COIN =====
+    # ===== AI COIN =====
     elif txt == "AI":
-        symbols = ["BTC/USDT:USDT","ETH/USDT:USDT","SOL/USDT:USDT"]
+        sym = "BTC/USDT:USDT"
 
-        sym = np.random.choice(symbols)
         f = features(sym)
+        result, direction = ai_analyze(sym, f)
 
-        result = ai_analyze(sym, f)
-
-        send(f"🤖 AI fırsat buldu:\n{sym}")
+        send(f"🤖 AI fırsat: {sym}")
         send(result)
         send("Girelim mi? EVET / HAYIR")
 
-        pending = {"sym": sym, "f": f}
+        pending = {"sym": sym, "dir": direction}
 
     # ===== GİR =====
     elif txt == "EVET":
         sym = pending["sym"]
-        pr = price(sym)
+        direction = pending["dir"]
 
+        pr = price(sym)
         qty = (BASE_USDT * LEVERAGE) / pr
 
-        order(sym, "buy", qty)
+        side = "buy" if direction == "LONG" else "sell"
+
+        order(sym, side, qty)
 
         position = {
             "sym": sym,
             "entry": pr,
             "qty": qty,
+            "side": direction,
             "peak": 0,
             "tp1": False
         }
 
-        send(f"🚀 {sym} açıldı")
+        send(f"🚀 {sym} {direction} açıldı")
 
     # ===== KAPAT =====
     elif txt == "KAPAT":
@@ -162,7 +172,11 @@ def handle(m):
             return
 
         pr = price(position["sym"])
-        pnl = (pr - position["entry"]) * position["qty"]
+
+        if position["side"] == "LONG":
+            pnl = (pr - position["entry"]) * position["qty"]
+        else:
+            pnl = (position["entry"] - pr) * position["qty"]
 
         send(f"❌ kapandı {round(pnl,2)} USDT")
         position = None
@@ -178,7 +192,11 @@ def loop():
         try:
             if position:
                 pr = price(position["sym"])
-                pnl = (pr - position["entry"]) * position["qty"]
+
+                if position["side"] == "LONG":
+                    pnl = (pr - position["entry"]) * position["qty"]
+                else:
+                    pnl = (position["entry"] - pr) * position["qty"]
 
                 if pnl > position["peak"]:
                     position["peak"] = pnl
@@ -186,7 +204,7 @@ def loop():
                 # TP1
                 if pnl > 2 and not position["tp1"]:
                     position["tp1"] = True
-                    send(f"🎯 TP1: {round(pnl,2)} USDT\nDevam mı? DEVAM / KAPAT")
+                    send(f"🎯 TP1: {round(pnl,2)} USDT\nDEVAM / KAPAT")
 
                 # AI yorum
                 send("🧠 " + ai_live(position["sym"], round(pnl,2)))
@@ -207,5 +225,5 @@ def loop():
 # ===== START =====
 threading.Thread(target=loop, daemon=True).start()
 
-send("💀 V11000 KONUŞAN AI AKTİF")
+send("💀 V12000 FINAL AKTİF")
 bot.infinity_polling()
