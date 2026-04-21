@@ -32,7 +32,7 @@ exchange = ccxt.bitget({
 pending = {}
 position = None
 
-# ===== SYMBOL FIX (AKILLI) =====
+# ===== SYMBOL FIX (OHLCV TEST) =====
 def fix_symbol(raw):
     raw = raw.upper().replace(" ", "")
 
@@ -44,7 +44,7 @@ def fix_symbol(raw):
 
     for sym in options:
         try:
-            exchange.fetch_ticker(sym)
+            exchange.fetch_ohlcv(sym, "1m", 5)
             return sym
         except:
             continue
@@ -147,7 +147,7 @@ def handle(m):
 
     # ===== AI COIN =====
     elif txt == "AI":
-        sym = "BTC/USDT"
+        sym = "BTC/USDT:USDT"
 
         f = features(sym)
         result, direction = ai_analyze(sym, f)
@@ -240,5 +240,5 @@ def loop():
 # ===== START =====
 threading.Thread(target=loop, daemon=True).start()
 
-send("💀 V13000 FINAL AKTİF")
+send("💀 V14000 FINAL AKTİF")
 bot.infinity_polling()
