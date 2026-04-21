@@ -67,24 +67,46 @@ def to_array(f):
         f["fake"], f["whale"]
     ]
 
+# ===== FIXED TRAIN MODEL =====
 def train_model():
     data = load_trades()
     if len(data) < 50:
+        send("⚠️ Veri az")
         return
 
     X, y = [], []
+
     for d in data:
+        if "pnl" not in d:
+            continue
+
+        required = ["momentum","volume","vol_change","trend","rsi","volatility","fake","whale"]
+        if not all(k in d for k in required):
+            continue
+
         X.append([
-            d["momentum"], d["volume"], d["vol_change"],
-            d["trend"], d["rsi"], d["volatility"],
-            d["fake"], d["whale"]
+            d["momentum"],
+            d["volume"],
+            d["vol_change"],
+            d["trend"],
+            d["rsi"],
+            d["volatility"],
+            d["fake"],
+            d["whale"]
         ])
+
         y.append(1 if d["pnl"] > 0 else 0)
+
+    if len(X) < 20:
+        send("⚠️ Temiz veri yok")
+        return
 
     model.fit(np.array(X), np.array(y))
     joblib.dump(model, MODEL_FILE)
-    send("🧠 AI MODEL READY")
 
+    send(f"🧠 AI TRAINED ({len(X)} veri)")
+
+# ===== PREDICT =====
 def predict_win(f):
     try:
         return model.predict_proba(np.array([to_array(f)]))[0][1]
@@ -140,7 +162,7 @@ Coin: {sym}
 PnL: {round(pnl,2)} USDT
 Win Probability: {round(prob*100,1)}%
 
-Should we continue or exit?
+Continue or exit?
 """
     res = client.chat.completions.create(
         model="gpt-4.1-mini",
@@ -155,9 +177,15 @@ def report():
         send("Veri yok")
         return
 
-    total = len(data)
-    wins = sum(1 for d in data if d["pnl"] > 0)
-    pnl_total = sum(d["pnl"] for d in data)
+    valid = [d for d in data if "pnl" in d]
+
+    total = len(valid)
+    wins = sum(1 for d in valid if d["pnl"] > 0)
+    pnl_total = sum(d["pnl"] for d in valid)
+
+    if total == 0:
+        send("Veri yok")
+        return
 
     winrate = (wins/total)*100
     avg = pnl_total/total
@@ -216,7 +244,7 @@ def handle(m):
             return
 
         send(chat_ai(sym,f,prob)+"\nEVET / HAYIR")
-        pending={"sym":sym,"f":f,"prob":prob}
+        pending={"sym":sym,"f":f}
 
     elif txt=="EVET":
         sym=pending["sym"]
@@ -236,6 +264,7 @@ def handle(m):
         pnl=(pr-position["entry"])*position["qty"]
 
         save_trade({**position["f"],"pnl":pnl})
+
         send(f"❌ KAPANDI {round(pnl,2)} USDT")
         position=None
 
@@ -277,12 +306,12 @@ def loop():
             time.sleep(25)
 
         except Exception as e:
-            print(e)
+            print("ERR:",e)
             time.sleep(5)
 
 # ===== START =====
 train_model()
 threading.Thread(target=loop,daemon=True).start()
 
-send("🤖 V6000 ELITE FINAL AKTİF")
+send("🤖 V6000 ELITE FINAL FIXED AKTİF")
 bot.infinity_polling()
