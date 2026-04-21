@@ -60,7 +60,7 @@ pending={}
 symbols_cache=[]
 last_symbols=0
 last_trade={}
-last_live_time=0
+last_live_time={"t":0}   # ✅ GUARANTEED FIX
 
 # ===== BTC FILTER =====
 def btc_trend():
@@ -185,7 +185,13 @@ def tg():
 
             place_order(sym,side,qty)
 
-            positions.append({"sym":sym,"side":"LONG" if d["act"]==1 else "SHORT","entry":price,"qty":qty,"peak":0})
+            positions.append({
+                "sym":sym,
+                "side":"LONG" if d["act"]==1 else "SHORT",
+                "entry":price,
+                "qty":qty,
+                "peak":0
+            })
 
             safe_send(msg_open(sym,positions[-1]["side"],price,d["conf"]))
             pending.pop(m.chat.id,None)
@@ -194,12 +200,11 @@ def tg():
 
 threading.Thread(target=tg,daemon=True).start()
 
-safe_send("🤖 V4013 FINAL AKTİF")
+safe_send("🤖 V4014 FINAL AKTİF")
 
 # ===== LOOP =====
 while True:
     try:
-        global last_live_time
         btc=btc_trend()
 
         for sym in get_symbols():
@@ -236,7 +241,13 @@ while True:
 
             place_order(sym,side,qty)
 
-            positions.append({"sym":sym,"side":"LONG" if act==1 else "SHORT","entry":price,"qty":qty,"peak":0})
+            positions.append({
+                "sym":sym,
+                "side":"LONG" if act==1 else "SHORT",
+                "entry":price,
+                "qty":qty,
+                "peak":0
+            })
 
             last_trade[sym]=time.time()
 
@@ -252,8 +263,8 @@ while True:
             if pnl>pos["peak"]:
                 pos["peak"]=pnl
 
-            if time.time()-last_live_time>30:
-                last_live_time=time.time()
+            if time.time()-last_live_time["t"]>30:
+                last_live_time["t"]=time.time()
                 safe_send(msg_live(pos["sym"],pnl))
 
             close=False
