@@ -1,4 +1,4 @@
-import os, time, ccxt, telebot, threading, requests
+import os, time, ccxt, requests, telebot, threading
 import pandas as pd
 import numpy as np
 from openai import OpenAI
@@ -56,7 +56,7 @@ MODEL_FILE = "ai_model.pkl"
 def load_model():
     if os.path.exists(MODEL_FILE):
         return joblib.load(MODEL_FILE)
-    return XGBClassifier(n_estimators=50, max_depth=4)
+    return XGBClassifier(n_estimators=80, max_depth=5)
 
 model = load_model()
 
@@ -67,17 +67,14 @@ def to_array(f):
         f["fake"], f["whale"]
     ]
 
-# ===== FIXED TRAIN MODEL =====
 def train_model():
     data = load_trades()
-    if len(data) < 50:
-        send("⚠️ Veri az")
-        return
-
     X, y = [], []
 
     for d in data:
-        if "pnl" not in d:
+        pnl = d.get("pnl")
+
+        if pnl is None:
             continue
 
         required = ["momentum","volume","vol_change","trend","rsi","volatility","fake","whale"]
@@ -85,35 +82,29 @@ def train_model():
             continue
 
         X.append([
-            d["momentum"],
-            d["volume"],
-            d["vol_change"],
-            d["trend"],
-            d["rsi"],
-            d["volatility"],
-            d["fake"],
-            d["whale"]
+            d["momentum"], d["volume"], d["vol_change"],
+            d["trend"], d["rsi"], d["volatility"],
+            d["fake"], d["whale"]
         ])
 
-        y.append(1 if d["pnl"] > 0 else 0)
+        y.append(1 if pnl > 0 else 0)
 
     if len(X) < 20:
-        send("⚠️ Temiz veri yok")
+        send("⚠️ veri az")
         return
 
     model.fit(np.array(X), np.array(y))
     joblib.dump(model, MODEL_FILE)
 
-    send(f"🧠 AI TRAINED ({len(X)} veri)")
+    send(f"🧠 AI TRAINED ({len(X)})")
 
-# ===== PREDICT =====
-def predict_win(f):
+def predict(f):
     try:
         return model.predict_proba(np.array([to_array(f)]))[0][1]
     except:
         return 0.5
 
-# ===== RSI =====
+# ===== INDICATORS =====
 def compute_rsi(series):
     delta = series.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
@@ -121,7 +112,6 @@ def compute_rsi(series):
     rs = gain/(loss+1e-9)
     return 100-(100/(1+rs))
 
-# ===== FEATURES =====
 def features(sym):
     try:
         df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),
@@ -134,70 +124,11 @@ def features(sym):
             "trend":1 if df["c"].ewm(9).mean().iloc[-1] > df["c"].ewm(21).mean().iloc[-1] else 0,
             "rsi":float(compute_rsi(df["c"]).iloc[-1]),
             "volatility":float(df["h"].iloc[-1]-df["l"].iloc[-1]),
-            "fake":1 if (df["h"].iloc[-1]>df["h"].iloc[-5:-1].max() and df["c"].iloc[-1]<df["h"].iloc[-1]*0.995) else 0,
+            "fake":0,
             "whale":1 if df["v"].iloc[-1]>df["v"].rolling(20).mean().iloc[-1]*2 else 0
         }
     except:
         return None
-
-# ===== AI CHAT =====
-def chat_ai(sym, f, prob):
-    prompt = f"""
-Coin: {sym}
-Win Probability: {round(prob*100,1)}%
-RSI: {f['rsi']}
-Trend: {f['trend']}
-
-Explain briefly and ask to enter.
-"""
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role":"user","content":prompt}]
-    )
-    return res.choices[0].message.content
-
-def chat_ai_live(sym, f, prob, pnl):
-    prompt = f"""
-Coin: {sym}
-PnL: {round(pnl,2)} USDT
-Win Probability: {round(prob*100,1)}%
-
-Continue or exit?
-"""
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role":"user","content":prompt}]
-    )
-    return res.choices[0].message.content
-
-# ===== REPORT =====
-def report():
-    data = load_trades()
-    if not data:
-        send("Veri yok")
-        return
-
-    valid = [d for d in data if "pnl" in d]
-
-    total = len(valid)
-    wins = sum(1 for d in valid if d["pnl"] > 0)
-    pnl_total = sum(d["pnl"] for d in valid)
-
-    if total == 0:
-        send("Veri yok")
-        return
-
-    winrate = (wins/total)*100
-    avg = pnl_total/total
-
-    send(f"""
-📊 RAPOR
-
-Trade: {total}
-Winrate: {round(winrate,2)}%
-Toplam: {round(pnl_total,2)} USDT
-Ortalama: {round(avg,2)} USDT
-""")
 
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
@@ -207,20 +138,27 @@ exchange = ccxt.bitget({
     "options": {"defaultType": "swap"}
 })
 
-# ===== STATE =====
-pending={}
-position=None
-
-# ===== PRICE =====
 def price(sym):
     return exchange.fetch_ticker(sym)["last"]
 
-# ===== ORDER =====
 def order(sym,side,qty):
     if MODE=="REAL":
         exchange.set_leverage(LEVERAGE,sym)
         return exchange.create_market_order(sym,side,qty)
     return True
+
+# ===== CHAT AI =====
+def chat_ai(sym, f, prob):
+    prompt = f"{sym} analiz. RSI:{f['rsi']} Trend:{f['trend']} Güven:{round(prob,2)} kısa yorum yap"
+    res = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[{"role":"user","content":prompt}]
+    )
+    return res.choices[0].message.content
+
+# ===== STATE =====
+pending={}
+position=None
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
@@ -233,18 +171,12 @@ def handle(m):
         sym=txt.split(" ")[1]+"/USDT:USDT"
         f=features(sym)
 
-        if not f:
-            send("❌ Veri yok")
-            return
+        prob=predict(f)
 
-        prob=predict_win(f)
+        send(chat_ai(sym,f,prob))
+        send(f"GİR? EVET / HAYIR")
 
-        if prob < 0.6:
-            send(f"⚠️ Zayıf ({round(prob*100,1)}%)")
-            return
-
-        send(chat_ai(sym,f,prob)+"\nEVET / HAYIR")
-        pending={"sym":sym,"f":f}
+        pending={"sym":sym,"f":f,"prob":prob}
 
     elif txt=="EVET":
         sym=pending["sym"]
@@ -253,23 +185,17 @@ def handle(m):
 
         order(sym,"buy",qty)
 
-        position={"sym":sym,"entry":pr,"qty":qty,"peak":0,"tp1":False,"tp2":False,"f":pending["f"]}
-        send(f"🚀 {sym} AÇILDI")
+        position={"sym":sym,"entry":pr,"qty":qty,"peak":0,"f":pending["f"]}
+        send(f"🚀 {sym} AÇILDI {round(pr,4)}")
 
     elif txt=="KAPAT":
-        if not position:
-            return
-
         pr=price(position["sym"])
         pnl=(pr-position["entry"])*position["qty"]
 
         save_trade({**position["f"],"pnl":pnl})
 
-        send(f"❌ KAPANDI {round(pnl,2)} USDT")
+        send(f"❌ {round(pnl,2)} USDT")
         position=None
-
-    elif txt=="RAPOR":
-        report()
 
 # ===== LOOP =====
 def loop():
@@ -279,39 +205,29 @@ def loop():
         try:
             if position:
                 pr=price(position["sym"])
-                f=features(position["sym"])
-                prob=predict_win(f)
-
                 pnl=(pr-position["entry"])*position["qty"]
-                pct=(pnl/(position["entry"]*position["qty"]))*100
 
                 if pnl > position["peak"]:
-                    position["peak"] = pnl
+                    position["peak"]=pnl
 
-                if pnl > 2 and not position["tp1"]:
-                    position["tp1"]=True
-                    send(f"🎯 TP1 +{round(pnl,2)} USDT")
-
-                if pnl > 5 and not position["tp2"]:
-                    position["tp2"]=True
-                    send(f"🎯 TP2 +{round(pnl,2)} USDT")
+                if pnl > 2:
+                    send(f"🎯 +{round(pnl,2)} USDT")
 
                 if position["peak"]>3 and pnl<position["peak"]-2:
-                    send(f"⚠️ TRAILING {round(pnl,2)} USDT")
+                    send("⚠️ trailing exit")
                     position=None
 
-                send(chat_ai_live(position["sym"],f,prob,pnl))
-                send(f"📊 {round(pnl,2)} USDT ({round(pct,2)}%)")
+                send(f"📊 {round(pnl,2)} USDT")
 
-            time.sleep(25)
+            time.sleep(20)
 
         except Exception as e:
-            print("ERR:",e)
+            print(e)
             time.sleep(5)
 
 # ===== START =====
 train_model()
 threading.Thread(target=loop,daemon=True).start()
 
-send("🤖 V6000 ELITE FINAL FIXED AKTİF")
+send("🤖 V6000 ELITE AKTİF")
 bot.infinity_polling()
