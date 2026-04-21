@@ -36,7 +36,7 @@ exchange.load_markets()
 
 # ===== AI =====
 agent = DQNAgent(state_size=8, action_size=3)
-agent.epsilon = 1.0
+agent.epsilon = 0.5
 agent.epsilon_decay = 0.995
 
 # ===== SUPABASE =====
@@ -65,7 +65,7 @@ def save_trade(data):
     except Exception as e:
         print("SUPABASE ERROR:", e)
 
-# ===== RESET: ESKİ MEMORY KULLANMA =====
+# ===== RESET =====
 def load_ai_memory():
     trades = load_trades()
     send(f"🧠 AI RESET ACTIVE — eski veri kullanılmıyor ({len(trades)} kayıt arşivde)")
@@ -88,6 +88,17 @@ def send_report():
 📈 Winrate: {round(winrate,2)}%
 💵 Avg PnL: {round(avg_pnl,2)}%
 """)
+
+# ===== BTC TREND =====
+def btc_trend():
+    try:
+        ohlcv = exchange.fetch_ohlcv("BTC/USDT:USDT","5m",limit=50)
+        df = pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
+        ema9 = df["c"].ewm(span=9).mean().iloc[-1]
+        ema21 = df["c"].ewm(span=21).mean().iloc[-1]
+        return 1 if ema9 > ema21 else 0
+    except:
+        return 1
 
 # ===== RSI =====
 def compute_rsi(series, period=14):
@@ -119,13 +130,25 @@ def features(sym):
 def make_state(f):
     return np.array([[f["momentum"],f["volume"],f["vol_change"],f["trend"],f["rsi"],f["volatility"],f["fake"],f["whale"]]])
 
-# ===== SYMBOLS =====
+# ===== AI CONFIDENCE =====
+def get_confidence(state):
+    try:
+        q_values = agent.model.predict(state, verbose=0)[0]
+        return float(np.max(q_values))
+    except:
+        return 0.5
+
+# ===== SYMBOLS (120 COIN) =====
 def symbols():
     try:
         t=exchange.fetch_tickers()
         pairs=[(s,x["quoteVolume"]) for s,x in t.items() if ":USDT" in s and x["quoteVolume"]]
         pairs.sort(key=lambda x:x[1],reverse=True)
-        return random.sample([p[0] for p in pairs[:30]],10)
+
+        top = [p[0] for p in pairs[:120]]
+        filtered = [s for s in top if t[s]["quoteVolume"] > 50000]
+
+        return random.sample(filtered, min(20, len(filtered)))
     except:
         return ["BTC/USDT:USDT"]
 
@@ -156,7 +179,7 @@ positions=[]
 last_trade={}
 symbol_count={}
 
-send("🤖 V2000 RESET BAŞLADI")
+send("🤖 V3000 PRO AI BAŞLADI")
 load_ai_memory()
 
 # ===== LOOP =====
@@ -187,6 +210,16 @@ while True:
             state=make_state(f)
             action=agent.act(state)
 
+            confidence = get_confidence(state)
+            if confidence < 0.55:
+                continue
+
+            btc = btc_trend()
+            if action == 1 and btc == 0:
+                continue
+            if action == 2 and btc == 1:
+                continue
+
             if action==0:
                 continue
 
@@ -210,6 +243,7 @@ while True:
 
 📊 {sym}
 📈 Yön: {direction}
+🧠 Güven: {round(confidence,2)}
 
 💰 Giriş: {round(price,6)}
 💵 Margin: {BASE_USDT} USDT
@@ -230,11 +264,10 @@ while True:
 
             close=False
 
-            # ===== V2000 LOGIC =====
             if pnl < -4:
                 close = True
             elif pnl < 1.2:
-                close = False
+                continue
             elif pos["peak"] > 5 and pnl < pos["peak"] - 3:
                 close = True
             elif pos["peak"] > 3 and pnl < pos["peak"] - 2:
