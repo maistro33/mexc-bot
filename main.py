@@ -32,38 +32,44 @@ exchange = ccxt.bitget({
 pending = {}
 position = None
 
-# ===== SYMBOL FIX (OHLCV TEST) =====
+# ===== SYMBOL FIX (SADECE GERÇEK VERİ) =====
 def fix_symbol(raw):
     raw = raw.upper().replace(" ", "")
 
     options = [
-        raw,
-        raw + "/USDT",
-        raw + "/USDT:USDT"
+        raw + "/USDT:USDT",
+        raw + "/USDT"
     ]
 
     for sym in options:
         try:
-            exchange.fetch_ohlcv(sym, "1m", 5)
+            # 💀 SADECE OHLCV TEST
+            exchange.fetch_ohlcv(sym, "1m", 10)
             return sym
         except:
             continue
 
     return None
 
-# ===== FEATURES =====
+# ===== FEATURES (NO FAKE DATA) =====
 def features(sym):
     try:
-        df = pd.DataFrame(exchange.fetch_ohlcv(sym,"1m",50),
-                          columns=["t","o","h","l","c","v"])
+        df = pd.DataFrame(
+            exchange.fetch_ohlcv(sym, "1m", 50),
+            columns=["t","o","h","l","c","v"]
+        )
+
+        ema9 = df["c"].ewm(9).mean().iloc[-1]
+        ema21 = df["c"].ewm(21).mean().iloc[-1]
 
         return {
             "price": float(df["c"].iloc[-1]),
-            "trend": int(df["c"].ewm(9).mean().iloc[-1] > df["c"].ewm(21).mean().iloc[-1]),
+            "trend": int(ema9 > ema21),
             "volume": float(df["v"].iloc[-1])
         }
+
     except:
-        return None
+        return None  # ❗ veri yoksa STOP
 
 # ===== AI ANALYSIS =====
 def ai_analyze(sym, f):
@@ -73,6 +79,7 @@ You are a professional trader.
 Coin: {sym}
 Price: {f['price']}
 Trend: {"UP" if f["trend"]==1 else "DOWN"}
+Volume: {f['volume']}
 
 Give:
 Direction: LONG or SHORT
@@ -128,14 +135,14 @@ def handle(m):
         sym = fix_symbol(raw)
 
         if not sym:
-            send("❌ coin bulunamadı")
+            send("❌ Bu coin için gerçek veri yok (trade yapılmaz)")
             return
 
         send(f"🔍 analiz: {sym}")
 
         f = features(sym)
         if not f:
-            send("❌ veri alınamadı")
+            send("❌ veri yok → trade iptal")
             return
 
         result, direction = ai_analyze(sym, f)
@@ -147,7 +154,16 @@ def handle(m):
 
     # ===== AI COIN =====
     elif txt == "AI":
-        sym = "BTC/USDT:USDT"
+        coins = ["BTC","ETH","SOL","XRP"]
+
+        for c in coins:
+            sym = fix_symbol(c)
+            if sym:
+                break
+
+        if not sym:
+            send("❌ uygun coin bulunamadı")
+            return
 
         f = features(sym)
         result, direction = ai_analyze(sym, f)
@@ -240,5 +256,5 @@ def loop():
 # ===== START =====
 threading.Thread(target=loop, daemon=True).start()
 
-send("💀 V14000 FINAL AKTİF")
+send("💀 V15000 GERÇEK VERİ AKTİF")
 bot.infinity_polling()
