@@ -1,8 +1,7 @@
-import os, time, ccxt, requests, telebot, random, threading
+import os, time, ccxt, telebot
 import pandas as pd
-import numpy as np
 
-# ===== TELEGRAM (FIX) =====
+# ===== TELEGRAM =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 
@@ -12,15 +11,11 @@ def send(msg):
     try:
         if bot and CHAT_ID:
             bot.send_message(CHAT_ID, msg)
-            print("📩 Telegram gönderildi")
+            print("📩 gönderildi")
         else:
-            print("❌ Telegram ayar yok")
+            print("Telegram yok:", msg)
     except Exception as e:
-        print("❌ Telegram hata:", e)
-
-# ===== CONFIG =====
-SYMBOL = "BTC/USDT:USDT"
-TIMEFRAME = "5m"
+        print("Telegram hata:", e)
 
 # ===== EXCHANGE =====
 exchange = ccxt.bitget({
@@ -31,86 +26,99 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-# ===== RSI =====
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / (loss + 1e-9)
-    return 100 - (100 / (1 + rs))
+SYMBOL = "BTC/USDT:USDT"
 
 # ===== DATA =====
 def get_data():
     try:
-        df = pd.DataFrame(exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, 100),
-                          columns=["t","o","h","l","c","v"])
+        ohlcv = exchange.fetch_ohlcv(SYMBOL, "5m", limit=50)
+
+        if not ohlcv or len(ohlcv) == 0:
+            return None
+
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+
+        if len(df) < 5:
+            return None
+
         return df
+
     except Exception as e:
-        print("❌ veri yok:", e)
+        print("Veri hata:", e)
         return None
 
-# ===== AI ANALİZ =====
+# ===== ANALİZ (CRASH FIX) =====
 def analyze(df):
-    df["ema"] = df["c"].ewm(span=20).mean()
-    df["rsi"] = compute_rsi(df["c"])
+    try:
+        if df is None or len(df) < 5:
+            return None, None
 
-    last = df.iloc[-1]
+        df["ema"] = df["c"].ewm(span=20).mean()
 
-    trend = "LONG" if last["c"] > last["ema"] else "SHORT"
-    strength = abs(last["c"] - last["ema"]) / last["c"]
-    confidence = min(100, strength * 10000)
+        last = df.iloc[-1]
 
-    return trend, confidence
+        trend = "LONG" if last["c"] > last["ema"] else "SHORT"
+        price = float(last["c"])
+
+        return trend, price
+
+    except Exception as e:
+        print("Analyze hata:", e)
+        return None, None
 
 # ===== TRADE =====
 last_signal = None
 
-def trade(signal, price, confidence):
+def check_trade(signal, price):
     global last_signal
+
+    if signal is None:
+        return
 
     if signal == last_signal:
         return
 
     last_signal = signal
 
-    tp = price * 1.01 if signal == "LONG" else price * 0.99
-    sl = price * 0.98 if signal == "LONG" else price * 1.02
-
     msg = f"""
-💀 V13000 AI TRADE
+💀 TRADE
 
 📊 {SYMBOL}
-📈 Sinyal: {signal}
-💰 Fiyat: {price}
-
-🎯 TP: {tp}
-🛑 SL: {sl}
-📊 Güç: {confidence:.2f}
+📈 {signal}
+💰 {price}
 """
-
     print(msg)
     send(msg)
 
-# ===== START =====
+# ===== MAIN =====
 def run():
-    print("💀 V13000 FINAL AKTİF")
-    send("🚀 BOT BAŞLADI")
+    print("💀 BOT AKTİF")
 
     while True:
-        df = get_data()
+        try:
+            df = get_data()
 
-        if df is None:
-            time.sleep(10)
-            continue
+            if df is None:
+                print("❌ veri yok → bekleniyor")
+                time.sleep(10)
+                continue
 
-        trend, confidence = analyze(df)
-        price = df["c"].iloc[-1]
+            signal, price = analyze(df)
 
-        print(f"🔍 {SYMBOL} → {trend} ({confidence:.2f})")
+            if signal is None:
+                print("❌ analiz yok")
+                time.sleep(5)
+                continue
 
-        if confidence > 10:
-            trade(trend, price, confidence)
+            print("🔍", signal, price)
 
-        time.sleep(20)
+            check_trade(signal, price)
 
+            time.sleep(20)
+
+        except Exception as e:
+            print("💀 CRASH ENGELLENDİ:", e)
+            time.sleep(5)
+
+# ===== START =====
 run()
