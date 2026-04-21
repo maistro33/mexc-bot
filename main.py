@@ -65,20 +65,10 @@ def save_trade(data):
     except Exception as e:
         print("SUPABASE ERROR:", e)
 
+# ===== RESET: ESKİ MEMORY KULLANMA =====
 def load_ai_memory():
     trades = load_trades()
-    count = 0
-    for t in trades:
-        try:
-            state = np.array([[t["momentum"],t["volume"],t["vol_change"],t["trend"],t["rsi"],t["volatility"],t["fake"],t["whale"]]])
-            reward = t["result"]
-            action = 1 if reward > 0 else 2
-            agent.remember(state, action, reward, state, True)
-            count += 1
-        except:
-            continue
-
-    send(f"🧠 AI memory loaded: {count}")
+    send(f"🧠 AI RESET ACTIVE — eski veri kullanılmıyor ({len(trades)} kayıt arşivde)")
 
 # ===== STATS =====
 stats = {"total":0,"win":0,"loss":0,"pnl_total":0}
@@ -166,7 +156,7 @@ positions=[]
 last_trade={}
 symbol_count={}
 
-send("🤖 V1900 ULTIMATE BAŞLADI")
+send("🤖 V2000 RESET BAŞLADI")
 load_ai_memory()
 
 # ===== LOOP =====
@@ -240,12 +230,15 @@ while True:
 
             close=False
 
+            # ===== V2000 LOGIC =====
             if pnl < -4:
-                close=True
-            elif pos["peak"] > 4 and pnl < pos["peak"] - 3:
-                close=True
-            elif pos["peak"] > 2 and pnl < pos["peak"] - 2:
-                close=True
+                close = True
+            elif pnl < 1.2:
+                close = False
+            elif pos["peak"] > 5 and pnl < pos["peak"] - 3:
+                close = True
+            elif pos["peak"] > 3 and pnl < pos["peak"] - 2:
+                close = True
 
             if close:
                 place_order(sym,"sell" if pos["side"]=="LONG" else "buy",pos["qty"])
