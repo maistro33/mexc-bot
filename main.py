@@ -19,13 +19,10 @@ SYMBOL = "BTC/USDT:USDT"
 TIMEFRAME = "5m"
 
 # =====================
-# 🌐 PROXY
+# 🌐 PROXY (SADECE BITGET)
 # =====================
 proxy = "http://bwfwxtag:l64c0islq59i@31.59.20.176:6754"
 
-# =====================
-# 🔌 EXCHANGE
-# =====================
 exchange = ccxt.bitget({
     "apiKey": API_KEY,
     "secret": API_SECRET,
@@ -39,14 +36,18 @@ exchange = ccxt.bitget({
 })
 
 # =====================
-# 📩 TELEGRAM
+# 📩 TELEGRAM (PROXY BYPASS FIX)
 # =====================
 def send(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except:
-        print("Telegram hata")
+        requests.post(
+            url,
+            data={"chat_id": CHAT_ID, "text": msg},
+            proxies={"http": None, "https": None}  # 💀 FIX
+        )
+    except Exception as e:
+        print("Telegram hata:", e)
 
 # =====================
 # 📊 VERİ ÇEK
@@ -61,26 +62,39 @@ def get_data():
         return None
 
 # =====================
-# 🧠 AI ANALİZ
+# 🧠 ANALİZ (DAHA SAĞLAM)
 # =====================
 def analyze(df):
     df["ema"] = df["close"].ewm(span=20).mean()
-    df["rsi"] = 100 - (100 / (1 + df["close"].pct_change().rolling(14).mean()))
+
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
 
     last = df.iloc[-1]
 
     trend = "LONG" if last["close"] > last["ema"] else "SHORT"
-    strength = abs(last["close"] - last["ema"])
 
-    confidence = min(100, strength * 1000)
+    strength = abs(last["close"] - last["ema"]) / last["close"]
+    confidence = min(100, strength * 10000)
 
     return trend, confidence
 
 # =====================
-# 💰 TRADE
+# 💰 TRADE (SPAM ENGEL)
 # =====================
-def trade(signal, price):
-    size = 10  # USDT
+last_signal = None
+
+def trade(signal, price, confidence):
+    global last_signal
+
+    # aynı sinyali tekrar açma
+    if signal == last_signal:
+        return
+
+    last_signal = signal
 
     tp = price * 1.01 if signal == "LONG" else price * 0.99
     sl = price * 0.98 if signal == "LONG" else price * 1.02
@@ -94,22 +108,24 @@ def trade(signal, price):
 
 🎯 TP: {tp}
 🛑 SL: {sl}
+📊 Güç: {confidence:.2f}
 """
 
     print(msg)
     send(msg)
 
 # =====================
-# 🚀 MAIN LOOP
+# 🚀 MAIN
 # =====================
 def run():
     print("💀 V13000 FINAL AKTİF")
+    send("🚀 BOT BAŞLADI")
 
     while True:
         df = get_data()
 
         if df is None:
-            print("❌ veri yok → bekleniyor...")
+            print("❌ veri yok")
             time.sleep(10)
             continue
 
@@ -118,8 +134,9 @@ def run():
 
         print(f"🔍 {SYMBOL} → {trend} ({confidence:.2f})")
 
-        if confidence > 5:
-            trade(trend, price)
+        # minimum filtre
+        if confidence > 10:
+            trade(trend, price, confidence)
 
         time.sleep(20)
 
