@@ -1,266 +1,129 @@
-import os, time, ccxt, telebot, threading
+import ccxt
 import pandas as pd
-from openai import OpenAI
+import numpy as np
+import time
+import os
+import requests
 
-# ===== CONFIG =====
-LEVERAGE = 10
-BASE_USDT = 5
-MODE = "PAPER"
+# =====================
+# 🔐 AYARLAR
+# =====================
+API_KEY = os.getenv("BITGET_API")
+API_SECRET = os.getenv("BITGET_SECRET")
+API_PASS = os.getenv("BITGET_PASS")
 
-# ===== TELEGRAM =====
-bot = telebot.TeleBot(os.getenv("TELE_TOKEN"))
-CHAT_ID = os.getenv("MY_CHAT_ID")
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
+CHAT_ID = os.getenv("TG_CHAT")
 
-def send(msg):
-    try:
-        bot.send_message(CHAT_ID, msg)
-    except:
-        print(msg)
+SYMBOL = "BTC/USDT:USDT"
+TIMEFRAME = "5m"
 
-# ===== OPENAI =====
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# =====================
+# 🌐 PROXY
+# =====================
+proxy = "http://bwfwxtag:l64c0islq59i@31.59.20.176:6754"
 
-# ===== EXCHANGE (FIXED) =====
+# =====================
+# 🔌 EXCHANGE
+# =====================
 exchange = ccxt.bitget({
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
-    "password": os.getenv("BITGET_PASS"),
-    "options": {"defaultType": "swap"},
+    "apiKey": API_KEY,
+    "secret": API_SECRET,
+    "password": API_PASS,
     "enableRateLimit": True,
-    "rateLimit": 1200
+    "options": {"defaultType": "swap"},
+    "proxies": {
+        "http": proxy,
+        "https": proxy
+    }
 })
 
-# 🔥 KRİTİK FIX
-exchange.options['fetchOHLCV'] = {'method': 'public'}
-
-# ===== STATE =====
-pending = {}
-position = None
-
-# ===== SYMBOL FIX =====
-def fix_symbol(raw):
-    raw = raw.upper().replace(" ", "")
-
-    options = [
-        raw + "/USDT:USDT",
-        raw + "/USDT"
-    ]
-
-    for sym in options:
-        try:
-            exchange.fetch_ohlcv(sym, "5m", 5)  # 🔥 5m FIX
-            return sym
-        except:
-            continue
-
-    return None
-
-# ===== FEATURES (REAL DATA ONLY) =====
-def features(sym):
+# =====================
+# 📩 TELEGRAM
+# =====================
+def send(msg):
     try:
-        df = pd.DataFrame(
-            exchange.fetch_ohlcv(sym, "5m", 50),  # 🔥 FIX
-            columns=["t","o","h","l","c","v"]
-        )
-
-        ema9 = df["c"].ewm(9).mean().iloc[-1]
-        ema21 = df["c"].ewm(21).mean().iloc[-1]
-
-        return {
-            "price": float(df["c"].iloc[-1]),
-            "trend": int(ema9 > ema21),
-            "volume": float(df["v"].iloc[-1])
-        }
-
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
+        print("Telegram hata")
+
+# =====================
+# 📊 VERİ ÇEK
+# =====================
+def get_data():
+    try:
+        ohlcv = exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=100)
+        df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+        return df
+    except Exception as e:
+        print("❌ veri alınamadı:", e)
         return None
 
-# ===== AI ANALYSIS =====
-def ai_analyze(sym, f):
-    prompt = f"""
-You are a professional trader.
+# =====================
+# 🧠 AI ANALİZ
+# =====================
+def analyze(df):
+    df["ema"] = df["close"].ewm(span=20).mean()
+    df["rsi"] = 100 - (100 / (1 + df["close"].pct_change().rolling(14).mean()))
 
-Coin: {sym}
-Price: {f['price']}
-Trend: {"UP" if f["trend"]==1 else "DOWN"}
-Volume: {f['volume']}
+    last = df.iloc[-1]
 
-Give:
-Direction: LONG or SHORT
-Confidence: 0-1
-TP and SL
+    trend = "LONG" if last["close"] > last["ema"] else "SHORT"
+    strength = abs(last["close"] - last["ema"])
 
-Short answer.
+    confidence = min(100, strength * 1000)
+
+    return trend, confidence
+
+# =====================
+# 💰 TRADE
+# =====================
+def trade(signal, price):
+    size = 10  # USDT
+
+    tp = price * 1.01 if signal == "LONG" else price * 0.99
+    sl = price * 0.98 if signal == "LONG" else price * 1.02
+
+    msg = f"""
+💀 V13000 AI TRADE
+
+📊 {SYMBOL}
+📈 Sinyal: {signal}
+💰 Fiyat: {price}
+
+🎯 TP: {tp}
+🛑 SL: {sl}
 """
-    res = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role":"user","content":prompt}],
-        temperature=0.4
-    )
 
-    text = res.choices[0].message.content
-    direction = "LONG" if "LONG" in text.upper() else "SHORT"
+    print(msg)
+    send(msg)
 
-    return text, direction
-
-# ===== AI LIVE =====
-def ai_live(sym, pnl):
-    try:
-        prompt = f"PnL: {pnl} USDT. Continue or exit?"
-        res = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
-        return res.choices[0].message.content
-    except:
-        return ""
-
-# ===== PRICE =====
-def price(sym):
-    return exchange.fetch_ticker(sym)["last"]
-
-# ===== ORDER =====
-def order(sym, side, qty):
-    if MODE == "REAL":
-        exchange.set_leverage(LEVERAGE, sym)
-        return exchange.create_market_order(sym, side, qty)
-    return True
-
-# ===== TELEGRAM =====
-@bot.message_handler(func=lambda m: True)
-def handle(m):
-    global pending, position
-
-    txt = m.text.upper()
-
-    # ===== ANALIZ =====
-    if "ANALIZ" in txt:
-        raw = txt.split(" ")[1]
-        sym = fix_symbol(raw)
-
-        if not sym:
-            send("❌ Bu coin için veri yok (Bitget sınırlaması)")
-            return
-
-        send(f"🔍 analiz: {sym}")
-
-        f = features(sym)
-        if not f:
-            send("❌ veri çekilemedi")
-            return
-
-        result, direction = ai_analyze(sym, f)
-
-        send(result)
-        send("Girelim mi? EVET / HAYIR")
-
-        pending = {"sym": sym, "dir": direction}
-
-    # ===== AI COIN =====
-    elif txt == "AI":
-        coins = ["BTC","ETH","SOL","XRP"]
-
-        sym = None
-        for c in coins:
-            s = fix_symbol(c)
-            if s:
-                sym = s
-                break
-
-        if not sym:
-            send("❌ uygun coin yok")
-            return
-
-        f = features(sym)
-        result, direction = ai_analyze(sym, f)
-
-        send(f"🤖 AI fırsat: {sym}")
-        send(result)
-        send("Girelim mi? EVET / HAYIR")
-
-        pending = {"sym": sym, "dir": direction}
-
-    # ===== GİR =====
-    elif txt == "EVET":
-        sym = pending["sym"]
-        direction = pending["dir"]
-
-        pr = price(sym)
-        qty = (BASE_USDT * LEVERAGE) / pr
-
-        side = "buy" if direction == "LONG" else "sell"
-
-        order(sym, side, qty)
-
-        position = {
-            "sym": sym,
-            "entry": pr,
-            "qty": qty,
-            "side": direction,
-            "peak": 0,
-            "tp1": False
-        }
-
-        send(f"🚀 {sym} {direction} açıldı")
-
-    # ===== KAPAT =====
-    elif txt == "KAPAT":
-        if not position:
-            return
-
-        pr = price(position["sym"])
-
-        if position["side"] == "LONG":
-            pnl = (pr - position["entry"]) * position["qty"]
-        else:
-            pnl = (position["entry"] - pr) * position["qty"]
-
-        send(f"❌ kapandı {round(pnl,2)} USDT")
-        position = None
-
-    elif txt == "DEVAM":
-        send("👍 devam")
-
-# ===== LOOP =====
-def loop():
-    global position
+# =====================
+# 🚀 MAIN LOOP
+# =====================
+def run():
+    print("💀 V13000 FINAL AKTİF")
 
     while True:
-        try:
-            if position:
-                pr = price(position["sym"])
+        df = get_data()
 
-                if position["side"] == "LONG":
-                    pnl = (pr - position["entry"]) * position["qty"]
-                else:
-                    pnl = (position["entry"] - pr) * position["qty"]
+        if df is None:
+            print("❌ veri yok → bekleniyor...")
+            time.sleep(10)
+            continue
 
-                if pnl > position["peak"]:
-                    position["peak"] = pnl
+        trend, confidence = analyze(df)
+        price = df["close"].iloc[-1]
 
-                # TP1
-                if pnl > 2 and not position["tp1"]:
-                    position["tp1"] = True
-                    send(f"🎯 TP1: {round(pnl,2)} USDT\nDEVAM / KAPAT")
+        print(f"🔍 {SYMBOL} → {trend} ({confidence:.2f})")
 
-                # AI yorum
-                send("🧠 " + ai_live(position["sym"], round(pnl,2)))
+        if confidence > 5:
+            trade(trend, price)
 
-                # trailing
-                if position["peak"] > 3 and pnl < position["peak"] - 2:
-                    send("⚠️ trailing exit")
-                    position = None
+        time.sleep(20)
 
-                send(f"📊 {round(pnl,2)} USDT")
-
-            time.sleep(20)
-
-        except Exception as e:
-            print(e)
-            time.sleep(5)
-
-# ===== START =====
-threading.Thread(target=loop, daemon=True).start()
-
-send("💀 V16000 GERÇEK VERİ FIX AKTİF")
-bot.infinity_polling()
+# =====================
+# START
+# =====================
+run()
