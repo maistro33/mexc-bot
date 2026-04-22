@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v21 LEARNING AI
+# 💀 SADIK BOT v20.1 FINAL FULL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v21 LEARNING AI"
+VERSION = "v20.1 LEARNING FULL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -34,6 +34,11 @@ daily_pnl = 0
 total_pnl = 0
 
 # ==============================
+# 🧠 CACHE
+history_cache = []
+last_history_update = 0
+
+# ==============================
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg)
@@ -46,22 +51,36 @@ def get_data(sym):
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=100)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
+        df["rsi"] = 100 - (100 / (1 + df["c"].pct_change().rolling(14).mean()))
         return df
     except:
         return None
 
 # ==============================
 def load_history():
+    global history_cache, last_history_update
+
+    if time.time() - last_history_update < 60:
+        return history_cache
+
     try:
         headers = {
             "apikey": SUPA_KEY,
             "Authorization": f"Bearer {SUPA_KEY}"
         }
-        r = requests.get(f"{SUPA_URL}/rest/v1/trades?select=*",
-                         headers=headers)
-        return r.json()
+
+        r = requests.get(
+            f"{SUPA_URL}/rest/v1/trades?select=*",
+            headers=headers
+        )
+
+        history_cache = r.json()
+        last_history_update = time.time()
+
+        return history_cache
+
     except:
-        return []
+        return history_cache
 
 # ==============================
 def coin_filter(symbol):
@@ -76,37 +95,54 @@ def coin_filter(symbol):
 
     winrate = len(wins) / len(trades)
 
-    return winrate > 0.4
+    if winrate < 0.4:
+        return False
+
+    return True
 
 # ==============================
 def ai_signal(df):
     price = df["c"].iloc[-1]
     ema = df["ema"].iloc[-1]
+    rsi = df["rsi"].iloc[-1]
 
     momentum = df["c"].iloc[-1] - df["c"].iloc[-5]
     volume = df["v"].iloc[-1] / df["v"].iloc[-5]
 
-    long_score = 0
-    short_score = 0
+    score_long = 0
+    score_short = 0
 
     if price > ema:
-        long_score += 40
+        score_long += 30
     else:
-        short_score += 40
+        score_short += 30
+
+    if rsi < 30:
+        score_long += 20
+    elif rsi > 70:
+        score_short += 20
 
     if momentum > 0:
-        long_score += 30
+        score_long += 25
     else:
-        short_score += 30
+        score_short += 25
 
     if volume > 1.3:
-        long_score += 20
-        short_score += 20
+        score_long += 15
+        score_short += 15
 
-    if long_score > short_score:
-        return "LONG", long_score
+    if score_long > score_short:
+        return "LONG", score_long
     else:
-        return "SHORT", short_score
+        return "SHORT", score_short
+
+# ==============================
+def market_status():
+    try:
+        df = get_data("BTC/USDT:USDT")
+        return "🟢 BULLISH" if df["c"].iloc[-1] > df["ema"].iloc[-1] else "🔴 BEARISH"
+    except:
+        return "UNKNOWN"
 
 # ==============================
 def save_trade(sym, pnl):
@@ -120,10 +156,14 @@ def save_trade(sym, pnl):
         requests.post(
             f"{SUPA_URL}/rest/v1/trades",
             headers=headers,
-            json={"Symbol": sym, "pnl": pnl}
+            json={
+                "Symbol": sym,
+                "pnl": pnl
+            }
         )
-    except:
-        pass
+
+    except Exception as e:
+        print("SUPABASE ERROR:", e)
 
 # ==============================
 def calc_pnl(p, price):
@@ -144,6 +184,7 @@ def scanner():
                 if ":USDT" not in sym:
                     continue
 
+                # 🧠 LEARNING FILTER
                 if not coin_filter(sym):
                     continue
 
@@ -157,6 +198,9 @@ def scanner():
                     continue
 
                 price = df["c"].iloc[-1]
+
+                if price == 0:
+                    continue
 
                 if signal == "LONG":
                     tp1 = price * 1.01
@@ -183,24 +227,21 @@ def scanner():
                 }
 
                 markup = InlineKeyboardMarkup()
-                markup.add(
-                    InlineKeyboardButton("✅ GİR",
-                    callback_data=f"enter|{safe}")
-                )
+                markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
                 send(f"""
-💀 AI SİNYAL
+💀 AKILLI SİNYAL
 
-{sym}
-{signal}
-{round(price,4)}
+📊 {sym}
+📈 {signal}
+💰 {round(price,4)}
 
-TP1: {round(tp1,4)}
-TP2: {round(tp2,4)}
-TP3: {round(tp3,4)}
-SL: {round(sl,4)}
+🎯 TP1: {round(tp1,4)}
+🎯 TP2: {round(tp2,4)}
+🎯 TP3: {round(tp3,4)}
+🛑 SL: {round(sl,4)}
 
-Güç: %{strength}
+🤖 Güç: %{strength}
 """)
 
                 bot.send_message(CHAT_ID, "GİR:", reply_markup=markup)
@@ -226,7 +267,7 @@ def open_trade(data, cid):
         "size":50
     })
 
-    send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
+    send(f"🚀 AÇILDI {data['sym']}", cid)
 
 # ==============================
 def manage():
@@ -247,12 +288,15 @@ def manage():
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
+                    send(f"🎯 TP1 {p['sym']} +{pnl} USDT")
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
                     p["sl"] = p["tp1"]
+                    send(f"🎯 TP2 {p['sym']} +{pnl} USDT")
 
                 elif price >= p["tp3"]:
+                    send(f"🚀 TP3 {p['sym']} +{pnl} USDT")
                     daily_pnl += pnl
                     total_pnl += pnl
                     save_trade(p["sym"], pnl)
@@ -260,6 +304,7 @@ def manage():
                     continue
 
                 if price <= p["sl"]:
+                    send(f"🛑 STOP {p['sym']} {pnl} USDT")
                     daily_pnl += pnl
                     total_pnl += pnl
                     save_trade(p["sym"], pnl)
@@ -271,12 +316,15 @@ def manage():
                 if not p["tp1_done"] and price <= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
+                    send(f"🎯 TP1 SHORT {p['sym']} +{pnl} USDT")
 
                 elif not p["tp2_done"] and price <= p["tp2"]:
                     p["tp2_done"] = True
                     p["sl"] = p["tp1"]
+                    send(f"🎯 TP2 SHORT {p['sym']} +{pnl} USDT")
 
                 elif price <= p["tp3"]:
+                    send(f"🚀 TP3 SHORT {p['sym']} +{pnl} USDT")
                     daily_pnl += pnl
                     total_pnl += pnl
                     save_trade(p["sym"], pnl)
@@ -284,6 +332,7 @@ def manage():
                     continue
 
                 if price >= p["sl"]:
+                    send(f"🛑 STOP SHORT {p['sym']} {pnl} USDT")
                     daily_pnl += pnl
                     total_pnl += pnl
                     save_trade(p["sym"], pnl)
@@ -295,19 +344,23 @@ def manage():
 # ==============================
 def build_panel():
     text = f"""
-💀 PANEL
+💀 LIVE PANEL
 
-Günlük: {round(daily_pnl,2)}
-Toplam: {round(total_pnl,2)}
+📅 Günlük: {round(daily_pnl,2)} USDT
+💰 Toplam: {round(total_pnl,2)} USDT
 
-Açık: {len(positions)}
+🌍 Market: {market_status()}
+📈 Açık: {len(positions)}
+
+━━━━━━━━━━━━━━
 """
 
     for p in positions:
         try:
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
-            text += f"\n{p['sym']} → {pnl}"
+            emoji = "🟢" if pnl>=0 else "🔴"
+            text += f"{p['sym']} → {pnl} USDT {emoji}\n"
         except:
             continue
 
@@ -319,8 +372,13 @@ def panel_keyboard():
 
     for p in positions:
         markup.row(
-            InlineKeyboardButton(f"STOP {p['sym']}", callback_data=f"exit_{p['id']}")
+            InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"keep_{p['id']}"),
+            InlineKeyboardButton(f"⛔ STOP {p['sym']}", callback_data=f"exit_{p['id']}")
         )
+
+    markup.row(
+        InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all")
+    )
 
     return markup
 
@@ -329,7 +387,7 @@ def panel_keyboard():
 def panel(msg):
     global panel_message_id, panel_chat_id
     panel_chat_id = msg.chat.id
-    m = bot.send_message(panel_chat_id, "LOADING...")
+    m = bot.send_message(panel_chat_id, "⏳ PANEL YÜKLENİYOR...")
     panel_message_id = m.message_id
 
 # ==============================
@@ -374,8 +432,26 @@ def callback(call):
 
                 save_trade(p["sym"], pnl)
 
+                send(f"⛔ MANUAL EXIT {p['sym']} → {pnl} USDT", cid)
+
                 positions.remove(p)
                 break
+
+    elif call.data == "exit_all":
+
+        for p in positions[:]:
+
+            price = exchange.fetch_ticker(p["sym"])["last"]
+            pnl = calc_pnl(p, price)
+
+            daily_pnl += pnl
+            total_pnl += pnl
+
+            save_trade(p["sym"], pnl)
+
+            send(f"⛔ EXIT {p['sym']} → {pnl} USDT", cid)
+
+            positions.remove(p)
 
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
