@@ -1,13 +1,13 @@
 # ==============================
-# 💀 SADIK BOT v17 AI TRADER
+# 💀 SADIK BOT v14 PRO PANEL + AI
 # ==============================
 
-import os, time, ccxt, telebot, threading, requests, uuid
+import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v17 AI TRADER"
+VERSION = "v14 PRO PANEL AI"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -45,13 +45,11 @@ def get_data(sym):
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
-        df["vol_mean"] = df["v"].rolling(10).mean()
         return df
     except:
         return None
 
 # ==============================
-# 🧠 GELİŞMİŞ AI ANALİZ
 def ai_analyze(sym):
     try:
         df = get_data(sym)
@@ -60,58 +58,32 @@ def ai_analyze(sym):
 
         price = df["c"].iloc[-1]
         ema = df["ema"].iloc[-1]
-        vol = df["v"].iloc[-1]
-        vol_mean = df["vol_mean"].iloc[-1]
-
-        prompt = f"""
-Symbol: {sym}
-Price: {price}
-EMA: {ema}
-Volume: {vol}
-Avg Volume: {vol_mean}
-
-Kurallar:
-- LONG / SHORT / NONE karar ver
-- Confidence (0-1)
-- Kısa sebep
-
-Format:
-DECISION: LONG
-CONFIDENCE: 0.75
-REASON: ...
-"""
+        trend = "UP" if price > ema else "DOWN"
 
         r = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
+            messages=[{
+                "role":"user",
+                "content":f"{sym} trend {trend}. LONG SHORT NONE karar ver confidence yaz kısa sebep"
+            }]
         )
 
-        txt = r.choices[0].message.content.upper()
+        txt = r.choices[0].message.content
 
         signal = "NONE"
-        if "LONG" in txt:
+        if "LONG" in txt.upper():
             signal = "LONG"
-        elif "SHORT" in txt:
+        elif "SHORT" in txt.upper():
             signal = "SHORT"
-
-        # confidence parse
-        conf = 0.5
-        try:
-            if "CONFIDENCE" in txt:
-                conf = float(txt.split("CONFIDENCE:")[1].split()[0])
-        except:
-            pass
 
         return {
             "sym": sym,
             "signal": signal,
             "entry": price,
-            "text": txt,
-            "confidence": conf
+            "text": txt
         }
 
-    except Exception as e:
-        print("AI:", e)
+    except:
         return None
 
 # ==============================
@@ -128,24 +100,21 @@ def scanner():
                 if ":USDT" in s and v["quoteVolume"]
             ]
 
+            # 🚀 3M volume filter
             pairs = [p for p in pairs if p[1] > 3_000_000]
+
             pairs.sort(key=lambda x: x[1], reverse=True)
+
             top = [p[0] for p in pairs[:30]]
 
             for sym in top:
 
+                # 🚫 BTC ETH BNB çıkar
                 if any(x in sym for x in ["BTC","ETH","BNB"]):
                     continue
 
                 data = ai_analyze(sym)
-                if not data:
-                    continue
-
-                # 🔥 CONFIDENCE FİLTRE
-                if data["confidence"] < 0.65:
-                    continue
-
-                if data["signal"] == "NONE":
+                if not data or data["signal"] == "NONE":
                     continue
 
                 best_signal = data
@@ -160,12 +129,13 @@ def scanner():
 🤖 AI SİNYAL
 
 {data['sym']}
-{data['signal']} ({data['confidence']})
+{data['signal']}
 
 {data['text']}
 """)
 
                 bot.send_message(CHAT_ID, "İşlem:", reply_markup=markup)
+
                 break
 
         except Exception as e:
@@ -174,88 +144,14 @@ def scanner():
         time.sleep(60)
 
 # ==============================
-# 💾 TRADE AÇ
 def open_trade(data, cid):
-    trade_id = str(uuid.uuid4())
-
     positions.append({
-        "id": trade_id,
         **data,
         "remaining": 1.0,
         "ai_status": "HOLD",
         "chat": cid
     })
-
-    # Supabase kayıt
-    try:
-        headers = {
-            "apikey": SUPA_KEY,
-            "Authorization": f"Bearer {SUPA_KEY}",
-            "Content-Type": "application/json"
-        }
-
-        requests.post(f"{SUPA_URL}/rest/v1/trades", headers=headers, json={
-            "id": trade_id,
-            "symbol": data["sym"],
-            "entry": data["entry"],
-            "reason": data["text"]
-        })
-    except:
-        pass
-
     send(f"🚀 {data['sym']} açıldı", cid)
-
-# ==============================
-# 🧠 AI EXIT ANALİZ
-def ai_exit_decision(p, price):
-
-    try:
-        prompt = f"""
-Trade: {p['sym']}
-Entry: {p['entry']}
-Current: {price}
-
-Kar mı zarar mı bak.
-EXIT mi HOLD mu karar ver.
-"""
-
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
-
-        txt = r.choices[0].message.content.upper()
-
-        return "EXIT" if "EXIT" in txt else "HOLD"
-
-    except:
-        return "HOLD"
-
-# ==============================
-# 🔁 AI LEARNING
-def ai_learn(p, pnl):
-    try:
-        prompt = f"""
-Trade sonucu:
-Symbol: {p['sym']}
-PnL: {pnl}
-AI Reason: {p['text']}
-
-Bu trade neden başarılı/başarısız oldu?
-Kısa öğrenme yaz.
-"""
-
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
-
-        learn = r.choices[0].message.content
-
-        send(f"🧠 AI LEARN:\n{learn}", p["chat"])
-
-    except:
-        pass
 
 # ==============================
 def manage():
@@ -266,32 +162,20 @@ def manage():
             except:
                 continue
 
-            pnl = ((price - p["entry"]) / p["entry"]) * 50
+            pnl = ((price - p["entry"]) / p["entry"]) * 50 * p["remaining"]
             pnl = round(pnl,2)
 
-            decision = ai_exit_decision(p, price)
-            p["ai_status"] = decision
+            df = get_data(p["sym"])
+            if df is None:
+                continue
 
-            if decision == "EXIT":
-                send(f"⚠️ AI EXIT {p['sym']} {pnl} USDT", p["chat"])
+            ema = df["ema"].iloc[-1]
+            trend = "UP" if price > ema else "DOWN"
 
-                # Supabase update
-                try:
-                    headers = {
-                        "apikey": SUPA_KEY,
-                        "Authorization": f"Bearer {SUPA_KEY}",
-                        "Content-Type": "application/json"
-                    }
+            p["ai_status"] = "HOLD" if trend=="UP" else "EXIT"
 
-                    requests.patch(f"{SUPA_URL}/rest/v1/trades?id=eq.{p['id']}",
-                                   headers=headers,
-                                   json={"exit": price, "result": pnl})
-                except:
-                    pass
-
-                ai_learn(p, pnl)
-
-                positions.remove(p)
+            if p["ai_status"] == "EXIT":
+                send(f"⚠️ AI EXIT {p['sym']}", p["chat"])
 
         time.sleep(5)
 
@@ -326,11 +210,10 @@ def panel(msg):
         data = r.json()
 
         for t in data:
-            if t.get("result"):
-                if t["result"] > 0:
-                    total_profit += t["result"]
-                else:
-                    total_loss += t["result"]
+            if t["result"] > 0:
+                total_profit += t["result"]
+            else:
+                total_loss += t["result"]
 
     except:
         pass
@@ -359,7 +242,7 @@ def panel(msg):
         for p in positions:
 
             price = exchange.fetch_ticker(p["sym"])["last"]
-            pnl = ((price - p["entry"]) / p["entry"]) * 50
+            pnl = ((price - p["entry"]) / p["entry"]) * 50 * p["remaining"]
             pnl = round(pnl,2)
 
             text += f"\n{p['sym']} → {pnl} USDT | {p['ai_status']}\n"
@@ -376,6 +259,7 @@ def panel(msg):
 def callback(call):
 
     global best_signal
+
     cid = call.message.chat.id
 
     if call.data == "enter" and best_signal:
@@ -394,7 +278,6 @@ def callback(call):
                 pnl = round(pnl,2)
 
                 send(f"⛔ {p['sym']} kapatıldı {pnl} USDT", cid)
-                ai_learn(p, pnl)
                 positions.remove(p)
                 break
 
