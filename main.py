@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v9.1 AI LIVE REPORT
+# 💀 SADIK BOT v10 SMART EXIT
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v9.1 AI LIVE REPORT"
+VERSION = "v10 SMART EXIT"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -197,7 +197,9 @@ def open_trade(data, cid):
         "tp2_done": False,
         "chat": cid,
         "ai_status": "HOLD",
-        "last_ai_report": 0
+        "last_ai_report": 0,
+        "awaiting_decision": False,
+        "exit_timer": 0
     })
     log_event(f"OPEN {data['sym']}")
     send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
@@ -213,53 +215,57 @@ def manage():
                 continue
 
             pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
-            pnl_usdt = round(pnl * 1000, 2)
 
             # ======================
-            # 🤖 AI LIVE REPORT
-            if time.time() - p["last_ai_report"] > 20:
-
-                df = get_data(p["sym"])
-                if df is not None:
-                    ema = df["ema"].iloc[-1]
-                    trend = "UP" if price > ema else "DOWN"
-
-                    momentum = "STRONG" if abs(df["c"].iloc[-1] - df["c"].iloc[-3]) > price*0.002 else "WEAK"
-                    volume = "HIGH" if df["v"].iloc[-1] > df["v"].iloc[-5] else "LOW"
-
-                    decision = "DEVAM" if trend == "UP" else "EXIT"
-
-                    send(f"""
-🤖 AI LIVE
-
-📊 {p['sym']}
-Trend: {trend}
-Momentum: {momentum}
-Volume: {volume}
-
-Karar: {decision}
-""")
-
-                    p["last_ai_report"] = time.time()
-
-            # ======================
-            # AI EXIT
+            # 🤖 AI EXIT TRIGGER
             df = get_data(p["sym"])
             if df is not None:
                 ema = df["ema"].iloc[-1]
                 trend = "UP" if price > ema else "DOWN"
 
                 if trend == "DOWN" and p["signal"] == "LONG":
-                    if p["ai_status"] != "EXIT":
-                        p["ai_status"] = "EXIT"
-                        send(f"🤖 AI EXIT {p['sym']}")
-                        log_event(f"AI EXIT {p['sym']}")
+                    if not p["awaiting_decision"]:
+                        p["awaiting_decision"] = True
+                        p["exit_timer"] = time.time()
 
-            if p.get("ai_status") == "EXIT":
-                send(f"⛔ AI CLOSE {p['sym']} {pnl_usdt}$")
-                save_trade(p["sym"], pnl)
-                positions.remove(p)
-                continue
+                        markup = InlineKeyboardMarkup()
+                        markup.row(
+                            InlineKeyboardButton("🟢 DEVAM", callback_data=f"keep_{p['sym']}"),
+                            InlineKeyboardButton("⛔ ÇIK", callback_data=f"exit_{p['sym']}")
+                        )
+
+                        send(f"""
+🤖 AI UYARI
+
+📊 {p['sym']}
+Trend: DOWN
+Karar: EXIT
+
+⏳ 30 saniye içinde karar ver
+""", p["chat"])
+
+                        bot.send_message(p["chat"], "Seç:", reply_markup=markup)
+
+            # ======================
+            # 🧠 SMART WAIT
+            if p["awaiting_decision"]:
+
+                df = get_data(p["sym"])
+                if df is not None:
+                    ema = df["ema"].iloc[-1]
+                    price = df["c"].iloc[-1]
+                    trend = "UP" if price > ema else "DOWN"
+
+                    if trend == "UP":
+                        p["awaiting_decision"] = False
+                        send(f"🟢 DÜZELTME - DEVAM {p['sym']}")
+                        continue
+
+                if time.time() - p["exit_timer"] > 30:
+                    send(f"⛔ CONFIRMED EXIT {p['sym']}")
+                    save_trade(p["sym"], pnl)
+                    positions.remove(p)
+                    continue
 
             # ======================
             if p["signal"]=="LONG":
@@ -267,16 +273,13 @@ Karar: {decision}
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
-                    log_event(f"TP1 {p['sym']}")
                     send(f"🎯 TP1 {p['sym']}")
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
-                    log_event(f"TP2 {p['sym']}")
                     send(f"🎯 TP2 {p['sym']}")
 
                 elif price >= p["tp3"]:
-                    log_event(f"TP3 {p['sym']}")
                     send(f"🚀 TP3 {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
@@ -287,31 +290,12 @@ Karar: {decision}
                     p["sl"] = new_sl
 
                 if price <= p["sl"]:
-                    log_event(f"STOP {p['sym']}")
                     send(f"🛑 STOP {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
 
         time.sleep(5)
-
-# ==============================
-@bot.message_handler(commands=['panel'])
-def panel(msg):
-    markup = InlineKeyboardMarkup()
-    markup.row(
-        InlineKeyboardButton("📊 Durum", callback_data="panel_durum"),
-        InlineKeyboardButton("📈 Pozisyon", callback_data="panel_pos")
-    )
-    markup.row(
-        InlineKeyboardButton("🤖 AI", callback_data="panel_ai"),
-        InlineKeyboardButton("📡 Log", callback_data="panel_log")
-    )
-    markup.row(
-        InlineKeyboardButton("⛔ EXIT", callback_data="exit_trade")
-    )
-
-    bot.send_message(msg.chat.id, "🤖 PRO PANEL", reply_markup=markup)
 
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
@@ -321,62 +305,26 @@ def callback(call):
     if call.data.startswith("enter|"):
         safe = call.data.split("|")[1]
         data = signal_cache.get(safe)
+        if data:
+            open_trade(data, cid)
 
-        if not data:
-            send("veri bulunamadi", cid)
-            return
+    elif call.data.startswith("keep_"):
+        sym = call.data.split("_")[1]
+        for p in positions:
+            if p["sym"] == sym:
+                p["awaiting_decision"] = False
+                send(f"🟢 DEVAM {sym}", cid)
 
-        open_trade(data, cid)
-
-    elif call.data == "exit_trade":
-        if not positions:
-            send("Açık işlem yok", cid)
-            return
-
-        p = positions[0]
-
-        try:
-            price = exchange.fetch_ticker(p["sym"])["last"]
-        except:
-            send("Fiyat alınamadı", cid)
-            return
-
-        pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
-        pnl_usdt = round(pnl * 1000, 2)
-
-        log_event(f"MANUAL EXIT {p['sym']}")
-        send(f"⛔ EXIT {p['sym']} {pnl_usdt}$", cid)
-
-        save_trade(p["sym"], pnl)
-        positions.remove(p)
-
-    elif call.data == "panel_durum":
-        send(f"📊 Açık işlem: {len(positions)}", cid)
-
-    elif call.data == "panel_pos":
-        if not positions:
-            send("Pozisyon yok", cid)
-            return
-
-        p = positions[0]
-        send(f"""
-📈 {p['sym']}
-Entry: {round(p['entry'],4)}
-
-AI: {p.get('ai_status')}
-
-TP1: {'✅' if p['tp1_done'] else '⏳'}
-TP2: {'✅' if p['tp2_done'] else '⏳'}
-""", cid)
-
-    elif call.data == "panel_ai":
-        send("🤖 AI LIVE AKTIF", cid)
-
-    elif call.data == "panel_log":
-        if not event_log:
-            send("Log boş", cid)
-        else:
-            send("\n".join(event_log[-10:]), cid)
+    elif call.data.startswith("exit_"):
+        sym = call.data.split("_")[1]
+        for p in positions:
+            if p["sym"] == sym:
+                price = exchange.fetch_ticker(p["sym"])["last"]
+                pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
+                send(f"⛔ MANUAL EXIT {sym}", cid)
+                save_trade(p["sym"], pnl)
+                positions.remove(p)
+                break
 
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
