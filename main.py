@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.2 FINAL FIXED
+# 💀 SADIK BOT v20.3 FINAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.2 FIXED"
+VERSION = "v20.3 PARTIAL TP"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -34,7 +34,6 @@ daily_pnl = 0
 total_pnl = 0
 
 # ==============================
-# CACHE
 history_cache = []
 last_history_update = 0
 
@@ -57,7 +56,6 @@ def get_data(sym):
         df["ema"] = df["c"].ewm(20).mean()
         df["rsi"] = 100 - (100 / (1 + df["c"].pct_change().rolling(14).mean()))
         return df
-
     except:
         return None
 
@@ -87,14 +85,12 @@ def load_history():
 # ==============================
 def coin_filter(symbol):
     data = load_history()
-
     trades = [x for x in data if x.get("Symbol") == symbol]
 
     if len(trades) < 15:
         return True
 
     wins = [x for x in trades if x.get("pnl",0) > 0]
-
     winrate = len(wins) / len(trades)
 
     return winrate > 0.4
@@ -106,12 +102,9 @@ def ai_signal(df):
         ema = df["ema"].iloc[-1]
         rsi = df["rsi"].iloc[-1]
 
-        # güvenli momentum
         momentum = df["c"].iloc[-1] - df["c"].iloc[-5]
 
-        # 💀 FIX: volume güvenli
         base_volume = df["v"].iloc[-5]
-
         if base_volume <= 0:
             return None, 0
 
@@ -139,10 +132,7 @@ def ai_signal(df):
             score_long += 15
             score_short += 15
 
-        if score_long > score_short:
-            return "LONG", score_long
-        else:
-            return "SHORT", score_short
+        return ("LONG", score_long) if score_long > score_short else ("SHORT", score_short)
 
     except:
         return None, 0
@@ -201,27 +191,17 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
-                if signal is None:
-                    continue
-
-                if strength < 60:
+                if signal is None or strength < 60:
                     continue
 
                 price = df["c"].iloc[-1]
-
                 if price <= 0:
                     continue
 
                 if signal == "LONG":
-                    tp1 = price * 1.01
-                    tp2 = price * 1.02
-                    tp3 = price * 1.03
-                    sl  = price * 0.98
+                    tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
                 else:
-                    tp1 = price * 0.99
-                    tp2 = price * 0.98
-                    tp3 = price * 0.97
-                    sl  = price * 1.02
+                    tp1, tp2, tp3, sl = price*0.99, price*0.98, price*0.97, price*1.02
 
                 safe = sym.replace("/","").replace(":","")
 
@@ -268,7 +248,6 @@ def scanner():
 def open_trade(data, cid):
     positions.append({
         **data,
-        "remaining":1.0,
         "tp1_done":False,
         "tp2_done":False,
         "chat":cid,
@@ -276,7 +255,6 @@ def open_trade(data, cid):
         "leverage":10,
         "size":50
     })
-
     send(f"🚀 AÇILDI {data['sym']}", cid)
 
 # ==============================
@@ -291,33 +269,43 @@ def manage():
             except:
                 continue
 
-            pnl = calc_pnl(p, price)
+            pnl_total = calc_pnl(p, price)
 
             if p["signal"] == "LONG":
 
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
+                    part = pnl_total * 0.5
+                    p["size"] *= 0.5
                     p["sl"] = p["entry"]
-                    send(f"🎯 TP1 {p['sym']} +{pnl} USDT")
+                    daily_pnl += part
+                    total_pnl += part
+                    send(f"🎯 TP1 {p['sym']} +{round(part,2)} USDT")
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
+                    part = pnl_total * 0.25
+                    p["size"] *= 0.5
                     p["sl"] = p["tp1"]
-                    send(f"🎯 TP2 {p['sym']} +{pnl} USDT")
+                    daily_pnl += part
+                    total_pnl += part
+                    send(f"🎯 TP2 {p['sym']} +{round(part,2)} USDT")
 
                 elif price >= p["tp3"]:
-                    send(f"🚀 TP3 {p['sym']} +{pnl} USDT")
-                    daily_pnl += pnl
-                    total_pnl += pnl
-                    save_trade(p["sym"], pnl)
+                    final = pnl_total
+                    daily_pnl += final
+                    total_pnl += final
+                    save_trade(p["sym"], final)
+                    send(f"🚀 TP3 {p['sym']} +{round(final,2)} USDT")
                     positions.remove(p)
                     continue
 
                 if price <= p["sl"]:
-                    send(f"🛑 STOP {p['sym']} {pnl} USDT")
-                    daily_pnl += pnl
-                    total_pnl += pnl
-                    save_trade(p["sym"], pnl)
+                    final = pnl_total
+                    daily_pnl += final
+                    total_pnl += final
+                    save_trade(p["sym"], final)
+                    send(f"🛑 STOP {p['sym']} {round(final,2)} USDT")
                     positions.remove(p)
                     continue
 
@@ -325,27 +313,37 @@ def manage():
 
                 if not p["tp1_done"] and price <= p["tp1"]:
                     p["tp1_done"] = True
+                    part = pnl_total * 0.5
+                    p["size"] *= 0.5
                     p["sl"] = p["entry"]
-                    send(f"🎯 TP1 SHORT {p['sym']} +{pnl} USDT")
+                    daily_pnl += part
+                    total_pnl += part
+                    send(f"🎯 TP1 SHORT {p['sym']} +{round(part,2)} USDT")
 
                 elif not p["tp2_done"] and price <= p["tp2"]:
                     p["tp2_done"] = True
+                    part = pnl_total * 0.25
+                    p["size"] *= 0.5
                     p["sl"] = p["tp1"]
-                    send(f"🎯 TP2 SHORT {p['sym']} +{pnl} USDT")
+                    daily_pnl += part
+                    total_pnl += part
+                    send(f"🎯 TP2 SHORT {p['sym']} +{round(part,2)} USDT")
 
                 elif price <= p["tp3"]:
-                    send(f"🚀 TP3 SHORT {p['sym']} +{pnl} USDT")
-                    daily_pnl += pnl
-                    total_pnl += pnl
-                    save_trade(p["sym"], pnl)
+                    final = pnl_total
+                    daily_pnl += final
+                    total_pnl += final
+                    save_trade(p["sym"], final)
+                    send(f"🚀 TP3 SHORT {p['sym']} +{round(final,2)} USDT")
                     positions.remove(p)
                     continue
 
                 if price >= p["sl"]:
-                    send(f"🛑 STOP SHORT {p['sym']} {pnl} USDT")
-                    daily_pnl += pnl
-                    total_pnl += pnl
-                    save_trade(p["sym"], pnl)
+                    final = pnl_total
+                    daily_pnl += final
+                    total_pnl += final
+                    save_trade(p["sym"], final)
+                    send(f"🛑 STOP SHORT {p['sym']} {round(final,2)} USDT")
                     positions.remove(p)
                     continue
 
@@ -387,7 +385,6 @@ def panel_keyboard():
         )
 
     markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
-
     return markup
 
 # ==============================
@@ -430,7 +427,6 @@ def callback(call):
 
         for p in positions:
             if p["id"] == pid:
-
                 price = exchange.fetch_ticker(p["sym"])["last"]
                 pnl = calc_pnl(p, price)
 
@@ -448,7 +444,6 @@ def callback(call):
     elif call.data == "exit_all":
 
         for p in positions[:]:
-
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
 
