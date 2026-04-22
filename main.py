@@ -1,13 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v7.3 FINAL CLEAN FIX
+# 💀 SADIK BOT v8 CORE
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
 import pandas as pd
 from openai import OpenAI
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v7.3 FINAL CLEAN"
+VERSION = "v8 CORE AI"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -32,39 +31,22 @@ last_analysis = {}
 
 daily_profit = 0
 daily_loss = 0
-start_balance = 50
 
-last_sent = {}
+MAX_TRADES = 3
+MAX_DAILY_LOSS = -10
 
+# ==============================
+# SEND
+# ==============================
 def send(msg, cid=None):
     try:
-        bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
+        bot.send_message(cid or CHAT_ID, msg)
     except Exception as e:
         print("SEND HATA:", e)
 
-def save_trade(sym, pnl):
-    global daily_profit, daily_loss
-
-    if pnl > 0:
-        daily_profit += pnl
-    else:
-        daily_loss += pnl
-
-    try:
-        headers = {
-            "apikey": SUPA_KEY,
-            "Authorization": f"Bearer {SUPA_KEY}",
-            "Content-Type": "application/json"
-        }
-        r = requests.post(f"{SUPA_URL}/rest/v1/trades",
-                          headers=headers,
-                          json={"symbol": sym, "result": pnl})
-
-        print("SUPABASE:", r.status_code, r.text)
-
-    except Exception as e:
-        print("SUPABASE HATA:", e)
-
+# ==============================
+# DATA
+# ==============================
 def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
@@ -74,72 +56,187 @@ def get_data(sym):
     except:
         return None
 
+# ==============================
+# SUPABASE LOAD
+# ==============================
+def load_trade_history():
+    try:
+        headers = {
+            "apikey": SUPA_KEY,
+            "Authorization": f"Bearer {SUPA_KEY}"
+        }
+        r = requests.get(f"{SUPA_URL}/rest/v1/trades?select=*", headers=headers)
+        data = r.json()
+
+        wins = [x for x in data if x["result"] > 0]
+        losses = [x for x in data if x["result"] <= 0]
+
+        return wins[-50:], losses[-50:]
+    except:
+        return [], []
+
+# ==============================
+# MEMORY DECISION
+# ==============================
+def ai_memory_decision(sym):
+    wins, losses = load_trade_history()
+
+    sym_wins = [x for x in wins if x["symbol"] == sym]
+    sym_losses = [x for x in losses if x["symbol"] == sym]
+
+    total = len(sym_wins) + len(sym_losses)
+
+    if total < 5:
+        return True, "veri az"
+
+    winrate = len(sym_wins) / total
+
+    if winrate < 0.4:
+        return False, f"kotu (%{round(winrate*100,1)})"
+
+    return True, f"iyi (%{round(winrate*100,1)})"
+
+# ==============================
+# AI ANALYZE
+# ==============================
+def ai_analyze(sym, price, trend):
+    try:
+        prompt = f"""
+Symbol: {sym}
+Price: {price}
+Trend: {trend}
+
+LONG or SHORT?
+Return: LONG/SHORT|confidence|reason
+"""
+
+        res = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        txt = res.choices[0].message.content
+        s, c, r = txt.split("|")
+
+        return s.strip(), int(c), r
+
+    except:
+        return None, None, "ai hata"
+
+# ==============================
+# ANALYZE
+# ==============================
 def analyze(sym, cid):
     df = get_data(sym)
     if df is None:
-        send("❌ Veri yok", cid)
+        send("veri yok", cid)
+        return
+
+    if daily_loss <= MAX_DAILY_LOSS:
+        send("gunluk zarar limit", cid)
         return
 
     last = df.iloc[-1]
     trend = "UP" if last["c"] > last["ema"] else "DOWN"
     signal = "LONG" if trend == "UP" else "SHORT"
     price = float(last["c"])
-    vol = df["v"].iloc[-1]
-    conf = random.randint(65, 85)
+
+    allow, note = ai_memory_decision(sym)
+
+    if not allow:
+        send(f"AI RED: {note}", cid)
+        return
+
+    ai_signal, ai_conf, ai_reason = ai_analyze(sym, price, trend)
+
+    if ai_signal and ai_conf >= 75:
+        signal = ai_signal
+        conf = ai_conf
+        mode = "AI"
+    else:
+        conf = random.randint(60,70)
+        mode = "TREND"
 
     send(f"""
-💀 AI ANALİZ
+💀 ANALIZ
 
-📊 {sym}
-📈 {signal}
-💰 {round(price,4)}
-💰 Vol: {round(vol,2)}
+{sym}
+{signal}
+{price}
 
-📊 %{conf}
-━━━━━━━━━━━━━━━
-✅ GİR
-━━━━━━━━━━━━━━━
+AI: %{conf}
+mode: {mode}
+memory: {note}
+{ai_reason}
 """, cid)
 
     last_analysis.update({"sym": sym, "signal": signal, "price": price})
 
+# ==============================
+# OPEN TRADE
+# ==============================
 def open_trade(cid):
+    if len(positions) >= MAX_TRADES:
+        send("max trade", cid)
+        return
+
     if not last_analysis:
-        send("⚠️ Önce analiz", cid)
+        send("once analiz", cid)
         return
 
     sym = last_analysis["sym"]
     price = last_analysis["price"]
     signal = last_analysis["signal"]
 
-    sl = price * 0.98 if signal == "LONG" else price * 1.02
+    sl = price * 0.98 if signal=="LONG" else price*1.02
 
     positions.append({
         "sym": sym,
         "entry": price,
-        "size": 50,
-        "chat": cid,
         "signal": signal,
-        "tp1_done": False,
         "sl": sl,
-        "last_sl_msg": 0
+        "chat": cid
     })
 
-    send(f"""
-🚀 TRADE AÇILDI
+    send(f"TRADE {sym} {signal} {price}", cid)
 
-📊 {sym}
-📈 {signal}
-💰 Giriş: {round(price,4)}
-💵 Miktar: 50 USDT
+# ==============================
+# AI TRADE MANAGE
+# ==============================
+def ai_manage_trade(sym, entry, price, signal, pct):
+    try:
+        prompt = f"""
+Trade:
+{sym}
+Entry:{entry}
+Price:{price}
+Type:{signal}
+Profit:{pct}
 
-🛑 SL: {round(sl,4)}
-🎯 TP1: %1
+HOLD or CLOSE?
+"""
 
-🤖 AI takip ediyor...
-""", cid)
+        res = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role":"user","content":prompt}]
+        )
 
+        txt = res.choices[0].message.content
+
+        if "CLOSE" in txt:
+            return "CLOSE", txt
+
+    except:
+        pass
+
+    return "HOLD",""
+
+# ==============================
+# MANAGE LOOP
+# ==============================
 def manage():
+    global daily_profit, daily_loss
+
     while True:
         for p in positions[:]:
             try:
@@ -147,152 +244,62 @@ def manage():
             except:
                 continue
 
-            if p["signal"] == "LONG":
-                pnl = (price - p["entry"]) * p["size"]
-            else:
-                pnl = (p["entry"] - price) * p["size"]
+            pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
+            pct = pnl/p["entry"]*100
 
-            pct = (pnl/(p["entry"]*p["size"]))*100
-            cid = p["chat"]
+            if "last_ai" not in p:
+                p["last_ai"]=0
 
-            if not p["tp1_done"]:
-                if p["signal"] == "LONG" and price <= p["entry"] * 0.98:
-                    send(f"🛑 STOP LOSS {p['sym']} {round(pnl,4)} USDT", cid)
-                    save_trade(p["sym"], pnl)
+            if time.time()-p["last_ai"]>15:
+                p["last_ai"]=time.time()
+
+                action,_ = ai_manage_trade(p["sym"],p["entry"],price,p["signal"],pct)
+
+                if action=="CLOSE":
+                    send(f"AI CLOSE {p['sym']} {round(pnl,4)}")
+                    daily_profit += pnl if pnl>0 else 0
+                    daily_loss += pnl if pnl<0 else 0
                     positions.remove(p)
-                    continue
-
-                if p["signal"] == "SHORT" and price >= p["entry"] * 1.02:
-                    send(f"🛑 STOP LOSS {p['sym']} {round(pnl,4)} USDT", cid)
-                    save_trade(p["sym"], pnl)
-                    positions.remove(p)
-                    continue
-
-            if not p["tp1_done"] and pct >= 1:
-                p["tp1_done"] = True
-                pnl_half = pnl / 2
-                save_trade(p["sym"], pnl_half)
-                p["sl"] = p["entry"]
-
-                send(f"""
-🎯 TP1
-
-📊 {p['sym']}
-💰 {round(pnl_half,4)} USDT
-
-🛡 SL → ENTRY
-""", cid)
-
-            if p["tp1_done"]:
-                updated = False
-
-                if p["signal"] == "LONG":
-                    new_sl = price * 0.995
-                    if new_sl > p["sl"]:
-                        p["sl"] = new_sl
-                        updated = True
-                else:
-                    new_sl = price * 1.005
-                    if new_sl < p["sl"]:
-                        p["sl"] = new_sl
-                        updated = True
-
-                if updated and time.time() - p["last_sl_msg"] > 20:
-                    p["last_sl_msg"] = time.time()
-
-                    send(f"""
-📈 TRAILING
-
-📊 {p['sym']}
-🛡 SL: {round(p['sl'],4)}
-""", cid)
-
-            if p["signal"] == "LONG" and price <= p["sl"]:
-                send(f"🚨 STOP {p['sym']} {round(pnl,4)} USDT", cid)
-                save_trade(p["sym"], pnl)
-                positions.remove(p)
-                continue
-
-            if p["signal"] == "SHORT" and price >= p["sl"]:
-                send(f"🚨 STOP {p['sym']} {round(pnl,4)} USDT", cid)
-                save_trade(p["sym"], pnl)
-                positions.remove(p)
-                continue
 
         time.sleep(5)
 
-def scanner():
-    while True:
-        try:
-            tickers = exchange.fetch_tickers()
-            sent = 0
+# ==============================
+# CHAT AI
+# ==============================
+def chat_ai(text):
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role":"user","content":text}]
+        )
+        return res.choices[0].message.content
+    except:
+        return "ai hata"
 
-            for sym, data in tickers.items():
-
-                if ":USDT" not in sym:
-                    continue
-
-                if any(x in sym for x in ["BTC","ETH","BNB"]):
-                    continue
-
-                vol = data.get("quoteVolume", 0)
-
-                df = get_data(sym)
-                if df is None:
-                    continue
-
-                price = df["c"].iloc[-1]
-
-                if price < 0.0001:
-                    continue
-
-                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
-                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 1.5
-
-                if vol and vol > 3_000_000 and move and vol_spike:
-
-                    if sym in last_sent and time.time() - last_sent[sym] < 120:
-                        continue
-
-                    last_sent[sym] = time.time()
-
-                    send(f"""
-💀 FIRSAT
-
-📊 {sym}
-💰 Vol: {round(vol/1e6,2)}M
-
-👉 analiz yaz
-""")
-
-                    sent += 1
-                    if sent >= 3:
-                        break
-
-            time.sleep(20)
-
-        except Exception as e:
-            print("SCANNER HATA:", e)
-            time.sleep(10)
-
+# ==============================
+# TELEGRAM
+# ==============================
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
-    text = msg.text.lower().strip()
-    text = text.replace("ç","c").replace("ı","i")
+    text = msg.text.lower()
     cid = msg.chat.id
 
     if "analiz" in text:
         coin = text.replace("analiz","").strip().upper()
-        if coin == "":
-            send("⚠️ coin yaz", cid)
-            return
         analyze(coin+"/USDT:USDT", cid)
 
     elif text == "gir":
         open_trade(cid)
 
-threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=scanner, daemon=True).start()
+    elif text == "ogren":
+        send("memory aktif", cid)
 
-send(f"💀 SADIK BOT {VERSION} AKTİF")
+    else:
+        reply = chat_ai(text)
+        send(reply, cid)
+
+# ==============================
+threading.Thread(target=manage, daemon=True).start()
+
+send(f"💀 BOT {VERSION} AKTIF")
 bot.infinity_polling()
