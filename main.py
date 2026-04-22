@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v8.7 FINAL
+# 💀 SADIK BOT v8.8 FINAL STABLE
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v8.7 FINAL AI"
+VERSION = "v8.8 FINAL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -80,19 +80,23 @@ def load_history():
 
 # ==============================
 def ai_memory(sym):
-    wins, losses = load_history()
+    try:
+        wins, losses = load_history()
 
-    sym_w = [x for x in wins if x["symbol"] == sym]
-    sym_l = [x for x in losses if x["symbol"] == sym]
+        sym_w = [x for x in wins if x["symbol"] == sym]
+        sym_l = [x for x in losses if x["symbol"] == sym]
 
-    total = len(sym_w) + len(sym_l)
+        total = len(sym_w) + len(sym_l)
 
-    if total < 5:
+        if total < 5:
+            return True
+
+        winrate = len(sym_w) / total
+
+        return winrate > 0.4
+
+    except:
         return True
-
-    winrate = len(sym_w) / total
-
-    return winrate > 0.4
 
 # ==============================
 def get_data(sym):
@@ -110,56 +114,73 @@ def scanner():
         try:
             tickers = exchange.fetch_tickers()
 
-            for sym in tickers:
+            for sym, data in tickers.items():
 
-                if ":USDT" not in sym:
+                try:
+                    if not sym or not isinstance(sym, str):
+                        continue
+
+                    if ":USDT" not in sym:
+                        continue
+
+                    if any(x in sym for x in ["BTC","ETH","BNB"]):
+                        continue
+
+                    if data is None:
+                        continue
+
+                    if "quoteVolume" not in data:
+                        continue
+
+                except:
                     continue
 
                 df = get_data(sym)
                 if df is None:
                     continue
 
-                price = df["c"].iloc[-1]
-                ema = df["ema"].iloc[-1]
-
                 if not ai_memory(sym):
                     continue
+
+                price = df["c"].iloc[-1]
+                ema = df["ema"].iloc[-1]
 
                 trend = "UP" if price > ema else "DOWN"
 
                 move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
                 vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 1.5
 
-                if move and vol_spike:
+                if not (move and vol_spike):
+                    continue
 
-                    signal = "LONG" if trend=="UP" else "SHORT"
+                signal = "LONG" if trend=="UP" else "SHORT"
 
-                    tp1 = price * 1.01 if signal=="LONG" else price * 0.99
-                    tp2 = price * 1.02 if signal=="LONG" else price * 0.98
-                    tp3 = price * 1.03 if signal=="LONG" else price * 0.97
-                    sl = price * 0.98 if signal=="LONG" else price * 1.02
+                tp1 = price * 1.01 if signal=="LONG" else price * 0.99
+                tp2 = price * 1.02 if signal=="LONG" else price * 0.98
+                tp3 = price * 1.03 if signal=="LONG" else price * 0.97
+                sl = price * 0.98 if signal=="LONG" else price * 1.02
 
-                    safe = sym.replace("/","").replace(":","")
+                safe = sym.replace("/","").replace(":","")
 
-                    signal_cache[safe] = {
-                        "sym": sym,
-                        "signal": signal,
-                        "price": price,
-                        "tp1": tp1,
-                        "tp2": tp2,
-                        "tp3": tp3,
-                        "sl": sl
-                    }
+                signal_cache[safe] = {
+                    "sym": sym,
+                    "signal": signal,
+                    "entry": price,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "sl": sl
+                }
 
-                    markup = InlineKeyboardMarkup()
-                    markup.add(
-                        InlineKeyboardButton(
-                            "✅ GİR",
-                            callback_data=f"enter|{safe}"
-                        )
+                markup = InlineKeyboardMarkup()
+                markup.add(
+                    InlineKeyboardButton(
+                        "✅ GİR",
+                        callback_data=f"enter|{safe}"
                     )
+                )
 
-                    send(f"""
+                bot.send_message(CHAT_ID, f"""
 💀 AKILLI SİNYAL
 
 📊 {sym}
@@ -170,11 +191,9 @@ def scanner():
 🎯 TP2: {round(tp2,4)}
 🎯 TP3: {round(tp3,4)}
 🛑 SL: {round(sl,4)}
-""", CHAT_ID)
+""", reply_markup=markup)
 
-                    bot.send_message(CHAT_ID, "Trade aç?", reply_markup=markup)
-
-                    time.sleep(5)
+                time.sleep(3)
 
             time.sleep(20)
 
@@ -221,6 +240,11 @@ def manage():
                     positions.remove(p)
                     continue
 
+                # trailing
+                new_sl = price * 0.995
+                if new_sl > p["sl"]:
+                    p["sl"] = new_sl
+
                 if price <= p["sl"]:
                     send(f"🛑 STOP {p['sym']}")
                     save_trade(p["sym"], pnl)
@@ -241,6 +265,10 @@ def manage():
                     positions.remove(p)
                     continue
 
+                new_sl = price * 1.005
+                if new_sl < p["sl"]:
+                    p["sl"] = new_sl
+
                 if price >= p["sl"]:
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
@@ -259,7 +287,7 @@ def callback(call):
         data = signal_cache.get(safe)
 
         if not data:
-            send("veri yok", cid)
+            send("veri bulunamadi", cid)
             return
 
         open_trade(data, cid)
