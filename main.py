@@ -1,7 +1,13 @@
+# ==============================
+# 💀 SADIK BOT v7.0 FINAL
+# ==============================
+
 import os, time, ccxt, telebot, threading, requests, random
 import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+VERSION = "v7.0"
 
 # ===== CONFIG =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -24,14 +30,13 @@ exchange = ccxt.bitget({
 
 positions = []
 last_analysis = {}
-MAX_TRADES = 3
 
 # ===== STATS =====
 daily_profit = 0
 daily_loss = 0
 start_balance = 50
 
-# ===== UTILS =====
+# ===== SEND =====
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
@@ -138,22 +143,76 @@ def manage():
 
         time.sleep(5)
 
-# ===== SCANNER BOOST =====
+# ===== SCANNER v7 BOOST =====
 def scanner():
     while True:
         try:
             tickers = exchange.fetch_tickers()
+
+            pairs = []
             for sym, data in tickers.items():
+
                 if ":USDT" not in sym:
                     continue
 
+                if any(x in sym for x in ["BTC","ETH","XRP","BNB"]):
+                    continue
+
                 vol = data.get("quoteVolume", 0)
+
+                # 💀 3M AYAR
                 if vol and vol > 3_000_000:
-                    send(f"💀 FIRSAT {sym}", CHAT_ID)
+                    pairs.append((sym, vol))
+
+            pairs.sort(key=lambda x: x[1], reverse=True)
+
+            sample = random.sample(pairs[:80], min(20, len(pairs)))
+
+            for sym, vol in sample:
+
+                df = get_data(sym)
+                if df is None:
+                    continue
+
+                price = df["c"].iloc[-1]
+
+                # spike
+                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 2
+
+                # hareket
+                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
+
+                # whale
+                whale = False
+                try:
+                    ob = exchange.fetch_order_book(sym, limit=20)
+                    bids = sum(b[1] for b in ob["bids"])
+                    asks = sum(a[1] for a in ob["asks"])
+                    whale = bids > asks * 1.5
+                except:
+                    pass
+
+                if whale and vol_spike and move:
+
+                    send(f"""
+💀 ULTRA FIRSAT
+
+📊 {sym}
+💰 Vol: {round(vol/1e6,1)}M
+
+🐋 Whale: EVET
+⚡ Spike: EVET
+🚀 Pump: EVET
+
+👉 analiz yaz
+""", CHAT_ID)
+
                     break
 
-            time.sleep(20)
-        except:
+            time.sleep(25)
+
+        except Exception as e:
+            print("SCANNER HATA:", e)
             time.sleep(10)
 
 # ===== PANEL =====
@@ -172,7 +231,7 @@ def panel(cid):
         InlineKeyboardButton("❌ Çık All", callback_data="exit_all")
     )
 
-    bot.send_message(cid, "🤖 PANEL", reply_markup=kb)
+    bot.send_message(cid, f"🤖 PANEL {VERSION}", reply_markup=kb)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
@@ -196,7 +255,6 @@ def handle(msg):
 def callback(call):
     cid = call.message.chat.id
 
-    # ===== POZİSYON + STOP/DEVAM =====
     if call.data == "pozisyon":
         if not positions:
             bot.send_message(cid, "📭 Açık işlem yok")
@@ -218,7 +276,6 @@ def callback(call):
 
         bot.send_message(cid, msg, reply_markup=kb)
 
-    # ===== TEK TEK STOP =====
     elif call.data.startswith("stop_"):
         sym = call.data.replace("stop_", "")
 
@@ -232,17 +289,10 @@ def callback(call):
 
                 bot.send_message(cid, f"❌ {p['sym']} kapandı ({round(pnl,4)} USDT)")
 
-    # ===== DEVAM =====
     elif call.data.startswith("hold_"):
         sym = call.data.replace("hold_", "")
+        bot.send_message(cid, f"🟢 {sym} devam")
 
-        for p in positions:
-            if sym in p["sym"]:
-                p["exit_flag"] = False
-
-        bot.send_message(cid, f"🟢 {sym} devam ediyor")
-
-    # ===== AI PANEL =====
     elif call.data == "ai":
         total = daily_profit + daily_loss
         balance = start_balance + total
@@ -259,12 +309,10 @@ def callback(call):
 💼 Bakiye: {round(balance,4)} USDT
 """)
 
-    # ===== STOP ALL =====
     elif call.data == "stop_all":
         positions.clear()
         bot.send_message(cid, "🛑 Tüm işlemler durduruldu")
 
-    # ===== EXIT ALL =====
     elif call.data == "exit_all":
         for p in positions[:]:
             price = exchange.fetch_ticker(p["sym"])["last"]
@@ -279,5 +327,5 @@ def callback(call):
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-send("💀 FINAL SYSTEM AKTİF")
+send(f"💀 SADIK BOT {VERSION} AKTİF")
 bot.infinity_polling()
