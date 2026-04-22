@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v7.1 (NO DELETE MODE)
+# 💀 SADIK BOT v7.3 (TP + TRAILING + FULL MESSAGE)
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v7.1"
+VERSION = "v7.3"
 
 # ===== CONFIG =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -58,12 +58,11 @@ def save_trade(sym, pnl):
             "Authorization": f"Bearer {SUPA_KEY}",
             "Content-Type": "application/json"
         }
-        r = requests.post(f"{SUPA_URL}/rest/v1/trades",
-                          headers=headers,
-                          json={"symbol": sym, "result": pnl})
-        print("SUPABASE:", r.status_code, r.text)
-    except Exception as e:
-        print("SUPABASE HATA:", e)
+        requests.post(f"{SUPA_URL}/rest/v1/trades",
+                      headers=headers,
+                      json={"symbol": sym, "result": pnl})
+    except:
+        pass
 
 # ===== DATA =====
 def get_data(sym):
@@ -101,13 +100,9 @@ def analyze(sym, cid):
 ━━━━━━━━━━━━━━━
 """, cid)
 
-    last_analysis.update({
-        "sym": sym,
-        "signal": signal,
-        "price": price
-    })
+    last_analysis.update({"sym": sym, "signal": signal, "price": price})
 
-# ===== TRADE (FIXED) =====
+# ===== TRADE =====
 def open_trade(cid):
     if not last_analysis:
         send("⚠️ Önce analiz", cid)
@@ -124,7 +119,9 @@ def open_trade(cid):
         "chat": cid,
         "peak_pct": 0,
         "exit_flag": False,
-        "signal": signal
+        "signal": signal,
+        "tp1_done": False,
+        "sl": price * 0.98
     })
 
     send(f"""
@@ -147,193 +144,78 @@ def manage():
 
             pnl = (price - p["entry"]) * p["size"]
             pct = (pnl/(p["entry"]*p["size"]))*100
+            cid = p["chat"]
 
-            p["peak_pct"] = max(p["peak_pct"], pct)
+            # ===== STOP LOSS =====
+            if not p["tp1_done"] and price <= p["entry"] * 0.98:
+                send(f"""
+🛑 STOP LOSS
 
-            if pct < p["peak_pct"] - 0.5 and not p["exit_flag"]:
-                send(f"⚠️ {p['sym']} risk var ({round(pnl,4)} USDT)", p["chat"])
-                p["exit_flag"] = True
+📊 {p['sym']}
+💰 {round(pnl,4)} USDT
 
-        time.sleep(5)
-
-# ===== SCANNER (3M + WHALE) =====
-def scanner():
-    while True:
-        try:
-            tickers = exchange.fetch_tickers()
-
-            pairs = []
-            for sym, data in tickers.items():
-
-                if ":USDT" not in sym:
-                    continue
-
-                if any(x in sym for x in ["BTC","ETH","XRP","BNB"]):
-                    continue
-
-                vol = data.get("quoteVolume", 0)
-
-                if vol and vol > 3_000_000:
-                    pairs.append((sym, vol))
-
-            pairs.sort(key=lambda x: x[1], reverse=True)
-
-            sample = random.sample(pairs[:80], min(20, len(pairs)))
-
-            for sym, vol in sample:
-
-                df = get_data(sym)
-                if df is None:
-                    continue
-
-                price = df["c"].iloc[-1]
-
-                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 2
-                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
-
-                whale = False
-                try:
-                    ob = exchange.fetch_order_book(sym, limit=20)
-                    bids = sum(b[1] for b in ob["bids"])
-                    asks = sum(a[1] for a in ob["asks"])
-                    whale = bids > asks * 1.5
-                except:
-                    pass
-
-                if whale and vol_spike and move:
-
-                    send(f"""
-💀 ULTRA FIRSAT
-
-📊 {sym}
-💰 Vol: {round(vol/1e6,1)}M
-
-🐋 Whale: EVET
-⚡ Spike: EVET
-🚀 Pump: EVET
-
-👉 analiz yaz
-""", CHAT_ID)
-
-                    break
-
-            time.sleep(25)
-
-        except Exception as e:
-            print("SCANNER HATA:", e)
-            time.sleep(10)
-
-# ===== PANEL =====
-def panel(cid):
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("📊 Durum", callback_data="durum"),
-        InlineKeyboardButton("📈 Pozisyon", callback_data="pozisyon")
-    )
-    kb.add(
-        InlineKeyboardButton("🤖 AI", callback_data="ai"),
-        InlineKeyboardButton("🟢 Devam", callback_data="devam")
-    )
-    kb.add(
-        InlineKeyboardButton("🛑 Stop All", callback_data="stop_all"),
-        InlineKeyboardButton("❌ Çık All", callback_data="exit_all")
-    )
-
-    bot.send_message(cid, f"🤖 PANEL {VERSION}", reply_markup=kb)
-
-# ===== TELEGRAM =====
-@bot.message_handler(func=lambda m: True)
-def handle(msg):
-    text = msg.text.lower().strip()
-    text = text.replace("ç","c").replace("ı","i")
-    cid = msg.chat.id
-
-    if "analiz" in text:
-        coin = text.replace("analiz","").strip().upper()
-        analyze(coin+"/USDT:USDT", cid)
-
-    elif text == "gir":
-        open_trade(cid)
-
-    elif text == "/panel":
-        panel(cid)
-
-# ===== CALLBACK =====
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    cid = call.message.chat.id
-
-    if call.data == "pozisyon":
-        if not positions:
-            bot.send_message(cid, "📭 Açık işlem yok")
-            return
-
-        kb = InlineKeyboardMarkup()
-        msg = "📊 POZİSYONLAR\n\n"
-
-        for p in positions:
-            price = exchange.fetch_ticker(p["sym"])["last"]
-            pnl = (price - p["entry"]) * p["size"]
-
-            msg += f"{p['sym']} → {round(pnl,4)} USDT\n"
-
-            kb.add(
-                InlineKeyboardButton(f"❌ STOP {p['sym']}", callback_data=f"stop_{p['sym']}"),
-                InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"hold_{p['sym']}")
-            )
-
-        bot.send_message(cid, msg, reply_markup=kb)
-
-    elif call.data.startswith("stop_"):
-        sym = call.data.replace("stop_", "")
-
-        for p in positions[:]:
-            if sym in p["sym"]:
-                price = exchange.fetch_ticker(p["sym"])["last"]
-                pnl = (price - p["entry"]) * p["size"]
+❗ %2 zarar kesildi
+""", cid)
 
                 save_trade(p["sym"], pnl)
                 positions.remove(p)
+                continue
 
-                bot.send_message(cid, f"❌ {p['sym']} kapandı ({round(pnl,4)} USDT)")
+            # ===== TP1 =====
+            if not p["tp1_done"] and pct >= 1:
+                p["tp1_done"] = True
 
-    elif call.data.startswith("hold_"):
-        sym = call.data.replace("hold_", "")
-        bot.send_message(cid, f"🟢 {sym} devam")
+                pnl_half = pnl / 2
+                save_trade(p["sym"], pnl_half)
 
-    elif call.data == "ai":
-        total = daily_profit + daily_loss
-        balance = start_balance + total
+                p["sl"] = p["entry"]
 
-        bot.send_message(cid, f"""
-🤖 AI PANEL
+                send(f"""
+🎯 TP1 GERÇEKLEŞTİ
 
-📊 Açık İşlem: {len(positions)}
+📊 {p['sym']}
+💰 {round(pnl_half,4)} USDT
 
-💰 Kâr: {round(daily_profit,4)} USDT
-📉 Zarar: {round(daily_loss,4)} USDT
-📈 Net: {round(total,4)} USDT
+🛡 SL → ENTRY ({round(p['sl'],4)})
+📈 Trailing başlıyor
+""", cid)
 
-💼 Bakiye: {round(balance,4)} USDT
-""")
+            # ===== TRAILING =====
+            if p["tp1_done"]:
+                old_sl = p["sl"]
+                new_sl = price * 0.995
 
-    elif call.data == "stop_all":
-        positions.clear()
-        bot.send_message(cid, "🛑 Tüm işlemler durduruldu")
+                if new_sl > p["sl"]:
+                    p["sl"] = new_sl
 
-    elif call.data == "exit_all":
-        for p in positions[:]:
-            price = exchange.fetch_ticker(p["sym"])["last"]
-            pnl = (price - p["entry"]) * p["size"]
+                    send(f"""
+📈 TRAILING GÜNCELLENDİ
 
-            save_trade(p["sym"], pnl)
-            positions.remove(p)
+📊 {p['sym']}
+💰 Fiyat: {round(price,4)}
 
-        bot.send_message(cid, "❌ Tüm işlemler kapatıldı")
+🛡 Yeni SL: {round(p['sl'],4)}
+""", cid)
 
-# ===== THREADS =====
+            # ===== STOP (TRAILING) =====
+            if price <= p["sl"]:
+                send(f"""
+🚨 STOP TETİKLENDİ
+
+📊 {p['sym']}
+💰 {round(pnl,4)} USDT
+
+🛡 SL: {round(p['sl'],4)}
+""", cid)
+
+                save_trade(p["sym"], pnl)
+                positions.remove(p)
+                continue
+
+        time.sleep(5)
+
+# ===== THREAD =====
 threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=scanner, daemon=True).start()
 
 send(f"💀 SADIK BOT {VERSION} AKTİF")
 bot.infinity_polling()
