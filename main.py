@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v8.9 PRO PANEL
+# 💀 SADIK BOT v9 AI LIVE FINAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v8.9 PRO PANEL"
+VERSION = "v9 AI LIVE"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -29,8 +29,6 @@ exchange = ccxt.bitget({
 
 positions = []
 signal_cache = {}
-
-# ✅ NEW: LOG SYSTEM
 event_log = []
 
 # ==============================
@@ -41,7 +39,6 @@ def send(msg, cid=None):
         print("SEND:", e)
 
 # ==============================
-# ✅ NEW: LOG ADD
 def log_event(text):
     event_log.append(f"{time.strftime('%H:%M:%S')} - {text}")
     if len(event_log) > 20:
@@ -61,7 +58,6 @@ def save_trade(sym, pnl):
             headers=headers,
             json={"symbol": sym, "result": pnl}
         )
-
     except Exception as e:
         print("SUPABASE:", e)
 
@@ -79,12 +75,9 @@ def load_history():
         )
 
         data = r.json()
-
         wins = [x for x in data if x["result"] > 0]
         losses = [x for x in data if x["result"] <= 0]
-
         return wins, losses
-
     except:
         return [], []
 
@@ -92,19 +85,13 @@ def load_history():
 def ai_memory(sym):
     try:
         wins, losses = load_history()
-
         sym_w = [x for x in wins if x["symbol"] == sym]
         sym_l = [x for x in losses if x["symbol"] == sym]
-
         total = len(sym_w) + len(sym_l)
-
         if total < 5:
             return True
-
         winrate = len(sym_w) / total
-
         return winrate > 0.4
-
     except:
         return True
 
@@ -125,23 +112,17 @@ def scanner():
             tickers = exchange.fetch_tickers()
 
             for sym, data in tickers.items():
-
                 try:
                     if not sym or not isinstance(sym, str):
                         continue
-
                     if ":USDT" not in sym:
                         continue
-
                     if any(x in sym for x in ["BTC","ETH","BNB"]):
                         continue
-
                     if data is None:
                         continue
-
                     if "quoteVolume" not in data:
                         continue
-
                 except:
                     continue
 
@@ -184,10 +165,7 @@ def scanner():
 
                 markup = InlineKeyboardMarkup()
                 markup.add(
-                    InlineKeyboardButton(
-                        "✅ GİR",
-                        callback_data=f"enter|{safe}"
-                    )
+                    InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}")
                 )
 
                 bot.send_message(CHAT_ID, f"""
@@ -217,10 +195,10 @@ def open_trade(data, cid):
         **data,
         "tp1_done": False,
         "tp2_done": False,
-        "chat": cid
+        "chat": cid,
+        "ai_status": "HOLD"
     })
-
-    log_event(f"TRADE OPEN {data['sym']}")
+    log_event(f"OPEN {data['sym']}")
     send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
 
 # ==============================
@@ -228,28 +206,51 @@ def manage():
     while True:
         for p in positions[:]:
             try:
-                price = exchange.fetch_ticker(p["sym"])["last"]
+                ticker = exchange.fetch_ticker(p["sym"])
+                price = ticker["last"]
             except:
                 continue
 
             pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
-            pnl_usdt = round(pnl * 1000, 2)  # approx
+            pnl_usdt = round(pnl * 1000, 2)
 
+            # ======================
+            # 🤖 AI LIVE ANALİZ
+            df = get_data(p["sym"])
+            if df is not None:
+                ema = df["ema"].iloc[-1]
+                trend = "UP" if price > ema else "DOWN"
+
+                if trend == "DOWN" and p["signal"] == "LONG":
+                    if p["ai_status"] != "EXIT":
+                        p["ai_status"] = "EXIT"
+                        send(f"🤖 AI EXIT {p['sym']}")
+                        log_event(f"AI EXIT {p['sym']}")
+
+            # ======================
+            # AI EXIT
+            if p.get("ai_status") == "EXIT":
+                send(f"⛔ AI CLOSE {p['sym']} {pnl_usdt}$")
+                save_trade(p["sym"], pnl)
+                positions.remove(p)
+                continue
+
+            # ======================
             if p["signal"]=="LONG":
 
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
-                    log_event(f"TP1 HIT {p['sym']} +{pnl_usdt}$")
+                    log_event(f"TP1 {p['sym']}")
                     send(f"🎯 TP1 {p['sym']}")
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
-                    log_event(f"TP2 HIT {p['sym']} +{pnl_usdt}$")
+                    log_event(f"TP2 {p['sym']}")
                     send(f"🎯 TP2 {p['sym']}")
 
                 elif price >= p["tp3"]:
-                    log_event(f"TP3 HIT {p['sym']} +{pnl_usdt}$")
+                    log_event(f"TP3 {p['sym']}")
                     send(f"🚀 TP3 {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
@@ -260,35 +261,8 @@ def manage():
                     p["sl"] = new_sl
 
                 if price <= p["sl"]:
-                    log_event(f"STOP {p['sym']} {pnl_usdt}$")
+                    log_event(f"STOP {p['sym']}")
                     send(f"🛑 STOP {p['sym']}")
-                    save_trade(p["sym"], pnl)
-                    positions.remove(p)
-                    continue
-
-            else:
-
-                if not p["tp1_done"] and price <= p["tp1"]:
-                    p["tp1_done"] = True
-                    p["sl"] = p["entry"]
-                    log_event(f"TP1 SHORT {p['sym']}")
-
-                elif not p["tp2_done"] and price <= p["tp2"]:
-                    p["tp2_done"] = True
-                    log_event(f"TP2 SHORT {p['sym']}")
-
-                elif price <= p["tp3"]:
-                    log_event(f"TP3 SHORT {p['sym']}")
-                    save_trade(p["sym"], pnl)
-                    positions.remove(p)
-                    continue
-
-                new_sl = price * 1.005
-                if new_sl < p["sl"]:
-                    p["sl"] = new_sl
-
-                if price >= p["sl"]:
-                    log_event(f"STOP SHORT {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
@@ -296,7 +270,6 @@ def manage():
         time.sleep(5)
 
 # ==============================
-# ✅ PANEL COMMAND
 @bot.message_handler(commands=['panel'])
 def panel(msg):
     markup = InlineKeyboardMarkup()
@@ -308,8 +281,11 @@ def panel(msg):
         InlineKeyboardButton("🤖 AI", callback_data="panel_ai"),
         InlineKeyboardButton("📡 Log", callback_data="panel_log")
     )
+    markup.row(
+        InlineKeyboardButton("⛔ EXIT", callback_data="exit_trade")
+    )
 
-    bot.send_message(msg.chat.id, "🤖 SADIK PRO PANEL", reply_markup=markup)
+    bot.send_message(msg.chat.id, "🤖 PRO PANEL", reply_markup=markup)
 
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
@@ -326,6 +302,28 @@ def callback(call):
 
         open_trade(data, cid)
 
+    elif call.data == "exit_trade":
+        if not positions:
+            send("Açık işlem yok", cid)
+            return
+
+        p = positions[0]
+
+        try:
+            price = exchange.fetch_ticker(p["sym"])["last"]
+        except:
+            send("Fiyat alınamadı", cid)
+            return
+
+        pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
+        pnl_usdt = round(pnl * 1000, 2)
+
+        log_event(f"MANUAL EXIT {p['sym']}")
+        send(f"⛔ EXIT {p['sym']} {pnl_usdt}$", cid)
+
+        save_trade(p["sym"], pnl)
+        positions.remove(p)
+
     elif call.data == "panel_durum":
         send(f"📊 Açık işlem: {len(positions)}", cid)
 
@@ -339,13 +337,14 @@ def callback(call):
 📈 {p['sym']}
 Entry: {round(p['entry'],4)}
 
+AI: {p.get('ai_status')}
+
 TP1: {'✅' if p['tp1_done'] else '⏳'}
 TP2: {'✅' if p['tp2_done'] else '⏳'}
-TP3: ⏳
 """, cid)
 
     elif call.data == "panel_ai":
-        send("🤖 AI: aktif (basit mod)", cid)
+        send("🤖 AI LIVE AKTIF", cid)
 
     elif call.data == "panel_log":
         if not event_log:
