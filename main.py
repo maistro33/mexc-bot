@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v8.8 FINAL STABLE
+# 💀 SADIK BOT v8.9 PRO PANEL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v8.8 FINAL"
+VERSION = "v8.9 PRO PANEL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -30,12 +30,22 @@ exchange = ccxt.bitget({
 positions = []
 signal_cache = {}
 
+# ✅ NEW: LOG SYSTEM
+event_log = []
+
 # ==============================
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg)
     except Exception as e:
         print("SEND:", e)
+
+# ==============================
+# ✅ NEW: LOG ADD
+def log_event(text):
+    event_log.append(f"{time.strftime('%H:%M:%S')} - {text}")
+    if len(event_log) > 20:
+        event_log.pop(0)
 
 # ==============================
 def save_trade(sym, pnl):
@@ -210,6 +220,7 @@ def open_trade(data, cid):
         "chat": cid
     })
 
+    log_event(f"TRADE OPEN {data['sym']}")
     send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
 
 # ==============================
@@ -222,30 +233,34 @@ def manage():
                 continue
 
             pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
+            pnl_usdt = round(pnl * 1000, 2)  # approx
 
             if p["signal"]=="LONG":
 
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
+                    log_event(f"TP1 HIT {p['sym']} +{pnl_usdt}$")
                     send(f"🎯 TP1 {p['sym']}")
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
+                    log_event(f"TP2 HIT {p['sym']} +{pnl_usdt}$")
                     send(f"🎯 TP2 {p['sym']}")
 
                 elif price >= p["tp3"]:
+                    log_event(f"TP3 HIT {p['sym']} +{pnl_usdt}$")
                     send(f"🚀 TP3 {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
 
-                # trailing
                 new_sl = price * 0.995
                 if new_sl > p["sl"]:
                     p["sl"] = new_sl
 
                 if price <= p["sl"]:
+                    log_event(f"STOP {p['sym']} {pnl_usdt}$")
                     send(f"🛑 STOP {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
@@ -256,11 +271,14 @@ def manage():
                 if not p["tp1_done"] and price <= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
+                    log_event(f"TP1 SHORT {p['sym']}")
 
                 elif not p["tp2_done"] and price <= p["tp2"]:
                     p["tp2_done"] = True
+                    log_event(f"TP2 SHORT {p['sym']}")
 
                 elif price <= p["tp3"]:
+                    log_event(f"TP3 SHORT {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
@@ -270,11 +288,28 @@ def manage():
                     p["sl"] = new_sl
 
                 if price >= p["sl"]:
+                    log_event(f"STOP SHORT {p['sym']}")
                     save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
 
         time.sleep(5)
+
+# ==============================
+# ✅ PANEL COMMAND
+@bot.message_handler(commands=['panel'])
+def panel(msg):
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("📊 Durum", callback_data="panel_durum"),
+        InlineKeyboardButton("📈 Pozisyon", callback_data="panel_pos")
+    )
+    markup.row(
+        InlineKeyboardButton("🤖 AI", callback_data="panel_ai"),
+        InlineKeyboardButton("📡 Log", callback_data="panel_log")
+    )
+
+    bot.send_message(msg.chat.id, "🤖 SADIK PRO PANEL", reply_markup=markup)
 
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
@@ -283,7 +318,6 @@ def callback(call):
 
     if call.data.startswith("enter|"):
         safe = call.data.split("|")[1]
-
         data = signal_cache.get(safe)
 
         if not data:
@@ -291,6 +325,33 @@ def callback(call):
             return
 
         open_trade(data, cid)
+
+    elif call.data == "panel_durum":
+        send(f"📊 Açık işlem: {len(positions)}", cid)
+
+    elif call.data == "panel_pos":
+        if not positions:
+            send("Pozisyon yok", cid)
+            return
+
+        p = positions[0]
+        send(f"""
+📈 {p['sym']}
+Entry: {round(p['entry'],4)}
+
+TP1: {'✅' if p['tp1_done'] else '⏳'}
+TP2: {'✅' if p['tp2_done'] else '⏳'}
+TP3: ⏳
+""", cid)
+
+    elif call.data == "panel_ai":
+        send("🤖 AI: aktif (basit mod)", cid)
+
+    elif call.data == "panel_log":
+        if not event_log:
+            send("Log boş", cid)
+        else:
+            send("\n".join(event_log[-10:]), cid)
 
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
