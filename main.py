@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v9 AI LIVE FINAL
+# 💀 SADIK BOT v9.1 AI LIVE REPORT
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v9 AI LIVE"
+VERSION = "v9.1 AI LIVE REPORT"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -196,7 +196,8 @@ def open_trade(data, cid):
         "tp1_done": False,
         "tp2_done": False,
         "chat": cid,
-        "ai_status": "HOLD"
+        "ai_status": "HOLD",
+        "last_ai_report": 0
     })
     log_event(f"OPEN {data['sym']}")
     send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
@@ -215,7 +216,34 @@ def manage():
             pnl_usdt = round(pnl * 1000, 2)
 
             # ======================
-            # 🤖 AI LIVE ANALİZ
+            # 🤖 AI LIVE REPORT
+            if time.time() - p["last_ai_report"] > 20:
+
+                df = get_data(p["sym"])
+                if df is not None:
+                    ema = df["ema"].iloc[-1]
+                    trend = "UP" if price > ema else "DOWN"
+
+                    momentum = "STRONG" if abs(df["c"].iloc[-1] - df["c"].iloc[-3]) > price*0.002 else "WEAK"
+                    volume = "HIGH" if df["v"].iloc[-1] > df["v"].iloc[-5] else "LOW"
+
+                    decision = "DEVAM" if trend == "UP" else "EXIT"
+
+                    send(f"""
+🤖 AI LIVE
+
+📊 {p['sym']}
+Trend: {trend}
+Momentum: {momentum}
+Volume: {volume}
+
+Karar: {decision}
+""")
+
+                    p["last_ai_report"] = time.time()
+
+            # ======================
+            # AI EXIT
             df = get_data(p["sym"])
             if df is not None:
                 ema = df["ema"].iloc[-1]
@@ -227,8 +255,6 @@ def manage():
                         send(f"🤖 AI EXIT {p['sym']}")
                         log_event(f"AI EXIT {p['sym']}")
 
-            # ======================
-            # AI EXIT
             if p.get("ai_status") == "EXIT":
                 send(f"⛔ AI CLOSE {p['sym']} {pnl_usdt}$")
                 save_trade(p["sym"], pnl)
