@@ -1,16 +1,18 @@
 # ==============================
-# 💀 SADIK BOT v8 CORE
+# 💀 SADIK BOT v8.1 AI DEBUG FULL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
 import pandas as pd
 from openai import OpenAI
 
-VERSION = "v8 CORE AI"
+VERSION = "v8.1 AI DEBUG"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+
+print("OPENAI KEY:", OPENAI_KEY)
 
 SUPA_URL = os.getenv("SUPABASE_URL")
 SUPA_KEY = os.getenv("SUPABASE_KEY")
@@ -53,7 +55,8 @@ def get_data(sym):
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
-    except:
+    except Exception as e:
+        print("DATA HATA:", e)
         return None
 
 # ==============================
@@ -72,29 +75,35 @@ def load_trade_history():
         losses = [x for x in data if x["result"] <= 0]
 
         return wins[-50:], losses[-50:]
-    except:
+    except Exception as e:
+        print("SUPABASE LOAD HATA:", e)
         return [], []
 
 # ==============================
 # MEMORY DECISION
 # ==============================
 def ai_memory_decision(sym):
-    wins, losses = load_trade_history()
+    try:
+        wins, losses = load_trade_history()
 
-    sym_wins = [x for x in wins if x["symbol"] == sym]
-    sym_losses = [x for x in losses if x["symbol"] == sym]
+        sym_wins = [x for x in wins if x["symbol"] == sym]
+        sym_losses = [x for x in losses if x["symbol"] == sym]
 
-    total = len(sym_wins) + len(sym_losses)
+        total = len(sym_wins) + len(sym_losses)
 
-    if total < 5:
-        return True, "veri az"
+        if total < 5:
+            return True, "veri az"
 
-    winrate = len(sym_wins) / total
+        winrate = len(sym_wins) / total
 
-    if winrate < 0.4:
-        return False, f"kotu (%{round(winrate*100,1)})"
+        if winrate < 0.4:
+            return False, f"kotu (%{round(winrate*100,1)})"
 
-    return True, f"iyi (%{round(winrate*100,1)})"
+        return True, f"iyi (%{round(winrate*100,1)})"
+
+    except Exception as e:
+        print("MEMORY HATA:", e)
+        return True, "memory hata"
 
 # ==============================
 # AI ANALYZE
@@ -111,16 +120,19 @@ Return: LONG/SHORT|confidence|reason
 """
 
         res = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
         )
 
-        txt = res.choices[0].message.content
+        txt = res.choices[0].message.content.strip()
+        print("AI ANALYZE RAW:", txt)
+
         s, c, r = txt.split("|")
 
-        return s.strip(), int(c), r
+        return s.strip(), int(c), r.strip()
 
-    except:
+    except Exception as e:
+        print("AI ANALYZE HATA:", e)
         return None, None, "ai hata"
 
 # ==============================
@@ -149,7 +161,7 @@ def analyze(sym, cid):
 
     ai_signal, ai_conf, ai_reason = ai_analyze(sym, price, trend)
 
-    if ai_signal and ai_conf >= 75:
+    if ai_signal and ai_conf and ai_conf >= 75:
         signal = ai_signal
         conf = ai_conf
         mode = "AI"
@@ -217,17 +229,18 @@ HOLD or CLOSE?
 """
 
         res = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}]
         )
 
-        txt = res.choices[0].message.content
+        txt = res.choices[0].message.content.strip()
+        print("AI MANAGE RAW:", txt)
 
-        if "CLOSE" in txt:
+        if "CLOSE" in txt.upper():
             return "CLOSE", txt
 
-    except:
-        pass
+    except Exception as e:
+        print("AI MANAGE HATA:", e)
 
     return "HOLD",""
 
@@ -241,7 +254,8 @@ def manage():
         for p in positions[:]:
             try:
                 price = exchange.fetch_ticker(p["sym"])["last"]
-            except:
+            except Exception as e:
+                print("PRICE HATA:", e)
                 continue
 
             pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
@@ -269,12 +283,18 @@ def manage():
 def chat_ai(text):
     try:
         res = client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",
             messages=[{"role":"user","content":text}]
         )
-        return res.choices[0].message.content
-    except:
-        return "ai hata"
+
+        reply = res.choices[0].message.content
+        print("CHAT AI:", reply)
+
+        return reply
+
+    except Exception as e:
+        print("CHAT AI HATA:", e)
+        return f"AI hata: {e}"
 
 # ==============================
 # TELEGRAM
