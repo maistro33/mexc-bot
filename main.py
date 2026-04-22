@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v19.4 FINAL
+# 💀 SADIK BOT v20 BALANCED AI
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v19.4 FINAL"
+VERSION = "v20 BALANCED AI"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -43,26 +43,53 @@ def send(msg, cid=None):
 # ==============================
 def get_data(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=100)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
+        df["rsi"] = 100 - (100 / (1 + df["c"].pct_change().rolling(14).mean()))
         return df
     except:
         return None
 
 # ==============================
-def ai_strength(df):
+def ai_signal(df):
     price = df["c"].iloc[-1]
     ema = df["ema"].iloc[-1]
-    momentum = abs(df["c"].iloc[-1] - df["c"].iloc[-5])
+    rsi = df["rsi"].iloc[-1]
+
+    momentum = df["c"].iloc[-1] - df["c"].iloc[-5]
     volume = df["v"].iloc[-1] / df["v"].iloc[-5]
 
-    score = 0
-    if price > ema: score += 40
-    if momentum > price * 0.002: score += 30
-    if volume > 1.2: score += 30
+    score_long = 0
+    score_short = 0
 
-    return min(score,100)
+    # EMA trend
+    if price > ema:
+        score_long += 30
+    else:
+        score_short += 30
+
+    # RSI
+    if rsi < 30:
+        score_long += 20
+    elif rsi > 70:
+        score_short += 20
+
+    # Momentum
+    if momentum > 0:
+        score_long += 25
+    else:
+        score_short += 25
+
+    # Volume
+    if volume > 1.3:
+        score_long += 15
+        score_short += 15
+
+    if score_long > score_short:
+        return "LONG", score_long
+    else:
+        return "SHORT", score_short
 
 # ==============================
 def market_status():
@@ -80,11 +107,18 @@ def save_trade(sym, pnl):
             "Authorization": f"Bearer {SUPA_KEY}",
             "Content-Type": "application/json"
         }
-        requests.post(f"{SUPA_URL}/rest/v1/trades",
-                      headers=headers,
-                      json={"symbol": sym, "result": pnl})
-    except:
-        pass
+
+        requests.post(
+            f"{SUPA_URL}/rest/v1/trades",
+            headers=headers,
+            json={
+                "Symbol": sym,
+                "pnl": pnl
+            }
+        )
+
+    except Exception as e:
+        print("SUPABASE ERROR:", e)
 
 # ==============================
 def calc_pnl(p, price):
@@ -109,14 +143,14 @@ def scanner():
                 if df is None:
                     continue
 
-                strength = ai_strength(df)
-                if strength < 70:
+                signal, strength = ai_signal(df)
+
+                if strength < 60:
                     continue
 
                 price = df["c"].iloc[-1]
-                trend = "LONG" if price > df["ema"].iloc[-1] else "SHORT"
 
-                if trend == "LONG":
+                if signal == "LONG":
                     tp1 = price * 1.01
                     tp2 = price * 1.02
                     tp3 = price * 1.03
@@ -133,7 +167,7 @@ def scanner():
                     "id": safe,
                     "sym": sym,
                     "entry": price,
-                    "signal": trend,
+                    "signal": signal,
                     "tp1": tp1,
                     "tp2": tp2,
                     "tp3": tp3,
@@ -147,7 +181,7 @@ def scanner():
 💀 AKILLI SİNYAL
 
 📊 {sym}
-📈 {trend}
+📈 {signal}
 💰 {round(price,4)}
 
 🎯 TP1: {round(tp1,4)}
@@ -164,7 +198,8 @@ def scanner():
 
             time.sleep(15)
 
-        except:
+        except Exception as e:
+            print("SCANNER:", e)
             time.sleep(5)
 
 # ==============================
@@ -200,13 +235,11 @@ def manage():
 
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
-                    p["remaining"] -= 0.5
                     p["sl"] = p["entry"]
                     send(f"🎯 TP1 {p['sym']} +{pnl} USDT")
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
-                    p["remaining"] -= 0.25
                     p["sl"] = p["tp1"]
                     send(f"🎯 TP2 {p['sym']} +{pnl} USDT")
 
@@ -230,13 +263,11 @@ def manage():
 
                 if not p["tp1_done"] and price <= p["tp1"]:
                     p["tp1_done"] = True
-                    p["remaining"] -= 0.5
                     p["sl"] = p["entry"]
                     send(f"🎯 TP1 SHORT {p['sym']} +{pnl} USDT")
 
                 elif not p["tp2_done"] and price <= p["tp2"]:
                     p["tp2_done"] = True
-                    p["remaining"] -= 0.25
                     p["sl"] = p["tp1"]
                     send(f"🎯 TP2 SHORT {p['sym']} +{pnl} USDT")
 
