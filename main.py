@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v8.6 PRO MULTI TP
+# 💀 SADIK BOT v8.7 FINAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,11 +7,14 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v8.6 PRO MULTI TP"
+VERSION = "v8.7 FINAL AI"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+
+SUPA_URL = os.getenv("SUPABASE_URL")
+SUPA_KEY = os.getenv("SUPABASE_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 client = OpenAI(api_key=OPENAI_KEY)
@@ -25,13 +28,71 @@ exchange = ccxt.bitget({
 })
 
 positions = []
+signal_cache = {}
 
 # ==============================
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg)
+    except Exception as e:
+        print("SEND:", e)
+
+# ==============================
+def save_trade(sym, pnl):
+    try:
+        headers = {
+            "apikey": SUPA_KEY,
+            "Authorization": f"Bearer {SUPA_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        requests.post(
+            f"{SUPA_URL}/rest/v1/trades",
+            headers=headers,
+            json={"symbol": sym, "result": pnl}
+        )
+
+    except Exception as e:
+        print("SUPABASE:", e)
+
+# ==============================
+def load_history():
+    try:
+        headers = {
+            "apikey": SUPA_KEY,
+            "Authorization": f"Bearer {SUPA_KEY}"
+        }
+
+        r = requests.get(
+            f"{SUPA_URL}/rest/v1/trades?select=*",
+            headers=headers
+        )
+
+        data = r.json()
+
+        wins = [x for x in data if x["result"] > 0]
+        losses = [x for x in data if x["result"] <= 0]
+
+        return wins, losses
+
     except:
-        pass
+        return [], []
+
+# ==============================
+def ai_memory(sym):
+    wins, losses = load_history()
+
+    sym_w = [x for x in wins if x["symbol"] == sym]
+    sym_l = [x for x in losses if x["symbol"] == sym]
+
+    total = len(sym_w) + len(sym_l)
+
+    if total < 5:
+        return True
+
+    winrate = len(sym_w) / total
+
+    return winrate > 0.4
 
 # ==============================
 def get_data(sym):
@@ -44,14 +105,13 @@ def get_data(sym):
         return None
 
 # ==============================
-# SCANNER + AI SIGNAL
-# ==============================
 def scanner():
     while True:
         try:
             tickers = exchange.fetch_tickers()
 
-            for sym, data in tickers.items():
+            for sym in tickers:
+
                 if ":USDT" not in sym:
                     continue
 
@@ -62,7 +122,11 @@ def scanner():
                 price = df["c"].iloc[-1]
                 ema = df["ema"].iloc[-1]
 
+                if not ai_memory(sym):
+                    continue
+
                 trend = "UP" if price > ema else "DOWN"
+
                 move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
                 vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 1.5
 
@@ -75,12 +139,27 @@ def scanner():
                     tp3 = price * 1.03 if signal=="LONG" else price * 0.97
                     sl = price * 0.98 if signal=="LONG" else price * 1.02
 
+                    safe = sym.replace("/","").replace(":","")
+
+                    signal_cache[safe] = {
+                        "sym": sym,
+                        "signal": signal,
+                        "price": price,
+                        "tp1": tp1,
+                        "tp2": tp2,
+                        "tp3": tp3,
+                        "sl": sl
+                    }
+
                     markup = InlineKeyboardMarkup()
                     markup.add(
-                        InlineKeyboardButton("✅ GİR", callback_data=f"enter_{sym}_{signal}_{price}_{tp1}_{tp2}_{tp3}_{sl}")
+                        InlineKeyboardButton(
+                            "✅ GİR",
+                            callback_data=f"enter|{safe}"
+                        )
                     )
 
-                    bot.send_message(CHAT_ID, f"""
+                    send(f"""
 💀 AKILLI SİNYAL
 
 📊 {sym}
@@ -91,7 +170,9 @@ def scanner():
 🎯 TP2: {round(tp2,4)}
 🎯 TP3: {round(tp3,4)}
 🛑 SL: {round(sl,4)}
-""", reply_markup=markup)
+""", CHAT_ID)
+
+                    bot.send_message(CHAT_ID, "Trade aç?", reply_markup=markup)
 
                     time.sleep(5)
 
@@ -102,27 +183,16 @@ def scanner():
             time.sleep(10)
 
 # ==============================
-# OPEN TRADE
-# ==============================
-def open_trade(sym, signal, price, tp1, tp2, tp3, sl, cid):
-
+def open_trade(data, cid):
     positions.append({
-        "sym": sym,
-        "entry": float(price),
-        "signal": signal,
-        "tp1": float(tp1),
-        "tp2": float(tp2),
-        "tp3": float(tp3),
-        "sl": float(sl),
+        **data,
         "tp1_done": False,
         "tp2_done": False,
         "chat": cid
     })
 
-    send(f"🚀 TRADE AÇILDI {sym} {signal}", cid)
+    send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
 
-# ==============================
-# MANAGE (MULTI TP)
 # ==============================
 def manage():
     while True:
@@ -132,74 +202,67 @@ def manage():
             except:
                 continue
 
-            # LONG
+            pnl = (price - p["entry"]) if p["signal"]=="LONG" else (p["entry"]-price)
+
             if p["signal"]=="LONG":
 
-                # TP1
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
-                    send(f"🎯 TP1 HIT {p['sym']} → SL ENTRY")
+                    send(f"🎯 TP1 {p['sym']}")
 
-                # TP2
                 elif not p["tp2_done"] and price >= p["tp2"]:
                     p["tp2_done"] = True
-                    send(f"🎯 TP2 HIT {p['sym']}")
+                    send(f"🎯 TP2 {p['sym']}")
 
-                # TP3
                 elif price >= p["tp3"]:
-                    send(f"🚀 TP3 FULL CLOSE {p['sym']}")
+                    send(f"🚀 TP3 {p['sym']}")
+                    save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
-
-                # TRAILING
-                new_sl = price * 0.995
-                if new_sl > p["sl"]:
-                    p["sl"] = new_sl
 
                 if price <= p["sl"]:
                     send(f"🛑 STOP {p['sym']}")
+                    save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
 
-            # SHORT
             else:
 
                 if not p["tp1_done"] and price <= p["tp1"]:
                     p["tp1_done"] = True
                     p["sl"] = p["entry"]
-                    send(f"🎯 TP1 HIT {p['sym']} → SL ENTRY")
 
                 elif not p["tp2_done"] and price <= p["tp2"]:
                     p["tp2_done"] = True
-                    send(f"🎯 TP2 HIT {p['sym']}")
 
                 elif price <= p["tp3"]:
-                    send(f"🚀 TP3 FULL CLOSE {p['sym']}")
+                    save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
 
-                new_sl = price * 1.005
-                if new_sl < p["sl"]:
-                    p["sl"] = new_sl
-
                 if price >= p["sl"]:
-                    send(f"🛑 STOP {p['sym']}")
+                    save_trade(p["sym"], pnl)
                     positions.remove(p)
                     continue
 
         time.sleep(5)
 
 # ==============================
-# CALLBACK
-# ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
     cid = call.message.chat.id
 
-    if call.data.startswith("enter_"):
-        _, sym, signal, price, tp1, tp2, tp3, sl = call.data.split("_")
-        open_trade(sym, signal, price, tp1, tp2, tp3, sl, cid)
+    if call.data.startswith("enter|"):
+        safe = call.data.split("|")[1]
+
+        data = signal_cache.get(safe)
+
+        if not data:
+            send("veri yok", cid)
+            return
+
+        open_trade(data, cid)
 
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
