@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.5 SMART AUTO
+# 💀 SADIK BOT v20.6 FIX SIGNAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.5 SMART AUTO"
+VERSION = "v20.6 SIGNAL FIX"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -33,7 +33,6 @@ panel_chat_id = None
 daily_pnl = 0
 total_pnl = 0
 
-# ==============================
 history_cache = []
 last_history_update = 0
 
@@ -49,10 +48,8 @@ def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=100)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-
         if len(df) < 10:
             return None
-
         df["ema"] = df["c"].ewm(20).mean()
         df["rsi"] = 100 - (100 / (1 + df["c"].pct_change().rolling(14).mean()))
         return df
@@ -62,23 +59,14 @@ def get_data(sym):
 # ==============================
 def load_history():
     global history_cache, last_history_update
-
     if time.time() - last_history_update < 60:
         return history_cache
-
     try:
-        headers = {
-            "apikey": SUPA_KEY,
-            "Authorization": f"Bearer {SUPA_KEY}"
-        }
-
+        headers = {"apikey": SUPA_KEY,"Authorization": f"Bearer {SUPA_KEY}"}
         r = requests.get(f"{SUPA_URL}/rest/v1/trades?select=*", headers=headers)
-
         history_cache = r.json()
         last_history_update = time.time()
-
         return history_cache
-
     except:
         return history_cache
 
@@ -86,14 +74,10 @@ def load_history():
 def coin_filter(symbol):
     data = load_history()
     trades = [x for x in data if x.get("Symbol") == symbol]
-
     if len(trades) < 15:
         return True
-
     wins = [x for x in trades if x.get("pnl",0) > 0]
-    winrate = len(wins) / len(trades)
-
-    return winrate > 0.4
+    return (len(wins)/len(trades)) > 0.4
 
 # ==============================
 def ai_signal(df):
@@ -101,32 +85,23 @@ def ai_signal(df):
         price = df["c"].iloc[-1]
         ema = df["ema"].iloc[-1]
         rsi = df["rsi"].iloc[-1]
-
         momentum = df["c"].iloc[-1] - df["c"].iloc[-5]
-
         base_volume = df["v"].iloc[-5]
         if base_volume <= 0:
             return None, 0
-
         volume = df["v"].iloc[-1] / base_volume
 
         score_long = 0
         score_short = 0
 
-        if price > ema:
-            score_long += 30
-        else:
-            score_short += 30
+        score_long += 30 if price > ema else 0
+        score_short += 30 if price <= ema else 0
 
-        if rsi < 30:
-            score_long += 20
-        elif rsi > 70:
-            score_short += 20
+        if rsi < 30: score_long += 20
+        elif rsi > 70: score_short += 20
 
-        if momentum > 0:
-            score_long += 25
-        else:
-            score_short += 25
+        score_long += 25 if momentum > 0 else 0
+        score_short += 25 if momentum <= 0 else 0
 
         if volume > 1.3:
             score_long += 15
@@ -153,13 +128,7 @@ def save_trade(sym, pnl):
             "Authorization": f"Bearer {SUPA_KEY}",
             "Content-Type": "application/json"
         }
-
-        requests.post(
-            f"{SUPA_URL}/rest/v1/trades",
-            headers=headers,
-            json={"Symbol": sym, "pnl": pnl}
-        )
-
+        requests.post(f"{SUPA_URL}/rest/v1/trades", headers=headers, json={"Symbol": sym,"pnl": pnl})
     except Exception as e:
         print("SUPABASE ERROR:", e)
 
@@ -175,6 +144,8 @@ def calc_pnl(p, price):
 def scanner():
     while True:
         try:
+            signal_cache.clear()  # 🔥 FIX
+
             tickers = exchange.fetch_tickers()
 
             best_signal = None
@@ -193,9 +164,6 @@ def scanner():
 
                 safe = sym.replace("/","").replace(":","")
 
-                if safe in signal_cache:
-                    continue
-
                 df = get_data(sym)
                 if df is None:
                     continue
@@ -210,33 +178,24 @@ def scanner():
                     continue
 
                 if signal == "LONG":
-                    tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
+                    tp1,tp2,tp3,sl = price*1.01,price*1.02,price*1.03,price*0.98
                 else:
-                    tp1, tp2, tp3, sl = price*0.99, price*0.98, price*0.97, price*1.02
+                    tp1,tp2,tp3,sl = price*0.99,price*0.98,price*0.97,price*1.02
 
                 signal_cache[safe] = {
-                    "id": safe,
-                    "sym": sym,
-                    "entry": price,
-                    "signal": signal,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "tp3": tp3,
-                    "sl": sl
+                    "id": safe,"sym": sym,"entry": price,"signal": signal,
+                    "tp1": tp1,"tp2": tp2,"tp3": tp3,"sl": sl
                 }
 
-                # AUTO >=95
                 if strength >= 95:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
                     open_trade(signal_cache[safe], CHAT_ID)
                     continue
 
-                # BEST SIGNAL TRACK
                 if strength > best_strength:
                     best_strength = strength
                     best_signal = safe
 
-                # MANUAL
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
@@ -259,7 +218,6 @@ def scanner():
 
                 time.sleep(2)
 
-            # 🔥 BEST AUTO (yeni)
             if best_signal and best_strength >= 90 and len(positions) < 7:
                 send(f"🤖 BEST AUTO (%{best_strength})")
                 open_trade(signal_cache[best_signal], CHAT_ID)
@@ -286,10 +244,8 @@ def open_trade(data, cid):
 # ==============================
 def manage():
     global daily_pnl, total_pnl
-
     while True:
         for p in positions[:]:
-
             try:
                 price = exchange.fetch_ticker(p["sym"])["last"]
             except:
@@ -388,7 +344,6 @@ def build_panel():
 
 ━━━━━━━━━━━━━━
 """
-
     for p in positions:
         try:
             price = exchange.fetch_ticker(p["sym"])["last"]
@@ -397,19 +352,16 @@ def build_panel():
             text += f"{p['sym']} → {pnl} USDT {emoji}\n"
         except:
             continue
-
     return text
 
 # ==============================
 def panel_keyboard():
     markup = InlineKeyboardMarkup()
-
     for p in positions:
         markup.row(
             InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"keep_{p['id']}"),
             InlineKeyboardButton(f"⛔ STOP {p['sym']}", callback_data=f"exit_{p['id']}")
         )
-
     markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
     return markup
 
