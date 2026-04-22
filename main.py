@@ -1,22 +1,25 @@
 # ==============================
-# 💀 SADIK BOT FINAL CONTROL AI
+# 💀 SADIK BOT v14 PRO PANEL + AI
 # ==============================
 
-import os,time,ccxt,telebot,threading,requests
+import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION="FINAL CONTROL AI"
+VERSION = "v14 PRO PANEL AI"
 
-TOKEN=os.getenv("TELE_TOKEN")
-CHAT_ID=os.getenv("MY_CHAT_ID")
-OPENAI_KEY=os.getenv("OPENAI_API_KEY")
+TOKEN = os.getenv("TELE_TOKEN")
+CHAT_ID = os.getenv("MY_CHAT_ID")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
-bot=telebot.TeleBot(TOKEN)
-client=OpenAI(api_key=OPENAI_KEY)
+SUPA_URL = os.getenv("SUPABASE_URL")
+SUPA_KEY = os.getenv("SUPABASE_KEY")
 
-exchange=ccxt.bitget({
+bot = telebot.TeleBot(TOKEN)
+client = OpenAI(api_key=OPENAI_KEY)
+
+exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
@@ -24,61 +27,54 @@ exchange=ccxt.bitget({
     "enableRateLimit": True
 })
 
-positions=[]
-signal_cache={}
-best_signal=None
+positions = []
+signal_cache = []
+event_log = []
+best_signal = None
 
 # ==============================
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg)
-    except:
-        print(msg)
+    except Exception as e:
+        print(e)
 
 # ==============================
 def get_data(sym):
     try:
-        ohlcv=exchange.fetch_ohlcv(sym,"1m",limit=50)
-        df=pd.DataFrame(ohlcv,columns=["t","o","h","l","c","v"])
-        df["ema"]=df["c"].ewm(20).mean()
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+        df["ema"] = df["c"].ewm(20).mean()
         return df
     except:
         return None
 
 # ==============================
 def ai_analyze(sym):
-
-    df=get_data(sym)
-    if df is None:
-        return None
-
-    price=df["c"].iloc[-1]
-    ema=df["ema"].iloc[-1]
-    trend="UP" if price>ema else "DOWN"
-
     try:
-        r=client.chat.completions.create(
+        df = get_data(sym)
+        if df is None:
+            return None
+
+        price = df["c"].iloc[-1]
+        ema = df["ema"].iloc[-1]
+        trend = "UP" if price > ema else "DOWN"
+
+        r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{
                 "role":"user",
-                "content":f"""
-                Coin:{sym}
-                Trend:{trend}
-
-                LONG SHORT NONE karar ver
-                confidence yüzde ver
-                kısa sebep yaz
-                """
+                "content":f"{sym} trend {trend}. LONG SHORT NONE karar ver confidence yaz kısa sebep"
             }]
         )
 
-        txt=r.choices[0].message.content
+        txt = r.choices[0].message.content
 
-        signal="NONE"
+        signal = "NONE"
         if "LONG" in txt.upper():
-            signal="LONG"
+            signal = "LONG"
         elif "SHORT" in txt.upper():
-            signal="SHORT"
+            signal = "SHORT"
 
         return {
             "sym": sym,
@@ -96,27 +92,32 @@ def scanner():
 
     while True:
         try:
-            tickers=list(exchange.fetch_tickers().keys())[:40]
+            tickers = exchange.fetch_tickers()
 
-            best=None
+            pairs = [
+                (s, v["quoteVolume"])
+                for s, v in tickers.items()
+                if ":USDT" in s and v["quoteVolume"]
+            ]
 
-            for sym in tickers:
+            # 🚀 3M volume filter
+            pairs = [p for p in pairs if p[1] > 3_000_000]
 
-                if ":USDT" not in sym:
+            pairs.sort(key=lambda x: x[1], reverse=True)
+
+            top = [p[0] for p in pairs[:30]]
+
+            for sym in top:
+
+                # 🚫 BTC ETH BNB çıkar
+                if any(x in sym for x in ["BTC","ETH","BNB"]):
                     continue
 
-                data=ai_analyze(sym)
-                if not data:
+                data = ai_analyze(sym)
+                if not data or data["signal"] == "NONE":
                     continue
 
-                if data["signal"]=="NONE":
-                    continue
-
-                best=data
-                break
-
-            if best:
-                best_signal=best
+                best_signal = data
 
                 markup = InlineKeyboardMarkup()
                 markup.add(
@@ -127,13 +128,15 @@ def scanner():
                 send(f"""
 🤖 AI SİNYAL
 
-{best['sym']}
-{best['signal']}
+{data['sym']}
+{data['signal']}
 
-{best['text']}
+{data['text']}
 """)
 
                 bot.send_message(CHAT_ID, "İşlem:", reply_markup=markup)
+
+                break
 
         except Exception as e:
             print("SCAN:", e)
@@ -142,55 +145,114 @@ def scanner():
 
 # ==============================
 def open_trade(data, cid):
-
     positions.append({
         **data,
-        "tp1_done":False,
-        "tp2_done":False,
-        "remaining":1.0,
-        "chat":cid
+        "remaining": 1.0,
+        "ai_status": "HOLD",
+        "chat": cid
     })
-
-    send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
+    send(f"🚀 {data['sym']} açıldı", cid)
 
 # ==============================
 def manage():
     while True:
         for p in positions[:]:
-
             try:
-                price=exchange.fetch_ticker(p["sym"])["last"]
+                price = exchange.fetch_ticker(p["sym"])["last"]
             except:
                 continue
 
-            pnl=((price-p["entry"])/p["entry"])*50 if p["signal"]=="LONG" else ((p["entry"]-price)/p["entry"])*50
-            pnl=round(pnl,2)
+            pnl = ((price - p["entry"]) / p["entry"]) * 50 * p["remaining"]
+            pnl = round(pnl,2)
 
-            # TP1
-            if not p["tp1_done"] and pnl>1:
-                p["tp1_done"]=True
-                p["remaining"]-=0.5
-                send(f"🎯 TP1 {p['sym']} {pnl} USDT")
-
-            # TP2
-            elif not p["tp2_done"] and pnl>2:
-                p["tp2_done"]=True
-                p["remaining"]-=0.25
-                send(f"🎯 TP2 {p['sym']} {pnl} USDT")
-
-            # TP3
-            elif pnl>3:
-                send(f"🚀 TP3 {p['sym']} {pnl} USDT")
-                positions.remove(p)
+            df = get_data(p["sym"])
+            if df is None:
                 continue
 
-            # SL
-            if pnl<-2:
-                send(f"🛑 STOP {p['sym']} {pnl} USDT")
-                positions.remove(p)
-                continue
+            ema = df["ema"].iloc[-1]
+            trend = "UP" if price > ema else "DOWN"
+
+            p["ai_status"] = "HOLD" if trend=="UP" else "EXIT"
+
+            if p["ai_status"] == "EXIT":
+                send(f"⚠️ AI EXIT {p['sym']}", p["chat"])
 
         time.sleep(5)
+
+# ==============================
+def market_status():
+    try:
+        df = get_data("BTC/USDT:USDT")
+        price = df["c"].iloc[-1]
+        ema = df["ema"].iloc[-1]
+        return "🟢 BULLISH" if price > ema else "🔴 BEARISH"
+    except:
+        return "UNKNOWN"
+
+# ==============================
+@bot.message_handler(commands=['panel'])
+def panel(msg):
+
+    cid = msg.chat.id
+
+    total_profit = 0
+    total_loss = 0
+
+    try:
+        headers = {
+            "apikey": SUPA_KEY,
+            "Authorization": f"Bearer {SUPA_KEY}"
+        }
+
+        r = requests.get(f"{SUPA_URL}/rest/v1/trades?select=*",
+                         headers=headers)
+
+        data = r.json()
+
+        for t in data:
+            if t["result"] > 0:
+                total_profit += t["result"]
+            else:
+                total_loss += t["result"]
+
+    except:
+        pass
+
+    net = total_profit + total_loss
+
+    text = f"""
+💀 SADIK PRO PANEL
+
+💰 Kâr: {round(total_profit,2)}
+📉 Zarar: {round(total_loss,2)}
+📊 Net: {round(net,2)}
+
+🤖 AI: AKTİF
+🌍 Market: {market_status()}
+
+━━━━━━━━━━━━━━
+"""
+
+    markup = InlineKeyboardMarkup()
+
+    if not positions:
+        text += "\n❗ Açık işlem yok\n"
+
+    else:
+        for p in positions:
+
+            price = exchange.fetch_ticker(p["sym"])["last"]
+            pnl = ((price - p["entry"]) / p["entry"]) * 50 * p["remaining"]
+            pnl = round(pnl,2)
+
+            text += f"\n{p['sym']} → {pnl} USDT | {p['ai_status']}\n"
+
+            markup.row(
+                InlineKeyboardButton("🟢 DEVAM", callback_data=f"keep_{p['id']}"),
+                InlineKeyboardButton("⛔ KAPAT", callback_data=f"exit_{p['id']}")
+            )
+
+    bot.send_message(cid, text, reply_markup=markup)
 
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
@@ -198,29 +260,29 @@ def callback(call):
 
     global best_signal
 
-    cid=call.message.chat.id
+    cid = call.message.chat.id
 
-    if call.data=="enter" and best_signal:
+    if call.data == "enter" and best_signal:
         open_trade(best_signal, cid)
 
-    elif call.data=="pass":
+    elif call.data == "pass":
         send("⛔ PAS", cid)
 
-# ==============================
-@bot.message_handler(commands=['panel'])
-def panel(msg):
+    elif call.data.startswith("exit_"):
+        pid = call.data.split("_")[1]
 
-    text=f"💀 PANEL\nAçık: {len(positions)}\n"
+        for p in positions:
+            if p["id"] == pid:
+                price = exchange.fetch_ticker(p["sym"])["last"]
+                pnl = ((price - p["entry"]) / p["entry"]) * 50
+                pnl = round(pnl,2)
 
-    for p in positions:
-        try:
-            price=exchange.fetch_ticker(p["sym"])["last"]
-            pnl=((price-p["entry"])/p["entry"])*50
-            text+=f"\n{p['sym']} {round(pnl,2)}"
-        except:
-            pass
+                send(f"⛔ {p['sym']} kapatıldı {pnl} USDT", cid)
+                positions.remove(p)
+                break
 
-    bot.send_message(msg.chat.id,text)
+    elif call.data.startswith("keep_"):
+        send("🟢 DEVAM", cid)
 
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
