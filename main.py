@@ -26,6 +26,11 @@ positions = []
 last_analysis = {}
 MAX_TRADES = 3
 
+# ===== STATS =====
+daily_profit = 0
+daily_loss = 0
+start_balance = 50
+
 # ===== UTILS =====
 def send(msg, cid=None):
     try:
@@ -33,17 +38,15 @@ def send(msg, cid=None):
     except:
         print(msg)
 
-def bar(p):
-    f = int(max(0, min(100, p)) / 10)
-    return "█" * f + "░" * (10 - f)
-
-def icon(sig):
-    return "🟢" if sig == "LONG" else "🔴"
-
 # ===== SUPABASE =====
 def save_trade(sym, pnl):
-    if not SUPA_URL or not SUPA_KEY:
-        return
+    global daily_profit, daily_loss
+
+    if pnl > 0:
+        daily_profit += pnl
+    else:
+        daily_loss += pnl
+
     try:
         headers = {
             "apikey": SUPA_KEY,
@@ -81,43 +84,31 @@ def analyze(sym, cid):
     conf = random.randint(65, 85)
 
     send(f"""
-💀 <b>AI ANALİZ</b>
+💀 AI ANALİZ
 
 📊 {sym}
-📈 {signal} {icon(signal)}
+📈 {signal}
 💰 {round(price,4)}
 
-📊 %{conf} {bar(conf)}
-
+📊 %{conf}
 ━━━━━━━━━━━━━━━
 ✅ GİR
 ━━━━━━━━━━━━━━━
 """, cid)
 
-    last_analysis.update({
-        "sym": sym,
-        "signal": signal,
-        "price": price,
-        "conf": conf
-    })
+    last_analysis.update({"sym": sym, "signal": signal, "price": price})
 
 # ===== TRADE =====
 def open_trade(cid):
-    if len(positions) >= MAX_TRADES:
-        send("⚠️ Max trade dolu", cid)
-        return
-
     if not last_analysis:
-        send("⚠️ Önce analiz yap", cid)
+        send("⚠️ Önce analiz", cid)
         return
 
     sym = last_analysis["sym"]
-    signal = last_analysis["signal"]
     price = last_analysis["price"]
 
     positions.append({
         "sym": sym,
-        "side": signal,
         "entry": price,
         "size": 50,
         "chat": cid,
@@ -125,15 +116,7 @@ def open_trade(cid):
         "exit_flag": False
     })
 
-    send(f"""
-🚀 TRADE
-
-📊 {sym}
-📈 {signal}
-
-💰 {price}
-💵 50 USDT
-""", cid)
+    send(f"🚀 {sym} trade açıldı", cid)
 
 # ===== MANAGEMENT =====
 def manage():
@@ -144,25 +127,14 @@ def manage():
             except:
                 continue
 
-            pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
+            pnl = (price - p["entry"]) * p["size"]
             pct = (pnl/(p["entry"]*p["size"]))*100
 
             p["peak_pct"] = max(p["peak_pct"], pct)
-            cid = p["chat"]
 
-            if pct < p["peak_pct"] - 0.5:
-                df = get_data(p["sym"])
-                if df is not None and df["c"].iloc[-1] < df["c"].iloc[-2]:
-
-                    if pnl > 0:
-                        msg = f"⚠️ Kâr düşüyor\n💰 {round(pnl,4)} USDT"
-                    else:
-                        msg = f"⚠️ Zarar artıyor\n💰 {round(pnl,4)} USDT"
-
-                    send(f"{msg}\n👉 çıkılıyor", cid)
-
-                    save_trade(p["sym"], pnl)
-                    positions.remove(p)
+            if pct < p["peak_pct"] - 0.5 and not p["exit_flag"]:
+                send(f"⚠️ {p['sym']} risk var ({round(pnl,4)} USDT)", p["chat"])
+                p["exit_flag"] = True
 
         time.sleep(5)
 
@@ -171,57 +143,17 @@ def scanner():
     while True:
         try:
             tickers = exchange.fetch_tickers()
-            pairs = []
-
             for sym, data in tickers.items():
                 if ":USDT" not in sym:
-                    continue
-                if any(x in sym for x in ["BTC","ETH","XRP","BNB"]):
                     continue
 
                 vol = data.get("quoteVolume", 0)
                 if vol and vol > 3_000_000:
-                    pairs.append((sym, vol))
-
-            pairs.sort(key=lambda x: x[1], reverse=True)
-            sample = random.sample(pairs[:60], min(20, len(pairs)))
-
-            for sym, vol in sample:
-                df = get_data(sym)
-                if df is None:
-                    continue
-
-                price = df["c"].iloc[-1]
-                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 1.5
-                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.002
-
-                whale = False
-                try:
-                    ob = exchange.fetch_order_book(sym, limit=20)
-                    bids = sum(b[1] for b in ob["bids"])
-                    asks = sum(a[1] for a in ob["asks"])
-                    whale = bids > asks * 1.3
-                except:
-                    pass
-
-                if (whale or vol_spike) and move:
-                    send(f"""
-💀 ULTRA FIRSAT
-
-📊 {sym}
-💰 {round(vol/1e6,1)}M
-
-🐋 Whale: {"EVET" if whale else "YOK"}
-⚡ Spike: {"EVET" if vol_spike else "YOK"}
-
-👉 analiz yaz
-""", CHAT_ID)
+                    send(f"💀 FIRSAT {sym}", CHAT_ID)
                     break
 
             time.sleep(20)
-
-        except Exception as e:
-            print("SCANNER HATA:", e)
+        except:
             time.sleep(10)
 
 # ===== PANEL =====
@@ -235,6 +167,11 @@ def panel(cid):
         InlineKeyboardButton("🤖 AI", callback_data="ai"),
         InlineKeyboardButton("🟢 Devam", callback_data="devam")
     )
+    kb.add(
+        InlineKeyboardButton("🛑 Stop All", callback_data="stop_all"),
+        InlineKeyboardButton("❌ Çık All", callback_data="exit_all")
+    )
+
     bot.send_message(cid, "🤖 PANEL", reply_markup=kb)
 
 # ===== TELEGRAM =====
@@ -244,39 +181,12 @@ def handle(msg):
     text = text.replace("ç","c").replace("ı","i")
     cid = msg.chat.id
 
-    if text.startswith("analiz"):
+    if "analiz" in text:
         coin = text.replace("analiz","").strip().upper()
         analyze(coin+"/USDT:USDT", cid)
 
     elif text == "gir":
         open_trade(cid)
-
-    elif text.startswith("cik"):
-        parts = text.split()
-
-        if len(parts) == 1:
-            for p in positions[:]:
-                price = exchange.fetch_ticker(p["sym"])["last"]
-                pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
-                save_trade(p["sym"], pnl)
-                positions.remove(p)
-                send(f"❌ {p['sym']} kapandı", cid)
-
-        else:
-            coin = parts[1].upper()
-            for p in positions[:]:
-                if coin in p["sym"]:
-                    price = exchange.fetch_ticker(p["sym"])["last"]
-                    pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
-                    save_trade(p["sym"], pnl)
-                    positions.remove(p)
-                    send(f"❌ {p['sym']} kapandı", cid)
-
-    elif text == "durum":
-        for p in positions:
-            price = exchange.fetch_ticker(p["sym"])["last"]
-            pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
-            send(f"{p['sym']} → {round(pnl,4)} USDT", cid)
 
     elif text == "/panel":
         panel(cid)
@@ -286,47 +196,88 @@ def handle(msg):
 def callback(call):
     cid = call.message.chat.id
 
+    # ===== POZİSYON + STOP/DEVAM =====
     if call.data == "pozisyon":
+        if not positions:
+            bot.send_message(cid, "📭 Açık işlem yok")
+            return
+
         kb = InlineKeyboardMarkup()
         msg = "📊 POZİSYONLAR\n\n"
 
         for p in positions:
             price = exchange.fetch_ticker(p["sym"])["last"]
-            pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
+            pnl = (price - p["entry"]) * p["size"]
 
             msg += f"{p['sym']} → {round(pnl,4)} USDT\n"
 
             kb.add(
-                InlineKeyboardButton(f"❌ {p['sym']}", callback_data=f"close_{p['sym']}"),
-                InlineKeyboardButton(f"🟢 {p['sym']}", callback_data=f"hold_{p['sym']}")
+                InlineKeyboardButton(f"❌ STOP {p['sym']}", callback_data=f"stop_{p['sym']}"),
+                InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"hold_{p['sym']}")
             )
 
         bot.send_message(cid, msg, reply_markup=kb)
 
-    elif call.data.startswith("close_"):
-        sym = call.data.replace("close_","")
+    # ===== TEK TEK STOP =====
+    elif call.data.startswith("stop_"):
+        sym = call.data.replace("stop_", "")
+
         for p in positions[:]:
-            if p["sym"] == sym:
-                price = exchange.fetch_ticker(sym)["last"]
+            if sym in p["sym"]:
+                price = exchange.fetch_ticker(p["sym"])["last"]
                 pnl = (price - p["entry"]) * p["size"]
-                save_trade(sym, pnl)
+
+                save_trade(p["sym"], pnl)
                 positions.remove(p)
-                bot.send_message(cid, f"❌ {sym} kapandı")
 
+                bot.send_message(cid, f"❌ {p['sym']} kapandı ({round(pnl,4)} USDT)")
+
+    # ===== DEVAM =====
     elif call.data.startswith("hold_"):
-        sym = call.data.replace("hold_","")
-        bot.send_message(cid, f"🟢 {sym} devam")
+        sym = call.data.replace("hold_", "")
 
-    elif call.data == "ai":
         for p in positions:
-            bot.send_message(cid, f"🤖 {p['sym']} takip ediliyor")
+            if sym in p["sym"]:
+                p["exit_flag"] = False
 
-    elif call.data == "devam":
-        bot.send_message(cid, "🟢 devam")
+        bot.send_message(cid, f"🟢 {sym} devam ediyor")
+
+    # ===== AI PANEL =====
+    elif call.data == "ai":
+        total = daily_profit + daily_loss
+        balance = start_balance + total
+
+        bot.send_message(cid, f"""
+🤖 AI PANEL
+
+📊 Açık İşlem: {len(positions)}
+
+💰 Kâr: {round(daily_profit,4)} USDT
+📉 Zarar: {round(daily_loss,4)} USDT
+📈 Net: {round(total,4)} USDT
+
+💼 Bakiye: {round(balance,4)} USDT
+""")
+
+    # ===== STOP ALL =====
+    elif call.data == "stop_all":
+        positions.clear()
+        bot.send_message(cid, "🛑 Tüm işlemler durduruldu")
+
+    # ===== EXIT ALL =====
+    elif call.data == "exit_all":
+        for p in positions[:]:
+            price = exchange.fetch_ticker(p["sym"])["last"]
+            pnl = (price - p["entry"]) * p["size"]
+
+            save_trade(p["sym"], pnl)
+            positions.remove(p)
+
+        bot.send_message(cid, "❌ Tüm işlemler kapatıldı")
 
 # ===== THREADS =====
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
-send("💀 ULTRA FINAL AKTİF")
+send("💀 FINAL SYSTEM AKTİF")
 bot.infinity_polling()
