@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v7.0 FINAL
+# 💀 SADIK BOT v7.1 (NO DELETE MODE)
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v7.0"
+VERSION = "v7.1"
 
 # ===== CONFIG =====
 TOKEN = os.getenv("TELE_TOKEN")
@@ -101,9 +101,13 @@ def analyze(sym, cid):
 ━━━━━━━━━━━━━━━
 """, cid)
 
-    last_analysis.update({"sym": sym, "signal": signal, "price": price})
+    last_analysis.update({
+        "sym": sym,
+        "signal": signal,
+        "price": price
+    })
 
-# ===== TRADE =====
+# ===== TRADE (FIXED) =====
 def open_trade(cid):
     if not last_analysis:
         send("⚠️ Önce analiz", cid)
@@ -111,6 +115,7 @@ def open_trade(cid):
 
     sym = last_analysis["sym"]
     price = last_analysis["price"]
+    signal = last_analysis["signal"]
 
     positions.append({
         "sym": sym,
@@ -118,10 +123,18 @@ def open_trade(cid):
         "size": 50,
         "chat": cid,
         "peak_pct": 0,
-        "exit_flag": False
+        "exit_flag": False,
+        "signal": signal
     })
 
-    send(f"🚀 {sym} trade açıldı", cid)
+    send(f"""
+🚀 TRADE
+
+📊 {sym}
+📈 {signal}
+💰 {round(price,4)}
+💵 50 USDT
+""", cid)
 
 # ===== MANAGEMENT =====
 def manage():
@@ -143,7 +156,7 @@ def manage():
 
         time.sleep(5)
 
-# ===== SCANNER v7 BOOST =====
+# ===== SCANNER (3M + WHALE) =====
 def scanner():
     while True:
         try:
@@ -160,7 +173,6 @@ def scanner():
 
                 vol = data.get("quoteVolume", 0)
 
-                # 💀 3M AYAR
                 if vol and vol > 3_000_000:
                     pairs.append((sym, vol))
 
@@ -176,13 +188,9 @@ def scanner():
 
                 price = df["c"].iloc[-1]
 
-                # spike
                 vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 2
-
-                # hareket
                 move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
 
-                # whale
                 whale = False
                 try:
                     ob = exchange.fetch_order_book(sym, limit=20)
