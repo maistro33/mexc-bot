@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.1 FINAL FULL
+# 💀 SADIK BOT v20.2 FINAL FIXED
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.1 LEARNING FULL"
+VERSION = "v20.2 FIXED"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -34,7 +34,7 @@ daily_pnl = 0
 total_pnl = 0
 
 # ==============================
-# 🧠 CACHE
+# CACHE
 history_cache = []
 last_history_update = 0
 
@@ -50,9 +50,14 @@ def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=100)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+
+        if len(df) < 10:
+            return None
+
         df["ema"] = df["c"].ewm(20).mean()
         df["rsi"] = 100 - (100 / (1 + df["c"].pct_change().rolling(14).mean()))
         return df
+
     except:
         return None
 
@@ -69,10 +74,7 @@ def load_history():
             "Authorization": f"Bearer {SUPA_KEY}"
         }
 
-        r = requests.get(
-            f"{SUPA_URL}/rest/v1/trades?select=*",
-            headers=headers
-        )
+        r = requests.get(f"{SUPA_URL}/rest/v1/trades?select=*", headers=headers)
 
         history_cache = r.json()
         last_history_update = time.time()
@@ -95,52 +97,61 @@ def coin_filter(symbol):
 
     winrate = len(wins) / len(trades)
 
-    if winrate < 0.4:
-        return False
-
-    return True
+    return winrate > 0.4
 
 # ==============================
 def ai_signal(df):
-    price = df["c"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    rsi = df["rsi"].iloc[-1]
+    try:
+        price = df["c"].iloc[-1]
+        ema = df["ema"].iloc[-1]
+        rsi = df["rsi"].iloc[-1]
 
-    momentum = df["c"].iloc[-1] - df["c"].iloc[-5]
-    volume = df["v"].iloc[-1] / df["v"].iloc[-5]
+        # güvenli momentum
+        momentum = df["c"].iloc[-1] - df["c"].iloc[-5]
 
-    score_long = 0
-    score_short = 0
+        # 💀 FIX: volume güvenli
+        base_volume = df["v"].iloc[-5]
 
-    if price > ema:
-        score_long += 30
-    else:
-        score_short += 30
+        if base_volume <= 0:
+            return None, 0
 
-    if rsi < 30:
-        score_long += 20
-    elif rsi > 70:
-        score_short += 20
+        volume = df["v"].iloc[-1] / base_volume
 
-    if momentum > 0:
-        score_long += 25
-    else:
-        score_short += 25
+        score_long = 0
+        score_short = 0
 
-    if volume > 1.3:
-        score_long += 15
-        score_short += 15
+        if price > ema:
+            score_long += 30
+        else:
+            score_short += 30
 
-    if score_long > score_short:
-        return "LONG", score_long
-    else:
-        return "SHORT", score_short
+        if rsi < 30:
+            score_long += 20
+        elif rsi > 70:
+            score_short += 20
+
+        if momentum > 0:
+            score_long += 25
+        else:
+            score_short += 25
+
+        if volume > 1.3:
+            score_long += 15
+            score_short += 15
+
+        if score_long > score_short:
+            return "LONG", score_long
+        else:
+            return "SHORT", score_short
+
+    except:
+        return None, 0
 
 # ==============================
 def market_status():
     try:
         df = get_data("BTC/USDT:USDT")
-        return "🟢 BULLISH" if df["c"].iloc[-1] > df["ema"].iloc[-1] else "🔴 BEARISH"
+        return "🟢 BULLISH" if df and df["c"].iloc[-1] > df["ema"].iloc[-1] else "🔴 BEARISH"
     except:
         return "UNKNOWN"
 
@@ -156,10 +167,7 @@ def save_trade(sym, pnl):
         requests.post(
             f"{SUPA_URL}/rest/v1/trades",
             headers=headers,
-            json={
-                "Symbol": sym,
-                "pnl": pnl
-            }
+            json={"Symbol": sym, "pnl": pnl}
         )
 
     except Exception as e:
@@ -184,7 +192,6 @@ def scanner():
                 if ":USDT" not in sym:
                     continue
 
-                # 🧠 LEARNING FILTER
                 if not coin_filter(sym):
                     continue
 
@@ -194,12 +201,15 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
+                if signal is None:
+                    continue
+
                 if strength < 60:
                     continue
 
                 price = df["c"].iloc[-1]
 
-                if price == 0:
+                if price <= 0:
                     continue
 
                 if signal == "LONG":
@@ -376,9 +386,7 @@ def panel_keyboard():
             InlineKeyboardButton(f"⛔ STOP {p['sym']}", callback_data=f"exit_{p['id']}")
         )
 
-    markup.row(
-        InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all")
-    )
+    markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
 
     return markup
 
