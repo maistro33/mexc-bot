@@ -1,191 +1,142 @@
+# ==============================
+# 💀 SADIK BOT v16 FULL SYSTEM
+# ==============================
 
-import os, time, ccxt, telebot, threading, requests, random
+import os, time, ccxt, telebot, threading, requests
 import pandas as pd
-from openai import OpenAI
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ===== CONFIG =====
+VERSION = "v16 FULL SYSTEM"
+
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 
 SUPA_URL = os.getenv("SUPABASE_URL")
 SUPA_KEY = os.getenv("SUPABASE_KEY")
 
 bot = telebot.TeleBot(TOKEN)
-client = OpenAI(api_key=OPENAI_KEY)
 
 exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
-    "options": {"defaultType":"swap"},
+    "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
 positions = []
-last_analysis = {}
-MAX_TRADES = 3
+signal_cache = {}
 
-# ===== UI =====
-def bar(p):
-    p = max(0, min(100, p))
-    f = int(p/10)
-    return "█"*f + "░"*(10-f)
+panel_message_id = None
+panel_chat_id = None
 
-def icon(sig):
-    return "🟢" if sig=="LONG" else "🔴"
-
+# ==============================
 def send(msg, cid=None):
     try:
-        bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
-    except:
-        print(msg)
-
-# ===== SUPABASE =====
-def save_trade(sym, pnl):
-    if not SUPA_URL or not SUPA_KEY:
-        return
-    try:
-        headers = {
-            "apikey": SUPA_KEY,
-            "Authorization": f"Bearer {SUPA_KEY}",
-            "Content-Type": "application/json"
-        }
-        requests.post(f"{SUPA_URL}/rest/v1/trades",
-                      headers=headers,
-                      json={"symbol": sym, "result": pnl})
+        bot.send_message(cid or CHAT_ID, msg)
     except:
         pass
 
-# ===== DATA =====
+# ==============================
 def get_data(sym):
-    for _ in range(3):
-        try:
-            ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
-            if not ohlcv or len(ohlcv) < 20:
-                time.sleep(0.5)
-                continue
-
-            df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-            df["ema"] = df["c"].ewm(20).mean()
-            return df
-        except:
-            time.sleep(0.5)
-    return None
-
-# ===== AI ANALYZE =====
-def analyze(sym, cid):
-    df = get_data(sym)
-    if df is None:
-        return
-
-    last = df.iloc[-1]
-    trend = "UP" if last["c"] > last["ema"] else "DOWN"
-    signal = "LONG" if trend=="UP" else "SHORT"
-    price = float(last["c"])
-
     try:
-        prompt = f"""
-Sadece Türkçe yaz.
-
-GÜÇ: %??
-KARAR: GİR veya BEKLE
-
-Coin: {sym}
-Trend: {trend}
-"""
-        r = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role":"user","content":prompt}]
-        )
-        txt = r.choices[0].message.content
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
+        df["ema"] = df["c"].ewm(20).mean()
+        return df
     except:
-        txt = "GÜÇ: %50\nKARAR: BEKLE"
+        return None
 
-    conf = 50
-    decision = "BEKLE"
+# ==============================
+def market_status():
+    try:
+        df = get_data("BTC/USDT:USDT")
+        price = df["c"].iloc[-1]
+        ema = df["ema"].iloc[-1]
+        return "🟢 BULLISH" if price > ema else "🔴 BEARISH"
+    except:
+        return "UNKNOWN"
 
-    for line in txt.splitlines():
-        if "GÜÇ" in line.upper():
-            try:
-                conf = int(line.split("%")[1].strip())
-            except:
-                pass
-        if "KARAR" in line.upper():
-            if "GİR" in line.upper():
-                decision = "GİR"
+# ==============================
+def scanner():
+    while True:
+        try:
+            tickers = exchange.fetch_tickers()
 
-    conf = max(0, min(conf, 100))
-    if conf < 65:
-        decision = "BEKLE"
+            for sym in tickers:
 
-    status = "✅ GİR" if decision=="GİR" else "⏳ BEKLE"
+                if ":USDT" not in sym:
+                    continue
+                if any(x in sym for x in ["BTC","ETH","BNB"]):
+                    continue
 
-    send(f"""
-💀 <b>AI ANALİZ</b>
+                df = get_data(sym)
+                if df is None:
+                    continue
+
+                price = df["c"].iloc[-1]
+                ema = df["ema"].iloc[-1]
+
+                trend = "UP" if price > ema else "DOWN"
+
+                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
+                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 1.5
+
+                if not (move and vol_spike):
+                    continue
+
+                signal = "LONG" if trend=="UP" else "SHORT"
+
+                tp1 = price * 1.01
+                tp2 = price * 1.02
+                tp3 = price * 1.03
+                sl = price * 0.98
+
+                safe = sym.replace("/","").replace(":","")
+
+                signal_cache[safe] = {
+                    "id": safe,
+                    "sym": sym,
+                    "signal": signal,
+                    "entry": price,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": tp3,
+                    "sl": sl
+                }
+
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
+
+                send(f"""
+💀 AKILLI SİNYAL
 
 📊 {sym}
-📈 {signal} {icon(signal)}
+📈 {signal}
 💰 {round(price,4)}
+""")
 
-📊 %{conf} {bar(conf)}
+                bot.send_message(CHAT_ID, "GİR:", reply_markup=markup)
+                time.sleep(2)
 
-━━━━━━━━━━━━━━━
-{status}
-━━━━━━━━━━━━━━━
-""", cid)
+            time.sleep(15)
 
-    last_analysis.update({
-        "sym": sym,
-        "signal": signal,
-        "price": price,
-        "conf": conf
-    })
+        except:
+            time.sleep(5)
 
-# ===== TRADE =====
-def open_trade(cid):
-    if len(positions) >= MAX_TRADES:
-        send("⚠️ Max trade dolu", cid)
-        return
-
-    if last_analysis.get("conf", 0) < 65:
-        send("⚠️ Güç düşük", cid)
-        return
-
-    sym = last_analysis["sym"]
-    signal = last_analysis["signal"]
-    price = last_analysis["price"]
-
-    size = 50
-    sl = price*0.99 if signal=="LONG" else price*1.01
-
+# ==============================
+def open_trade(data, cid):
     positions.append({
-        "sym": sym,
-        "side": signal,
-        "entry": price,
-        "size": size,
-        "sl": sl,
-        "peak": 0,
-        "chat": cid,
-        "last_ai": 0,
-        "exit_flag": False,
-        "exit_time": 0,
-        "last_smart": 0,
-        "last_pnl": 0
+        **data,
+        "remaining": 1.0,
+        "tp1_done": False,
+        "tp2_done": False,
+        "ai_status": "HOLD",
+        "chat": cid
     })
+    send(f"🚀 TRADE AÇILDI {data['sym']}", cid)
 
-    send(f"""
-🚀 <b>TRADE</b>
-
-📊 {sym}
-📈 {signal} {icon(signal)}
-
-💰 {price}
-💵 {size} USDT
-🛑 SL: {round(sl,4)}
-""", cid)
-
-# ===== MANAGEMENT =====
+# ==============================
 def manage():
     while True:
         for p in positions[:]:
@@ -194,164 +145,156 @@ def manage():
             except:
                 continue
 
-            entry = p["entry"]
-            size = p["size"]
+            pnl = ((price - p["entry"]) / p["entry"]) * 50 * p["remaining"]
+            pnl = round(pnl,2)
 
-            pnl = (price-entry)*size if p["side"]=="LONG" else (entry-price)*size
-            pct = (pnl/(entry*size))*100
-
-            p["peak"] = max(p["peak"], pct)
-            cid = p["chat"]
-
-            now = time.time()
-
-            # TP1
-            if pct > 1 and p["sl"] != entry:
-                p["sl"] = entry
-                send(f"🎯 TP1 {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
-
-            # ===== TREND KONTROL (KRİTİK) =====
             df = get_data(p["sym"])
-            if df is not None:
-                trend = "UP" if df.iloc[-1]["c"] > df.iloc[-1]["ema"] else "DOWN"
+            if df is None:
+                continue
 
-                if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
-                    send(f"""
-⚠️ {p['sym']}
+            ema = df["ema"].iloc[-1]
+            trend = "UP" if price > ema else "DOWN"
 
-Trend ters döndü
+            p["ai_status"] = "HOLD" if trend=="UP" else "EXIT"
 
-👉 çıkılıyor
-""", cid)
+            # TP SYSTEM
+            if p["signal"]=="LONG":
 
-                    p["exit_flag"] = True
-                    p["exit_time"] = now
+                if not p["tp1_done"] and price >= p["tp1"]:
+                    p["tp1_done"] = True
+                    p["remaining"] -= 0.5
+                    send(f"🎯 TP1 {p['sym']} +{pnl} USDT")
 
-            # LIVE AI
-            if now - p["last_ai"] > 20:
-                p["last_ai"] = now
+                elif not p["tp2_done"] and price >= p["tp2"]:
+                    p["tp2_done"] = True
+                    p["remaining"] -= 0.25
+                    send(f"🎯 TP2 {p['sym']} +{pnl} USDT")
 
-                send(f"""
-📊 {p['sym']}
-
-💰 {round(pnl,4)} USDT ({round(pct,2)}%)
-👉 Devam edelim mi?
-""", cid)
-
-            # SMART AI
-            if now - p["last_smart"] > 20:
-                p["last_smart"] = now
-
-                change = pct - p["last_pnl"]
-                p["last_pnl"] = pct
-
-                if pct > 0.1 and change > 0.05:
-                    send(f"{p['sym']} hareket başladı", cid)
-
-                elif pct > 0.4:
-                    send(f"{p['sym']} trend güçlü", cid)
-
-                elif pct > 0.2 and change < -0.1:
-                    send(f"{p['sym']} dikkat, düşüş", cid)
-
-            # AUTO EXIT
-            if p["exit_flag"]:
-                if now - p["exit_time"] > 10:
-                    send(f"🚨 AI ÇIKIŞ {p['sym']} {round(pnl,4)} USDT", cid)
-                    save_trade(p["sym"], pnl)
+                elif price >= p["tp3"]:
+                    send(f"🚀 TP3 {p['sym']} +{pnl} USDT")
                     positions.remove(p)
+                    continue
+
+                if price <= p["sl"]:
+                    send(f"🛑 STOP {p['sym']} {pnl} USDT")
+                    positions.remove(p)
+                    continue
 
         time.sleep(5)
 
-# ===== SCANNER =====
-def scanner():
-    while True:
+# ==============================
+def build_panel():
+
+    text = f"""
+💀 SADIK LIVE PANEL
+
+🌍 Market: {market_status()}
+📈 Açık İşlem: {len(positions)}
+
+━━━━━━━━━━━━━━
+"""
+
+    total = 0
+
+    for p in positions:
         try:
-            tickers = exchange.fetch_tickers()
+            price = exchange.fetch_ticker(p["sym"])["last"]
+            pnl = ((price - p["entry"]) / p["entry"]) * 50 * p["remaining"]
+            pnl = round(pnl,2)
 
-            pairs = []
-            for sym, data in tickers.items():
-                if ":USDT" not in sym:
-                    continue
-                if any(x in sym for x in ["BTC","ETH","XRP","BNB"]):
-                    continue
+            total += pnl
 
-                vol = data.get("quoteVolume", 0)
-                if vol and vol > 5_000_000:
-                    pairs.append((sym, vol))
+            emoji = "🟢" if pnl >= 0 else "🔴"
 
-            pairs.sort(key=lambda x: x[1], reverse=True)
-            sample = random.sample(pairs[:80], min(20, len(pairs)))
-
-            for sym, vol in sample:
-                df = get_data(sym)
-                if df is None:
-                    continue
-
-                price = df["c"].iloc[-1]
-                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 2
-                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
-
-                whale = False
-                try:
-                    ob = exchange.fetch_order_book(sym, limit=20)
-                    bids = sum(b[1] for b in ob["bids"])
-                    asks = sum(a[1] for a in ob["asks"])
-                    whale = bids > asks * 1.5
-                except:
-                    pass
-
-                if whale and vol_spike and move:
-                    send(f"💀 FIRSAT {sym} | Whale + Spike", CHAT_ID)
-                    break
-
-            time.sleep(25)
+            text += f"\n{p['sym']} → {pnl} USDT {emoji} | {p['ai_status']}\n"
 
         except:
-            time.sleep(10)
+            continue
 
-# ===== TELEGRAM =====
-@bot.message_handler(func=lambda m: True)
-def handle(msg):
-    text = msg.text.lower()
-    cid = msg.chat.id
+    text += f"\n💰 Toplam: {round(total,2)} USDT"
 
-    if "analiz" in text:
-        coin = text.replace("analiz","").strip().upper()
-        analyze(coin + "/USDT:USDT", cid)
+    return text
 
-    elif text == "gir":
-        open_trade(cid)
+# ==============================
+def panel_keyboard():
 
-    elif text == "devam":
-        send("👍 Devam ediliyor", cid)
+    markup = InlineKeyboardMarkup()
 
-    elif text == "çık":
-        if positions:
-            p = positions[0]
-            price = exchange.fetch_ticker(p["sym"])["last"]
+    for p in positions:
+        markup.row(
+            InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"keep_{p['id']}"),
+            InlineKeyboardButton(f"⛔ KAPAT {p['sym']}", callback_data=f"exit_{p['id']}")
+        )
 
-            pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
-            pct = (pnl/(p["entry"]*p["size"]))*100
+    markup.row(
+        InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all")
+    )
 
-            send(f"❌ ÇIKIŞ {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
+    return markup
 
-            save_trade(p["sym"], pnl)
+# ==============================
+@bot.message_handler(commands=['panel'])
+def panel(msg):
+
+    global panel_message_id, panel_chat_id
+
+    panel_chat_id = msg.chat.id
+
+    m = bot.send_message(panel_chat_id, "⏳ PANEL YÜKLENİYOR...")
+    panel_message_id = m.message_id
+
+# ==============================
+def live_panel():
+
+    global panel_message_id, panel_chat_id
+
+    while True:
+
+        if panel_message_id:
+
+            try:
+                bot.edit_message_text(
+                    build_panel(),
+                    chat_id=panel_chat_id,
+                    message_id=panel_message_id,
+                    reply_markup=panel_keyboard()
+                )
+            except:
+                pass
+
+        time.sleep(4)
+
+# ==============================
+@bot.callback_query_handler(func=lambda call: True)
+def callback(call):
+
+    cid = call.message.chat.id
+
+    if call.data.startswith("enter|"):
+        data = signal_cache.get(call.data.split("|")[1])
+        if data:
+            open_trade(data, cid)
+
+    elif call.data.startswith("exit_"):
+        pid = call.data.split("_")[1]
+        for p in positions:
+            if p["id"] == pid:
+                send(f"⛔ EXIT {p['sym']}", cid)
+                positions.remove(p)
+                break
+
+    elif call.data.startswith("keep_"):
+        send("🟢 DEVAM", cid)
+
+    elif call.data == "exit_all":
+        for p in positions[:]:
+            send(f"⛔ EXIT {p['sym']}", cid)
             positions.remove(p)
 
-    elif text == "durum":
-        if positions:
-            p = positions[0]
-            price = exchange.fetch_ticker(p["sym"])["last"]
-
-            pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
-            pct = (pnl/(p["entry"]*p["size"]))*100
-
-            send(f"📊 {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
-
-# ===== THREADS =====
-threading.Thread(target=manage, daemon=True).start()
+# ==============================
 threading.Thread(target=scanner, daemon=True).start()
+threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=live_panel, daemon=True).start()
 
-send("💀 ULTRA FINAL AI AKTİF")
+send(f"💀 BOT {VERSION} AKTİF")
 bot.infinity_polling()
