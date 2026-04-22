@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v12 FINAL PRO
+# 💀 SADIK BOT v13 ULTRA PANEL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v12 FINAL PRO"
+VERSION = "v13 ULTRA PANEL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -73,7 +73,7 @@ def scanner():
         try:
             tickers = exchange.fetch_tickers()
 
-            for sym, data in tickers.items():
+            for sym in tickers:
 
                 if ":USDT" not in sym:
                     continue
@@ -165,7 +165,6 @@ def manage():
             except:
                 continue
 
-            # USDT PnL
             pnl_percent = ((price - p["entry"]) / p["entry"]) if p["signal"]=="LONG" else ((p["entry"] - price) / p["entry"])
             pnl_usdt = round(pnl_percent * 50 * p["remaining"], 2)
 
@@ -176,10 +175,8 @@ def manage():
             ema = df["ema"].iloc[-1]
             trend = "UP" if price > ema else "DOWN"
 
-            # AI
             p["ai_status"] = "HOLD" if trend == "UP" else "EXIT"
 
-            # AI EXIT UYARI
             if p["ai_status"] == "EXIT" and not p["awaiting_decision"]:
                 p["awaiting_decision"] = True
                 p["exit_timer"] = time.time()
@@ -200,7 +197,6 @@ Karar: EXIT
 ⏳ 30 sn içinde karar ver
 """, reply_markup=markup)
 
-            # SMART WAIT
             if p["awaiting_decision"]:
                 if trend == "UP":
                     p["awaiting_decision"] = False
@@ -212,14 +208,12 @@ Karar: EXIT
                     positions.remove(p)
                     continue
 
-            # TP SYSTEM
             if p["signal"]=="LONG":
 
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     p["remaining"] -= 0.5
                     send(f"🎯 TP1 {p['sym']} +{pnl_usdt} USDT")
-
                     p["sl"] = p["entry"]
 
                 elif not p["tp2_done"] and price >= p["tp2"]:
@@ -242,19 +236,80 @@ Karar: EXIT
         time.sleep(5)
 
 # ==============================
+# 💀 ULTRA PANEL
 @bot.message_handler(commands=['panel'])
 def panel(msg):
 
+    cid = msg.chat.id
+
+    total_profit = 0
+    total_loss = 0
+
+    try:
+        headers = {
+            "apikey": SUPA_KEY,
+            "Authorization": f"Bearer {SUPA_KEY}"
+        }
+
+        r = requests.get(f"{SUPA_URL}/rest/v1/trades?select=*",
+                         headers=headers)
+
+        data = r.json()
+
+        for t in data:
+            if t["result"] > 0:
+                total_profit += t["result"]
+            else:
+                total_loss += t["result"]
+
+    except:
+        pass
+
+    net = total_profit + total_loss
+
+    text = f"""
+💀 SADIK ULTRA PANEL
+
+💰 Kâr: {round(total_profit,2)} USDT
+📉 Zarar: {round(total_loss,2)} USDT
+📊 Net: {round(net,2)} USDT
+
+📈 Açık İşlem: {len(positions)}
+
+━━━━━━━━━━━━━━
+"""
+
     markup = InlineKeyboardMarkup()
+
+    for p in positions:
+
+        try:
+            price = exchange.fetch_ticker(p["sym"])["last"]
+        except:
+            continue
+
+        pnl_percent = ((price - p["entry"]) / p["entry"]) if p["signal"]=="LONG" else ((p["entry"] - price) / p["entry"])
+        pnl_usdt = round(pnl_percent * 50 * p["remaining"], 2)
+
+        emoji = "🟢" if pnl_usdt >= 0 else "🔴"
+
+        text += f"\n{p['sym']} → {pnl_usdt} USDT {emoji}\n"
+
+        markup.row(
+            InlineKeyboardButton(f"🟢 DEVAM", callback_data=f"keep_{p['id']}"),
+            InlineKeyboardButton(f"⛔ STOP", callback_data=f"exit_{p['id']}")
+        )
+
+    if event_log:
+        text += "\n📡 Son Olaylar:\n"
+        for l in event_log[-5:]:
+            text += f"{l}\n"
+
     markup.row(
-        InlineKeyboardButton("📊 Durum", callback_data="panel_status"),
-        InlineKeyboardButton("📈 Trades", callback_data="panel_trades")
-    )
-    markup.row(
-        InlineKeyboardButton("📡 Log", callback_data="panel_log")
+        InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all")
     )
 
-    bot.send_message(msg.chat.id, "💀 PRO PANEL", reply_markup=markup)
+    bot.send_message(cid, text, reply_markup=markup)
 
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
@@ -265,48 +320,6 @@ def callback(call):
         data = signal_cache.get(call.data.split("|")[1])
         if data:
             open_trade(data, cid)
-
-    elif call.data == "panel_status":
-        send(f"📊 Açık işlem: {len(positions)}", cid)
-
-    elif call.data == "panel_trades":
-
-        if not positions:
-            send("Açık işlem yok", cid)
-            return
-
-        for p in positions:
-
-            try:
-                price = exchange.fetch_ticker(p["sym"])["last"]
-            except:
-                continue
-
-            pnl_percent = ((price - p["entry"]) / p["entry"]) if p["signal"]=="LONG" else ((p["entry"] - price) / p["entry"])
-            pnl_usdt = round(pnl_percent * 50 * p["remaining"], 2)
-
-            markup = InlineKeyboardMarkup()
-            markup.row(
-                InlineKeyboardButton("🟢 DEVAM", callback_data=f"keep_{p['id']}"),
-                InlineKeyboardButton("⛔ EXIT", callback_data=f"exit_{p['id']}")
-            )
-
-            send(f"""
-📊 {p['sym']}
-
-💰 Entry: {round(p['entry'],4)}
-📈 Fiyat: {round(price,4)}
-
-💵 PnL: {pnl_usdt} USDT
-📦 Kalan: %{int(p['remaining']*100)}
-
-🤖 AI: {p['ai_status']}
-
-TP1: {'✅' if p['tp1_done'] else '⏳'}
-TP2: {'✅' if p['tp2_done'] else '⏳'}
-""", cid)
-
-            bot.send_message(cid, "Seç:", reply_markup=markup)
 
     elif call.data.startswith("keep_"):
         pid = call.data.split("_")[1]
@@ -328,8 +341,20 @@ TP2: {'✅' if p['tp2_done'] else '⏳'}
                 positions.remove(p)
                 break
 
-    elif call.data == "panel_log":
-        send("\n".join(event_log[-10:]) if event_log else "Log boş", cid)
+    elif call.data == "exit_all":
+
+        for p in positions[:]:
+            try:
+                price = exchange.fetch_ticker(p["sym"])["last"]
+                pnl_percent = ((price - p["entry"]) / p["entry"]) if p["signal"]=="LONG" else ((p["entry"] - price) / p["entry"])
+                pnl_usdt = round(pnl_percent * 50 * p["remaining"], 2)
+
+                send(f"⛔ EXIT {p['sym']} → {pnl_usdt} USDT", cid)
+                save_trade(p["sym"], pnl_usdt)
+                positions.remove(p)
+
+            except:
+                continue
 
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
