@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v7.3 (TP + TRAILING + FULL MESSAGE)
+# 💀 SADIK BOT v7.3 ULTRA FINAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
@@ -7,9 +7,8 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v7.3"
+VERSION = "v7.3 ULTRA FINAL"
 
-# ===== CONFIG =====
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
@@ -31,17 +30,19 @@ exchange = ccxt.bitget({
 positions = []
 last_analysis = {}
 
-# ===== STATS =====
 daily_profit = 0
 daily_loss = 0
 start_balance = 50
+
+# ===== SCANNER CACHE =====
+last_sent = {}
 
 # ===== SEND =====
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
-    except:
-        print(msg)
+    except Exception as e:
+        print("SEND HATA:", e)
 
 # ===== SUPABASE =====
 def save_trade(sym, pnl):
@@ -58,11 +59,14 @@ def save_trade(sym, pnl):
             "Authorization": f"Bearer {SUPA_KEY}",
             "Content-Type": "application/json"
         }
-        requests.post(f"{SUPA_URL}/rest/v1/trades",
-                      headers=headers,
-                      json={"symbol": sym, "result": pnl})
-    except:
-        pass
+        r = requests.post(f"{SUPA_URL}/rest/v1/trades",
+                          headers=headers,
+                          json={"symbol": sym, "result": pnl})
+
+        print("SUPABASE:", r.status_code, r.text)
+
+    except Exception as e:
+        print("SUPABASE HATA:", e)
 
 # ===== DATA =====
 def get_data(sym):
@@ -71,7 +75,8 @@ def get_data(sym):
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
-    except:
+    except Exception as e:
+        print("DATA HATA:", e)
         return None
 
 # ===== ANALYZE =====
@@ -85,6 +90,7 @@ def analyze(sym, cid):
     trend = "UP" if last["c"] > last["ema"] else "DOWN"
     signal = "LONG" if trend == "UP" else "SHORT"
     price = float(last["c"])
+    vol = df["v"].iloc[-1]
     conf = random.randint(65, 85)
 
     send(f"""
@@ -93,6 +99,7 @@ def analyze(sym, cid):
 📊 {sym}
 📈 {signal}
 💰 {round(price,4)}
+💰 Vol: {round(vol,2)}
 
 📊 %{conf}
 ━━━━━━━━━━━━━━━
@@ -117,11 +124,10 @@ def open_trade(cid):
         "entry": price,
         "size": 50,
         "chat": cid,
-        "peak_pct": 0,
-        "exit_flag": False,
         "signal": signal,
         "tp1_done": False,
-        "sl": price * 0.98
+        "sl": price * 0.98,
+        "last_sl_msg": 0
     })
 
     send(f"""
@@ -142,80 +148,126 @@ def manage():
             except:
                 continue
 
-            pnl = (price - p["entry"]) * p["size"]
+            # ===== PNL =====
+            if p["signal"] == "LONG":
+                pnl = (price - p["entry"]) * p["size"]
+            else:
+                pnl = (p["entry"] - price) * p["size"]
+
             pct = (pnl/(p["entry"]*p["size"]))*100
             cid = p["chat"]
 
             # ===== STOP LOSS =====
-            if not p["tp1_done"] and price <= p["entry"] * 0.98:
-                send(f"""
-🛑 STOP LOSS
+            if not p["tp1_done"]:
+                if p["signal"] == "LONG" and price <= p["entry"] * 0.98:
+                    send(f"🛑 STOP LOSS {p['sym']} {round(pnl,4)} USDT", cid)
+                    save_trade(p["sym"], pnl)
+                    positions.remove(p)
+                    continue
 
-📊 {p['sym']}
-💰 {round(pnl,4)} USDT
-
-❗ %2 zarar kesildi
-""", cid)
-
-                save_trade(p["sym"], pnl)
-                positions.remove(p)
-                continue
+                if p["signal"] == "SHORT" and price >= p["entry"] * 1.02:
+                    send(f"🛑 STOP LOSS {p['sym']} {round(pnl,4)} USDT", cid)
+                    save_trade(p["sym"], pnl)
+                    positions.remove(p)
+                    continue
 
             # ===== TP1 =====
             if not p["tp1_done"] and pct >= 1:
                 p["tp1_done"] = True
-
                 pnl_half = pnl / 2
                 save_trade(p["sym"], pnl_half)
 
                 p["sl"] = p["entry"]
 
-                send(f"""
-🎯 TP1 GERÇEKLEŞTİ
-
-📊 {p['sym']}
-💰 {round(pnl_half,4)} USDT
-
-🛡 SL → ENTRY ({round(p['sl'],4)})
-📈 Trailing başlıyor
-""", cid)
+                send(f"🎯 TP1 {p['sym']} {round(pnl_half,4)} USDT", cid)
 
             # ===== TRAILING =====
             if p["tp1_done"]:
-                old_sl = p["sl"]
-                new_sl = price * 0.995
+                updated = False
 
-                if new_sl > p["sl"]:
-                    p["sl"] = new_sl
+                if p["signal"] == "LONG":
+                    new_sl = price * 0.995
+                    if new_sl > p["sl"]:
+                        p["sl"] = new_sl
+                        updated = True
+                else:
+                    new_sl = price * 1.005
+                    if new_sl < p["sl"]:
+                        p["sl"] = new_sl
+                        updated = True
+
+                if updated and time.time() - p["last_sl_msg"] > 20:
+                    p["last_sl_msg"] = time.time()
 
                     send(f"""
-📈 TRAILING GÜNCELLENDİ
+📈 TRAILING
 
 📊 {p['sym']}
-💰 Fiyat: {round(price,4)}
-
-🛡 Yeni SL: {round(p['sl'],4)}
-""", cid)
-
-            # ===== STOP (TRAILING) =====
-            if price <= p["sl"]:
-                send(f"""
-🚨 STOP TETİKLENDİ
-
-📊 {p['sym']}
-💰 {round(pnl,4)} USDT
-
 🛡 SL: {round(p['sl'],4)}
 """, cid)
 
+            # ===== STOP =====
+            if p["signal"] == "LONG" and price <= p["sl"]:
+                send(f"🚨 STOP {p['sym']} {round(pnl,4)} USDT", cid)
+                save_trade(p["sym"], pnl)
+                positions.remove(p)
+                continue
+
+            if p["signal"] == "SHORT" and price >= p["sl"]:
+                send(f"🚨 STOP {p['sym']} {round(pnl,4)} USDT", cid)
                 save_trade(p["sym"], pnl)
                 positions.remove(p)
                 continue
 
         time.sleep(5)
 
-# ===== THREAD =====
+# ===== SCANNER =====
+def scanner():
+    while True:
+        try:
+            tickers = exchange.fetch_tickers()
+            sent = 0
+
+            for sym, data in tickers.items():
+
+                if ":USDT" not in sym:
+                    continue
+
+                if any(x in sym for x in ["BTC","ETH","BNB"]):
+                    continue
+
+                vol = data.get("quoteVolume", 0)
+
+                if vol and vol > 3_000_000:
+
+                    # spam engelle
+                    if sym in last_sent and time.time() - last_sent[sym] < 120:
+                        continue
+
+                    last_sent[sym] = time.time()
+
+                    send(f"""
+💀 FIRSAT
+
+📊 {sym}
+💰 Vol: {round(vol/1e6,2)}M
+
+👉 analiz yaz
+""")
+
+                    sent += 1
+                    if sent >= 3:
+                        break
+
+            time.sleep(20)
+
+        except Exception as e:
+            print("SCANNER HATA:", e)
+            time.sleep(10)
+
+# ===== THREADS =====
 threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=scanner, daemon=True).start()
 
 send(f"💀 SADIK BOT {VERSION} AKTİF")
 bot.infinity_polling()
