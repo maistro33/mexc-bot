@@ -170,7 +170,9 @@ def open_trade(cid):
         "chat": cid,
         "last_ai": 0,
         "exit_flag": False,
-        "exit_time": 0
+        "exit_time": 0,
+        "last_smart": 0,
+        "last_pnl": 0
     })
 
     send(f"""
@@ -214,9 +216,9 @@ def manage():
                     p["sl"] = new_sl
                     send(f"🔼 SL → {round(new_sl,4)}", cid)
 
-            # ===== LIVE AI =====
             now = time.time()
 
+            # ===== LIVE AI =====
             if now - p["last_ai"] > 20:
                 p["last_ai"] = now
 
@@ -247,6 +249,42 @@ Trend ters
 
                     p["exit_flag"] = True
                     p["exit_time"] = now
+
+            # ===== SMART LIVE AI =====
+            if now - p["last_smart"] > 20:
+                p["last_smart"] = now
+
+                change = pct - p["last_pnl"]
+                p["last_pnl"] = pct
+
+                if pct > 0.3 and change > 0.2:
+                    send(f"""
+📊 {p['sym']}
+
+💰 +{round(pnl,2)} USDT
+📈 hareket başladı
+
+👉 takip ediyorum
+""", cid)
+
+                elif pct > 0.8 and change > 0:
+                    send(f"""
+📊 {p['sym']}
+
+💰 +{round(pnl,2)} USDT
+📈 trend güçlü
+
+👉 devam edelim mi?
+""", cid)
+
+                elif pct > 0.5 and change < -0.3:
+                    send(f"""
+⚠️ {p['sym']}
+
+💰 kâr düşüyor
+
+👉 dikkat edelim
+""", cid)
 
             # AUTO EXIT
             if p["exit_flag"]:
