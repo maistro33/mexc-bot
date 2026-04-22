@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v7.3 ULTRA FINAL (SCANNER FIX)
+# 💀 SADIK BOT v7.3 FINAL FULL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v7.3 ULTRA FINAL"
+VERSION = "v7.3 FINAL FULL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -36,12 +36,14 @@ start_balance = 50
 
 last_sent = {}
 
+# ===== SEND =====
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
     except Exception as e:
         print("SEND HATA:", e)
 
+# ===== SUPABASE =====
 def save_trade(sym, pnl):
     global daily_profit, daily_loss
 
@@ -65,6 +67,7 @@ def save_trade(sym, pnl):
     except Exception as e:
         print("SUPABASE HATA:", e)
 
+# ===== DATA =====
 def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
@@ -75,6 +78,7 @@ def get_data(sym):
         print("DATA HATA:", e)
         return None
 
+# ===== ANALYZE =====
 def analyze(sym, cid):
     df = get_data(sym)
     if df is None:
@@ -104,6 +108,7 @@ def analyze(sym, cid):
 
     last_analysis.update({"sym": sym, "signal": signal, "price": price})
 
+# ===== TRADE =====
 def open_trade(cid):
     if not last_analysis:
         send("⚠️ Önce analiz", cid)
@@ -133,6 +138,7 @@ def open_trade(cid):
 💵 50 USDT
 """, cid)
 
+# ===== MANAGEMENT =====
 def manage():
     while True:
         for p in positions[:]:
@@ -209,7 +215,7 @@ def manage():
 
         time.sleep(5)
 
-# ===== SADECE BURASI GELİŞTİRİLDİ =====
+# ===== SCANNER =====
 def scanner():
     while True:
         try:
@@ -226,7 +232,6 @@ def scanner():
 
                 vol = data.get("quoteVolume", 0)
 
-                # 💀 YENİ EKLENEN FİLTRELER
                 df = get_data(sym)
                 if df is None:
                     continue
@@ -265,6 +270,21 @@ def scanner():
             print("SCANNER HATA:", e)
             time.sleep(10)
 
+# ===== TELEGRAM HANDLER =====
+@bot.message_handler(func=lambda m: True)
+def handle(msg):
+    text = msg.text.lower().strip()
+    text = text.replace("ç","c").replace("ı","i")
+    cid = msg.chat.id
+
+    if "analiz" in text:
+        coin = text.replace("analiz","").strip().upper()
+        analyze(coin+"/USDT:USDT", cid)
+
+    elif text == "gir":
+        open_trade(cid)
+
+# ===== THREADS =====
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
