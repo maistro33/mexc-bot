@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v13 ULTRA PANEL
+# 💀 SADIK BOT v13.1 PANEL FIX
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v13 ULTRA PANEL"
+VERSION = "v13.1 PANEL FIX"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -236,7 +236,6 @@ Karar: EXIT
         time.sleep(5)
 
 # ==============================
-# 💀 ULTRA PANEL
 @bot.message_handler(commands=['panel'])
 def panel(msg):
 
@@ -281,31 +280,30 @@ def panel(msg):
 
     markup = InlineKeyboardMarkup()
 
-    for p in positions:
+    if not positions:
+        text += "\n❗ Açık işlem yok\n"
 
-        try:
-            price = exchange.fetch_ticker(p["sym"])["last"]
-        except:
-            continue
+    else:
+        for p in positions:
+            try:
+                price = exchange.fetch_ticker(p["sym"])["last"]
+                pnl_percent = ((price - p["entry"]) / p["entry"]) if p["signal"]=="LONG" else ((p["entry"] - price) / p["entry"])
+                pnl_usdt = round(pnl_percent * 50 * p["remaining"], 2)
 
-        pnl_percent = ((price - p["entry"]) / p["entry"]) if p["signal"]=="LONG" else ((p["entry"] - price) / p["entry"])
-        pnl_usdt = round(pnl_percent * 50 * p["remaining"], 2)
+                emoji = "🟢" if pnl_usdt >= 0 else "🔴"
 
-        emoji = "🟢" if pnl_usdt >= 0 else "🔴"
+                text += f"\n{p['sym']} → {pnl_usdt} USDT {emoji}\n"
 
-        text += f"\n{p['sym']} → {pnl_usdt} USDT {emoji}\n"
+                markup.row(
+                    InlineKeyboardButton("🟢 DEVAM", callback_data=f"keep_{p['id']}"),
+                    InlineKeyboardButton("⛔ STOP", callback_data=f"exit_{p['id']}")
+                )
 
-        markup.row(
-            InlineKeyboardButton(f"🟢 DEVAM", callback_data=f"keep_{p['id']}"),
-            InlineKeyboardButton(f"⛔ STOP", callback_data=f"exit_{p['id']}")
-        )
-
-    if event_log:
-        text += "\n📡 Son Olaylar:\n"
-        for l in event_log[-5:]:
-            text += f"{l}\n"
+            except:
+                continue
 
     markup.row(
+        InlineKeyboardButton("🔄 YENİLE", callback_data="refresh_panel"),
         InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all")
     )
 
@@ -320,6 +318,9 @@ def callback(call):
         data = signal_cache.get(call.data.split("|")[1])
         if data:
             open_trade(data, cid)
+
+    elif call.data == "refresh_panel":
+        panel(call.message)
 
     elif call.data.startswith("keep_"):
         pid = call.data.split("_")[1]
@@ -342,7 +343,6 @@ def callback(call):
                 break
 
     elif call.data == "exit_all":
-
         for p in positions[:]:
             try:
                 price = exchange.fetch_ticker(p["sym"])["last"]
