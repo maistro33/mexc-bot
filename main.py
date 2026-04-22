@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v7.3 ULTRA FINAL
+# 💀 SADIK BOT v7.3 ULTRA FINAL (SCANNER FIX)
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
@@ -34,17 +34,14 @@ daily_profit = 0
 daily_loss = 0
 start_balance = 50
 
-# ===== SCANNER CACHE =====
 last_sent = {}
 
-# ===== SEND =====
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
     except Exception as e:
         print("SEND HATA:", e)
 
-# ===== SUPABASE =====
 def save_trade(sym, pnl):
     global daily_profit, daily_loss
 
@@ -68,7 +65,6 @@ def save_trade(sym, pnl):
     except Exception as e:
         print("SUPABASE HATA:", e)
 
-# ===== DATA =====
 def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
@@ -79,7 +75,6 @@ def get_data(sym):
         print("DATA HATA:", e)
         return None
 
-# ===== ANALYZE =====
 def analyze(sym, cid):
     df = get_data(sym)
     if df is None:
@@ -109,7 +104,6 @@ def analyze(sym, cid):
 
     last_analysis.update({"sym": sym, "signal": signal, "price": price})
 
-# ===== TRADE =====
 def open_trade(cid):
     if not last_analysis:
         send("⚠️ Önce analiz", cid)
@@ -139,7 +133,6 @@ def open_trade(cid):
 💵 50 USDT
 """, cid)
 
-# ===== MANAGEMENT =====
 def manage():
     while True:
         for p in positions[:]:
@@ -148,7 +141,6 @@ def manage():
             except:
                 continue
 
-            # ===== PNL =====
             if p["signal"] == "LONG":
                 pnl = (price - p["entry"]) * p["size"]
             else:
@@ -157,7 +149,6 @@ def manage():
             pct = (pnl/(p["entry"]*p["size"]))*100
             cid = p["chat"]
 
-            # ===== STOP LOSS =====
             if not p["tp1_done"]:
                 if p["signal"] == "LONG" and price <= p["entry"] * 0.98:
                     send(f"🛑 STOP LOSS {p['sym']} {round(pnl,4)} USDT", cid)
@@ -171,7 +162,6 @@ def manage():
                     positions.remove(p)
                     continue
 
-            # ===== TP1 =====
             if not p["tp1_done"] and pct >= 1:
                 p["tp1_done"] = True
                 pnl_half = pnl / 2
@@ -181,7 +171,6 @@ def manage():
 
                 send(f"🎯 TP1 {p['sym']} {round(pnl_half,4)} USDT", cid)
 
-            # ===== TRAILING =====
             if p["tp1_done"]:
                 updated = False
 
@@ -206,7 +195,6 @@ def manage():
 🛡 SL: {round(p['sl'],4)}
 """, cid)
 
-            # ===== STOP =====
             if p["signal"] == "LONG" and price <= p["sl"]:
                 send(f"🚨 STOP {p['sym']} {round(pnl,4)} USDT", cid)
                 save_trade(p["sym"], pnl)
@@ -221,7 +209,7 @@ def manage():
 
         time.sleep(5)
 
-# ===== SCANNER =====
+# ===== SADECE BURASI GELİŞTİRİLDİ =====
 def scanner():
     while True:
         try:
@@ -238,9 +226,21 @@ def scanner():
 
                 vol = data.get("quoteVolume", 0)
 
-                if vol and vol > 3_000_000:
+                # 💀 YENİ EKLENEN FİLTRELER
+                df = get_data(sym)
+                if df is None:
+                    continue
 
-                    # spam engelle
+                price = df["c"].iloc[-1]
+
+                if price < 0.0001:
+                    continue
+
+                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
+                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 1.5
+
+                if vol and vol > 3_000_000 and move and vol_spike:
+
                     if sym in last_sent and time.time() - last_sent[sym] < 120:
                         continue
 
@@ -265,7 +265,6 @@ def scanner():
             print("SCANNER HATA:", e)
             time.sleep(10)
 
-# ===== THREADS =====
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
