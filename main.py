@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v7.3 FINAL FULL
+# 💀 SADIK BOT v7.3 FINAL CLEAN FIX
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests, random
@@ -7,7 +7,7 @@ import pandas as pd
 from openai import OpenAI
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v7.3 FINAL FULL"
+VERSION = "v7.3 FINAL CLEAN"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -36,14 +36,12 @@ start_balance = 50
 
 last_sent = {}
 
-# ===== SEND =====
 def send(msg, cid=None):
     try:
         bot.send_message(cid or CHAT_ID, msg, parse_mode="HTML")
     except Exception as e:
         print("SEND HATA:", e)
 
-# ===== SUPABASE =====
 def save_trade(sym, pnl):
     global daily_profit, daily_loss
 
@@ -67,18 +65,15 @@ def save_trade(sym, pnl):
     except Exception as e:
         print("SUPABASE HATA:", e)
 
-# ===== DATA =====
 def get_data(sym):
     try:
         ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
         df["ema"] = df["c"].ewm(20).mean()
         return df
-    except Exception as e:
-        print("DATA HATA:", e)
+    except:
         return None
 
-# ===== ANALYZE =====
 def analyze(sym, cid):
     df = get_data(sym)
     if df is None:
@@ -108,7 +103,6 @@ def analyze(sym, cid):
 
     last_analysis.update({"sym": sym, "signal": signal, "price": price})
 
-# ===== TRADE =====
 def open_trade(cid):
     if not last_analysis:
         send("⚠️ Önce analiz", cid)
@@ -118,6 +112,8 @@ def open_trade(cid):
     price = last_analysis["price"]
     signal = last_analysis["signal"]
 
+    sl = price * 0.98 if signal == "LONG" else price * 1.02
+
     positions.append({
         "sym": sym,
         "entry": price,
@@ -125,20 +121,24 @@ def open_trade(cid):
         "chat": cid,
         "signal": signal,
         "tp1_done": False,
-        "sl": price * 0.98,
+        "sl": sl,
         "last_sl_msg": 0
     })
 
     send(f"""
-🚀 TRADE
+🚀 TRADE AÇILDI
 
 📊 {sym}
 📈 {signal}
-💰 {round(price,4)}
-💵 50 USDT
+💰 Giriş: {round(price,4)}
+💵 Miktar: 50 USDT
+
+🛑 SL: {round(sl,4)}
+🎯 TP1: %1
+
+🤖 AI takip ediyor...
 """, cid)
 
-# ===== MANAGEMENT =====
 def manage():
     while True:
         for p in positions[:]:
@@ -172,10 +172,16 @@ def manage():
                 p["tp1_done"] = True
                 pnl_half = pnl / 2
                 save_trade(p["sym"], pnl_half)
-
                 p["sl"] = p["entry"]
 
-                send(f"🎯 TP1 {p['sym']} {round(pnl_half,4)} USDT", cid)
+                send(f"""
+🎯 TP1
+
+📊 {p['sym']}
+💰 {round(pnl_half,4)} USDT
+
+🛡 SL → ENTRY
+""", cid)
 
             if p["tp1_done"]:
                 updated = False
@@ -215,7 +221,6 @@ def manage():
 
         time.sleep(5)
 
-# ===== SCANNER =====
 def scanner():
     while True:
         try:
@@ -270,7 +275,6 @@ def scanner():
             print("SCANNER HATA:", e)
             time.sleep(10)
 
-# ===== TELEGRAM HANDLER =====
 @bot.message_handler(func=lambda m: True)
 def handle(msg):
     text = msg.text.lower().strip()
@@ -279,12 +283,14 @@ def handle(msg):
 
     if "analiz" in text:
         coin = text.replace("analiz","").strip().upper()
+        if coin == "":
+            send("⚠️ coin yaz", cid)
+            return
         analyze(coin+"/USDT:USDT", cid)
 
     elif text == "gir":
         open_trade(cid)
 
-# ===== THREADS =====
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=scanner, daemon=True).start()
 
