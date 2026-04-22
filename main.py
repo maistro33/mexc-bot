@@ -170,7 +170,8 @@ def open_trade(cid):
         "exit_flag": False,
         "exit_time": 0,
         "last_smart": 0,
-        "last_pnl": 0
+        "last_pnl": 0,
+        "peak_pct": 0
     })
 
     send(f"""
@@ -199,61 +200,35 @@ def manage():
             pnl = (price-entry)*size if p["side"]=="LONG" else (entry-price)*size
             pct = (pnl/(entry*size))*100
 
-            p["peak"] = max(p["peak"], pct)
             cid = p["chat"]
-
             now = time.time()
 
-            # TP1
+            p["peak_pct"] = max(p["peak_pct"], pct)
+
             if pct > 1 and p["sl"] != entry:
                 p["sl"] = entry
                 send(f"🎯 TP1 {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
 
-            # ===== TREND KONTROL (KRİTİK) =====
-            df = get_data(p["sym"])
-            if df is not None:
-                trend = "UP" if df.iloc[-1]["c"] > df.iloc[-1]["ema"] else "DOWN"
-
-                if (p["side"]=="LONG" and trend=="DOWN") or (p["side"]=="SHORT" and trend=="UP"):
-                    send(f"""
-⚠️ {p['sym']}
-
-Trend ters döndü
-
-👉 çıkılıyor
-""", cid)
-
-                    p["exit_flag"] = True
-                    p["exit_time"] = now
-
-            # LIVE AI
             if now - p["last_ai"] > 20:
                 p["last_ai"] = now
-
                 send(f"""
 📊 {p['sym']}
-
 💰 {round(pnl,4)} USDT ({round(pct,2)}%)
 👉 Devam edelim mi?
 """, cid)
 
-            # SMART AI
-            if now - p["last_smart"] > 20:
-                p["last_smart"] = now
+            if pct < p["peak_pct"] - 0.5:
+                df = get_data(p["sym"])
+                if df is not None and len(df) > 3:
+                    if df["c"].iloc[-1] < df["c"].iloc[-2]:
+                        send(f"""
+⚠️ {p['sym']}
+Kâr geri veriliyor
+👉 çıkılıyor
+""", cid)
+                        p["exit_flag"] = True
+                        p["exit_time"] = now
 
-                change = pct - p["last_pnl"]
-                p["last_pnl"] = pct
-
-                if pct > 0.1 and change > 0.05:
-                    send(f"{p['sym']} hareket başladı", cid)
-
-                elif pct > 0.4:
-                    send(f"{p['sym']} trend güçlü", cid)
-
-                elif pct > 0.2 and change < -0.1:
-                    send(f"{p['sym']} dikkat, düşüş", cid)
-
-            # AUTO EXIT
             if p["exit_flag"]:
                 if now - p["exit_time"] > 10:
                     send(f"🚨 AI ÇIKIŞ {p['sym']} {round(pnl,4)} USDT", cid)
@@ -261,53 +236,6 @@ Trend ters döndü
                     positions.remove(p)
 
         time.sleep(5)
-
-# ===== SCANNER =====
-def scanner():
-    while True:
-        try:
-            tickers = exchange.fetch_tickers()
-
-            pairs = []
-            for sym, data in tickers.items():
-                if ":USDT" not in sym:
-                    continue
-                if any(x in sym for x in ["BTC","ETH","XRP","BNB"]):
-                    continue
-
-                vol = data.get("quoteVolume", 0)
-                if vol and vol > 5_000_000:
-                    pairs.append((sym, vol))
-
-            pairs.sort(key=lambda x: x[1], reverse=True)
-            sample = random.sample(pairs[:80], min(20, len(pairs)))
-
-            for sym, vol in sample:
-                df = get_data(sym)
-                if df is None:
-                    continue
-
-                price = df["c"].iloc[-1]
-                vol_spike = df["v"].iloc[-1] > df["v"].iloc[-5] * 2
-                move = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) > price * 0.003
-
-                whale = False
-                try:
-                    ob = exchange.fetch_order_book(sym, limit=20)
-                    bids = sum(b[1] for b in ob["bids"])
-                    asks = sum(a[1] for a in ob["asks"])
-                    whale = bids > asks * 1.5
-                except:
-                    pass
-
-                if whale and vol_spike and move:
-                    send(f"💀 FIRSAT {sym} | Whale + Spike", CHAT_ID)
-                    break
-
-            time.sleep(25)
-
-        except:
-            time.sleep(10)
 
 # ===== TELEGRAM =====
 @bot.message_handler(func=lambda m: True)
@@ -322,27 +250,34 @@ def handle(msg):
     elif text == "gir":
         open_trade(cid)
 
-    elif text == "devam":
-        send("👍 Devam ediliyor", cid)
+    elif text.startswith("çık"):
+        parts = text.split()
 
-    elif text == "çık":
-        if positions:
-            p = positions[0]
-            price = exchange.fetch_ticker(p["sym"])["last"]
+        if len(parts) == 1:
+            for p in positions[:]:
+                price = exchange.fetch_ticker(p["sym"])["last"]
+                pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
+                pct = (pnl/(p["entry"]*p["size"]))*100
 
-            pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
-            pct = (pnl/(p["entry"]*p["size"]))*100
+                send(f"❌ ÇIKIŞ {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
+                save_trade(p["sym"], pnl)
+                positions.remove(p)
 
-            send(f"❌ ÇIKIŞ {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
+        else:
+            coin = parts[1].upper()
+            for p in positions[:]:
+                if coin in p["sym"]:
+                    price = exchange.fetch_ticker(p["sym"])["last"]
+                    pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
+                    pct = (pnl/(p["entry"]*p["size"]))*100
 
-            save_trade(p["sym"], pnl)
-            positions.remove(p)
+                    send(f"❌ ÇIKIŞ {p['sym']} {round(pnl,4)} USDT ({round(pct,2)}%)", cid)
+                    save_trade(p["sym"], pnl)
+                    positions.remove(p)
 
     elif text == "durum":
-        if positions:
-            p = positions[0]
+        for p in positions:
             price = exchange.fetch_ticker(p["sym"])["last"]
-
             pnl = (price - p["entry"]) * p["size"] if p["side"]=="LONG" else (p["entry"] - price) * p["size"]
             pct = (pnl/(p["entry"]*p["size"]))*100
 
@@ -350,7 +285,6 @@ def handle(msg):
 
 # ===== THREADS =====
 threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=scanner, daemon=True).start()
 
-send("💀 ULTRA FINAL AI AKTİF")
+send("💀 CONTROL PRO AKTİF")
 bot.infinity_polling()
