@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.7 REAL PNL FIX
+# 💀 SADIK BOT v20.9 PANEL FIX
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.7 REAL PNL FIX"
+VERSION = "v20.9 PANEL FIX"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -71,6 +71,21 @@ def load_history():
         return history_cache
 
 # ==============================
+def get_total_pnl():
+    try:
+        data = load_history()
+        return round(sum([x.get("pnl",0) for x in data]),2)
+    except:
+        return 0
+
+def get_daily_pnl():
+    try:
+        data = load_history()
+        return round(sum([x.get("pnl",0) for x in data[-50:]]),2)
+    except:
+        return 0
+
+# ==============================
 def coin_filter(symbol):
     data = load_history()
     trades = [x for x in data if x.get("Symbol") == symbol]
@@ -96,18 +111,27 @@ def ai_signal(df):
         score_long = 0
         score_short = 0
 
-        score_long += 30 if price > ema else 0
-        score_short += 30 if price <= ema else 0
+        if price > ema:
+            score_long += 20
+        else:
+            score_short += 20
 
-        if rsi < 30: score_long += 20
-        elif rsi > 70: score_short += 20
+        if rsi < 40:
+            score_long += 20
+        elif rsi > 60:
+            score_short += 20
 
-        score_long += 25 if momentum > 0 else 0
-        score_short += 25 if momentum <= 0 else 0
+        if momentum > 0:
+            score_long += 25
+        else:
+            score_short += 25
 
         if volume > 1.3:
             score_long += 15
             score_short += 15
+
+        if price < ema and momentum < 0:
+            score_short += 10
 
         return ("LONG", score_long) if score_long > score_short else ("SHORT", score_short)
 
@@ -240,7 +264,7 @@ def open_trade(data, cid):
         "margin":5,
         "leverage":10,
         "size":50,
-        "realized":0   # 🔥 EKLENDİ
+        "realized":0
     })
     send(f"🚀 AÇILDI {data['sym']}", cid)
 
@@ -265,7 +289,7 @@ def manage():
                     part = pnl_total * 0.5
                     p["size"] *= 0.5
                     p["sl"] = p["entry"]
-                    p["realized"] += part   # 🔥 EKLENDİ
+                    p["realized"] += part
                     daily_pnl += part
                     total_pnl += part
                     send(f"🎯 TP1 {p['sym']} +{round(part,2)} USDT")
@@ -275,13 +299,13 @@ def manage():
                     part = pnl_total * 0.25
                     p["size"] *= 0.5
                     p["sl"] = p["tp1"]
-                    p["realized"] += part   # 🔥 EKLENDİ
+                    p["realized"] += part
                     daily_pnl += part
                     total_pnl += part
                     send(f"🎯 TP2 {p['sym']} +{round(part,2)} USDT")
 
                 elif price >= p["tp3"]:
-                    final = p["realized"] + pnl_total   # 🔥 FIX
+                    final = p["realized"] + pnl_total
                     daily_pnl += final
                     total_pnl += final
                     save_trade(p["sym"], final)
@@ -290,7 +314,7 @@ def manage():
                     continue
 
                 if price <= p["sl"]:
-                    final = p["realized"] + pnl_total   # 🔥 FIX
+                    final = p["realized"] + pnl_total
                     daily_pnl += final
                     total_pnl += final
                     save_trade(p["sym"], final)
@@ -345,8 +369,8 @@ def build_panel():
     text = f"""
 💀 LIVE PANEL
 
-📅 Günlük: {round(daily_pnl,2)} USDT
-💰 Toplam: {round(total_pnl,2)} USDT
+📅 Günlük: {get_daily_pnl()} USDT
+💰 Toplam: {get_total_pnl()} USDT
 
 🌍 Market: {market_status()}
 📈 Açık: {len(positions)}
@@ -423,7 +447,7 @@ def callback(call):
                 pnl = calc_pnl(p, price)
 
                 global daily_pnl, total_pnl
-                final = p["realized"] + pnl   # 🔥 FIX
+                final = p["realized"] + pnl
                 daily_pnl += final
                 total_pnl += final
 
@@ -441,7 +465,7 @@ def callback(call):
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
 
-            final = p["realized"] + pnl   # 🔥 FIX
+            final = p["realized"] + pnl
 
             daily_pnl += final
             total_pnl += final
