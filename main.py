@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v19.3 FINAL
+# 💀 SADIK BOT v19.4 FINAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v19.3 FINAL"
+VERSION = "v19.4 FINAL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -300,6 +300,29 @@ def panel_keyboard():
     return markup
 
 # ==============================
+@bot.message_handler(commands=['panel'])
+def panel(msg):
+    global panel_message_id, panel_chat_id
+    panel_chat_id = msg.chat.id
+    m = bot.send_message(panel_chat_id, "⏳ PANEL YÜKLENİYOR...")
+    panel_message_id = m.message_id
+
+# ==============================
+def live_panel():
+    while True:
+        if panel_message_id:
+            try:
+                bot.edit_message_text(
+                    build_panel(),
+                    chat_id=panel_chat_id,
+                    message_id=panel_message_id,
+                    reply_markup=panel_keyboard()
+                )
+            except:
+                pass
+        time.sleep(4)
+
+# ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
 
@@ -350,6 +373,7 @@ def callback(call):
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
+threading.Thread(target=live_panel, daemon=True).start()
 
 send(f"💀 BOT {VERSION} AKTİF")
 bot.infinity_polling()
