@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.3 FINAL
+# 💀 SADIK BOT v20.4 AUTO AI
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.3 PARTIAL TP"
+VERSION = "v20.4 AUTO AI"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -140,7 +140,7 @@ def ai_signal(df):
 # ==============================
 def market_status():
     try:
-        df = get_data("BTC/USDT:USDT")
+        df = get_data("BTC/USDT")
         return "🟢 BULLISH" if df and df["c"].iloc[-1] > df["ema"].iloc[-1] else "🔴 BEARISH"
     except:
         return "UNKNOWN"
@@ -182,7 +182,16 @@ def scanner():
                 if ":USDT" not in sym:
                     continue
 
+                if len(positions) >= 7:
+                    continue
+
                 if not coin_filter(sym):
+                    continue
+
+                safe = sym.replace("/","").replace(":","")
+
+                # duplicate signal engelle
+                if safe in signal_cache:
                     continue
 
                 df = get_data(sym)
@@ -191,7 +200,7 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
-                if signal is None or strength < 60:
+                if signal is None or strength < 90:
                     continue
 
                 price = df["c"].iloc[-1]
@@ -202,8 +211,6 @@ def scanner():
                     tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
                 else:
                     tp1, tp2, tp3, sl = price*0.99, price*0.98, price*0.97, price*1.02
-
-                safe = sym.replace("/","").replace(":","")
 
                 signal_cache[safe] = {
                     "id": safe,
@@ -216,6 +223,13 @@ def scanner():
                     "sl": sl
                 }
 
+                # AUTO ENTRY
+                if strength >= 95:
+                    send(f"🤖 AUTO TRADE {sym} (%{strength})")
+                    open_trade(signal_cache[safe], CHAT_ID)
+                    continue
+
+                # MANUAL
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
