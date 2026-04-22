@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.4 AUTO AI
+# 💀 SADIK BOT v20.5 SMART AUTO
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.4 AUTO AI"
+VERSION = "v20.5 SMART AUTO"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -177,6 +177,9 @@ def scanner():
         try:
             tickers = exchange.fetch_tickers()
 
+            best_signal = None
+            best_strength = 0
+
             for sym in tickers:
 
                 if ":USDT" not in sym:
@@ -190,7 +193,6 @@ def scanner():
 
                 safe = sym.replace("/","").replace(":","")
 
-                # duplicate signal engelle
                 if safe in signal_cache:
                     continue
 
@@ -223,11 +225,16 @@ def scanner():
                     "sl": sl
                 }
 
-                # AUTO ENTRY
+                # AUTO >=95
                 if strength >= 95:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
                     open_trade(signal_cache[safe], CHAT_ID)
                     continue
+
+                # BEST SIGNAL TRACK
+                if strength > best_strength:
+                    best_strength = strength
+                    best_signal = safe
 
                 # MANUAL
                 markup = InlineKeyboardMarkup()
@@ -251,6 +258,11 @@ def scanner():
                 bot.send_message(CHAT_ID, "GİR:", reply_markup=markup)
 
                 time.sleep(2)
+
+            # 🔥 BEST AUTO (yeni)
+            if best_signal and best_strength >= 90 and len(positions) < 7:
+                send(f"🤖 BEST AUTO (%{best_strength})")
+                open_trade(signal_cache[best_signal], CHAT_ID)
 
             time.sleep(15)
 
