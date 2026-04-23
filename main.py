@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.3 PRO CONTROL SPIKE FIX
+# 💀 SADIK BOT v20.3 PRO CONTROL FINAL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.3 PRO CONTROL SPIKE FIX"
+VERSION = "v20.3 PRO CONTROL FINAL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -194,8 +194,8 @@ def scanner():
 
             for sym in tickers:
 
-                if len(positions) >= 5:
-                    break
+                # 🔥 MAX LIMIT FLAG (SİNYAL DURMAZ)
+                max_reached = len(positions) >= 5
 
                 if sent_count >= 5:
                     break
@@ -212,19 +212,14 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
-                if signal is None or strength < 90:
+                if signal is None or strength < 70:
                     continue
 
                 price = df["c"].iloc[-1]
                 if price <= 0:
                     continue
 
-                # 🔥 ESKİ VOLUME (KALDI)
-                real_volume = df["v"].iloc[-1]
-                if real_volume < 100000:
-                    pass  # iptal edilmedi ama etkisiz bırakıldı
-
-                # 🔥 YENİ SPIKE SİSTEMİ
+                # 🔥 VOLUME SPIKE
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
 
@@ -232,14 +227,12 @@ def scanner():
                     continue
 
                 volume_spike = vol_now / vol_avg
-
-                if volume_spike < 1.5:
+                if volume_spike < 1.2:
                     continue
 
-                # 🔥 STRONG MOMENTUM
+                # 🔥 MOMENTUM
                 momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
-
-                if momentum_abs < 0.005:
+                if momentum_abs < 0.003:
                     continue
 
                 if signal == "LONG":
@@ -260,10 +253,10 @@ def scanner():
                     "sl": sl
                 }
 
-                if 90 <= strength <= 95:
+                # 🔥 AUTO SADECE LIMIT ALTINDA
+                if 90 <= strength <= 95 and not max_reached:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
                     open_trade(signal_cache[safe], CHAT_ID)
-                    continue
 
                 if strength > best_strength:
                     best_strength = strength
@@ -292,7 +285,7 @@ def scanner():
                 sent_count += 1
                 time.sleep(4)
 
-            if best_signal and 90 <= best_strength <= 95:
+            if best_signal and 90 <= best_strength <= 95 and len(positions) < 5:
                 send(f"🤖 BEST AUTO (%{best_strength})")
                 open_trade(signal_cache[best_signal], CHAT_ID)
 
