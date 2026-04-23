@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.3 PRO TELEGRAM FIX
+# 💀 SADIK BOT v20.3 PRO FAST + AUTO
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.3 PRO TELEGRAM FIX"
+VERSION = "v20.3 PRO FAST AUTO"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -37,7 +37,6 @@ history_cache = []
 last_history_update = 0
 
 # ==============================
-# 🔥 TELEGRAM SAFE SEND (YENİ)
 def safe_send(text, cid=None, markup=None):
     while True:
         try:
@@ -189,7 +188,9 @@ def scanner():
         try:
             tickers = exchange.fetch_tickers()
 
-            sent_count = 0  # 🔥 LIMIT
+            sent_count = 0
+            best_signal = None
+            best_strength = 0
 
             for sym in tickers:
 
@@ -215,6 +216,15 @@ def scanner():
                 if price <= 0:
                     continue
 
+                # 🔥 FAST COIN FILTER
+                real_volume = df["v"].iloc[-1]
+                if real_volume < 100000:
+                    continue
+
+                momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
+                if momentum_abs < 0.003:
+                    continue
+
                 if signal == "LONG":
                     tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
                 else:
@@ -232,6 +242,17 @@ def scanner():
                     "tp3": tp3,
                     "sl": sl
                 }
+
+                # 🔥 AUTO TRADE 90+
+                if strength >= 90:
+                    send(f"🤖 AUTO TRADE {sym} (%{strength})")
+                    open_trade(signal_cache[safe], CHAT_ID)
+                    continue
+
+                # BEST SIGNAL TRACK
+                if strength > best_strength:
+                    best_strength = strength
+                    best_signal = safe
 
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
@@ -255,6 +276,11 @@ def scanner():
 
                 sent_count += 1
                 time.sleep(4)
+
+            # 🔥 BEST AUTO
+            if best_signal and best_strength >= 90:
+                send(f"🤖 BEST AUTO (%{best_strength})")
+                open_trade(signal_cache[best_signal], CHAT_ID)
 
             time.sleep(25)
 
