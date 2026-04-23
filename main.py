@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v21 AI DECISION
+# 💀 SADIK BOT v21.1 HARD FILTER
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v21 AI DECISION"
+VERSION = "v21.1 HARD FILTER"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -200,7 +200,6 @@ def scanner():
                 if ":USDT" not in sym:
                     continue
 
-                # 🚫 SAME COIN FILTER
                 if any(p["sym"] == sym for p in positions):
                     continue
 
@@ -213,23 +212,37 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
-                if signal is None or strength < 70:
+                if signal is None:
                     continue
 
-                price = df["c"].iloc[-1]
-                if price <= 0:
-                    continue
+                # ==============================
+                # 💀 HARD FILTER (EN BAŞTA ÇALIŞIR)
 
-                # 🔥 VOLUME SPIKE
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
+
                 if vol_avg == 0:
                     continue
 
                 volume_spike = vol_now / vol_avg
 
-                # 🔥 MOMENTUM
                 momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
+
+                # 🔥 ANA FİLTRE
+                if volume_spike < 1.5:
+                    continue
+
+                if momentum_abs < 0.004:
+                    continue
+
+                # ==============================
+
+                if strength < 70:
+                    continue
+
+                price = df["c"].iloc[-1]
+                if price <= 0:
+                    continue
 
                 if signal == "LONG":
                     tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
@@ -254,20 +267,20 @@ def scanner():
                 decision = "❌ PAS"
                 reason = ""
 
-                if strength >= 90 and volume_spike > 1.3 and momentum_abs > 0.004:
+                if strength >= 90 and volume_spike > 1.5 and momentum_abs > 0.004:
                     decision = "🔥 GİR"
                     reason = "Trend + Momentum + Volume"
 
-                elif strength >= 80 and volume_spike > 1.2:
+                elif strength >= 80 and volume_spike > 1.3:
                     decision = "🟡 İZLE"
                     reason = "Orta Güç + Volume"
 
                 else:
                     decision = "❌ PAS"
-                    reason = "Zayıf Sinyal"
+                    reason = "Zayıf"
 
                 # ==============================
-                # 🤖 AUTO TRADE
+
                 if 90 <= strength <= 95 and not max_reached:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
                     open_trade(signal_cache[safe], CHAT_ID)
