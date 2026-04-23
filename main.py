@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.3 PRO CONTROL FINAL
+# 💀 SADIK BOT v21 AI DECISION
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.3 PRO CONTROL FINAL"
+VERSION = "v21 AI DECISION"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -189,18 +189,19 @@ def scanner():
             tickers = exchange.fetch_tickers()
 
             sent_count = 0
-            best_signal = None
-            best_strength = 0
 
             for sym in tickers:
 
-                # 🔥 MAX LIMIT FLAG (SİNYAL DURMAZ)
                 max_reached = len(positions) >= 5
 
                 if sent_count >= 5:
                     break
 
                 if ":USDT" not in sym:
+                    continue
+
+                # 🚫 SAME COIN FILTER
+                if any(p["sym"] == sym for p in positions):
                     continue
 
                 if not coin_filter(sym):
@@ -222,18 +223,13 @@ def scanner():
                 # 🔥 VOLUME SPIKE
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
-
                 if vol_avg == 0:
                     continue
 
                 volume_spike = vol_now / vol_avg
-                if volume_spike < 1.2:
-                    continue
 
                 # 🔥 MOMENTUM
                 momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
-                if momentum_abs < 0.003:
-                    continue
 
                 if signal == "LONG":
                     tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
@@ -253,14 +249,28 @@ def scanner():
                     "sl": sl
                 }
 
-                # 🔥 AUTO SADECE LIMIT ALTINDA
+                # ==============================
+                # 🤖 AI DECISION
+                decision = "❌ PAS"
+                reason = ""
+
+                if strength >= 90 and volume_spike > 1.3 and momentum_abs > 0.004:
+                    decision = "🔥 GİR"
+                    reason = "Trend + Momentum + Volume"
+
+                elif strength >= 80 and volume_spike > 1.2:
+                    decision = "🟡 İZLE"
+                    reason = "Orta Güç + Volume"
+
+                else:
+                    decision = "❌ PAS"
+                    reason = "Zayıf Sinyal"
+
+                # ==============================
+                # 🤖 AUTO TRADE
                 if 90 <= strength <= 95 and not max_reached:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
                     open_trade(signal_cache[safe], CHAT_ID)
-
-                if strength > best_strength:
-                    best_strength = strength
-                    best_signal = safe
 
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
@@ -278,16 +288,14 @@ def scanner():
 🛑 SL: {round(sl,4)}
 
 🤖 Güç: %{strength}
+🤖 Karar: {decision}
+📊 Sebep: {reason}
 """)
 
                 safe_send("GİR:", markup=markup)
 
                 sent_count += 1
                 time.sleep(4)
-
-            if best_signal and 90 <= best_strength <= 95 and len(positions) < 5:
-                send(f"🤖 BEST AUTO (%{best_strength})")
-                open_trade(signal_cache[best_signal], CHAT_ID)
 
             time.sleep(25)
 
