@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.3 PRO FAST + AUTO
+# 💀 SADIK BOT v20.3 PRO CONTROL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.3 PRO FAST AUTO"
+VERSION = "v20.3 PRO CONTROL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -194,6 +194,10 @@ def scanner():
 
             for sym in tickers:
 
+                # 🔥 MAX 5 POZİSYON
+                if len(positions) >= 5:
+                    break
+
                 if sent_count >= 5:
                     break
 
@@ -209,20 +213,12 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
-                if signal is None or strength < 60:
+                # 🔥 SADECE GÜÇLÜ
+                if signal is None or strength < 90:
                     continue
 
                 price = df["c"].iloc[-1]
                 if price <= 0:
-                    continue
-
-                # 🔥 FAST COIN FILTER
-                real_volume = df["v"].iloc[-1]
-                if real_volume < 100000:
-                    continue
-
-                momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
-                if momentum_abs < 0.003:
                     continue
 
                 if signal == "LONG":
@@ -243,13 +239,12 @@ def scanner():
                     "sl": sl
                 }
 
-                # 🔥 AUTO TRADE 90+
-                if strength >= 90:
+                # 🔥 AUTO TRADE 90-95
+                if 90 <= strength <= 95:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
                     open_trade(signal_cache[safe], CHAT_ID)
                     continue
 
-                # BEST SIGNAL TRACK
                 if strength > best_strength:
                     best_strength = strength
                     best_signal = safe
@@ -278,7 +273,7 @@ def scanner():
                 time.sleep(4)
 
             # 🔥 BEST AUTO
-            if best_signal and best_strength >= 90:
+            if best_signal and 90 <= best_strength <= 95:
                 send(f"🤖 BEST AUTO (%{best_strength})")
                 open_trade(signal_cache[best_signal], CHAT_ID)
 
