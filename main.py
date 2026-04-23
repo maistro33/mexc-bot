@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v21.1 HARD FILTER
+# 💀 SADIK BOT v22.1 RISK + VOLUME
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v21.1 HARD FILTER"
+VERSION = "v22.1 RISK + VOLUME"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -183,11 +183,25 @@ def calc_pnl(p, price):
     return round(pnl,2)
 
 # ==============================
+# 💀 RISK ENGINE
+def apply_risk_engine(price, signal):
+    if signal == "LONG":
+        tp1 = price * 1.01
+        tp2 = price * 1.02
+        tp3 = price * 1.03
+        sl  = price * 0.985
+    else:
+        tp1 = price * 0.99
+        tp2 = price * 0.98
+        tp3 = price * 0.97
+        sl  = price * 1.015
+    return tp1, tp2, tp3, sl
+
+# ==============================
 def scanner():
     while True:
         try:
             tickers = exchange.fetch_tickers()
-
             sent_count = 0
 
             for sym in tickers:
@@ -211,12 +225,11 @@ def scanner():
                     continue
 
                 signal, strength = ai_signal(df)
-
-                if signal is None:
+                if signal is None or strength < 70:
                     continue
 
                 # ==============================
-                # 💀 HARD FILTER (EN BAŞTA ÇALIŞIR)
+                # 🔥 HARD VOLUME + MOMENTUM FILTER (EKLENDİ)
 
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
@@ -225,10 +238,8 @@ def scanner():
                     continue
 
                 volume_spike = vol_now / vol_avg
-
                 momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
 
-                # 🔥 ANA FİLTRE
                 if volume_spike < 1.5:
                     continue
 
@@ -237,17 +248,9 @@ def scanner():
 
                 # ==============================
 
-                if strength < 70:
-                    continue
-
                 price = df["c"].iloc[-1]
-                if price <= 0:
-                    continue
 
-                if signal == "LONG":
-                    tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
-                else:
-                    tp1, tp2, tp3, sl = price*0.99, price*0.98, price*0.97, price*1.02
+                tp1, tp2, tp3, sl = apply_risk_engine(price, signal)
 
                 safe = sym.replace("/","").replace(":","")
 
@@ -261,25 +264,6 @@ def scanner():
                     "tp3": tp3,
                     "sl": sl
                 }
-
-                # ==============================
-                # 🤖 AI DECISION
-                decision = "❌ PAS"
-                reason = ""
-
-                if strength >= 90 and volume_spike > 1.5 and momentum_abs > 0.004:
-                    decision = "🔥 GİR"
-                    reason = "Trend + Momentum + Volume"
-
-                elif strength >= 80 and volume_spike > 1.3:
-                    decision = "🟡 İZLE"
-                    reason = "Orta Güç + Volume"
-
-                else:
-                    decision = "❌ PAS"
-                    reason = "Zayıf"
-
-                # ==============================
 
                 if 90 <= strength <= 95 and not max_reached:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
@@ -301,8 +285,6 @@ def scanner():
 🛑 SL: {round(sl,4)}
 
 🤖 Güç: %{strength}
-🤖 Karar: {decision}
-📊 Sebep: {reason}
 """)
 
                 safe_send("GİR:", markup=markup)
