@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v20.3 PRO FIX
+# 💀 SADIK BOT v20.3 PRO TELEGRAM FIX
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v20.3 PRO FIX"
+VERSION = "v20.3 PRO TELEGRAM FIX"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -37,11 +37,24 @@ history_cache = []
 last_history_update = 0
 
 # ==============================
+# 🔥 TELEGRAM SAFE SEND (YENİ)
+def safe_send(text, cid=None, markup=None):
+    while True:
+        try:
+            if markup:
+                bot.send_message(cid or CHAT_ID, text, reply_markup=markup)
+            else:
+                bot.send_message(cid or CHAT_ID, text)
+            break
+        except Exception as e:
+            if "Too Many Requests" in str(e):
+                time.sleep(8)
+            else:
+                break
+
+# ==============================
 def send(msg, cid=None):
-    try:
-        bot.send_message(cid or CHAT_ID, msg)
-    except:
-        pass
+    safe_send(msg, cid)
 
 # ==============================
 def get_data(sym):
@@ -176,7 +189,12 @@ def scanner():
         try:
             tickers = exchange.fetch_tickers()
 
+            sent_count = 0  # 🔥 LIMIT
+
             for sym in tickers:
+
+                if sent_count >= 5:
+                    break
 
                 if ":USDT" not in sym:
                     continue
@@ -218,7 +236,7 @@ def scanner():
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
-                send(f"""
+                safe_send(f"""
 💀 AKILLI SİNYAL
 
 📊 {sym}
@@ -233,11 +251,12 @@ def scanner():
 🤖 Güç: %{strength}
 """)
 
-                bot.send_message(CHAT_ID, "GİR:", reply_markup=markup)
+                safe_send("GİR:", markup=markup)
 
-                time.sleep(2)
+                sent_count += 1
+                time.sleep(4)
 
-            time.sleep(15)
+            time.sleep(25)
 
         except Exception as e:
             print("SCANNER:", e)
@@ -253,7 +272,7 @@ def open_trade(data, cid):
         "margin":5,
         "leverage":10,
         "size":50,
-        "realized":0  # 🔥 EKLENDİ
+        "realized":0
     })
     send(f"🚀 AÇILDI {data['sym']}", cid)
 
