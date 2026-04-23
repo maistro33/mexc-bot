@@ -196,7 +196,7 @@ def scanner():
 
                 signal, strength = ai_signal(df)
 
-                if signal is None or strength < 90:
+                if signal is None or strength < 85:
                     continue
 
                 price = df["c"].iloc[-1]
@@ -244,7 +244,7 @@ def scanner():
 
                 time.sleep(2)
 
-            if best_signal and best_strength >= 90 and len(positions) < 7:
+            if best_signal and best_strength >= 85 and len(positions) < 7:
                 send(f"🤖 BEST AUTO (%{best_strength})")
                 open_trade(signal_cache[best_signal], CHAT_ID)
 
