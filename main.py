@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v21.1 HARD FILTER + SMART TP FULL
+# 💀 SADIK BOT v21.1 HARD FILTER + SMART TP FULL + REAL TP
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -37,7 +37,7 @@ history_cache = []
 last_history_update = 0
 
 # ==============================
-# 💀 SMART TP/SL
+# 💀 SMART TP (ESKİ - DURUYOR)
 def smart_tp_sl(price, signal):
     fee = 0.0012
     if signal == "LONG":
@@ -53,6 +53,25 @@ def smart_tp_sl(price, signal):
             price*(1-fee-0.018),
             price*(1-fee-0.038),
             price*1.015
+        )
+
+# ==============================
+# 💀 REAL TP (EK)
+def smart_tp_sl_real(price, signal):
+    fee = 0.0012
+    if signal == "LONG":
+        return (
+            price*(1+fee+0.01),
+            price*(1+fee+0.025),
+            price*(1+fee+0.05),
+            price*0.99
+        )
+    else:
+        return (
+            price*(1-fee-0.01),
+            price*(1-fee-0.025),
+            price*(1-fee-0.05),
+            price*1.01
         )
 
 # ==============================
@@ -243,7 +262,6 @@ def scanner():
                 if momentum_abs < 0.004:
                     continue
 
-                # EK filtreler
                 vol_avg_long = df["v"].rolling(50).mean().iloc[-1]
                 if vol_avg_long > 0:
                     if df["v"].iloc[-1] < vol_avg_long * 1.2:
@@ -263,14 +281,17 @@ def scanner():
                 if price <= 0:
                     continue
 
-                # Eski TP (duruyor)
+                # eski TP
                 if signal == "LONG":
                     tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
                 else:
                     tp1, tp2, tp3, sl = price*0.99, price*0.98, price*0.97, price*1.02
 
-                # 💀 EK: SMART TP override
+                # eski smart TP
                 tp1, tp2, tp3, sl = smart_tp_sl(price, signal)
+
+                # 💀 REAL TP override
+                tp1, tp2, tp3, sl = smart_tp_sl_real(price, signal)
 
                 safe = sym.replace("/","").replace(":","")
 
@@ -335,7 +356,6 @@ def scanner():
 
 # ==============================
 def open_trade(data, cid):
-    # 💀 3 USDT FIX
     data["margin"] = 3
     data["leverage"] = 10
     data["size"] = data["margin"] * data["leverage"]
@@ -350,11 +370,13 @@ def open_trade(data, cid):
         "size":data["size"],
         "realized":0
     })
+
     send(f"🚀 AÇILDI {data['sym']}", cid)
 
 # ==============================
 def manage():
     global daily_pnl, total_pnl
+
     while True:
         for p in positions[:]:
             try:
