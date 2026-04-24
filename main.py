@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v22.3 FINAL STABLE
+# 💀 SADIK BOT v22.3 FINAL STABLE + REAL PATCH STRICT
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -35,6 +35,34 @@ total_pnl = 0
 
 history_cache = []
 last_history_update = 0
+
+# ==============================
+# 💀 EK: REAL ORDER
+def real_order(symbol, signal, size):
+    try:
+        side = "buy" if signal == "LONG" else "sell"
+        exchange.set_leverage(10, symbol)
+        return exchange.create_market_order(symbol, side, size)
+    except Exception as e:
+        send(f"❌ ORDER HATA: {e}")
+        return None
+
+# ==============================
+# 💀 EK: TP/SL BORSA
+def place_tp_sl_orders(symbol, signal, size, tp1, tp2, tp3, sl):
+    try:
+        if signal == "LONG":
+            exchange.create_order(symbol, "limit", "sell", size*0.5, tp1, {"reduceOnly": True})
+            exchange.create_order(symbol, "limit", "sell", size*0.25, tp2, {"reduceOnly": True})
+            exchange.create_order(symbol, "limit", "sell", size*0.25, tp3, {"reduceOnly": True})
+            exchange.create_order(symbol, "stop_market", "sell", size, None, {"stopPrice": sl, "reduceOnly": True})
+        else:
+            exchange.create_order(symbol, "limit", "buy", size*0.5, tp1, {"reduceOnly": True})
+            exchange.create_order(symbol, "limit", "buy", size*0.25, tp2, {"reduceOnly": True})
+            exchange.create_order(symbol, "limit", "buy", size*0.25, tp3, {"reduceOnly": True})
+            exchange.create_order(symbol, "stop_market", "buy", size, None, {"stopPrice": sl, "reduceOnly": True})
+    except Exception as e:
+        send(f"❌ TP/SL HATA: {e}")
 
 # ==============================
 # 💀 SMART TP
@@ -230,7 +258,6 @@ def scanner():
                 if signal is None or strength < 70:
                     continue
 
-                # VOLUME
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
 
@@ -263,28 +290,15 @@ def scanner():
                     "sl": sl
                 }
 
-                if 90 <= strength <= 95 and not max_reached:
-                    send(f"🤖 AUTO TRADE {sym} (%{strength})")
-                    open_trade(signal_cache[safe], CHAT_ID)
+                # AUTO TRADE KAPALI (silinmedi sadece yorum)
+                # if 90 <= strength <= 95 and not max_reached:
+                #     send(f"🤖 AUTO TRADE {sym} (%{strength})")
+                #     open_trade(signal_cache[safe], CHAT_ID)
 
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
-                safe_send(f"""
-💀 AKILLI SİNYAL
-
-📊 {sym}
-📈 {signal}
-💰 {round(price,4)}
-
-🎯 TP1: {round(tp1,4)}
-🎯 TP2: {round(tp2,4)}
-🎯 TP3: {round(tp3,4)}
-🛑 SL: {round(sl,4)}
-
-🤖 Güç: %{strength}
-""")
-
+                safe_send(f"{sym} {signal}")
                 safe_send("GİR:", markup=markup)
 
                 sent_count += 1
@@ -298,6 +312,21 @@ def scanner():
 
 # ==============================
 def open_trade(data, cid):
+
+    # 💀 EK: GERÇEK TRADE
+    real_order(data["sym"], data["signal"], 30)
+
+    # 💀 EK: TP SL BORSA
+    place_tp_sl_orders(
+        data["sym"],
+        data["signal"],
+        30,
+        data["tp1"],
+        data["tp2"],
+        data["tp3"],
+        data["sl"]
+    )
+
     positions.append({
         **data,
         "tp1_done":False,
@@ -308,7 +337,8 @@ def open_trade(data, cid):
         "size":30,
         "realized":0
     })
-    send(f"🚀 AÇILDI {data['sym']}", cid)
+
+    send(f"🚀 GERÇEK AÇILDI {data['sym']}", cid)
 
 # ==============================
 def manage():
