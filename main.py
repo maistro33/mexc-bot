@@ -1,5 +1,5 @@
 # ==============================
-# 💀 SADIK BOT v22.3 FINAL STABLE + STRICT FIX
+# 💀 SADIK BOT v22.3 FINAL STABLE
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
@@ -230,11 +230,9 @@ def scanner():
                 if signal is None or strength < 70:
                     continue
 
-                # 💀 EK: GARANTİ FİLTRE
                 if strength < 80:
                     continue
 
-                # VOLUME
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
 
@@ -270,7 +268,6 @@ def scanner():
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
-                # 💀 EK: DETAYLI SİNYAL GERİ GELDİ
                 safe_send(f"""
 💀 AKILLI SİNYAL
 
@@ -299,6 +296,24 @@ def scanner():
 
 # ==============================
 def open_trade(data, cid):
+
+    # 💀 GERÇEK ORDER EKLENDİ (3 USDT)
+    try:
+        side = "buy" if data["signal"] == "LONG" else "sell"
+        exchange.set_leverage(10, data["sym"])
+        amount = 30 / data["entry"]
+
+        exchange.create_market_order(
+            data["sym"],
+            side,
+            amount
+        )
+
+        send(f"✅ GERÇEK AÇILDI {data['sym']}", cid)
+
+    except Exception as e:
+        send(f"❌ ORDER HATA: {e}", cid)
+
     positions.append({
         **data,
         "tp1_done":False,
@@ -314,7 +329,6 @@ def open_trade(data, cid):
 # ==============================
 def manage():
     global daily_pnl, total_pnl
-
     while True:
         for p in positions[:]:
             try:
@@ -324,85 +338,13 @@ def manage():
 
             pnl_total = calc_pnl(p, price)
 
-            if p["signal"] == "LONG":
-
-                if not p["tp1_done"] and price >= p["tp1"]:
-                    p["tp1_done"] = True
-                    part = pnl_total * 0.5
-                    p["size"] *= 0.5
-                    p["sl"] = p["entry"]
-                    p["realized"] += part
-                    daily_pnl += part
-                    total_pnl += part
-                    send(f"🎯 TP1 {p['sym']} +{round(part,2)} USDT")
-
-                elif not p["tp2_done"] and price >= p["tp2"]:
-                    p["tp2_done"] = True
-                    part = pnl_total * 0.25
-                    p["size"] *= 0.5
-                    p["sl"] = p["tp1"]
-                    p["realized"] += part
-                    daily_pnl += part
-                    total_pnl += part
-                    send(f"🎯 TP2 {p['sym']} +{round(part,2)} USDT")
-
-                elif price >= p["tp3"]:
-                    final = p["realized"] + pnl_total
-                    daily_pnl += final
-                    total_pnl += final
-                    save_trade(p["sym"], final)
-                    send(f"🚀 TP3 {p['sym']} +{round(final,2)} USDT")
-                    positions.remove(p)
-                    continue
-
-                if price <= p["sl"]:
-                    final = p["realized"] + pnl_total
-                    daily_pnl += final
-                    total_pnl += final
-                    save_trade(p["sym"], final)
-                    send(f"🛑 STOP {p['sym']} {round(final,2)} USDT")
-                    positions.remove(p)
-                    continue
-
-            else:
-
-                if not p["tp1_done"] and price <= p["tp1"]:
-                    p["tp1_done"] = True
-                    part = pnl_total * 0.5
-                    p["size"] *= 0.5
-                    p["sl"] = p["entry"]
-                    p["realized"] += part
-                    daily_pnl += part
-                    total_pnl += part
-                    send(f"🎯 TP1 SHORT {p['sym']} +{round(part,2)} USDT")
-
-                elif not p["tp2_done"] and price <= p["tp2"]:
-                    p["tp2_done"] = True
-                    part = pnl_total * 0.25
-                    p["size"] *= 0.5
-                    p["sl"] = p["tp1"]
-                    p["realized"] += part
-                    daily_pnl += part
-                    total_pnl += part
-                    send(f"🎯 TP2 SHORT {p['sym']} +{round(part,2)} USDT")
-
-                elif price <= p["tp3"]:
-                    final = p["realized"] + pnl_total
-                    daily_pnl += final
-                    total_pnl += final
-                    save_trade(p["sym"], final)
-                    send(f"🚀 TP3 SHORT {p['sym']} +{round(final,2)} USDT")
-                    positions.remove(p)
-                    continue
-
-                if price >= p["sl"]:
-                    final = p["realized"] + pnl_total
-                    daily_pnl += final
-                    total_pnl += final
-                    save_trade(p["sym"], final)
-                    send(f"🛑 STOP SHORT {p['sym']} {round(final,2)} USDT")
-                    positions.remove(p)
-                    continue
+            if price <= p["sl"] or price >= p["tp3"]:
+                final = p["realized"] + pnl_total
+                daily_pnl += final
+                total_pnl += final
+                save_trade(p["sym"], final)
+                send(f"⛔ KAPANDI {p['sym']} {round(final,2)} USDT")
+                positions.remove(p)
 
         time.sleep(5)
 
@@ -419,7 +361,6 @@ def build_panel():
 
 ━━━━━━━━━━━━━━
 """
-
     for p in positions:
         try:
             price = exchange.fetch_ticker(p["sym"])["last"]
@@ -428,19 +369,16 @@ def build_panel():
             text += f"{p['sym']} → {pnl} USDT {emoji}\n"
         except:
             continue
-
     return text
 
 # ==============================
 def panel_keyboard():
     markup = InlineKeyboardMarkup()
-
     for p in positions:
         markup.row(
             InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"keep_{p['id']}"),
             InlineKeyboardButton(f"⛔ STOP {p['sym']}", callback_data=f"exit_{p['id']}")
         )
-
     markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
     return markup
 
@@ -470,7 +408,6 @@ def live_panel():
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
-
     cid = call.message.chat.id
 
     if call.data.startswith("enter|"):
@@ -479,42 +416,29 @@ def callback(call):
             open_trade(data, cid)
 
     elif call.data.startswith("exit_"):
-
         pid = call.data.split("_")[1]
-
         for p in positions:
             if p["id"] == pid:
                 price = exchange.fetch_ticker(p["sym"])["last"]
                 pnl = calc_pnl(p, price)
-
                 final = p["realized"] + pnl
-
                 global daily_pnl, total_pnl
                 daily_pnl += final
                 total_pnl += final
-
                 save_trade(p["sym"], final)
-
                 send(f"⛔ MANUAL EXIT {p['sym']} → {round(final,2)} USDT", cid)
-
                 positions.remove(p)
                 break
 
     elif call.data == "exit_all":
-
         for p in positions[:]:
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
-
             final = p["realized"] + pnl
-
             daily_pnl += final
             total_pnl += final
-
             save_trade(p["sym"], final)
-
             send(f"⛔ EXIT {p['sym']} → {round(final,2)} USDT", cid)
-
             positions.remove(p)
 
 # ==============================
