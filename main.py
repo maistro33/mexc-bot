@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v21.1 HARD FILTER + SMART TP FULL + REAL TP
+# 💀 SADIK BOT v22.3 FINAL STABLE
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v21.1 HARD FILTER"
+VERSION = "v22.3 FINAL STABLE"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -37,27 +37,8 @@ history_cache = []
 last_history_update = 0
 
 # ==============================
-# 💀 SMART TP (ESKİ - DURUYOR)
+# 💀 SMART TP
 def smart_tp_sl(price, signal):
-    fee = 0.0012
-    if signal == "LONG":
-        return (
-            price*(1+fee+0.006),
-            price*(1+fee+0.018),
-            price*(1+fee+0.038),
-            price*0.985
-        )
-    else:
-        return (
-            price*(1-fee-0.006),
-            price*(1-fee-0.018),
-            price*(1-fee-0.038),
-            price*1.015
-        )
-
-# ==============================
-# 💀 REAL TP (EK)
-def smart_tp_sl_real(price, signal):
     fee = 0.0012
     if signal == "LONG":
         return (
@@ -246,11 +227,13 @@ def scanner():
                     continue
 
                 signal, strength = ai_signal(df)
-                if signal is None:
+                if signal is None or strength < 70:
                     continue
 
+                # VOLUME
                 vol_now = df["v"].iloc[-1]
                 vol_avg = df["v"].rolling(20).mean().iloc[-1]
+
                 if vol_avg == 0:
                     continue
 
@@ -259,39 +242,13 @@ def scanner():
 
                 if volume_spike < 1.5:
                     continue
+
                 if momentum_abs < 0.004:
                     continue
 
-                vol_avg_long = df["v"].rolling(50).mean().iloc[-1]
-                if vol_avg_long > 0:
-                    if df["v"].iloc[-1] < vol_avg_long * 1.2:
-                        continue
-
-                if signal == "LONG" and df["c"].iloc[-1] < df["ema"].iloc[-1]:
-                    continue
-                if signal == "SHORT" and df["c"].iloc[-1] > df["ema"].iloc[-1]:
-                    continue
-                if momentum_abs > 0.01:
-                    continue
-
-                if strength < 70:
-                    continue
-
                 price = df["c"].iloc[-1]
-                if price <= 0:
-                    continue
 
-                # eski TP
-                if signal == "LONG":
-                    tp1, tp2, tp3, sl = price*1.01, price*1.02, price*1.03, price*0.98
-                else:
-                    tp1, tp2, tp3, sl = price*0.99, price*0.98, price*0.97, price*1.02
-
-                # eski smart TP
                 tp1, tp2, tp3, sl = smart_tp_sl(price, signal)
-
-                # 💀 REAL TP override
-                tp1, tp2, tp3, sl = smart_tp_sl_real(price, signal)
 
                 safe = sym.replace("/","").replace(":","")
 
@@ -305,19 +262,6 @@ def scanner():
                     "tp3": tp3,
                     "sl": sl
                 }
-
-                decision = "❌ PAS"
-                reason = ""
-
-                if strength >= 90 and volume_spike > 1.5 and momentum_abs > 0.004:
-                    decision = "🔥 GİR"
-                    reason = "Trend + Momentum + Volume"
-                elif strength >= 80 and volume_spike > 1.3:
-                    decision = "🟡 İZLE"
-                    reason = "Orta Güç + Volume"
-                else:
-                    decision = "❌ PAS"
-                    reason = "Zayıf"
 
                 if 90 <= strength <= 95 and not max_reached:
                     send(f"🤖 AUTO TRADE {sym} (%{strength})")
@@ -339,8 +283,6 @@ def scanner():
 🛑 SL: {round(sl,4)}
 
 🤖 Güç: %{strength}
-🤖 Karar: {decision}
-📊 Sebep: {reason}
 """)
 
                 safe_send("GİR:", markup=markup)
@@ -356,21 +298,16 @@ def scanner():
 
 # ==============================
 def open_trade(data, cid):
-    data["margin"] = 3
-    data["leverage"] = 10
-    data["size"] = data["margin"] * data["leverage"]
-
     positions.append({
         **data,
         "tp1_done":False,
         "tp2_done":False,
         "chat":cid,
-        "margin":data["margin"],
-        "leverage":data["leverage"],
-        "size":data["size"],
+        "margin":3,
+        "leverage":10,
+        "size":30,
         "realized":0
     })
-
     send(f"🚀 AÇILDI {data['sym']}", cid)
 
 # ==============================
@@ -387,6 +324,7 @@ def manage():
             pnl_total = calc_pnl(p, price)
 
             if p["signal"] == "LONG":
+
                 if not p["tp1_done"] and price >= p["tp1"]:
                     p["tp1_done"] = True
                     part = pnl_total * 0.5
@@ -426,6 +364,7 @@ def manage():
                     continue
 
             else:
+
                 if not p["tp1_done"] and price <= p["tp1"]:
                     p["tp1_done"] = True
                     part = pnl_total * 0.5
@@ -479,6 +418,7 @@ def build_panel():
 
 ━━━━━━━━━━━━━━
 """
+
     for p in positions:
         try:
             price = exchange.fetch_ticker(p["sym"])["last"]
@@ -487,16 +427,19 @@ def build_panel():
             text += f"{p['sym']} → {pnl} USDT {emoji}\n"
         except:
             continue
+
     return text
 
 # ==============================
 def panel_keyboard():
     markup = InlineKeyboardMarkup()
+
     for p in positions:
         markup.row(
             InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"keep_{p['id']}"),
             InlineKeyboardButton(f"⛔ STOP {p['sym']}", callback_data=f"exit_{p['id']}")
         )
+
     markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
     return markup
 
@@ -526,6 +469,7 @@ def live_panel():
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
+
     cid = call.message.chat.id
 
     if call.data.startswith("enter|"):
@@ -534,29 +478,42 @@ def callback(call):
             open_trade(data, cid)
 
     elif call.data.startswith("exit_"):
+
         pid = call.data.split("_")[1]
+
         for p in positions:
             if p["id"] == pid:
                 price = exchange.fetch_ticker(p["sym"])["last"]
                 pnl = calc_pnl(p, price)
+
                 final = p["realized"] + pnl
+
                 global daily_pnl, total_pnl
                 daily_pnl += final
                 total_pnl += final
+
                 save_trade(p["sym"], final)
+
                 send(f"⛔ MANUAL EXIT {p['sym']} → {round(final,2)} USDT", cid)
+
                 positions.remove(p)
                 break
 
     elif call.data == "exit_all":
+
         for p in positions[:]:
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
+
             final = p["realized"] + pnl
+
             daily_pnl += final
             total_pnl += final
+
             save_trade(p["sym"], final)
+
             send(f"⛔ EXIT {p['sym']} → {round(final,2)} USDT", cid)
+
             positions.remove(p)
 
 # ==============================
