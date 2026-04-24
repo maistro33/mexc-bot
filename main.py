@@ -175,21 +175,66 @@ def market_status():
         return "UNKNOWN"
 
 # ==============================
-def save_trade(sym, pnl):
+# ===== LEVEL 2: MARKET AI =====
+def market_direction():
     try:
-        headers = {
-            "apikey": SUPA_KEY,
-            "Authorization": f"Bearer {SUPA_KEY}",
-            "Content-Type": "application/json"
-        }
+        df = get_data("BTC/USDT:USDT")
+        if df is None:
+            return "NEUTRAL"
+        if df["c"].iloc[-1] > df["ema"].iloc[-1]:
+            return "BULL"
+        else:
+            return "BEAR"
+    except:
+        return "NEUTRAL"
+# =================================
 
-        requests.post(
-            f"{SUPA_URL}/rest/v1/trades",
-            headers=headers,
-            json={"Symbol": sym, "pnl": pnl}
-        )
+# ==============================
+# ===== LEVEL 2: AUTO LOAD POSITIONS =====
+def load_open_positions():
+    try:
+        data = exchange.fetch_positions()
+
+        for pos in data:
+            if float(pos.get("contracts", 0)) == 0:
+                continue
+
+            sym = pos["symbol"]
+            entry = float(pos["entryPrice"])
+            side = pos["side"]
+
+            signal = "LONG" if side == "long" else "SHORT"
+
+            tp1, tp2, tp3, sl = smart_tp_sl(entry, signal)
+
+            if any(p["sym"] == sym for p in positions):
+                continue
+
+            safe = sym.replace("/","").replace(":","")
+
+            positions.append({
+                "id": safe,
+                "sym": sym,
+                "entry": entry,
+                "signal": signal,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3,
+                "sl": sl,
+                "tp1_done": False,
+                "tp2_done": False,
+                "chat": CHAT_ID,
+                "margin": 3,
+                "leverage": 10,
+                "size": 30,
+                "realized": 0
+            })
+
+            send(f"♻️ YÜKLENDİ {sym}")
+
     except Exception as e:
-        print("SUPABASE ERROR:", e)
+        send(f"❌ LOAD ERROR: {e}")
+# =================================
 
 # ==============================
 def calc_pnl(p, price):
@@ -230,6 +275,31 @@ def scanner():
                 if signal is None or strength < 70:
                     continue
 
+                # ===== LEVEL 2: MARKET AI =====
+                market = market_direction()
+                if signal == "LONG" and market == "BEAR":
+                    continue
+                if signal == "SHORT" and market == "BULL":
+                    continue
+
+                # ===== LEVEL 2: SMART ENTRY =====
+                trend_up = df["c"].iloc[-1] > df["ema"].iloc[-1]
+                trend_down = df["c"].iloc[-1] < df["ema"].iloc[-1]
+
+                pullback = abs(df["c"].iloc[-1] - df["ema"].iloc[-1]) / df["ema"].iloc[-1]
+
+                if signal == "LONG":
+                    if not trend_up:
+                        continue
+                    if pullback > 0.01:
+                        continue
+
+                if signal == "SHORT":
+                    if not trend_down:
+                        continue
+                    if pullback > 0.01:
+                        continue
+
                 if strength < 80:
                     continue
 
@@ -247,6 +317,21 @@ def scanner():
 
                 if momentum_abs < 0.004:
                     continue
+
+                # ===== LEVEL 2: FAKE BREAKOUT =====
+                last_high = df["h"].rolling(10).max().iloc[-2]
+                last_low = df["l"].rolling(10).min().iloc[-2]
+                price_now = df["c"].iloc[-1]
+
+                if signal == "LONG":
+                    if price_now > last_high and df["c"].iloc[-2] < last_high:
+                        if df["v"].iloc[-1] < df["v"].rolling(5).mean().iloc[-1]:
+                            continue
+
+                if signal == "SHORT":
+                    if price_now < last_low and df["c"].iloc[-2] > last_low:
+                        if df["v"].iloc[-1] < df["v"].rolling(5).mean().iloc[-1]:
+                            continue
 
                 price = df["c"].iloc[-1]
 
@@ -297,13 +382,10 @@ def scanner():
 # ==============================
 def open_trade(data, cid):
 
-    # ===== EKLEME: ÇİFT POZİSYON ENGELİ =====
     if any(p["sym"] == data["sym"] for p in positions):
         send(f"⚠️ ZATEN AÇIK: {data['sym']}", cid)
         return
-    # ========================================
 
-    # ===== EKLEME: GERÇEK AÇMA =====
     try:
         side = "buy" if data["signal"] == "LONG" else "sell"
         exchange.set_leverage(10, data["sym"])
@@ -312,7 +394,6 @@ def open_trade(data, cid):
         send(f"✅ GERÇEK AÇILDI {data['sym']}", cid)
     except Exception as e:
         send(f"❌ ORDER HATA: {e}", cid)
-    # =================================
 
     positions.append({
         **data,
@@ -340,8 +421,6 @@ def manage():
             pnl_total = calc_pnl(p, price)
 
             if price <= p["sl"] or price >= p["tp3"]:
-
-                # ===== EKLEME: GERÇEK KAPATMA =====
                 try:
                     close_side = "sell" if p["signal"] == "LONG" else "buy"
                     amount = p["size"] / p["entry"]
@@ -349,7 +428,6 @@ def manage():
                     send(f"✅ GERÇEK KAPANDI {p['sym']}")
                 except Exception as e:
                     send(f"❌ KAPATMA HATA: {e}")
-                # =================================
 
                 final = p["realized"] + pnl_total
                 daily_pnl += final
@@ -472,6 +550,9 @@ def callback(call):
             positions.remove(p)
 
 # ==============================
+# ===== AUTO LOAD CALL =====
+load_open_positions()
+
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=live_panel, daemon=True).start()
