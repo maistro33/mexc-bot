@@ -297,22 +297,22 @@ def scanner():
 # ==============================
 def open_trade(data, cid):
 
-    # 💀 GERÇEK ORDER EKLENDİ (3 USDT)
+    # ===== EKLEME: ÇİFT POZİSYON ENGELİ =====
+    if any(p["sym"] == data["sym"] for p in positions):
+        send(f"⚠️ ZATEN AÇIK: {data['sym']}", cid)
+        return
+    # ========================================
+
+    # ===== EKLEME: GERÇEK AÇMA =====
     try:
         side = "buy" if data["signal"] == "LONG" else "sell"
         exchange.set_leverage(10, data["sym"])
         amount = 30 / data["entry"]
-
-        exchange.create_market_order(
-            data["sym"],
-            side,
-            amount
-        )
-
+        exchange.create_market_order(data["sym"], side, amount)
         send(f"✅ GERÇEK AÇILDI {data['sym']}", cid)
-
     except Exception as e:
         send(f"❌ ORDER HATA: {e}", cid)
+    # =================================
 
     positions.append({
         **data,
@@ -329,6 +329,7 @@ def open_trade(data, cid):
 # ==============================
 def manage():
     global daily_pnl, total_pnl
+
     while True:
         for p in positions[:]:
             try:
@@ -339,6 +340,17 @@ def manage():
             pnl_total = calc_pnl(p, price)
 
             if price <= p["sl"] or price >= p["tp3"]:
+
+                # ===== EKLEME: GERÇEK KAPATMA =====
+                try:
+                    close_side = "sell" if p["signal"] == "LONG" else "buy"
+                    amount = p["size"] / p["entry"]
+                    exchange.create_market_order(p["sym"], close_side, amount)
+                    send(f"✅ GERÇEK KAPANDI {p['sym']}")
+                except Exception as e:
+                    send(f"❌ KAPATMA HATA: {e}")
+                # =================================
+
                 final = p["realized"] + pnl_total
                 daily_pnl += final
                 total_pnl += final
@@ -361,6 +373,7 @@ def build_panel():
 
 ━━━━━━━━━━━━━━
 """
+
     for p in positions:
         try:
             price = exchange.fetch_ticker(p["sym"])["last"]
@@ -369,16 +382,19 @@ def build_panel():
             text += f"{p['sym']} → {pnl} USDT {emoji}\n"
         except:
             continue
+
     return text
 
 # ==============================
 def panel_keyboard():
     markup = InlineKeyboardMarkup()
+
     for p in positions:
         markup.row(
             InlineKeyboardButton(f"🟢 DEVAM {p['sym']}", callback_data=f"keep_{p['id']}"),
             InlineKeyboardButton(f"⛔ STOP {p['sym']}", callback_data=f"exit_{p['id']}")
         )
+
     markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
     return markup
 
@@ -408,6 +424,7 @@ def live_panel():
 # ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
+
     cid = call.message.chat.id
 
     if call.data.startswith("enter|"):
@@ -416,29 +433,42 @@ def callback(call):
             open_trade(data, cid)
 
     elif call.data.startswith("exit_"):
+
         pid = call.data.split("_")[1]
+
         for p in positions:
             if p["id"] == pid:
                 price = exchange.fetch_ticker(p["sym"])["last"]
                 pnl = calc_pnl(p, price)
+
                 final = p["realized"] + pnl
+
                 global daily_pnl, total_pnl
                 daily_pnl += final
                 total_pnl += final
+
                 save_trade(p["sym"], final)
+
                 send(f"⛔ MANUAL EXIT {p['sym']} → {round(final,2)} USDT", cid)
+
                 positions.remove(p)
                 break
 
     elif call.data == "exit_all":
+
         for p in positions[:]:
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
+
             final = p["realized"] + pnl
+
             daily_pnl += final
             total_pnl += final
+
             save_trade(p["sym"], final)
+
             send(f"⛔ EXIT {p['sym']} → {round(final,2)} USDT", cid)
+
             positions.remove(p)
 
 # ==============================
