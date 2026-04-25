@@ -27,6 +27,10 @@ exchange = ccxt.bitget({
 positions = []
 signal_cache = {}
 
+# ===== EKLEME =====
+closed_trades = []
+# ==================
+
 panel_message_id = None
 panel_chat_id = None
 
@@ -55,7 +59,24 @@ def smart_tp_sl(price, signal):
             price*1.01
         )
 
-# ==============================
+# ===== EKLEME =====
+def save_trade(sym, pnl):
+    try:
+        headers = {
+            "apikey": SUPA_KEY,
+            "Authorization": f"Bearer {SUPA_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        requests.post(
+            f"{SUPA_URL}/rest/v1/trades",
+            headers=headers,
+            json={"Symbol": sym, "pnl": pnl}
+        )
+    except Exception as e:
+        print("SUPABASE ERROR:", e)
+# ==================
+
 def safe_send(text, cid=None, markup=None):
     while True:
         try:
@@ -420,6 +441,30 @@ def manage():
 
             pnl_total = calc_pnl(p, price)
 
+            # ===== EKLEME: TP1 TP2 =====
+            if p["signal"] == "LONG":
+
+                if not p["tp1_done"] and price >= p["tp1"]:
+                    try:
+                        close_amount = (p["size"]/p["entry"]) * 0.5
+                        exchange.create_market_order(p["sym"], "sell", close_amount)
+                        p["tp1_done"] = True
+                        p["size"] *= 0.5
+                        p["sl"] = p["entry"]
+                    except:
+                        pass
+
+                if not p["tp2_done"] and price >= p["tp2"]:
+                    try:
+                        close_amount = (p["size"]/p["entry"]) * 0.5
+                        exchange.create_market_order(p["sym"], "sell", close_amount)
+                        p["tp2_done"] = True
+                        p["size"] *= 0.5
+                        p["sl"] = p["tp1"]
+                    except:
+                        pass
+            # ==========================
+
             if price <= p["sl"] or price >= p["tp3"]:
                 try:
                     close_side = "sell" if p["signal"] == "LONG" else "buy"
@@ -433,6 +478,14 @@ def manage():
                 daily_pnl += final
                 total_pnl += final
                 save_trade(p["sym"], final)
+
+                # ===== EKLEME =====
+                closed_trades.append({
+                    "sym": p["sym"],
+                    "pnl": round(final,2)
+                })
+                # ==================
+
                 send(f"⛔ KAPANDI {p['sym']} {round(final,2)} USDT")
                 positions.remove(p)
 
@@ -460,6 +513,13 @@ def build_panel():
             text += f"{p['sym']} → {pnl} USDT {emoji}\n"
         except:
             continue
+
+    # ===== EKLEME =====
+    text += "\n📊 SON İŞLEMLER:\n"
+    for t in closed_trades[-5:]:
+        emoji = "🟢" if t["pnl"] >= 0 else "🔴"
+        text += f"{t['sym']} → {t['pnl']} USDT {emoji}\n"
+    # ==================
 
     return text
 
@@ -527,6 +587,13 @@ def callback(call):
 
                 save_trade(p["sym"], final)
 
+                # ===== EKLEME =====
+                closed_trades.append({
+                    "sym": p["sym"],
+                    "pnl": round(final,2)
+                })
+                # ==================
+
                 send(f"⛔ MANUAL EXIT {p['sym']} → {round(final,2)} USDT", cid)
 
                 positions.remove(p)
@@ -544,6 +611,13 @@ def callback(call):
             total_pnl += final
 
             save_trade(p["sym"], final)
+
+            # ===== EKLEME =====
+            closed_trades.append({
+                "sym": p["sym"],
+                "pnl": round(final,2)
+            })
+            # ==================
 
             send(f"⛔ EXIT {p['sym']} → {round(final,2)} USDT", cid)
 
