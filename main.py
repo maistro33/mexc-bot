@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v22.3 FINAL STABLE
+# 💀 SADIK BOT v22.3 FINAL STABLE (STRICT FIX)
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v22.3 FINAL STABLE"
+VERSION = "v22.3 FINAL STABLE STRICT FIX"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -27,9 +27,7 @@ exchange = ccxt.bitget({
 positions = []
 signal_cache = {}
 
-# ===== EKLEME =====
 closed_trades = []
-# ==================
 
 panel_message_id = None
 panel_chat_id = None
@@ -39,6 +37,25 @@ total_pnl = 0
 
 history_cache = []
 last_history_update = 0
+
+# ==============================
+# 🔴 EK: GLOBAL AYARLAR
+TP_TOLERANCE = 0.002
+MIN_CONFIDENCE = 90
+
+# ==============================
+# 🔴 EK: REAL SIZE (fallback dahil)
+def get_real_size(sym):
+    try:
+        data = exchange.fetch_positions()
+        for p in data:
+            if p["symbol"] == sym:
+                size = float(p.get("contracts", 0))
+                if size > 0:
+                    return size
+    except:
+        pass
+    return None
 
 # ==============================
 # 💀 SMART TP
@@ -59,7 +76,7 @@ def smart_tp_sl(price, signal):
             price*1.01
         )
 
-# ===== EKLEME =====
+# ==============================
 def save_trade(sym, pnl):
     try:
         headers = {
@@ -75,8 +92,8 @@ def save_trade(sym, pnl):
         )
     except Exception as e:
         print("SUPABASE ERROR:", e)
-# ==================
 
+# ==============================
 def safe_send(text, cid=None, markup=None):
     while True:
         try:
@@ -196,7 +213,6 @@ def market_status():
         return "UNKNOWN"
 
 # ==============================
-# ===== LEVEL 2: MARKET AI =====
 def market_direction():
     try:
         df = get_data("BTC/USDT:USDT")
@@ -208,10 +224,8 @@ def market_direction():
             return "BEAR"
     except:
         return "NEUTRAL"
-# =================================
 
 # ==============================
-# ===== LEVEL 2: AUTO LOAD POSITIONS =====
 def load_open_positions():
     try:
         data = exchange.fetch_positions()
@@ -248,14 +262,12 @@ def load_open_positions():
                 "margin": 3,
                 "leverage": 10,
                 "size": 30,
-                "realized": 0
+                "realized": 0,
+                "max_profit":0
             })
-
-            send(f"♻️ YÜKLENDİ {sym}")
 
     except Exception as e:
         send(f"❌ LOAD ERROR: {e}")
-# =================================
 
 # ==============================
 def calc_pnl(p, price):
@@ -273,6 +285,10 @@ def scanner():
             sent_count = 0
 
             for sym in tickers:
+
+                # 🔴 EK: TEK İŞLEM KURALI (scanner seviyesi)
+                if len(positions) >= 1:
+                    break
 
                 max_reached = len(positions) >= 5
 
@@ -296,14 +312,16 @@ def scanner():
                 if signal is None or strength < 70:
                     continue
 
-                # ===== LEVEL 2: MARKET AI =====
+                # 🔴 EK: %90 GÜVEN FİLTRESİ
+                if strength < MIN_CONFIDENCE:
+                    continue
+
                 market = market_direction()
                 if signal == "LONG" and market == "BEAR":
                     continue
                 if signal == "SHORT" and market == "BULL":
                     continue
 
-                # ===== LEVEL 2: SMART ENTRY =====
                 trend_up = df["c"].iloc[-1] > df["ema"].iloc[-1]
                 trend_down = df["c"].iloc[-1] < df["ema"].iloc[-1]
 
@@ -339,7 +357,6 @@ def scanner():
                 if momentum_abs < 0.004:
                     continue
 
-                # ===== LEVEL 2: FAKE BREAKOUT =====
                 last_high = df["h"].rolling(10).max().iloc[-2]
                 last_low = df["l"].rolling(10).min().iloc[-2]
                 price_now = df["c"].iloc[-1]
@@ -407,6 +424,11 @@ def open_trade(data, cid):
         send(f"⚠️ ZATEN AÇIK: {data['sym']}", cid)
         return
 
+    # 🔴 EK: TEK İŞLEM KURALI
+    if len(positions) >= 1:
+        send("⚠️ SADECE 1 İŞLEM İZİN", cid)
+        return
+
     try:
         side = "buy" if data["signal"] == "LONG" else "sell"
         exchange.set_leverage(10, data["sym"])
@@ -424,7 +446,8 @@ def open_trade(data, cid):
         "margin":3,
         "leverage":10,
         "size":30,
-        "realized":0
+        "realized":0,
+        "max_profit":0
     })
     send(f"🚀 AÇILDI {data['sym']}", cid)
 
@@ -441,36 +464,77 @@ def manage():
 
             pnl_total = calc_pnl(p, price)
 
-            # ===== EKLEME: TP1 TP2 =====
+            # 🔴 EK: PROFIT LOCK
+            if pnl_total > p.get("max_profit",0):
+                p["max_profit"] = pnl_total
+
+            if p.get("max_profit",0) > 2 and pnl_total < p["max_profit"]*0.6:
+                p["sl"] = price
+
+            # 🔴 EK: REAL SIZE
+            real_size = get_real_size(p["sym"])
+            if real_size is None:
+                real_size = p["size"]/p["entry"]
+
+            # TP1
             if p["signal"] == "LONG":
 
-                if not p["tp1_done"] and price >= p["tp1"]:
+                if not p["tp1_done"] and price >= p["tp1"]*(1-TP_TOLERANCE):
                     try:
-                        close_amount = (p["size"]/p["entry"]) * 0.5
-                        exchange.create_market_order(p["sym"], "sell", close_amount)
+                        exchange.create_market_order(p["sym"], "sell", real_size*0.5)
                         p["tp1_done"] = True
-                        p["size"] *= 0.5
                         p["sl"] = p["entry"]
-                    except:
-                        pass
-
-                if not p["tp2_done"] and price >= p["tp2"]:
-                    try:
-                        close_amount = (p["size"]/p["entry"]) * 0.5
-                        exchange.create_market_order(p["sym"], "sell", close_amount)
-                        p["tp2_done"] = True
+                        # 🔴 EK: SIZE SENK
                         p["size"] *= 0.5
-                        p["sl"] = p["tp1"]
                     except:
                         pass
-            # ==========================
 
-            if price <= p["sl"] or price >= p["tp3"]:
+                if not p["tp2_done"] and price >= p["tp2"]*(1-TP_TOLERANCE):
+                    try:
+                        exchange.create_market_order(p["sym"], "sell", real_size*0.5)
+                        p["tp2_done"] = True
+                        p["sl"] = p["tp1"]
+                        # 🔴 EK: SIZE SENK
+                        p["size"] *= 0.5
+                    except:
+                        pass
+
+            else:
+
+                if not p["tp1_done"] and price <= p["tp1"]*(1+TP_TOLERANCE):
+                    try:
+                        exchange.create_market_order(p["sym"], "buy", real_size*0.5)
+                        p["tp1_done"] = True
+                        p["sl"] = p["entry"]
+                        # 🔴 EK: SIZE SENK
+                        p["size"] *= 0.5
+                    except:
+                        pass
+
+                if not p["tp2_done"] and price <= p["tp2"]*(1+TP_TOLERANCE):
+                    try:
+                        exchange.create_market_order(p["sym"], "buy", real_size*0.5)
+                        p["tp2_done"] = True
+                        p["sl"] = p["tp1"]
+                        # 🔴 EK: SIZE SENK
+                        p["size"] *= 0.5
+                    except:
+                        pass
+
+            # 🔴 EK: FINAL CLOSE FIX (SHORT dahil)
+            if (p["signal"]=="LONG" and (price <= p["sl"] or price >= p["tp3"])) or \
+               (p["signal"]=="SHORT" and (price >= p["sl"] or price <= p["tp3"])):
+
                 try:
-                    close_side = "sell" if p["signal"] == "LONG" else "buy"
-                    amount = p["size"] / p["entry"]
-                    exchange.create_market_order(p["sym"], close_side, amount)
-                    send(f"✅ GERÇEK KAPANDI {p['sym']}")
+                    remaining = get_real_size(p["sym"])
+                    if remaining is None:
+                        remaining = real_size
+                    if remaining > 0:
+                        exchange.create_market_order(
+                            p["sym"],
+                            "sell" if p["signal"]=="LONG" else "buy",
+                            remaining
+                        )
                 except Exception as e:
                     send(f"❌ KAPATMA HATA: {e}")
 
@@ -479,12 +543,10 @@ def manage():
                 total_pnl += final
                 save_trade(p["sym"], final)
 
-                # ===== EKLEME =====
                 closed_trades.append({
                     "sym": p["sym"],
                     "pnl": round(final,2)
                 })
-                # ==================
 
                 send(f"⛔ KAPANDI {p['sym']} {round(final,2)} USDT")
                 positions.remove(p)
@@ -514,12 +576,10 @@ def build_panel():
         except:
             continue
 
-    # ===== EKLEME =====
     text += "\n📊 SON İŞLEMLER:\n"
     for t in closed_trades[-5:]:
         emoji = "🟢" if t["pnl"] >= 0 else "🔴"
         text += f"{t['sym']} → {t['pnl']} USDT {emoji}\n"
-    # ==================
 
     return text
 
@@ -576,6 +636,22 @@ def callback(call):
 
         for p in positions:
             if p["id"] == pid:
+
+                # 🔴 EK: GERÇEK KAPATMA
+                try:
+                    remaining = get_real_size(p["sym"])
+                    if remaining is None:
+                        remaining = p["size"]/p["entry"]
+
+                    if remaining > 0:
+                        exchange.create_market_order(
+                            p["sym"],
+                            "sell" if p["signal"]=="LONG" else "buy",
+                            remaining
+                        )
+                except Exception as e:
+                    send(f"❌ MANUAL CLOSE ERROR: {e}", cid)
+
                 price = exchange.fetch_ticker(p["sym"])["last"]
                 pnl = calc_pnl(p, price)
 
@@ -587,12 +663,10 @@ def callback(call):
 
                 save_trade(p["sym"], final)
 
-                # ===== EKLEME =====
                 closed_trades.append({
                     "sym": p["sym"],
                     "pnl": round(final,2)
                 })
-                # ==================
 
                 send(f"⛔ MANUAL EXIT {p['sym']} → {round(final,2)} USDT", cid)
 
@@ -602,6 +676,22 @@ def callback(call):
     elif call.data == "exit_all":
 
         for p in positions[:]:
+
+            # 🔴 EK: GERÇEK KAPATMA
+            try:
+                remaining = get_real_size(p["sym"])
+                if remaining is None:
+                    remaining = p["size"]/p["entry"]
+
+                if remaining > 0:
+                    exchange.create_market_order(
+                        p["sym"],
+                        "sell" if p["signal"]=="LONG" else "buy",
+                        remaining
+                    )
+            except Exception as e:
+                send(f"❌ EXIT ALL ERROR: {e}", cid)
+
             price = exchange.fetch_ticker(p["sym"])["last"]
             pnl = calc_pnl(p, price)
 
@@ -612,24 +702,42 @@ def callback(call):
 
             save_trade(p["sym"], final)
 
-            # ===== EKLEME =====
             closed_trades.append({
                 "sym": p["sym"],
                 "pnl": round(final,2)
             })
-            # ==================
 
             send(f"⛔ EXIT {p['sym']} → {round(final,2)} USDT", cid)
 
             positions.remove(p)
 
+    # 🔴 EK: KEEP HANDLER (buton çalışsın)
+    elif call.data.startswith("keep_"):
+        pid = call.data.split("_")[1]
+        for p in positions:
+            if p["id"] == pid:
+                send(f"🟢 DEVAM {p['sym']}", cid)
+                break
+
 # ==============================
-# ===== AUTO LOAD CALL =====
+# 🔴 EK: SIGNAL CACHE TEMİZLEYİCİ
+def clean_signal_cache():
+    while True:
+        try:
+            if len(signal_cache) > 100:
+                signal_cache.clear()
+        except:
+            pass
+        time.sleep(300)
+
+# ==============================
 load_open_positions()
 
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=live_panel, daemon=True).start()
+# 🔴 EK THREAD
+threading.Thread(target=clean_signal_cache, daemon=True).start()
 
 send(f"💀 BOT {VERSION} AKTİF")
 bot.infinity_polling()
