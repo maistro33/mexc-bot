@@ -287,7 +287,7 @@ def scanner():
                 if len(positions) >= 1:
                     break
 
-                if sent_count >= 3:
+                if sent_count >= 5:
                     break
 
                 if ":USDT" not in sym:
@@ -366,8 +366,8 @@ def open_trade(data, cid):
         send(f"⚠️ ZATEN AÇIK: {data['sym']}", cid)
         return
 
-    if len(positions) >= 3:
-        send("⚠️ MAKS 3 İŞLEM", cid)
+    if len(positions) >= 1:
+        send("⚠️ SADECE 1 İŞLEM İZİN", cid)
         return
 
     try:
