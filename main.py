@@ -366,7 +366,7 @@ def open_trade(data, cid):
         send(f"⚠️ ZATEN AÇIK: {data['sym']}", cid)
         return
 
-    if len(positions) >= 1:
+    if len(positions) >= 3:
         send("⚠️ SADECE 1 İŞLEM İZİN", cid)
         return
 
