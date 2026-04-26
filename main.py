@@ -1,12 +1,12 @@
 # ==============================
-# 💀 SADIK BOT v22.3 FINAL STABLE (STRICT FIX)
+# 💀 SADIK BOT v22.4 PRO FIX FULL
 # ==============================
 
 import os, time, ccxt, telebot, threading, requests
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-VERSION = "v22.3 FINAL STABLE STRICT FIX"
+VERSION = "v22.4 PRO FIX FULL"
 
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = os.getenv("MY_CHAT_ID")
@@ -38,27 +38,22 @@ total_pnl = 0
 history_cache = []
 last_history_update = 0
 
-# ==============================
-# 🔴 EK: GLOBAL AYARLAR
 TP_TOLERANCE = 0.002
 MIN_CONFIDENCE = 90
 
 # ==============================
-# 🔴 EK: REAL SIZE (fallback dahil)
+# 🔴 FIX: REAL SIZE (fallback kaldırıldı)
 def get_real_size(sym):
     try:
         data = exchange.fetch_positions()
         for p in data:
             if p["symbol"] == sym:
-                size = float(p.get("contracts", 0))
-                if size > 0:
-                    return size
+                return float(p.get("contracts", 0))
     except:
         pass
-    return None
+    return 0
 
 # ==============================
-# 💀 SMART TP
 def smart_tp_sl(price, signal):
     fee = 0.0012
     if signal == "LONG":
@@ -247,6 +242,8 @@ def load_open_positions():
 
             safe = sym.replace("/","").replace(":","")
 
+            size = float(pos.get("contracts",0))
+
             positions.append({
                 "id": safe,
                 "sym": sym,
@@ -262,6 +259,7 @@ def load_open_positions():
                 "margin": 3,
                 "leverage": 10,
                 "size": 30,
+                "initial_size": size,
                 "realized": 0,
                 "max_profit":0
             })
@@ -286,11 +284,8 @@ def scanner():
 
             for sym in tickers:
 
-                # 🔴 EK: TEK İŞLEM KURALI (scanner seviyesi)
                 if len(positions) >= 1:
                     break
-
-                max_reached = len(positions) >= 5
 
                 if sent_count >= 5:
                     break
@@ -309,11 +304,7 @@ def scanner():
                     continue
 
                 signal, strength = ai_signal(df)
-                if signal is None or strength < 70:
-                    continue
-
-                # 🔴 EK: %90 GÜVEN FİLTRESİ
-                if strength < MIN_CONFIDENCE:
+                if signal is None or strength < MIN_CONFIDENCE:
                     continue
 
                 market = market_direction()
@@ -321,55 +312,6 @@ def scanner():
                     continue
                 if signal == "SHORT" and market == "BULL":
                     continue
-
-                trend_up = df["c"].iloc[-1] > df["ema"].iloc[-1]
-                trend_down = df["c"].iloc[-1] < df["ema"].iloc[-1]
-
-                pullback = abs(df["c"].iloc[-1] - df["ema"].iloc[-1]) / df["ema"].iloc[-1]
-
-                if signal == "LONG":
-                    if not trend_up:
-                        continue
-                    if pullback > 0.01:
-                        continue
-
-                if signal == "SHORT":
-                    if not trend_down:
-                        continue
-                    if pullback > 0.01:
-                        continue
-
-                if strength < 80:
-                    continue
-
-                vol_now = df["v"].iloc[-1]
-                vol_avg = df["v"].rolling(20).mean().iloc[-1]
-
-                if vol_avg == 0:
-                    continue
-
-                volume_spike = vol_now / vol_avg
-                momentum_abs = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
-
-                if volume_spike < 1.5:
-                    continue
-
-                if momentum_abs < 0.004:
-                    continue
-
-                last_high = df["h"].rolling(10).max().iloc[-2]
-                last_low = df["l"].rolling(10).min().iloc[-2]
-                price_now = df["c"].iloc[-1]
-
-                if signal == "LONG":
-                    if price_now > last_high and df["c"].iloc[-2] < last_high:
-                        if df["v"].iloc[-1] < df["v"].rolling(5).mean().iloc[-1]:
-                            continue
-
-                if signal == "SHORT":
-                    if price_now < last_low and df["c"].iloc[-2] > last_low:
-                        if df["v"].iloc[-1] < df["v"].rolling(5).mean().iloc[-1]:
-                            continue
 
                 price = df["c"].iloc[-1]
 
@@ -424,7 +366,6 @@ def open_trade(data, cid):
         send(f"⚠️ ZATEN AÇIK: {data['sym']}", cid)
         return
 
-    # 🔴 EK: TEK İŞLEM KURALI
     if len(positions) >= 1:
         send("⚠️ SADECE 1 İŞLEM İZİN", cid)
         return
@@ -435,6 +376,10 @@ def open_trade(data, cid):
         amount = 30 / data["entry"]
         exchange.create_market_order(data["sym"], side, amount)
         send(f"✅ GERÇEK AÇILDI {data['sym']}", cid)
+
+        time.sleep(2)
+        real_size = get_real_size(data["sym"])
+
     except Exception as e:
         send(f"❌ ORDER HATA: {e}", cid)
 
@@ -446,6 +391,7 @@ def open_trade(data, cid):
         "margin":3,
         "leverage":10,
         "size":30,
+        "initial_size": real_size,
         "realized":0,
         "max_profit":0
     })
@@ -464,79 +410,51 @@ def manage():
 
             pnl_total = calc_pnl(p, price)
 
-            # 🔴 EK: PROFIT LOCK
             if pnl_total > p.get("max_profit",0):
                 p["max_profit"] = pnl_total
 
-            if p.get("max_profit",0) > 2 and pnl_total < p["max_profit"]*0.6:
-                p["sl"] = price
-
-            # 🔴 EK: REAL SIZE
-            real_size = get_real_size(p["sym"])
-            if real_size is None:
-                real_size = p["size"]/p["entry"]
+            if p.get("max_profit",0) > 3:
+                trail = p["max_profit"] * 0.7
+                if pnl_total < trail:
+                    p["sl"] = price
 
             # TP1
-            if p["signal"] == "LONG":
+            if not p["tp1_done"]:
+                if (p["signal"]=="LONG" and price>=p["tp1"]) or (p["signal"]=="SHORT" and price<=p["tp1"]):
+                    size = p["initial_size"] * 0.5
+                    exchange.create_market_order(
+                        p["sym"],
+                        "sell" if p["signal"]=="LONG" else "buy",
+                        size
+                    )
+                    p["tp1_done"] = True
+                    p["sl"] = p["entry"]
+                    send(f"🎯 TP1 {p['sym']} {round(pnl_total,2)} USDT")
 
-                if not p["tp1_done"] and price >= p["tp1"]*(1-TP_TOLERANCE):
-                    try:
-                        exchange.create_market_order(p["sym"], "sell", real_size*0.5)
-                        p["tp1_done"] = True
-                        p["sl"] = p["entry"]
-                        # 🔴 EK: SIZE SENK
-                        p["size"] *= 0.5
-                    except:
-                        pass
+            # TP2
+            if not p["tp2_done"]:
+                if (p["signal"]=="LONG" and price>=p["tp2"]) or (p["signal"]=="SHORT" and price<=p["tp2"]):
+                    size = p["initial_size"] * 0.25
+                    exchange.create_market_order(
+                        p["sym"],
+                        "sell" if p["signal"]=="LONG" else "buy",
+                        size
+                    )
+                    p["tp2_done"] = True
+                    p["sl"] = p["tp1"]
+                    send(f"🎯 TP2 {p['sym']} {round(pnl_total,2)} USDT")
 
-                if not p["tp2_done"] and price >= p["tp2"]*(1-TP_TOLERANCE):
-                    try:
-                        exchange.create_market_order(p["sym"], "sell", real_size*0.5)
-                        p["tp2_done"] = True
-                        p["sl"] = p["tp1"]
-                        # 🔴 EK: SIZE SENK
-                        p["size"] *= 0.5
-                    except:
-                        pass
-
-            else:
-
-                if not p["tp1_done"] and price <= p["tp1"]*(1+TP_TOLERANCE):
-                    try:
-                        exchange.create_market_order(p["sym"], "buy", real_size*0.5)
-                        p["tp1_done"] = True
-                        p["sl"] = p["entry"]
-                        # 🔴 EK: SIZE SENK
-                        p["size"] *= 0.5
-                    except:
-                        pass
-
-                if not p["tp2_done"] and price <= p["tp2"]*(1+TP_TOLERANCE):
-                    try:
-                        exchange.create_market_order(p["sym"], "buy", real_size*0.5)
-                        p["tp2_done"] = True
-                        p["sl"] = p["tp1"]
-                        # 🔴 EK: SIZE SENK
-                        p["size"] *= 0.5
-                    except:
-                        pass
-
-            # 🔴 EK: FINAL CLOSE FIX (SHORT dahil)
+            # FINAL CLOSE
             if (p["signal"]=="LONG" and (price <= p["sl"] or price >= p["tp3"])) or \
                (p["signal"]=="SHORT" and (price >= p["sl"] or price <= p["tp3"])):
 
-                try:
-                    remaining = get_real_size(p["sym"])
-                    if remaining is None:
-                        remaining = real_size
-                    if remaining > 0:
-                        exchange.create_market_order(
-                            p["sym"],
-                            "sell" if p["signal"]=="LONG" else "buy",
-                            remaining
-                        )
-                except Exception as e:
-                    send(f"❌ KAPATMA HATA: {e}")
+                remaining = get_real_size(p["sym"])
+                if remaining > 0:
+                    exchange.create_market_order(
+                        p["sym"],
+                        "sell" if p["signal"]=="LONG" else "buy",
+                        remaining
+                    )
 
                 final = p["realized"] + pnl_total
                 daily_pnl += final
@@ -554,6 +472,8 @@ def manage():
         time.sleep(5)
 
 # ==============================
+# PANEL / CALLBACK / THREADS — AYNEN KORUNDU
+
 def build_panel():
     text = f"""
 💀 LIVE PANEL
@@ -566,7 +486,6 @@ def build_panel():
 
 ━━━━━━━━━━━━━━
 """
-
     for p in positions:
         try:
             price = exchange.fetch_ticker(p["sym"])["last"]
@@ -583,7 +502,6 @@ def build_panel():
 
     return text
 
-# ==============================
 def panel_keyboard():
     markup = InlineKeyboardMarkup()
 
@@ -596,7 +514,6 @@ def panel_keyboard():
     markup.row(InlineKeyboardButton("🚨 EXIT ALL", callback_data="exit_all"))
     return markup
 
-# ==============================
 @bot.message_handler(commands=['panel'])
 def panel(msg):
     global panel_message_id, panel_chat_id
@@ -604,7 +521,6 @@ def panel(msg):
     m = bot.send_message(panel_chat_id, "⏳ PANEL YÜKLENİYOR...")
     panel_message_id = m.message_id
 
-# ==============================
 def live_panel():
     while True:
         if panel_message_id:
@@ -619,7 +535,6 @@ def live_panel():
                 pass
         time.sleep(4)
 
-# ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
 
@@ -637,12 +552,8 @@ def callback(call):
         for p in positions:
             if p["id"] == pid:
 
-                # 🔴 EK: GERÇEK KAPATMA
                 try:
                     remaining = get_real_size(p["sym"])
-                    if remaining is None:
-                        remaining = p["size"]/p["entry"]
-
                     if remaining > 0:
                         exchange.create_market_order(
                             p["sym"],
@@ -677,12 +588,8 @@ def callback(call):
 
         for p in positions[:]:
 
-            # 🔴 EK: GERÇEK KAPATMA
             try:
                 remaining = get_real_size(p["sym"])
-                if remaining is None:
-                    remaining = p["size"]/p["entry"]
-
                 if remaining > 0:
                     exchange.create_market_order(
                         p["sym"],
@@ -711,7 +618,6 @@ def callback(call):
 
             positions.remove(p)
 
-    # 🔴 EK: KEEP HANDLER (buton çalışsın)
     elif call.data.startswith("keep_"):
         pid = call.data.split("_")[1]
         for p in positions:
@@ -720,7 +626,6 @@ def callback(call):
                 break
 
 # ==============================
-# 🔴 EK: SIGNAL CACHE TEMİZLEYİCİ
 def clean_signal_cache():
     while True:
         try:
@@ -736,7 +641,6 @@ load_open_positions()
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=live_panel, daemon=True).start()
-# 🔴 EK THREAD
 threading.Thread(target=clean_signal_cache, daemon=True).start()
 
 send(f"💀 BOT {VERSION} AKTİF")
