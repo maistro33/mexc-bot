@@ -2,7 +2,6 @@ import ccxt, time, os, telebot, threading
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ==============================
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
 
@@ -38,7 +37,13 @@ def analyze(df):
     ema = df["ema"].iloc[-1]
 
     move = price - df["c"].iloc[-5]
-    vol = df["v"].iloc[-1] / df["v"].iloc[-5]
+
+    # 🔧 FIX (volume bölme hatası)
+    base_vol = df["v"].iloc[-5]
+    if base_vol == 0:
+        return None, 0
+
+    vol = df["v"].iloc[-1] / base_vol
 
     score = 0
 
@@ -56,6 +61,17 @@ def analyze(df):
         score += 30
 
     return signal, score
+
+# ==============================
+def get_real_size(sym):
+    try:
+        positions = exchange.fetch_positions()
+        for p in positions:
+            if p["symbol"] == sym:
+                return float(p.get("contracts", 0))
+    except:
+        pass
+    return 0
 
 # ==============================
 def scanner():
@@ -82,7 +98,7 @@ def scanner():
                     continue
 
                 vol = tickers[sym]["quoteVolume"]
-                if vol < 1000000:
+                if vol is None or vol < 2000000:
                     continue
 
                 df = get_data(sym)
@@ -91,7 +107,7 @@ def scanner():
 
                 sig, score = analyze(df)
 
-                if score < 70:
+                if sig is None or score < 80:
                     continue
 
                 safe = sym.replace("/","").replace(":","")
@@ -130,7 +146,6 @@ def scanner():
                     reply_markup=markup
                 )
 
-                # AUTO TRADE
                 if score >= 90 and not bot_position:
                     open_trade(signal_cache[safe], False)
 
@@ -189,8 +204,10 @@ def close_trade(pos, reason, is_manual):
     try:
         side = "sell" if pos["type"]=="LONG" else "buy"
 
-        # amount göndermiyoruz → exchange kapatır
-        exchange.create_market_order(pos["sym"], side)
+        size = get_real_size(pos["sym"])
+
+        if size > 0:
+            exchange.create_market_order(pos["sym"], side, size)
 
         bot.send_message(CHAT_ID, f"⛔ KAPANDI {pos['sym']} ({reason})")
 
@@ -236,7 +253,7 @@ def manage():
                 if pnl >= 0.70:
                     pos["trailing"] = True
 
-                if pos["trailing"] and pos["max"] > 0.15:
+                if pos["trailing"]:
                     if pnl < pos["max"] - 0.25:
                         close_trade(pos, "TRAILING", is_manual)
 
@@ -270,5 +287,5 @@ threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=clean_cache, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💀 BOT AKTİF (FINAL STABLE)")
+bot.send_message(CHAT_ID, "💀 BOT AKTİF (FIXED)")
 bot.infinity_polling()
