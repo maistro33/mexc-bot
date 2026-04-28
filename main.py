@@ -2,6 +2,7 @@ import ccxt, time, os, telebot, threading
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ==============================
 TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
 
@@ -19,6 +20,7 @@ bot_position = None
 manual_positions = []
 signal_cache = {}
 last_close_time = 0
+last_signal_time = 0
 lock = False
 
 # ==============================
@@ -38,7 +40,6 @@ def analyze(df):
 
     move = price - df["c"].iloc[-5]
 
-    # 🔧 FIX (volume bölme hatası)
     base_vol = df["v"].iloc[-5]
     if base_vol == 0:
         return None, 0
@@ -67,7 +68,7 @@ def get_real_size(sym):
     try:
         positions = exchange.fetch_positions()
         for p in positions:
-            if p["symbol"] == sym:
+            if sym.replace(":USDT","") in p["symbol"]:
                 return float(p.get("contracts", 0))
     except:
         pass
@@ -75,21 +76,20 @@ def get_real_size(sym):
 
 # ==============================
 def scanner():
-    global bot_position, last_close_time
+    global bot_position, last_close_time, last_signal_time
 
     while True:
         try:
-            if bot_position:
-                time.sleep(5)
-                continue
-
             if time.time() - last_close_time < 40:
                 time.sleep(5)
                 continue
 
             tickers = exchange.fetch_tickers()
 
-            for sym in tickers:
+            for sym, data in tickers.items():
+
+                if time.time() - last_signal_time < 20:
+                    continue
 
                 if ":USDT" not in sym:
                     continue
@@ -97,7 +97,7 @@ def scanner():
                 if any(x in sym for x in ["BTC","ETH","XRP"]):
                     continue
 
-                vol = tickers[sym]["quoteVolume"]
+                vol = data.get("quoteVolume")
                 if vol is None or vol < 2000000:
                     continue
 
@@ -145,6 +145,8 @@ def scanner():
 """,
                     reply_markup=markup
                 )
+
+                last_signal_time = time.time()
 
                 if score >= 90 and not bot_position:
                     open_trade(signal_cache[safe], False)
@@ -287,5 +289,5 @@ threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 threading.Thread(target=clean_cache, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💀 BOT AKTİF (FIXED)")
+bot.send_message(CHAT_ID, "💀 BOT AKTİF (FINAL)")
 bot.infinity_polling()
