@@ -92,14 +92,14 @@ def scanner():
 
             for sym, data in tickers.items():
 
-                if time.time() - last_signal_time < 20:
+                if time.time() - last_signal_time < 12:
                     continue
 
                 if ":USDT" not in sym:
                     continue
 
                 vol = data.get("quoteVolume")
-                if vol is None or vol < 3000000:
+                if vol is None or vol < 2000000:
                     continue
 
                 df = get_data(sym)
