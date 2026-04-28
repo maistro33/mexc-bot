@@ -313,7 +313,9 @@ def scanner():
                 if signal == "SHORT" and market == "BULL":
                     continue
 
-                price = df["c"].iloc[-1]
+                momentum = abs(df["c"].iloc[-1] - df["c"].iloc[-3]) / df["c"].iloc[-3]
+                if momentum < 0.003:
+                    continue
 
                 tp1, tp2, tp3, sl = smart_tp_sl(price, signal)
 
@@ -413,7 +415,7 @@ def manage():
             if pnl_total > p.get("max_profit",0):
                 p["max_profit"] = pnl_total
 
-            if p.get("max_profit",0) > 3:
+            if p.get("max_profit",0) > 999:
                 trail = p["max_profit"] * 0.7
                 if pnl_total < trail:
                     p["sl"] = price
