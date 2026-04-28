@@ -1,358 +1,274 @@
-# ==============================
-# 💀 SADIK BOT v27.2 PRO PANEL – COMPLETE
-# ==============================
-
-import os, time, threading
-import ccxt, telebot
+import ccxt, time, os, telebot, threading
 import pandas as pd
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ==============================
-# ENV
-TOKEN   = os.getenv("TELE_TOKEN")
-CHAT_ID = os.getenv("MY_CHAT_ID")
-
-API_KEY = os.getenv("BITGET_API")
-API_SEC = os.getenv("BITGET_SEC")
-API_PAS = os.getenv("BITGET_PASS")
-
-if not TOKEN or not CHAT_ID:
-    raise ValueError("TELE_TOKEN / MY_CHAT_ID eksik")
+TOKEN = os.getenv("TELE_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 bot = telebot.TeleBot(TOKEN)
 
 exchange = ccxt.bitget({
-    "apiKey": API_KEY,
-    "secret": API_SEC,
-    "password": API_PAS,
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
+    "password": os.getenv("BITGET_PASS"),
     "options": {"defaultType": "swap"},
     "enableRateLimit": True
 })
 
-# ==============================
-# GLOBALS
-positions = []  # dict list
-daily_pnl = 0.0
+bot_position = None
+manual_positions = []
+signal_cache = {}
+last_close_time = 0
+lock = False
 
 # ==============================
-# UTILS
-
-def safe_send(msg):
-    for _ in range(3):
-        try:
-            bot.send_message(CHAT_ID, msg)
-            return
-        except Exception:
-            time.sleep(2)
-
-def safe_order(sym, side, amount):
-    # küçük retry
-    for _ in range(3):
-        try:
-            if amount and amount > 0:
-                exchange.create_market_order(sym, side, amount)
-            return True
-        except Exception as e:
-            print("ORDER ERROR:", e)
-            time.sleep(1)
-    return False
-
-def get_real_size(sym):
-    try:
-        data = exchange.fetch_positions()
-        for p in data:
-            if p.get("symbol") == sym:
-                return float(p.get("contracts", 0) or 0)
-    except Exception as e:
-        print("REAL SIZE ERR:", e)
-    return 0.0
-
 def get_data(sym):
     try:
-        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=120)
+        ohlcv = exchange.fetch_ohlcv(sym, "1m", limit=50)
         df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
-        if len(df) < 30:
-            return None
         df["ema"] = df["c"].ewm(span=20).mean()
         return df
-    except Exception:
+    except:
         return None
 
-def smart_tp_sl(price, signal):
-    if signal == "LONG":
-        return price*1.002, price*1.035, price*1.06, price*0.99
+# ==============================
+def analyze(df):
+    price = df["c"].iloc[-1]
+    ema = df["ema"].iloc[-1]
+
+    move = price - df["c"].iloc[-5]
+    vol = df["v"].iloc[-1] / df["v"].iloc[-5]
+
+    score = 0
+
+    if price > ema:
+        signal = "LONG"
+        score += 40
     else:
-        return price*0.98, price*0.965, price*0.94, price*1.01
+        signal = "SHORT"
+        score += 40
 
-def calc_pnl(p, price):
-    # approx PnL (10x)
-    if p["signal"] == "LONG":
-        return (price - p["entry"]) / p["entry"] * p["initial_size"] * 10
-    else:
-        return (p["entry"] - price) / p["entry"] * p["initial_size"] * 10
+    if abs(move) > 0:
+        score += 30
 
-def is_bot_open():
-    return any(p.get("bot") for p in positions)
+    if vol > 1.2:
+        score += 30
 
-# ==============================
-# OPEN TRADE
-
-def open_trade(data):
-    try:
-        side = "buy" if data["signal"]=="LONG" else "sell"
-        amount = max(0.001, 30 / data["entry"])
-
-        exchange.set_leverage(10, data["sym"])
-        if not safe_order(data["sym"], side, amount):
-            return
-
-        time.sleep(1)
-        size = get_real_size(data["sym"])
-        if size <= 0:
-            size = amount
-
-        pos = {
-            **data,
-            "size": size,
-            "initial_size": size,
-            "tp1_done": False,
-            "tp2_done": False,
-            "max_profit": 0.0,
-            "bot": True,
-            "start_time": time.time()
-        }
-        positions.append(pos)
-
-        safe_send(f"🚀 BOT {data['signal']} AÇTI\n{data['sym']} @ {round(data['entry'],4)}")
-
-    except Exception as e:
-        print("OPEN ERROR:", e)
+    return signal, score
 
 # ==============================
-# MANUAL SYNC
-
-def sync_positions():
-    try:
-        data = exchange.fetch_positions()
-        for pos in data:
-            size = float(pos.get("contracts", 0) or 0)
-            if size <= 0:
-                continue
-
-            sym = pos.get("symbol")
-            if any(p["sym"] == sym for p in positions):
-                continue
-
-            entry = float(pos.get("entryPrice") or 0)
-            side  = pos.get("side")
-            signal = "LONG" if side == "long" else "SHORT"
-
-            tp1,tp2,tp3,sl = smart_tp_sl(entry, signal)
-
-            positions.append({
-                "sym": sym,
-                "entry": entry,
-                "signal": signal,
-                "tp1": tp1,
-                "tp2": tp2,
-                "tp3": tp3,
-                "sl": sl,
-                "size": size,
-                "initial_size": size,
-                "tp1_done": False,
-                "tp2_done": False,
-                "max_profit": 0.0,
-                "bot": False,
-                "start_time": time.time()
-            })
-
-            safe_send(f"📥 MANUEL ALGILANDI: {sym}")
-
-    except Exception as e:
-        print("SYNC ERROR:", e)
-
-def sync_loop():
-    while True:
-        sync_positions()
-        time.sleep(10)
-
-# ==============================
-# SCANNER
-
 def scanner():
+    global bot_position, last_close_time
+
     while True:
         try:
-            if is_bot_open():
+            if bot_position:
+                time.sleep(5)
+                continue
+
+            if time.time() - last_close_time < 40:
                 time.sleep(5)
                 continue
 
             tickers = exchange.fetch_tickers()
 
             for sym in tickers:
+
                 if ":USDT" not in sym:
                     continue
-                if any(x in sym for x in ["BTC","ETH","XRP","SOL"]):
+
+                if any(x in sym for x in ["BTC","ETH","XRP"]):
                     continue
-                if any(p["sym"] == sym for p in positions):
+
+                vol = tickers[sym]["quoteVolume"]
+                if vol < 1000000:
                     continue
 
                 df = get_data(sym)
                 if df is None:
                     continue
 
+                sig, score = analyze(df)
+
+                if score < 70:
+                    continue
+
+                safe = sym.replace("/","").replace(":","")
+
+                if safe in signal_cache:
+                    continue
+
                 price = df["c"].iloc[-1]
-                ema   = df["ema"].iloc[-1]
-                momentum = (df["c"].iloc[-1] - df["c"].iloc[-3]) / df["c"].iloc[-3]
 
-                vol = df["v"].iloc[-1]
-                avg = df["v"].rolling(20).mean().iloc[-1]
-
-                if price > ema and momentum > 0:
-                    signal = "LONG"
-                elif price < ema and momentum < 0:
-                    signal = "SHORT"
-                else:
-                    continue
-
-                if signal == "SHORT" and df["c"].iloc[-1] > df["c"].iloc[-2]:
-                    continue
-
-                if vol < avg * 1.3:
-                    continue
-
-                high = df["h"].rolling(10).max().iloc[-2]
-                low  = df["l"].rolling(10).min().iloc[-2]
-
-                if signal == "LONG" and price > high and vol < avg:
-                    continue
-                if signal == "SHORT" and price < low and vol < avg:
-                    continue
-
-                score = 0
-                if abs(momentum) > 0.004: score += 30
-                if vol > avg * 1.4: score += 40
-                if abs(price - ema)/ema > 0.002: score += 30
-
-                if score < 90:
-                    continue
-
-                tp1,tp2,tp3,sl = smart_tp_sl(price, signal)
-
-                safe_send(f"💀 SİNYAL\n{sym} {signal}\nGüç: %{score}")
-
-                open_trade({
+                signal_cache[safe] = {
                     "sym": sym,
-                    "entry": price,
-                    "signal": signal,
-                    "tp1": tp1,
-                    "tp2": tp2,
-                    "tp3": tp3,
-                    "sl": sl
-                })
+                    "price": price,
+                    "signal": sig
+                }
 
-                break
+                decision = "🔥 GİR" if score >= 90 else "❌ PAS"
 
-            time.sleep(25)
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
+
+                bot.send_message(
+                    CHAT_ID,
+                    f"""💀 AKILLI SİNYAL
+
+📊 {sym}
+📈 {sig}
+💰 {round(price,4)}
+
+🎯 TP: +0.70 USDT
+🛑 SL: -0.50 USDT
+
+🤖 Güç: %{score}
+🤖 Karar: {decision}
+📊 Sebep: Trend + Momentum + Volume
+""",
+                    reply_markup=markup
+                )
+
+                # AUTO TRADE
+                if score >= 90 and not bot_position:
+                    open_trade(signal_cache[safe], False)
+
+                time.sleep(2)
+
+            time.sleep(15)
 
         except Exception as e:
             print("SCAN ERROR:", e)
             time.sleep(5)
 
 # ==============================
-# MANAGER
+def open_trade(data, is_manual):
+    global bot_position, manual_positions, lock
 
+    if lock:
+        return
+
+    if not is_manual and bot_position:
+        return
+
+    lock = True
+
+    try:
+        side = "buy" if data["signal"]=="LONG" else "sell"
+        price = data["price"]
+        amount = 30 / price
+
+        exchange.create_market_order(data["sym"], side, amount)
+
+        pos = {
+            "sym": data["sym"],
+            "type": data["signal"],
+            "entry": price,
+            "max": 0,
+            "trailing": False,
+            "open_time": time.time()
+        }
+
+        if is_manual:
+            manual_positions.append(pos)
+            bot.send_message(CHAT_ID, f"🧑 MANUEL AÇILDI {data['sym']}")
+        else:
+            bot_position = pos
+            bot.send_message(CHAT_ID, f"🤖 BOT AÇTI {data['sym']}")
+
+    except Exception as e:
+        print("OPEN ERROR:", e)
+
+    lock = False
+
+# ==============================
+def close_trade(pos, reason, is_manual):
+    global bot_position, manual_positions, last_close_time
+
+    try:
+        side = "sell" if pos["type"]=="LONG" else "buy"
+
+        # amount göndermiyoruz → exchange kapatır
+        exchange.create_market_order(pos["sym"], side)
+
+        bot.send_message(CHAT_ID, f"⛔ KAPANDI {pos['sym']} ({reason})")
+
+    except Exception as e:
+        print("CLOSE ERROR:", e)
+
+    if is_manual:
+        if pos in manual_positions:
+            manual_positions.remove(pos)
+    else:
+        bot_position = None
+        last_close_time = time.time()
+
+# ==============================
 def manage():
-    global daily_pnl
+    global bot_position, manual_positions
 
     while True:
-        for p in positions[:]:
-            try:
-                price = exchange.fetch_ticker(p["sym"])["last"]
-            except Exception:
-                continue
+        try:
+            all_positions = []
 
-            pnl = calc_pnl(p, price)
+            if bot_position:
+                all_positions.append((bot_position, False))
 
-            if time.time() - p["start_time"] < 60:
-                continue
+            for p in manual_positions:
+                all_positions.append((p, True))
 
-            # TP1
-            if not p["tp1_done"]:
-                hit = (p["signal"]=="LONG" and price>=p["tp1"]) or (p["signal"]=="SHORT" and price<=p["tp1"])
-                if hit:
-                    close_size = p["size"] * 0.5
-                    if safe_order(p["sym"], "sell" if p["signal"]=="LONG" else "buy", close_size):
-                        p["size"] -= close_size
-                        p["tp1_done"] = True
-                        p["sl"] = p["entry"]
-                        safe_send(f"🎯 TP1 {p['sym']}")
+            for pos, is_manual in all_positions:
 
-            # TP2
-            if not p["tp2_done"]:
-                hit = (p["signal"]=="LONG" and price>=p["tp2"]) or (p["signal"]=="SHORT" and price<=p["tp2"])
-                if hit:
-                    close_size = p["size"] * 0.5
-                    if safe_order(p["sym"], "sell" if p["signal"]=="LONG" else "buy", close_size):
-                        p["size"] -= close_size
-                        p["tp2_done"] = True
-                        safe_send(f"🎯 TP2 {p['sym']}")
+                if time.time() - pos["open_time"] < 8:
+                    continue
 
-            # trailing
-            if p["tp1_done"]:
-                if pnl > p["max_profit"]:
-                    p["max_profit"] = pnl
-                if p["max_profit"] > 15 and pnl < p["max_profit"]*0.6:
-                    p["sl"] = price
+                price = exchange.fetch_ticker(pos["sym"])["last"]
 
-            # final
-            if (p["signal"]=="LONG" and (price<=p["sl"] or price>=p["tp3"])) or \
-               (p["signal"]=="SHORT" and (price>=p["sl"] or price<=p["tp3"])):
+                if pos["type"] == "LONG":
+                    pnl = (price - pos["entry"]) / pos["entry"] * 30
+                else:
+                    pnl = (pos["entry"] - price) / pos["entry"] * 30
 
-                remaining = get_real_size(p["sym"])
-                if remaining > 0:
-                    safe_order(p["sym"], "sell" if p["signal"]=="LONG" else "buy", remaining)
+                if pnl > pos["max"]:
+                    pos["max"] = pnl
 
-                daily_pnl += pnl
-                safe_send(f"⛔ KAPANDI {p['sym']} {round(pnl,2)} USDT")
+                if pnl >= 0.70:
+                    pos["trailing"] = True
 
-                positions.remove(p)
+                if pos["trailing"] and pos["max"] > 0.15:
+                    if pnl < pos["max"] - 0.25:
+                        close_trade(pos, "TRAILING", is_manual)
 
-        time.sleep(5)
+                if pnl <= -0.50:
+                    close_trade(pos, "STOP LOSS", is_manual)
+
+        except Exception as e:
+            print("MANAGE ERROR:", e)
+
+        time.sleep(2)
 
 # ==============================
-# PANEL
+def clean_cache():
+    global signal_cache
+    while True:
+        if len(signal_cache) > 100:
+            signal_cache.clear()
+        time.sleep(300)
 
-def build_panel():
-    text = f"💀 PANEL\nPnL: {round(daily_pnl,2)}\nAçık: {len(positions)}\n\n"
-    for p in positions:
-        who = "BOT" if p.get("bot") else "MANUAL"
-        text += f"{p['sym']} {p['signal']} [{who}]\n"
-    return text
-
-@bot.message_handler(commands=['panel'])
-def panel(msg):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🚨 EXIT BOT", callback_data="exit_bot"))
-    bot.send_message(msg.chat.id, build_panel(), reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda c: True)
+# ==============================
+@bot.callback_query_handler(func=lambda call: True)
 def callback(call):
-    if call.data == "exit_bot":
-        for p in positions[:]:
-            if not p.get("bot"):
-                continue
-            size = get_real_size(p["sym"])
-            if size > 0:
-                safe_order(p["sym"], "sell" if p["signal"]=="LONG" else "buy", size)
-            positions.remove(p)
-        safe_send("🚨 BOT POZİSYONLARI KAPATILDI")
+    if call.data.startswith("enter|"):
+        key = call.data.split("|")[1]
+        data = signal_cache.get(key)
+        if data:
+            open_trade(data, True)
 
 # ==============================
-# THREADS
-
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=sync_loop, daemon=True).start()
+threading.Thread(target=clean_cache, daemon=True).start()
 
-print("💀 BOT v27.2 AKTİF")
+bot.send_message(CHAT_ID, "💀 BOT AKTİF (FINAL STABLE)")
 bot.infinity_polling()
