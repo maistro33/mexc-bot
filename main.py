@@ -49,7 +49,7 @@ def analyze(df):
 
     # hareket şartı
     change = abs(df["c"].iloc[-1] - df["c"].iloc[-10]) / df["c"].iloc[-10]
-    if change < 0.0035:
+    if change < 0.003:
         return None, 0
 
     score = 0
