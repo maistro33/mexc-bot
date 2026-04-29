@@ -15,6 +15,10 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
+# AYARLAR
+MARGIN = 3
+LEVERAGE = 7
+
 bot_position = None
 manual_positions = []
 signal_cache = {}
@@ -37,16 +41,21 @@ def analyze(df):
     price = df["c"].iloc[-1]
     ema = df["ema"].iloc[-1]
 
+    # hareket filtresi
     change = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
-
-    # sadece hareket kontrolü
     if change < 0.002:
         return None, 0
 
-    if price > ema:
+    # EMA kırılım mantığı (fake giriş azaltır)
+    prev = df["c"].iloc[-2]
+
+    if price > ema and prev < ema:
         return "LONG", 95
-    else:
+
+    if price < ema and prev > ema:
         return "SHORT", 95
+
+    return None, 0
 
 # ==============================
 def get_real_size(sym):
@@ -65,14 +74,15 @@ def scanner():
 
     while True:
         try:
-            if time.time() - last_close_time < 20:
-                time.sleep(5)
+            if time.time() - last_close_time < 15:
+                time.sleep(3)
                 continue
 
             tickers = exchange.fetch_tickers()
 
-            for sym in tickers:
+            for sym, data in tickers.items():
 
+                # sinyal yavaşlat
                 if time.time() - last_signal_time < 10:
                     continue
 
@@ -83,8 +93,8 @@ def scanner():
                 if df is None:
                     continue
 
-                # candle volume kontrol
-                if df["v"].iloc[-1] < 50:
+                # 🔥 eski coinleri ele (volume + hareket)
+                if df["v"].iloc[-1] < 80:
                     continue
 
                 sig, score = analyze(df)
@@ -129,7 +139,7 @@ def scanner():
 
                 time.sleep(1)
 
-            time.sleep(10)
+            time.sleep(8)
 
         except Exception as e:
             print("SCAN ERROR:", e)
@@ -150,7 +160,12 @@ def open_trade(data, is_manual):
     try:
         side = "buy" if data["signal"]=="LONG" else "sell"
         price = data["price"]
-        amount = 30 / price
+
+        # 🔥 doğru kaldıraç + margin
+        exchange.set_leverage(LEVERAGE, data["sym"])
+
+        amount = (MARGIN * LEVERAGE) / price
+        amount = float(amount)
 
         exchange.create_market_order(data["sym"], side, amount)
 
@@ -220,9 +235,9 @@ def manage():
                 price = exchange.fetch_ticker(pos["sym"])["last"]
 
                 if pos["type"] == "LONG":
-                    pnl = (price - pos["entry"]) / pos["entry"] * 30
+                    pnl = (price - pos["entry"]) / pos["entry"] * (MARGIN * LEVERAGE)
                 else:
-                    pnl = (pos["entry"] - price) / pos["entry"] * 30
+                    pnl = (pos["entry"] - price) / pos["entry"] * (MARGIN * LEVERAGE)
 
                 if pnl > pos["max"]:
                     pos["max"] = pnl
@@ -245,14 +260,6 @@ def manage():
         time.sleep(2)
 
 # ==============================
-def clean_cache():
-    global signal_cache
-    while True:
-        if len(signal_cache) > 100:
-            signal_cache.clear()
-        time.sleep(300)
-
-# ==============================
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
     if call.data.startswith("enter|"):
@@ -263,7 +270,6 @@ def callback(call):
 # ==============================
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
-threading.Thread(target=clean_cache, daemon=True).start()
 
-bot.send_message(CHAT_ID, "BOT AKTİF")
+bot.send_message(CHAT_ID, "💀 BOT AKTİF (FINAL)")
 bot.infinity_polling()
