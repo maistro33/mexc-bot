@@ -15,7 +15,6 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-# AYARLAR
 MARGIN = 3
 LEVERAGE = 7
 
@@ -40,22 +39,22 @@ def get_data(sym):
 def analyze(df):
     price = df["c"].iloc[-1]
     ema = df["ema"].iloc[-1]
-
-    # hareket filtresi
-    change = abs(df["c"].iloc[-1] - df["c"].iloc[-5]) / df["c"].iloc[-5]
-    if change < 0.002:
-        return None, 0
-
-    # EMA kırılım mantığı (fake giriş azaltır)
     prev = df["c"].iloc[-2]
 
+    change = abs(price - df["c"].iloc[-5]) / df["c"].iloc[-5]
+
+    # hareket filtresi
+    if change < 0.002:
+        return None, 0, "Zayıf hareket"
+
+    # EMA kırılım (asıl giriş)
     if price > ema and prev < ema:
-        return "LONG", 95
+        return "LONG", 95, "EMA kırılım + momentum"
 
     if price < ema and prev > ema:
-        return "SHORT", 95
+        return "SHORT", 95, "EMA kırılım + momentum"
 
-    return None, 0
+    return None, 0, "Trend yok"
 
 # ==============================
 def get_real_size(sym):
@@ -82,7 +81,6 @@ def scanner():
 
             for sym, data in tickers.items():
 
-                # sinyal yavaşlat
                 if time.time() - last_signal_time < 10:
                     continue
 
@@ -93,11 +91,11 @@ def scanner():
                 if df is None:
                     continue
 
-                # 🔥 eski coinleri ele (volume + hareket)
+                # volume filtresi (ölü coinleri keser)
                 if df["v"].iloc[-1] < 80:
                     continue
 
-                sig, score = analyze(df)
+                sig, score, reason = analyze(df)
                 if sig is None:
                     continue
 
@@ -114,12 +112,14 @@ def scanner():
                     "signal": sig
                 }
 
+                decision = "🔥 GİR" if not bot_position else "❌ PAS"
+
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("✅ GİR", callback_data=f"enter|{safe}"))
 
                 bot.send_message(
                     CHAT_ID,
-                    f"""💀 SİNYAL
+                    f"""💀 AKILLI SİNYAL
 
 📊 {sym}
 📈 {sig}
@@ -127,6 +127,10 @@ def scanner():
 
 🎯 TP: +0.70 USDT
 🛑 SL: -0.50 USDT
+
+🤖 Güç: %{score}
+🤖 Karar: {decision}
+📊 Sebep: {reason}
 """,
                     reply_markup=markup
                 )
@@ -134,7 +138,7 @@ def scanner():
                 last_signal_time = time.time()
 
                 # bot sadece 1 işlem açar
-                if not bot_position:
+                if score >= 90 and not bot_position:
                     open_trade(signal_cache[safe], False)
 
                 time.sleep(1)
@@ -161,13 +165,11 @@ def open_trade(data, is_manual):
         side = "buy" if data["signal"]=="LONG" else "sell"
         price = data["price"]
 
-        # 🔥 doğru kaldıraç + margin
         exchange.set_leverage(LEVERAGE, data["sym"])
 
         amount = (MARGIN * LEVERAGE) / price
-        amount = float(amount)
 
-        exchange.create_market_order(data["sym"], side, amount)
+        exchange.create_market_order(data["sym"], side, float(amount))
 
         pos = {
             "sym": data["sym"],
@@ -180,10 +182,10 @@ def open_trade(data, is_manual):
 
         if is_manual:
             manual_positions.append(pos)
-            bot.send_message(CHAT_ID, f"🧑 MANUEL {data['sym']}")
+            bot.send_message(CHAT_ID, f"🧑 MANUEL AÇILDI {data['sym']}")
         else:
             bot_position = pos
-            bot.send_message(CHAT_ID, f"🤖 BOT {data['sym']}")
+            bot.send_message(CHAT_ID, f"🤖 BOT AÇTI {data['sym']}")
 
     except Exception as e:
         print("OPEN ERROR:", e)
@@ -242,7 +244,6 @@ def manage():
                 if pnl > pos["max"]:
                     pos["max"] = pnl
 
-                # TP → trailing
                 if pnl >= 0.70 and not pos["trailing"]:
                     pos["trailing"] = True
 
@@ -250,7 +251,6 @@ def manage():
                     if pnl < pos["max"] - 0.25:
                         close_trade(pos, "TRAIL", is_manual)
 
-                # SL
                 if pnl <= -0.50:
                     close_trade(pos, "SL", is_manual)
 
@@ -271,5 +271,5 @@ def callback(call):
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💀 BOT AKTİF (FINAL)")
+bot.send_message(CHAT_ID, "💀 BOT AKTİF (AKILLI SİNYAL)")
 bot.infinity_polling()
