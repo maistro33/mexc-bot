@@ -44,7 +44,7 @@ def analyze(df):
     vol_ratio = df["v"].iloc[-1] / base_vol
 
     # volume spike şartı
-    if vol_ratio < 1.5:
+    if vol_ratio < 1.2:
         return None, 0
 
     # hareket şartı
@@ -84,7 +84,7 @@ def scanner():
 
     while True:
         try:
-            if time.time() - last_close_time < 40:
+            if time.time() - last_close_time < 10:
                 time.sleep(5)
                 continue
 
@@ -99,7 +99,7 @@ def scanner():
                     continue
 
                 vol = data.get("quoteVolume")
-                if vol is None or vol < 2000000:
+                if vol is None or vol < 1000000:
                     continue
 
                 df = get_data(sym)
