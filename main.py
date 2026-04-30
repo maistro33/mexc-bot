@@ -39,20 +39,23 @@ def get_data(sym):
 def analyze(df):
     price = df["c"].iloc[-1]
     ema = df["ema"].iloc[-1]
+
     prev = df["c"].iloc[-2]
+    prev2 = df["c"].iloc[-3]
 
     change = abs(price - df["c"].iloc[-5]) / df["c"].iloc[-5]
 
-    # hareket filtresi
     if change < 0.002:
         return None, 0, "Zayıf hareket"
 
-    # EMA kırılım (asıl giriş)
-    if price > ema and prev < ema:
-        return "LONG", 95, "EMA kırılım + momentum"
+    if abs(price - df["c"].iloc[-3]) < 0.001:
+        return None, 0, "Zayıf momentum"
 
-    if price < ema and prev > ema:
-        return "SHORT", 95, "EMA kırılım + momentum"
+    if price > ema and prev < ema and prev2 < ema:
+        return "LONG", 95, "EMA kırılım + teyit"
+
+    if price < ema and prev > ema and prev2 > ema:
+        return "SHORT", 95, "EMA kırılım + teyit"
 
     return None, 0, "Trend yok"
 
@@ -61,7 +64,7 @@ def get_real_size(sym):
     try:
         positions = exchange.fetch_positions()
         for p in positions:
-            if sym.replace(":USDT","") in p["symbol"]:
+            if p["symbol"].replace("/","").replace(":USDT","") == sym.replace("/","").replace(":USDT",""):
                 return float(p.get("contracts", 0))
     except:
         pass
@@ -91,17 +94,17 @@ def scanner():
                 if df is None:
                     continue
 
-                # volume filtresi (ölü coinleri keser)
                 if df["v"].iloc[-1] < 80:
-                    continue
-
-                sig, score, reason = analyze(df)
-                if sig is None:
                     continue
 
                 safe = sym.replace("/","").replace(":","")
 
-                if safe in signal_cache:
+                # 🔥 CACHE FIX
+                if safe in signal_cache and time.time() - signal_cache[safe]["t"] < 60:
+                    continue
+
+                sig, score, reason = analyze(df)
+                if sig is None:
                     continue
 
                 price = df["c"].iloc[-1]
@@ -109,7 +112,8 @@ def scanner():
                 signal_cache[safe] = {
                     "sym": sym,
                     "price": price,
-                    "signal": sig
+                    "signal": sig,
+                    "t": time.time()
                 }
 
                 decision = "🔥 GİR" if not bot_position else "❌ PAS"
@@ -137,7 +141,6 @@ def scanner():
 
                 last_signal_time = time.time()
 
-                # bot sadece 1 işlem açar
                 if score >= 90 and not bot_position:
                     open_trade(signal_cache[safe], False)
 
@@ -271,5 +274,5 @@ def callback(call):
 threading.Thread(target=scanner, daemon=True).start()
 threading.Thread(target=manage, daemon=True).start()
 
-bot.send_message(CHAT_ID, "💀 BOT AKTİF (AKILLI SİNYAL)")
+bot.send_message(CHAT_ID, "💀 BOT AKTİF (FINAL FIX)")
 bot.infinity_polling()
