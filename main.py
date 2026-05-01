@@ -247,7 +247,7 @@ def manage():
                 if pnl > pos["max"]:
                     pos["max"] = pnl
 
-                if pnl >= 0.70 and not pos["trailing"]:
+                if pnl >= 0.60 and not pos["trailing"]:
                     pos["trailing"] = True
 
                 if pos["trailing"]:
