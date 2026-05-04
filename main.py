@@ -15,7 +15,7 @@ exchange = ccxt.bitget({
     "enableRateLimit": True
 })
 
-MARGIN = 3
+MARGIN = 4
 LEVERAGE = 10
 
 bot_position = None
@@ -247,7 +247,7 @@ def manage():
                 if pnl > pos["max"]:
                     pos["max"] = pnl
 
-                if pnl >= 0.60 and not pos["trailing"]:
+                if pnl >= 0.45 and not pos["trailing"]:
                     pos["trailing"] = True
 
                 if pos["trailing"]:
