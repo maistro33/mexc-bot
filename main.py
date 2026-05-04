@@ -251,7 +251,7 @@ def manage():
                     pos["trailing"] = True
 
                 if pos["trailing"]:
-                    if pnl < pos["max"] - 0.25:
+                    if pnl < pos["max"] - 0.20:
                         close_trade(pos, "TRAIL", is_manual)
 
                 if pnl <= -0.50:
