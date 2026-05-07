@@ -174,7 +174,7 @@ def save_trade(pos, pnl, reason):
 
         data = {
 
-            "symbol": pos["sym"],
+            "Symbol": pos["sym"],
 
             "side": pos["type"],
 
@@ -454,7 +454,7 @@ def restore_positions():
                     continue
 
                 bot_position = {
-                    "sym": p["symbol"],
+                    "sym": p["Symbol"],
                     "type": ptype,
                     "entry": entry,
                     "max": 0,
