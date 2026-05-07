@@ -135,7 +135,7 @@ def get_coin_stats(symbol, side):
 
         rows = supabase.table("trades") \
             .select("pnl") \
-            .eq("symbol", symbol) \
+            .eq("Symbol", symbol) \
             .eq("side", side) \
             .limit(100) \
             .execute()
@@ -149,8 +149,13 @@ def get_coin_stats(symbol, side):
 
         for r in data:
 
-            if float(r["pnl"]) > 0:
-                wins += 1
+            try:
+
+                if float(r["pnl"]) > 0:
+                    wins += 1
+
+            except:
+                pass
 
         wr = (wins / len(data)) * 100
 
@@ -178,15 +183,9 @@ def save_trade(pos, pnl, reason):
 
             "side": pos["type"],
 
-            "entry_price": float(pos["entry"]),
-
-            "exit_price": float(pos.get("last_price", 0)),
-
             "pnl": float(round(pnl, 4)),
 
             "result": result,
-
-            "close_reason": reason,
 
             "created_at": pd.Timestamp.utcnow().isoformat()
         }
@@ -454,7 +453,7 @@ def restore_positions():
                     continue
 
                 bot_position = {
-                    "sym": p["Symbol"],
+                    "sym": p["symbol"],
                     "type": ptype,
                     "entry": entry,
                     "max": 0,
@@ -469,8 +468,9 @@ def restore_positions():
 
                 break
 
-            except:
-                pass
+            except Exception as e:
+
+                print("RESTORE INNER ERROR:", e)
 
     except Exception as e:
 
@@ -600,8 +600,6 @@ def close_trade(pos, reason, is_manual):
         current_price = exchange.fetch_ticker(
             pos["sym"]
         )["last"]
-
-        pos["last_price"] = current_price
 
         if pos["type"] == "LONG":
 
@@ -844,8 +842,6 @@ def manage():
 
                     price = ticker["last"]
 
-                    pos["last_price"] = price
-
                     if pos["type"] == "LONG":
 
                         pnl_percent = (
@@ -970,7 +966,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "💀 BOT AKTİF (AI SUPABASE VERSION)"
+    "💀 BOT AKTİF (AI SUPABASE FIXED)"
 )
 
 bot.infinity_polling()
