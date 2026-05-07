@@ -6,4 +6,4 @@ openai>=1.0.0
 xgboost
 scikit-learn
 joblib
-supabase-py
+supabase==2.4.0
