@@ -4,6 +4,7 @@ import os
 import telebot
 import threading
 import pandas as pd
+import random
 
 from supabase import create_client
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -37,10 +38,15 @@ exchange = ccxt.bitget({
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
+
+    "enableRateLimit": True,
+    "rateLimit": 1200,
+    "timeout": 30000,
+
     "options": {
-        "defaultType": "swap"
-    },
-    "enableRateLimit": True
+        "defaultType": "swap",
+        "adjustForTimeDifference": True
+    }
 })
 
 # =========================================================
@@ -69,6 +75,64 @@ BLOCKED_COINS = [
 ]
 
 # =========================================================
+# API LIMITER
+# =========================================================
+
+LAST_API_CALL = 0
+
+def safe_api_call(func, *args, **kwargs):
+
+    global LAST_API_CALL
+
+    retries = 5
+
+    for attempt in range(retries):
+
+        try:
+
+            now = time.time()
+
+            wait_time = 1.2 - (now - LAST_API_CALL)
+
+            if wait_time > 0:
+                time.sleep(wait_time)
+
+            LAST_API_CALL = time.time()
+
+            result = func(*args, **kwargs)
+
+            time.sleep(0.2)
+
+            return result
+
+        except ccxt.RateLimitExceeded:
+
+            print("RATE LIMIT - WAITING")
+
+            time.sleep(5 + random.uniform(1, 3))
+
+        except ccxt.NetworkError as e:
+
+            print("NETWORK ERROR:", e)
+
+            time.sleep(3)
+
+        except Exception as e:
+
+            if "429" in str(e):
+
+                print("429 DETECTED")
+
+                time.sleep(8)
+
+            else:
+
+                print("API ERROR:", e)
+                time.sleep(3)
+
+    return None
+
+# =========================================================
 # DATA
 # =========================================================
 
@@ -76,11 +140,15 @@ def get_data(sym):
 
     try:
 
-        ohlcv = exchange.fetch_ohlcv(
+        ohlcv = safe_api_call(
+            exchange.fetch_ohlcv,
             sym,
             timeframe="5m",
             limit=100
         )
+
+        if not ohlcv:
+            return None
 
         df = pd.DataFrame(
             ohlcv,
@@ -209,10 +277,6 @@ def analyze(df, sym):
         ema_now = df["ema"].iloc[-1]
         ema_prev = df["ema"].iloc[-5]
 
-        # =================================================
-        # VOLUME FILTER
-        # =================================================
-
         avg_vol = df["v"].rolling(15).mean().iloc[-1]
 
         if avg_vol <= 0:
@@ -225,10 +289,6 @@ def analyze(df, sym):
         if volume_ratio < 1.8:
             return None, 0, "Weak volume"
 
-        # =================================================
-        # VOLATILITY FILTER
-        # =================================================
-
         volatility = (
             df["h"].iloc[-1] - df["l"].iloc[-1]
         ) / price
@@ -236,20 +296,12 @@ def analyze(df, sym):
         if volatility < 0.006:
             return None, 0, "Low volatility"
 
-        # =================================================
-        # MOMENTUM FILTER
-        # =================================================
-
         change = abs(
             price - df["c"].iloc[-5]
         ) / df["c"].iloc[-5]
 
         if change < 0.004:
             return None, 0, "Weak move"
-
-        # =================================================
-        # CANDLE FILTER
-        # =================================================
 
         body = abs(
             df["c"].iloc[-1] - df["o"].iloc[-1]
@@ -267,20 +319,12 @@ def analyze(df, sym):
         if body_ratio < 0.50:
             return None, 0, "Fake breakout"
 
-        # =================================================
-        # EMA DISTANCE
-        # =================================================
-
         ema_distance = abs(
             price - ema_now
         ) / ema_now
 
         if ema_distance > 0.015:
             return None, 0, "Too extended"
-
-        # =================================================
-        # OLD MOVE FILTER
-        # =================================================
 
         recent_high = df["h"].rolling(20).max().iloc[-2]
         recent_low = df["l"].rolling(20).min().iloc[-2]
@@ -377,7 +421,13 @@ def get_real_size(sym):
 
     try:
 
-        positions = exchange.fetch_positions([sym])
+        positions = safe_api_call(
+            exchange.fetch_positions,
+            [sym]
+        )
+
+        if not positions:
+            return 0
 
         for p in positions:
 
@@ -416,7 +466,12 @@ def restore_positions():
 
     try:
 
-        positions = exchange.fetch_positions()
+        positions = safe_api_call(
+            exchange.fetch_positions
+        )
+
+        if not positions:
+            return
 
         for p in positions:
 
@@ -507,14 +562,20 @@ def open_trade(data, is_manual):
             else "sell"
         )
 
-        exchange.set_leverage(
+        safe_api_call(
+            exchange.set_leverage,
             LEVERAGE,
             data["sym"]
         )
 
-        ticker = exchange.fetch_ticker(
+        ticker = safe_api_call(
+            exchange.fetch_ticker,
             data["sym"]
         )
+
+        if not ticker:
+            lock = False
+            return
 
         real_price = ticker["last"]
 
@@ -522,11 +583,16 @@ def open_trade(data, is_manual):
             MARGIN * LEVERAGE
         ) / real_price
 
-        order = exchange.create_market_order(
+        order = safe_api_call(
+            exchange.create_market_order,
             data["sym"],
             side,
             float(amount)
         )
+
+        if not order:
+            lock = False
+            return
 
         entry_price = (
             order.get("average")
@@ -588,7 +654,8 @@ def close_trade(pos, reason, is_manual):
 
         if size > 0:
 
-            exchange.create_market_order(
+            safe_api_call(
+                exchange.create_market_order,
                 pos["sym"],
                 side,
                 size,
@@ -597,9 +664,15 @@ def close_trade(pos, reason, is_manual):
                 }
             )
 
-        current_price = exchange.fetch_ticker(
+        ticker = safe_api_call(
+            exchange.fetch_ticker,
             pos["sym"]
-        )["last"]
+        )
+
+        if not ticker:
+            return
+
+        current_price = ticker["last"]
 
         if pos["type"] == "LONG":
 
@@ -671,7 +744,13 @@ def scanner():
                 time.sleep(3)
                 continue
 
-            tickers = exchange.fetch_tickers()
+            tickers = safe_api_call(
+                exchange.fetch_tickers
+            )
+
+            if not tickers:
+                time.sleep(5)
+                continue
 
             top = sorted(
                 tickers.items(),
@@ -680,7 +759,7 @@ def scanner():
                     0
                 ) or 0,
                 reverse=True
-            )[:40]
+            )[:12]
 
             for sym, data in top:
 
@@ -836,9 +915,13 @@ def manage():
 
                         continue
 
-                    ticker = exchange.fetch_ticker(
+                    ticker = safe_api_call(
+                        exchange.fetch_ticker,
                         pos["sym"]
                     )
+
+                    if not ticker:
+                        continue
 
                     price = ticker["last"]
 
@@ -920,7 +1003,7 @@ def manage():
 
             print("MANAGE ERROR:", e)
 
-        time.sleep(2)
+        time.sleep(4)
 
 # =========================================================
 # CALLBACK
@@ -966,7 +1049,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "💀 BOT AKTİF (AI SUPABASE FIXED)"
+    "💀 BOT AKTİF (FINAL STABLE VERSION)"
 )
 
 bot.infinity_polling()
