@@ -914,4 +914,17 @@ bot.send_message(
     "🤖 SADIK BOT PRO STARTED"
 )
 
-bot.infinity_polling()
+while True:
+
+    try:
+
+        bot.infinity_polling(
+            timeout=30,
+            long_polling_timeout=30
+        )
+
+    except Exception as e:
+
+        print("POLLING ERROR:", e)
+
+        time.sleep(5)
