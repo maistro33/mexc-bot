@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK BOT PRO IMPROVED VERSION
+# SADIK BOT FINAL STABLE HIGH WINRATE VERSION
 # =========================================================
 
 import ccxt
@@ -9,7 +9,6 @@ import telebot
 import threading
 import pandas as pd
 
-from supabase import create_client
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # =========================================================
@@ -22,18 +21,6 @@ CHAT_ID = int(os.getenv("MY_CHAT_ID"))
 bot = telebot.TeleBot(TOKEN)
 
 # =========================================================
-# SUPABASE
-# =========================================================
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
-
-# =========================================================
 # EXCHANGE
 # =========================================================
 
@@ -43,8 +30,6 @@ exchange = ccxt.bitget({
     "password": os.getenv("BITGET_PASS"),
 
     "enableRateLimit": True,
-    "rateLimit": 1200,
-    "timeout": 30000,
 
     "options": {
         "defaultType": "swap",
@@ -56,28 +41,27 @@ exchange = ccxt.bitget({
 # SETTINGS
 # =========================================================
 
-MARGIN = 3
-LEVERAGE = 10
+MARGIN = 5
+LEVERAGE = 3
 
 bot_position = None
-manual_positions = []
+
+LAST_API_CALL = 0
 
 signal_cache = {}
-coin_cooldown = {}
-loss_streak = {}
-last_direction = {}
-
-lock = False
 
 BLOCKED_COINS = [
     "BTC/USDT:USDT",
     "ETH/USDT:USDT",
     "BNB/USDT:USDT",
+    "XRP/USDT:USDT",
+    "SOL/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "ADA/USDT:USDT",
+    "TRX/USDT:USDT",
     "XAU/USDT:USDT",
     "XAG/USDT:USDT"
 ]
-
-LAST_API_CALL = 0
 
 # =========================================================
 # API SAFE
@@ -93,7 +77,7 @@ def safe_api_call(func, *args, **kwargs):
 
             now = time.time()
 
-            wait_time = 1.1 - (now - LAST_API_CALL)
+            wait_time = 2.5 - (now - LAST_API_CALL)
 
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -104,71 +88,33 @@ def safe_api_call(func, *args, **kwargs):
 
         except Exception as e:
 
+            if "429" in str(e):
+
+                print("429 RATE LIMIT")
+
+                time.sleep(20)
+
+                continue
+
             print("API ERROR:", e)
 
-            try:
-                bot.send_message(
-                    CHAT_ID,
-                    f"❌ API ERROR\n{str(e)}"
-                )
-            except:
-                pass
-
-            time.sleep(3)
+            time.sleep(5)
 
     return None
-
-# =========================================================
-# ADX
-# =========================================================
-
-def calculate_adx(df, period=14):
-
-    try:
-
-        high = df["h"]
-        low = df["l"]
-        close = df["c"]
-
-        plus_dm = high.diff()
-        minus_dm = low.diff()
-
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
-
-        tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
-
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-        atr = tr.rolling(period).mean()
-
-        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-        minus_di = abs(100 * (minus_dm.rolling(period).mean() / atr))
-
-        dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100
-
-        adx = dx.rolling(period).mean()
-
-        return adx.iloc[-1]
-
-    except:
-        return 0
 
 # =========================================================
 # DATA
 # =========================================================
 
-def get_data(sym):
+def get_data(sym, tf="5m", limit=200):
 
     try:
 
         ohlcv = safe_api_call(
             exchange.fetch_ohlcv,
             sym,
-            timeframe="5m",
-            limit=150
+            timeframe=tf,
+            limit=limit
         )
 
         if not ohlcv:
@@ -182,34 +128,51 @@ def get_data(sym):
         df["ema20"] = df["c"].ewm(span=20).mean()
         df["ema50"] = df["c"].ewm(span=50).mean()
 
+        delta = df["c"].diff()
+
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+
+        rs = avg_gain / avg_loss
+
+        df["rsi"] = 100 - (100 / (1 + rs))
+
         return df
 
     except Exception as e:
 
         print("DATA ERROR:", e)
+
         return None
 
 # =========================================================
 # BTC FILTER
 # =========================================================
 
-def btc_filter(signal):
+def btc_filter(direction):
 
     try:
 
-        df = get_data("BTC/USDT:USDT")
+        btc = get_data(
+            "BTC/USDT:USDT",
+            "15m"
+        )
 
-        if df is None:
+        if btc is None:
             return False
 
-        price = df["c"].iloc[-1]
-        ema20 = df["ema20"].iloc[-1]
-        ema50 = df["ema50"].iloc[-1]
+        price = btc["c"].iloc[-1]
 
-        if signal == "LONG":
+        ema20 = btc["ema20"].iloc[-1]
+        ema50 = btc["ema50"].iloc[-1]
+
+        if direction == "LONG":
             return price > ema20 > ema50
 
-        if signal == "SHORT":
+        if direction == "SHORT":
             return price < ema20 < ema50
 
         return False
@@ -218,240 +181,207 @@ def btc_filter(signal):
         return False
 
 # =========================================================
-# REAL SIZE
-# =========================================================
-
-def get_real_size(sym):
-
-    try:
-
-        positions = safe_api_call(
-            exchange.fetch_positions,
-            [sym]
-        )
-
-        if not positions:
-            return 0
-
-        for p in positions:
-
-            size = (
-                p.get("contracts")
-                or p.get("size")
-                or p.get("info", {}).get("total")
-                or p.get("info", {}).get("openDelegateSize")
-                or 0
-            )
-
-            size = abs(float(size))
-
-            if size > 0:
-                return size
-
-    except Exception as e:
-
-        print("SIZE ERROR:", e)
-
-    return 0
-
-# =========================================================
 # ANALYZE
 # =========================================================
 
-def analyze(df, sym):
+def analyze(sym):
 
     try:
 
-        price = df["c"].iloc[-1]
+        df_5m = get_data(sym, "5m")
+        df_15m = get_data(sym, "15m")
 
-        ema20 = df["ema20"].iloc[-1]
-        ema50 = df["ema50"].iloc[-1]
+        if df_5m is None:
+            return None
 
-        adx = calculate_adx(df)
+        if df_15m is None:
+            return None
 
-        if adx < 20:
-            return None, 0, "CHOP MARKET"
+        price = df_5m["c"].iloc[-1]
 
-        avg_vol = df["v"].rolling(20).mean().iloc[-1]
+        ema20_5m = df_5m["ema20"].iloc[-1]
+        ema50_5m = df_5m["ema50"].iloc[-1]
+
+        ema20_15m = df_15m["ema20"].iloc[-1]
+        ema50_15m = df_15m["ema50"].iloc[-1]
+
+        rsi = df_5m["rsi"].iloc[-1]
+
+        avg_vol = df_5m["v"].rolling(20).mean().iloc[-1]
 
         if avg_vol <= 0:
-            return None, 0, "BAD VOLUME"
+            return None
 
-        volume_ratio = df["v"].iloc[-1] / avg_vol
+        volume_ratio = (
+            df_5m["v"].iloc[-1] / avg_vol
+        )
 
-        if volume_ratio < 1.3:
-            return None, 0, "LOW VOLUME"
+        if volume_ratio < 1.5:
+            return None
 
-        recent_move = abs(
-            price - df["c"].iloc[-4]
-        ) / df["c"].iloc[-4]
-
-        if recent_move > 0.025:
-            return None, 0, "PUMP DETECTED"
-
-        # =====================================================
+        # =================================================
         # LONG
-        # =====================================================
+        # =================================================
 
-        if ema20 > ema50:
+        if (
+            ema20_5m > ema50_5m
+            and ema20_15m > ema50_15m
+            and btc_filter("LONG")
+        ):
 
-            if not btc_filter("LONG"):
-                return None, 0, "BTC FILTER"
+            if rsi > 72:
+                return None
 
-            pullback_ok = (
-                price <= ema20 * 1.003
+            pullback = (
+                price <= ema20_5m * 1.002
             )
 
-            if not pullback_ok:
-                return None, 0, "NO PULLBACK"
+            if not pullback:
+                return None
 
-            score = 88
+            return {
+                "signal": "LONG",
+                "score": 95
+            }
 
-            if adx > 25:
-                score += 4
-
-            if volume_ratio > 1.8:
-                score += 4
-
-            return "LONG", score, "PULLBACK LONG"
-
-        # =====================================================
+        # =================================================
         # SHORT
-        # =====================================================
+        # =================================================
 
-        if ema20 < ema50:
+        if (
+            ema20_5m < ema50_5m
+            and ema20_15m < ema50_15m
+            and btc_filter("SHORT")
+        ):
 
-            if not btc_filter("SHORT"):
-                return None, 0, "BTC FILTER"
+            if rsi < 28:
+                return None
 
-            pullback_ok = (
-                price >= ema20 * 0.997
+            pullback = (
+                price >= ema20_5m * 0.998
             )
 
-            if not pullback_ok:
-                return None, 0, "NO PULLBACK"
+            if not pullback:
+                return None
 
-            score = 88
+            return {
+                "signal": "SHORT",
+                "score": 95
+            }
 
-            if adx > 25:
-                score += 4
-
-            if volume_ratio > 1.8:
-                score += 4
-
-            return "SHORT", score, "PULLBACK SHORT"
-
-        return None, 0, "NO TREND"
+        return None
 
     except Exception as e:
 
         print("ANALYZE ERROR:", e)
 
-        return None, 0, "ERROR"
+        return None
 
 # =========================================================
-# OPEN
+# OPEN TRADE
 # =========================================================
 
-def open_trade(data, is_manual=False):
+def open_trade(sym, signal):
 
     global bot_position
-    global lock
 
-    if lock:
+    if bot_position:
         return
-
-    if bot_position and not is_manual:
-        return
-
-    lock = True
 
     try:
 
-        if get_real_size(data["sym"]) > 0:
+        balance = safe_api_call(
+            exchange.fetch_balance
+        )
 
-            lock = False
+        try:
+
+            usdt = (
+                balance.get("USDT", {})
+                .get("free", 0)
+            )
+
+        except:
+
+            usdt = 0
+
+        if usdt < MARGIN:
+
+            bot.send_message(
+                CHAT_ID,
+                "❌ YETERSIZ BAKIYE"
+            )
+
             return
 
         side = (
             "buy"
-            if data["signal"] == "LONG"
+            if signal == "LONG"
             else "sell"
         )
 
         safe_api_call(
             exchange.set_leverage,
             LEVERAGE,
-            data["sym"]
+            sym
         )
 
         ticker = safe_api_call(
             exchange.fetch_ticker,
-            data["sym"]
+            sym
         )
 
         if not ticker:
-
-            lock = False
             return
 
         price = ticker["last"]
 
+        usable_margin = MARGIN * 0.90
+
         amount = (
-            MARGIN * LEVERAGE
+            usable_margin * LEVERAGE
         ) / price
 
-        market = exchange.market(data["sym"])
-
-        min_amount = (
-            market.get("limits", {})
-            .get("amount", {})
-            .get("min", 0.001)
+        amount = float(
+            exchange.amount_to_precision(
+                sym,
+                amount
+            )
         )
-
-        amount = max(amount, min_amount)
 
         order = safe_api_call(
             exchange.create_market_order,
-            data["sym"],
+            sym,
             side,
-            float(amount)
+            amount
         )
 
         if not order:
 
             bot.send_message(
                 CHAT_ID,
-                f"❌ ORDER FAILED\n{data['sym']}"
+                f"❌ ORDER FAILED\n{sym}"
             )
 
-            lock = False
             return
 
         entry = order.get("average") or price
 
-        pos = {
-            "sym": data["sym"],
-            "type": data["signal"],
-            "entry": float(entry),
+        bot_position = {
+            "sym": sym,
+            "type": signal,
+            "entry": entry,
             "max": 0,
-            "tp1": False,
-            "breakeven": False,
-            "open_time": time.time()
+            "tp1": False
         }
-
-        if is_manual:
-            manual_positions.append(pos)
-        else:
-            bot_position = pos
 
         bot.send_message(
             CHAT_ID,
             f"""
 🚀 OPEN
 
-📊 {data['sym']}
-📈 {data['signal']}
+📊 {sym}
+📈 {signal}
 
 💰 Entry: {round(entry, 5)}
 """
@@ -461,21 +391,11 @@ def open_trade(data, is_manual=False):
 
         print("OPEN ERROR:", e)
 
-        try:
-            bot.send_message(
-                CHAT_ID,
-                f"❌ OPEN ERROR\n{str(e)}"
-            )
-        except:
-            pass
-
-    lock = False
-
 # =========================================================
-# CLOSE
+# CLOSE TRADE
 # =========================================================
 
-def close_trade(pos, reason, is_manual=False):
+def close_trade(pos, reason):
 
     global bot_position
 
@@ -487,7 +407,22 @@ def close_trade(pos, reason, is_manual=False):
             else "buy"
         )
 
-        size = get_real_size(pos["sym"])
+        positions = safe_api_call(
+            exchange.fetch_positions,
+            [pos["sym"]]
+        )
+
+        size = 0
+
+        if positions:
+
+            for p in positions:
+
+                size = abs(float(
+                    p.get("contracts")
+                    or p.get("size")
+                    or 0
+                ))
 
         if size > 0:
 
@@ -501,77 +436,13 @@ def close_trade(pos, reason, is_manual=False):
                 }
             )
 
-            time.sleep(2)
-
-            remain = get_real_size(pos["sym"])
-
-            if remain > 0:
-
-                safe_api_call(
-                    exchange.create_market_order,
-                    pos["sym"],
-                    side,
-                    remain,
-                    params={
-                        "reduceOnly": True
-                    }
-                )
-
-        ticker = safe_api_call(
-            exchange.fetch_ticker,
-            pos["sym"]
-        )
-
-        if not ticker:
-            return
-
-        current_price = ticker["last"]
-
-        if pos["type"] == "LONG":
-
-            pnl_percent = (
-                (current_price - pos["entry"])
-                / pos["entry"]
-            ) * 100
-
-        else:
-
-            pnl_percent = (
-                (pos["entry"] - current_price)
-                / pos["entry"]
-            ) * 100
-
-        pnl = (
-            pnl_percent / 100
-        ) * (
-            MARGIN * LEVERAGE
-        )
-
-        if pnl < 0:
-
-            loss_streak[pos["sym"]] = (
-                loss_streak.get(pos["sym"], 0) + 1
-            )
-
-            coin_cooldown[pos["sym"]] = (
-                time.time() + 7200
-            )
-
-        else:
-
-            loss_streak[pos["sym"]] = 0
-
-        last_direction[pos["sym"]] = pos["type"]
-
         bot.send_message(
             CHAT_ID,
             f"""
-❌ CLOSED
+❌ CLOSE
 
 📊 {pos['sym']}
 📉 {reason}
-
-💰 PNL: {round(pnl, 2)} USDT
 """
         )
 
@@ -579,14 +450,7 @@ def close_trade(pos, reason, is_manual=False):
 
         print("CLOSE ERROR:", e)
 
-    if is_manual:
-
-        if pos in manual_positions:
-            manual_positions.remove(pos)
-
-    else:
-
-        bot_position = None
+    bot_position = None
 
 # =========================================================
 # MANAGE
@@ -600,141 +464,78 @@ def manage():
 
         try:
 
-            all_positions = []
+            if not bot_position:
 
-            if bot_position:
-                all_positions.append((bot_position, False))
+                time.sleep(5)
+                continue
 
-            for p in manual_positions[:]:
-                all_positions.append((p, True))
+            pos = bot_position
 
-            for pos, is_manual in all_positions:
+            ticker = safe_api_call(
+                exchange.fetch_ticker,
+                pos["sym"]
+            )
 
-                real_size = get_real_size(pos["sym"])
+            if not ticker:
+                continue
 
-                if real_size <= 0:
+            price = ticker["last"]
 
-                    bot.send_message(
-                        CHAT_ID,
-                        f"⚠️ MANUAL CLOSE DETECTED\n{pos['sym']}"
-                    )
-
-                    if is_manual:
-
-                        if pos in manual_positions:
-                            manual_positions.remove(pos)
-
-                    else:
-
-                        bot_position = None
-
-                    continue
-
-                ticker = safe_api_call(
-                    exchange.fetch_ticker,
-                    pos["sym"]
-                )
-
-                if not ticker:
-                    continue
-
-                price = ticker["last"]
-
-                if pos["type"] == "LONG":
-
-                    pnl_percent = (
-                        (price - pos["entry"])
-                        / pos["entry"]
-                    ) * 100
-
-                else:
-
-                    pnl_percent = (
-                        (pos["entry"] - price)
-                        / pos["entry"]
-                    ) * 100
+            if pos["type"] == "LONG":
 
                 pnl = (
-                    pnl_percent / 100
-                ) * (
-                    MARGIN * LEVERAGE
+                    (price - pos["entry"])
+                    / pos["entry"]
+                ) * 100
+
+            else:
+
+                pnl = (
+                    (pos["entry"] - price)
+                    / pos["entry"]
+                ) * 100
+
+            if pnl > pos["max"]:
+                pos["max"] = pnl
+
+            # TP1
+
+            if pnl >= 0.7 and not pos["tp1"]:
+
+                pos["tp1"] = True
+
+                bot.send_message(
+                    CHAT_ID,
+                    f"✅ TP1 HIT\n{pos['sym']}"
                 )
 
-                if pnl > pos["max"]:
-                    pos["max"] = pnl
+            # TRAILING
 
-                # =================================================
-                # TP1
-                # =================================================
+            if pnl >= 1.2:
 
-                if pnl >= 0.45 and not pos["tp1"]:
-
-                    pos["tp1"] = True
-                    pos["breakeven"] = True
-
-                    bot.send_message(
-                        CHAT_ID,
-                        f"✅ TP1 HIT\n{pos['sym']}"
-                    )
-
-                # =================================================
-                # BREAK EVEN
-                # =================================================
-
-                if pos["breakeven"]:
-
-                    if pnl <= 0.05:
-
-                        close_trade(
-                            pos,
-                            "BREAK EVEN",
-                            is_manual
-                        )
-
-                        continue
-
-                # =================================================
-                # TRAILING
-                # =================================================
-
-                if pnl >= 0.80:
-
-                    trail_gap = max(
-                        0.25,
-                        pos["max"] * 0.45
-                    )
-
-                    if pnl < (
-                        pos["max"] - trail_gap
-                    ):
-
-                        close_trade(
-                            pos,
-                            "TRAIL",
-                            is_manual
-                        )
-
-                        continue
-
-                # =================================================
-                # STOP
-                # =================================================
-
-                if pnl <= -0.70:
+                if pnl < (
+                    pos["max"] - 0.4
+                ):
 
                     close_trade(
                         pos,
-                        "STOP LOSS",
-                        is_manual
+                        "TRAIL"
                     )
 
-                    continue
+            # STOP LOSS
+
+            if pnl <= -0.8:
+
+                close_trade(
+                    pos,
+                    "STOP LOSS"
+                )
 
         except Exception as e:
 
             print("MANAGE ERROR:", e)
 
-        time.sleep(4)
+        time.sleep(5)
 
 # =========================================================
 # SCANNER
@@ -742,14 +543,13 @@ def manage():
 
 def scanner():
 
-    global bot_position
-
     while True:
 
         try:
 
             if bot_position:
-                time.sleep(5)
+
+                time.sleep(10)
                 continue
 
             tickers = safe_api_call(
@@ -758,7 +558,7 @@ def scanner():
 
             if not tickers:
 
-                time.sleep(5)
+                time.sleep(10)
                 continue
 
             pairs = sorted(
@@ -768,7 +568,7 @@ def scanner():
                     0
                 ) or 0,
                 reverse=True
-            )[:20]
+            )[:8]
 
             for sym, data in pairs:
 
@@ -780,11 +580,6 @@ def scanner():
                     if sym in BLOCKED_COINS:
                         continue
 
-                    if sym in coin_cooldown:
-
-                        if time.time() < coin_cooldown[sym]:
-                            continue
-
                     safe = (
                         sym.replace("/", "")
                         .replace(":", "")
@@ -792,104 +587,79 @@ def scanner():
 
                     if safe in signal_cache:
 
-                        old = signal_cache[safe].get(
-                            "signal_time",
-                            0
-                        )
+                        old = signal_cache[safe]
 
-                        if time.time() - old < 1800:
+                        if time.time() - old < 3600:
                             continue
 
-                    df = get_data(sym)
+                    result = analyze(sym)
 
-                    if df is None:
+                    if not result:
                         continue
 
-                    sig, score, reason = analyze(
-                        df,
-                        sym
-                    )
+                    signal = result["signal"]
 
-                    if sig is None:
-                        continue
-
-                    if last_direction.get(sym) == sig:
-                        continue
-
-                    price = df["c"].iloc[-1]
-
-                    signal_cache[safe] = {
-                        "sym": sym,
-                        "price": price,
-                        "signal": sig,
-                        "signal_time": time.time()
-                    }
+                    signal_cache[safe] = time.time()
 
                     markup = InlineKeyboardMarkup()
 
                     markup.add(
                         InlineKeyboardButton(
                             "✅ MANUEL GİR",
-                            callback_data=f"enter|{safe}"
+                            callback_data=f"{sym}|{signal}"
                         )
                     )
 
                     bot.send_message(
                         CHAT_ID,
                         f"""
-💀 SIGNAL
+💀 HIGH WINRATE SIGNAL
 
 📊 {sym}
-📈 {sig}
+📈 {signal}
 
-🤖 SCORE: %{score}
-
-📌 {reason}
+🤖 SCORE: %95
 """,
                         reply_markup=markup
                     )
 
-                    if score >= 92:
+                    open_trade(
+                        sym,
+                        signal
+                    )
 
-                        open_trade(
-                            signal_cache[safe]
-                        )
-
-                    time.sleep(1)
+                    time.sleep(3)
 
                 except Exception as e:
 
                     print("PAIR ERROR:", e)
 
-            time.sleep(10)
+            time.sleep(30)
 
         except Exception as e:
 
             print("SCANNER ERROR:", e)
 
-            time.sleep(5)
+            time.sleep(10)
 
 # =========================================================
 # CALLBACK
 # =========================================================
 
-@bot.callback_query_handler(func=lambda call: True)
+@bot.callback_query_handler(func=lambda c: True)
 def callback(call):
 
     try:
 
-        if call.data.startswith("enter|"):
+        data = call.data.split("|")
 
-            key = call.data.split("|")[1]
+        sym = data[0]
+        signal = data[1]
 
-            data = signal_cache.get(key)
-
-            if data:
-
-                open_trade(
-                    data,
-                    True
-                )
+        open_trade(
+            sym,
+            signal
+        )
 
     except Exception as e:
 
@@ -911,7 +681,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK BOT PRO STARTED"
+    "🤖 SADIK FINAL BOT STARTED"
 )
 
 while True:
@@ -919,8 +689,9 @@ while True:
     try:
 
         bot.infinity_polling(
-            timeout=30,
-            long_polling_timeout=30
+            timeout=60,
+            long_polling_timeout=60,
+            skip_pending=True
         )
 
     except Exception as e:
