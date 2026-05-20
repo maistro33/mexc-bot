@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK BOT FINAL STABLE HIGH WINRATE VERSION
+# SADIK BOT DYNAMIC AI FINAL VERSION
 # =========================================================
 
 import ccxt
@@ -9,7 +9,8 @@ import telebot
 import threading
 import pandas as pd
 
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup
+from telebot.types import InlineKeyboardButton
 
 # =========================================================
 # TELEGRAM
@@ -25,6 +26,7 @@ bot = telebot.TeleBot(TOKEN)
 # =========================================================
 
 exchange = ccxt.bitget({
+
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
@@ -41,27 +43,14 @@ exchange = ccxt.bitget({
 # SETTINGS
 # =========================================================
 
-MARGIN = 3
-LEVERAGE = 10
+MARGIN = 5
+LEVERAGE = 3
 
 bot_position = None
 
 LAST_API_CALL = 0
 
 signal_cache = {}
-
-BLOCKED_COINS = [
-    "BTC/USDT:USDT",
-    "ETH/USDT:USDT",
-    "BNB/USDT:USDT",
-    "XRP/USDT:USDT",
-    "SOL/USDT:USDT",
-    "DOGE/USDT:USDT",
-    "ADA/USDT:USDT",
-    "TRX/USDT:USDT",
-    "XAU/USDT:USDT",
-    "XAG/USDT:USDT"
-]
 
 # =========================================================
 # API SAFE
@@ -77,7 +66,7 @@ def safe_api_call(func, *args, **kwargs):
 
             now = time.time()
 
-            wait_time = 2.5 - (now - LAST_API_CALL)
+            wait_time = 2.2 - (now - LAST_API_CALL)
 
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -103,7 +92,7 @@ def safe_api_call(func, *args, **kwargs):
     return None
 
 # =========================================================
-# DATA
+# GET DATA
 # =========================================================
 
 def get_data(sym, tf="5m", limit=200):
@@ -122,11 +111,27 @@ def get_data(sym, tf="5m", limit=200):
 
         df = pd.DataFrame(
             ohlcv,
-            columns=["t", "o", "h", "l", "c", "v"]
+            columns=[
+                "t",
+                "o",
+                "h",
+                "l",
+                "c",
+                "v"
+            ]
         )
 
-        df["ema20"] = df["c"].ewm(span=20).mean()
-        df["ema50"] = df["c"].ewm(span=50).mean()
+        # EMA
+
+        df["ema20"] = df["c"].ewm(
+            span=20
+        ).mean()
+
+        df["ema50"] = df["c"].ewm(
+            span=50
+        ).mean()
+
+        # RSI
 
         delta = df["c"].diff()
 
@@ -138,7 +143,9 @@ def get_data(sym, tf="5m", limit=200):
 
         rs = avg_gain / avg_loss
 
-        df["rsi"] = 100 - (100 / (1 + rs))
+        df["rsi"] = 100 - (
+            100 / (1 + rs)
+        )
 
         return df
 
@@ -170,15 +177,117 @@ def btc_filter(direction):
         ema50 = btc["ema50"].iloc[-1]
 
         if direction == "LONG":
-            return price > ema20 > ema50
+
+            return (
+                price > ema20 > ema50
+            )
 
         if direction == "SHORT":
-            return price < ema20 < ema50
+
+            return (
+                price < ema20 < ema50
+            )
 
         return False
 
     except:
+
         return False
+
+# =========================================================
+# DYNAMIC COIN SELECTOR
+# =========================================================
+
+def get_best_coins():
+
+    try:
+
+        tickers = safe_api_call(
+            exchange.fetch_tickers
+        )
+
+        if not tickers:
+            return []
+
+        selected = []
+
+        for sym, data in tickers.items():
+
+            try:
+
+                if ":USDT" not in sym:
+                    continue
+
+                if any(x in sym for x in [
+                    "BTC",
+                    "ETH",
+                    "BNB",
+                    "XRP",
+                    "SOL",
+                    "DOGE",
+                    "ADA",
+                    "TRX",
+                    "XAU",
+                    "XAG"
+                ]):
+                    continue
+
+                volume = (
+                    data.get(
+                        "quoteVolume",
+                        0
+                    ) or 0
+                )
+
+                if volume < 10000000:
+                    continue
+
+                df = get_data(sym)
+
+                if df is None:
+                    continue
+
+                volatility = (
+                    (
+                        df["h"].iloc[-1]
+                        - df["l"].iloc[-1]
+                    )
+                    / df["c"].iloc[-1]
+                ) * 100
+
+                if volatility < 1:
+                    continue
+
+                selected.append(
+                    (
+                        sym,
+                        volume,
+                        volatility
+                    )
+                )
+
+            except:
+                pass
+
+        selected = sorted(
+            selected,
+            key=lambda x: (
+                x[1],
+                x[2]
+            ),
+            reverse=True
+        )
+
+        return [
+            x[0]
+            for x in selected[:15]
+        ]
+
+    except Exception as e:
+
+        print("COIN SELECT ERROR:", e)
+
+        return []
 
 # =========================================================
 # ANALYZE
@@ -188,52 +297,62 @@ def analyze(sym):
 
     try:
 
-        df_5m = get_data(sym, "5m")
-        df_15m = get_data(sym, "15m")
+        df5 = get_data(sym, "5m")
+        df15 = get_data(sym, "15m")
 
-        if df_5m is None:
+        if df5 is None:
             return None
 
-        if df_15m is None:
+        if df15 is None:
             return None
 
-        price = df_5m["c"].iloc[-1]
+        price = df5["c"].iloc[-1]
 
-        ema20_5m = df_5m["ema20"].iloc[-1]
-        ema50_5m = df_5m["ema50"].iloc[-1]
+        ema20_5 = df5["ema20"].iloc[-1]
+        ema50_5 = df5["ema50"].iloc[-1]
 
-        ema20_15m = df_15m["ema20"].iloc[-1]
-        ema50_15m = df_15m["ema50"].iloc[-1]
+        ema20_15 = df15["ema20"].iloc[-1]
+        ema50_15 = df15["ema50"].iloc[-1]
 
-        rsi = df_5m["rsi"].iloc[-1]
+        rsi = df5["rsi"].iloc[-1]
 
-        avg_vol = df_5m["v"].rolling(20).mean().iloc[-1]
+        avg_vol = (
+            df5["v"]
+            .rolling(20)
+            .mean()
+            .iloc[-1]
+        )
 
         if avg_vol <= 0:
             return None
 
         volume_ratio = (
-            df_5m["v"].iloc[-1] / avg_vol
+            df5["v"].iloc[-1]
+            / avg_vol
         )
-
-        if volume_ratio < 1.5:
-            return None
 
         # =================================================
         # LONG
         # =================================================
 
         if (
-            ema20_5m > ema50_5m
-            and ema20_15m > ema50_15m
-            and btc_filter("LONG")
+
+            ema20_5 > ema50_5
+            and
+            ema20_15 > ema50_15
+            and
+            btc_filter("LONG")
+
         ):
 
-            if rsi > 72:
+            if rsi > 74:
+                return None
+
+            if volume_ratio < 1.2:
                 return None
 
             pullback = (
-                price <= ema20_5m * 1.002
+                price <= ema20_5 * 1.003
             )
 
             if not pullback:
@@ -241,7 +360,7 @@ def analyze(sym):
 
             return {
                 "signal": "LONG",
-                "score": 95
+                "score": 90
             }
 
         # =================================================
@@ -249,16 +368,23 @@ def analyze(sym):
         # =================================================
 
         if (
-            ema20_5m < ema50_5m
-            and ema20_15m < ema50_15m
-            and btc_filter("SHORT")
+
+            ema20_5 < ema50_5
+            and
+            ema20_15 < ema50_15
+            and
+            btc_filter("SHORT")
+
         ):
 
-            if rsi < 28:
+            if rsi < 26:
+                return None
+
+            if volume_ratio < 1.2:
                 return None
 
             pullback = (
-                price >= ema20_5m * 0.998
+                price >= ema20_5 * 0.997
             )
 
             if not pullback:
@@ -266,7 +392,7 @@ def analyze(sym):
 
             return {
                 "signal": "SHORT",
-                "score": 95
+                "score": 90
             }
 
         return None
@@ -297,8 +423,13 @@ def open_trade(sym, signal):
         try:
 
             usdt = (
-                balance.get("USDT", {})
-                .get("free", 0)
+                balance.get(
+                    "USDT",
+                    {}
+                ).get(
+                    "free",
+                    0
+                )
             )
 
         except:
@@ -365,14 +496,19 @@ def open_trade(sym, signal):
 
             return
 
-        entry = order.get("average") or price
+        entry = (
+            order.get("average")
+            or price
+        )
 
         bot_position = {
+
             "sym": sym,
             "type": signal,
             "entry": entry,
             "max": 0,
             "tp1": False
+
         }
 
         bot.send_message(
@@ -484,14 +620,20 @@ def manage():
             if pos["type"] == "LONG":
 
                 pnl = (
-                    (price - pos["entry"])
+                    (
+                        price
+                        - pos["entry"]
+                    )
                     / pos["entry"]
                 ) * 100
 
             else:
 
                 pnl = (
-                    (pos["entry"] - price)
+                    (
+                        pos["entry"]
+                        - price
+                    )
                     / pos["entry"]
                 ) * 100
 
@@ -500,7 +642,11 @@ def manage():
 
             # TP1
 
-            if pnl >= 0.7 and not pos["tp1"]:
+            if (
+                pnl >= 0.7
+                and
+                not pos["tp1"]
+            ):
 
                 pos["tp1"] = True
 
@@ -509,7 +655,7 @@ def manage():
                     f"✅ TP1 HIT\n{pos['sym']}"
                 )
 
-            # TRAILING
+            # TRAIL
 
             if pnl >= 1.2:
 
@@ -522,7 +668,7 @@ def manage():
                         "TRAIL"
                     )
 
-            # STOP LOSS
+            # STOP
 
             if pnl <= -0.8:
 
@@ -552,33 +698,13 @@ def scanner():
                 time.sleep(10)
                 continue
 
-            tickers = safe_api_call(
-                exchange.fetch_tickers
-            )
+            coins = get_best_coins()
 
-            if not tickers:
+            print("BEST COINS:", coins)
 
-                time.sleep(10)
-                continue
-
-            pairs = sorted(
-                tickers.items(),
-                key=lambda x: x[1].get(
-                    "quoteVolume",
-                    0
-                ) or 0,
-                reverse=True
-            )[:8]
-
-            for sym, data in pairs:
+            for sym in coins:
 
                 try:
-
-                    if ":USDT" not in sym:
-                        continue
-
-                    if sym in BLOCKED_COINS:
-                        continue
 
                     safe = (
                         sym.replace("/", "")
@@ -589,7 +715,11 @@ def scanner():
 
                         old = signal_cache[safe]
 
-                        if time.time() - old < 3600:
+                        if (
+                            time.time()
+                            - old
+                        ) < 1800:
+
                             continue
 
                     result = analyze(sym)
@@ -613,12 +743,12 @@ def scanner():
                     bot.send_message(
                         CHAT_ID,
                         f"""
-💀 HIGH WINRATE SIGNAL
+💀 AI SIGNAL
 
 📊 {sym}
 📈 {signal}
 
-🤖 SCORE: %88
+🤖 SCORE: %90
 """,
                         reply_markup=markup
                     )
@@ -681,7 +811,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK FINAL BOT STARTED"
+    "🤖 SADIK DYNAMIC AI BOT STARTED"
 )
 
 while True:
