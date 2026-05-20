@@ -618,7 +618,7 @@ def scanner():
 📊 {sym}
 📈 {signal}
 
-🤖 SCORE: %95
+🤖 SCORE: %88
 """,
                         reply_markup=markup
                     )
