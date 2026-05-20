@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK ULTIMATE AI BOT FINAL VERSION
+# SADIK FINAL ACTIVE AI BOT
 # =========================================================
 
 import ccxt
@@ -68,7 +68,7 @@ def safe_api_call(func, *args, **kwargs):
 
             now = time.time()
 
-            wait_time = 2.2 - (now - LAST_API_CALL)
+            wait_time = 1.3 - (now - LAST_API_CALL)
 
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -83,13 +83,13 @@ def safe_api_call(func, *args, **kwargs):
 
                 print("429 RATE LIMIT")
 
-                time.sleep(20)
+                time.sleep(15)
 
                 continue
 
             print("API ERROR:", e)
 
-            time.sleep(5)
+            time.sleep(3)
 
     return None
 
@@ -97,7 +97,7 @@ def safe_api_call(func, *args, **kwargs):
 # GET DATA
 # =========================================================
 
-def get_data(sym, tf="5m", limit=200):
+def get_data(sym, tf="5m", limit=150):
 
     try:
 
@@ -193,95 +193,7 @@ def btc_filter(direction):
         return False
 
     except:
-
         return False
-
-# =========================================================
-# BEST COINS
-# =========================================================
-
-def get_best_coins():
-
-    try:
-
-        tickers = safe_api_call(
-            exchange.fetch_tickers
-        )
-
-        if not tickers:
-            return []
-
-        selected = []
-
-        for sym, data in tickers.items():
-
-            try:
-
-                if ":USDT" not in sym:
-                    continue
-
-                if any(x in sym for x in [
-                    "XAU",
-                    "XAG"
-                ]):
-                    continue
-
-                volume = (
-                    data.get(
-                        "quoteVolume",
-                        0
-                    ) or 0
-                )
-
-                if volume < 10000000:
-                    continue
-
-                df = get_data(sym)
-
-                if df is None:
-                    continue
-
-                volatility = (
-                    (
-                        df["h"].iloc[-1]
-                        - df["l"].iloc[-1]
-                    )
-                    / df["c"].iloc[-1]
-                ) * 100
-
-                if volatility < 1:
-                    continue
-
-                selected.append(
-                    (
-                        sym,
-                        volume,
-                        volatility
-                    )
-                )
-
-            except:
-                pass
-
-        selected = sorted(
-            selected,
-            key=lambda x: (
-                x[1],
-                x[2]
-            ),
-            reverse=True
-        )
-
-        return [
-            x[0]
-            for x in selected[:15]
-        ]
-
-    except Exception as e:
-
-        print("COIN SELECT ERROR:", e)
-
-        return []
 
 # =========================================================
 # ANALYZE
@@ -339,14 +251,14 @@ def analyze(sym):
 
         ):
 
-            if rsi > 74:
+            if rsi > 78:
                 return None
 
-            if volume_ratio < 1.2:
+            if volume_ratio < 1.0:
                 return None
 
             pullback = (
-                price <= ema20_5 * 1.010
+                price <= ema20_5 * 1.015
             )
 
             if not pullback:
@@ -371,14 +283,14 @@ def analyze(sym):
 
         ):
 
-            if rsi < 26:
+            if rsi < 22:
                 return None
 
             if volume_ratio < 1.0:
                 return None
 
             pullback = (
-                price >= ema20_5 * 0.990
+                price >= ema20_5 * 0.985
             )
 
             if not pullback:
@@ -580,9 +492,7 @@ def close_trade(pos, reason):
 
         print("CLOSE ERROR:", e)
 
-    # =========================
     # COOLDOWN
-    # =========================
 
     coin_cooldown[pos["sym"]] = (
         time.time() + 3600
@@ -604,7 +514,7 @@ def manage():
 
             if not bot_position:
 
-                time.sleep(5)
+                time.sleep(4)
                 continue
 
             pos = bot_position
@@ -620,7 +530,7 @@ def manage():
             price = ticker["last"]
 
             # =================================================
-            # REAL PNL USDT
+            # REAL PNL
             # =================================================
 
             if pos["type"] == "LONG":
@@ -653,7 +563,7 @@ def manage():
                 pos["max"] = pnl_usdt
 
             # =================================================
-            # TP1 / BREAKEVEN
+            # TP1
             # =================================================
 
             if pnl_usdt >= 0.45 and not pos["tp1"]:
@@ -706,7 +616,7 @@ def manage():
                     continue
 
             # =================================================
-            # STOP LOSS
+            # STOP
             # =================================================
 
             if pnl_usdt <= -0.60:
@@ -722,7 +632,7 @@ def manage():
 
             print("MANAGE ERROR:", e)
 
-        time.sleep(5)
+        time.sleep(4)
 
 # =========================================================
 # SCANNER
@@ -736,20 +646,46 @@ def scanner():
 
             if bot_position:
 
-                time.sleep(10)
+                time.sleep(5)
                 continue
 
-            coins = get_best_coins()
+            tickers = safe_api_call(
+                exchange.fetch_tickers
+            )
 
-            print("BEST COINS:", coins)
+            if not tickers:
 
-            for sym in coins:
+                time.sleep(5)
+                continue
+
+            pairs = sorted(
+                tickers.items(),
+                key=lambda x: x[1].get(
+                    "quoteVolume",
+                    0
+                ) or 0,
+                reverse=True
+            )[:20]
+
+            print(
+                "TOP VOLUME COINS:",
+                [x[0] for x in pairs]
+            )
+
+            for sym, data in pairs:
 
                 try:
 
-                    # =========================
-                    # COOLDOWN FILTER
-                    # =========================
+                    if ":USDT" not in sym:
+                        continue
+
+                    if any(x in sym for x in [
+                        "XAU",
+                        "XAG"
+                    ]):
+                        continue
+
+                    # COOLDOWN
 
                     if sym in coin_cooldown:
 
@@ -764,6 +700,8 @@ def scanner():
                         sym.replace("/", "")
                         .replace(":", "")
                     )
+
+                    # SIGNAL CACHE
 
                     if safe in signal_cache:
 
@@ -812,19 +750,19 @@ def scanner():
                         signal
                     )
 
-                    time.sleep(3)
+                    time.sleep(2)
 
                 except Exception as e:
 
                     print("PAIR ERROR:", e)
 
-            time.sleep(30)
+            time.sleep(10)
 
         except Exception as e:
 
             print("SCANNER ERROR:", e)
 
-            time.sleep(10)
+            time.sleep(5)
 
 # =========================================================
 # CALLBACK
@@ -865,7 +803,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK ULTIMATE AI BOT STARTED"
+    "🤖 SADIK FINAL ACTIVE BOT STARTED"
 )
 
 while True:
