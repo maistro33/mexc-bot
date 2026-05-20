@@ -667,7 +667,7 @@ def manage():
 
             if pos["tp1"]:
 
-                if pnl_usdt <= 0.05:
+                if pnl_usdt <= 0.20:
 
                     close_trade(
                         pos,
@@ -680,7 +680,7 @@ def manage():
             # TRAILING
             # =================================================
 
-            if pnl_usdt >= 1.00:
+            if pnl_usdt >= 0.80:
 
                 trail_gap = 0.35
 
