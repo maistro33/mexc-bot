@@ -688,25 +688,34 @@ def scanner():
             )
 
             for sym, data in pairs:
-                if any(x in sym for x in [
-
-    "BTC",
-    "ETH",
-    "BNB",
-
-    "SOL",
-    "XRP",
-    "DOGE",
-    "TON",
-    "PEPE",
-
-    "XAU",
-    "XAG"
-
-]):
-    continue
 
                 try:
+
+                    # =========================================
+                    # MINI BLACKLIST
+                    # =========================================
+
+                    if any(x in sym for x in [
+
+                        "BTC",
+                        "ETH",
+                        "BNB",
+
+                        "SOL",
+                        "XRP",
+                        "DOGE",
+                        "TON",
+                        "PEPE",
+
+                        "XAU",
+                        "XAG"
+
+                    ]):
+                        continue
+
+                    # =========================================
+                    # COOLDOWN
+                    # =========================================
 
                     if sym in coin_cooldown:
 
@@ -721,6 +730,10 @@ def scanner():
                         sym.replace("/", "")
                         .replace(":", "")
                     )
+
+                    # =========================================
+                    # SIGNAL CACHE
+                    # =========================================
 
                     if safe in signal_cache:
 
