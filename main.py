@@ -123,8 +123,6 @@ def get_data(sym, tf="5m", limit=150):
             ]
         )
 
-        # EMA
-
         df["ema20"] = df["c"].ewm(
             span=20
         ).mean()
@@ -132,8 +130,6 @@ def get_data(sym, tf="5m", limit=150):
         df["ema50"] = df["c"].ewm(
             span=50
         ).mean()
-
-        # RSI
 
         delta = df["c"].diff()
 
@@ -492,8 +488,6 @@ def close_trade(pos, reason):
 
         print("CLOSE ERROR:", e)
 
-    # COOLDOWN
-
     coin_cooldown[pos["sym"]] = (
         time.time() + 3600
     )
@@ -528,10 +522,6 @@ def manage():
                 continue
 
             price = ticker["last"]
-
-            # =================================================
-            # REAL PNL
-            # =================================================
 
             if pos["type"] == "LONG":
 
@@ -600,9 +590,9 @@ def manage():
             # TRAILING
             # =================================================
 
-            if pnl_usdt >= 1.00:
+            if pnl_usdt >= 0.80:
 
-                trail_gap = 0.35
+                trail_gap = 0.25
 
                 if pnl_usdt < (
                     pos["max"] - trail_gap
@@ -616,7 +606,7 @@ def manage():
                     continue
 
             # =================================================
-            # STOP
+            # STOP LOSS
             # =================================================
 
             if pnl_usdt <= -0.60:
@@ -659,12 +649,37 @@ def scanner():
                 continue
 
             pairs = sorted(
-                tickers.items(),
+
+                [
+
+                    x for x in tickers.items()
+
+                    if (
+
+                        ":USDT" in x[0]
+
+                        and
+
+                        15000000
+                        <= (
+                            x[1].get(
+                                "quoteVolume",
+                                0
+                            ) or 0
+                        )
+                        <= 400000000
+
+                    )
+
+                ],
+
                 key=lambda x: x[1].get(
                     "quoteVolume",
                     0
                 ) or 0,
+
                 reverse=True
+
             )[:20]
 
             print(
@@ -675,17 +690,6 @@ def scanner():
             for sym, data in pairs:
 
                 try:
-
-                    if ":USDT" not in sym:
-                        continue
-
-                    if any(x in sym for x in [
-                        "XAU",
-                        "XAG"
-                    ]):
-                        continue
-
-                    # COOLDOWN
 
                     if sym in coin_cooldown:
 
@@ -700,8 +704,6 @@ def scanner():
                         sym.replace("/", "")
                         .replace(":", "")
                     )
-
-                    # SIGNAL CACHE
 
                     if safe in signal_cache:
 
