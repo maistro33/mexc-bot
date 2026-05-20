@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK FINAL QUALITY BOT
+# SADIK FINAL FAST QUALITY BOT
 # =========================================================
 
 import ccxt
@@ -38,6 +38,7 @@ supabase = create_client(
 # =========================================================
 
 exchange = ccxt.bitget({
+
     "apiKey": os.getenv("BITGET_API"),
     "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
@@ -73,8 +74,8 @@ LAST_API_CALL = 0
 
 btc_cache = {
     "time": 0,
-    "long": False,
-    "short": False
+    "long": True,
+    "short": True
 }
 
 # =========================================================
@@ -91,7 +92,7 @@ def safe_api_call(func, *args, **kwargs):
 
             now = time.time()
 
-            wait_time = 1.3 - (now - LAST_API_CALL)
+            wait_time = 0.8 - (now - LAST_API_CALL)
 
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -105,12 +106,14 @@ def safe_api_call(func, *args, **kwargs):
             if "429" in str(e):
 
                 print("429 RATE LIMIT")
-                time.sleep(15)
+
+                time.sleep(10)
+
                 continue
 
             print("API ERROR:", e)
 
-            time.sleep(3)
+            time.sleep(2)
 
     return None
 
@@ -183,7 +186,14 @@ def get_data(sym):
 
         df = pd.DataFrame(
             ohlcv,
-            columns=["t", "o", "h", "l", "c", "v"]
+            columns=[
+                "t",
+                "o",
+                "h",
+                "l",
+                "c",
+                "v"
+            ]
         )
 
         df["ema20"] = df["c"].ewm(
@@ -218,21 +228,20 @@ def btc_filter(signal):
 
             df = get_data("BTC/USDT:USDT")
 
-            if df is None:
-                return True
+            if df is not None:
 
-            price = df["c"].iloc[-1]
+                price = df["c"].iloc[-1]
 
-            ema20 = df["ema20"].iloc[-1]
-            ema50 = df["ema50"].iloc[-1]
+                ema20 = df["ema20"].iloc[-1]
+                ema50 = df["ema50"].iloc[-1]
 
-            btc_cache["long"] = (
-                price > ema20 > ema50
-            )
+                btc_cache["long"] = (
+                    price > ema20 > ema50
+                )
 
-            btc_cache["short"] = (
-                price < ema20 < ema50
-            )
+                btc_cache["short"] = (
+                    price < ema20 < ema50
+                )
 
             btc_cache["time"] = now
 
@@ -315,7 +324,7 @@ def analyze(df, sym):
             / avg_vol
         )
 
-        if volume_ratio < 1.15:
+        if volume_ratio < 1.10:
             return None, 0, "LOW VOLUME"
 
         recent_move = abs(
@@ -457,11 +466,6 @@ def open_trade(data, is_manual=False):
 
         if not order:
 
-            bot.send_message(
-                CHAT_ID,
-                f"❌ ORDER FAILED\n{data['sym']}"
-            )
-
             lock = False
             return
 
@@ -534,6 +538,8 @@ def close_trade(pos, reason, is_manual=False):
             pos["sym"]
         )
 
+        pnl = 0
+
         if ticker:
 
             current_price = ticker["last"]
@@ -558,9 +564,6 @@ def close_trade(pos, reason, is_manual=False):
                 MARGIN * LEVERAGE
             )
 
-        else:
-            pnl = 0
-
         bot.send_message(
             CHAT_ID,
             f"""
@@ -577,9 +580,15 @@ def close_trade(pos, reason, is_manual=False):
 
         print("CLOSE ERROR:", e)
 
+    # =====================================================
+    # 1 SAAT YASAK
+    # =====================================================
+
     coin_cooldown[pos["sym"]] = (
         time.time() + 3600
     )
+
+    last_direction[pos["sym"]] = pos["type"]
 
     if is_manual:
 
@@ -751,10 +760,6 @@ def scanner():
 
         try:
 
-            if bot_position:
-                time.sleep(5)
-                continue
-
             tickers = safe_api_call(
                 exchange.fetch_tickers
             )
@@ -763,6 +768,10 @@ def scanner():
 
                 time.sleep(5)
                 continue
+
+            # =====================================================
+            # ESKI COINLER TAM FILTRE
+            # =====================================================
 
             pairs = sorted(
 
@@ -776,7 +785,26 @@ def scanner():
 
                         and
 
-                        10000000
+                        not any(bad in x[0] for bad in [
+
+                            "BTC",
+                            "ETH",
+                            "BNB",
+
+                            "SOL",
+                            "XRP",
+                            "DOGE",
+                            "TON",
+                            "PEPE",
+
+                            "XAU",
+                            "XAG"
+
+                        ])
+
+                        and
+
+                        5000000
                         <= (
                             x[1].get(
                                 "quoteVolume",
@@ -796,7 +824,7 @@ def scanner():
 
                 reverse=True
 
-            )[:10]
+            )[:100]
 
             print(
                 "TOP COINS:",
@@ -807,28 +835,14 @@ def scanner():
 
                 try:
 
-                    if any(x in sym for x in [
-
-                        "BTC",
-                        "ETH",
-                        "BNB",
-
-                        "SOL",
-                        "XRP",
-                        "DOGE",
-                        "TON",
-                        "PEPE",
-
-                        "XAU",
-                        "XAG"
-
-                    ]):
-                        continue
-
                     if sym in coin_cooldown:
 
                         if time.time() < coin_cooldown[sym]:
                             continue
+
+                    if last_direction.get(sym):
+
+                        continue
 
                     safe = (
                         sym.replace("/", "")
@@ -842,7 +856,7 @@ def scanner():
                             0
                         )
 
-                        if time.time() - old < 1200:
+                        if time.time() - old < 3600:
                             continue
 
                     df = get_data(sym)
@@ -856,9 +870,6 @@ def scanner():
                     )
 
                     if sig is None:
-                        continue
-
-                    if last_direction.get(sym) == sig:
                         continue
 
                     price = df["c"].iloc[-1]
@@ -894,19 +905,27 @@ def scanner():
                         reply_markup=markup
                     )
 
-                    if score >= 92:
+                    # =================================================
+                    # AUTO OPEN
+                    # =================================================
+
+                    if (
+                        score >= 92
+                        and
+                        not bot_position
+                    ):
 
                         open_trade(
                             signal_cache[safe]
                         )
 
-                    time.sleep(2.5)
+                    time.sleep(0.5)
 
                 except Exception as e:
 
                     print("PAIR ERROR:", e)
 
-            time.sleep(12)
+            time.sleep(8)
 
         except Exception as e:
 
@@ -946,7 +965,7 @@ def callback(call):
 
 threading.Thread(
     target=scanner,
-    daemon=True
+   daemon=True
 ).start()
 
 threading.Thread(
@@ -956,7 +975,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK FINAL QUALITY BOT STARTED"
+    "🤖 SADIK FINAL FAST QUALITY BOT STARTED"
 )
 
 while True:
