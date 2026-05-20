@@ -734,6 +734,10 @@ def scanner():
             print("BEST COINS:", coins)
 
             for sym in coins:
+                if sym in coin_cooldown:
+
+    if time.time() < coin_cooldown[sym]:
+        continue
 
                 try:
 
@@ -788,6 +792,7 @@ def scanner():
                         sym,
                         signal
                     )
+                    coin_cooldown[sym] = time.time() + 3600
 
                     time.sleep(3)
 
