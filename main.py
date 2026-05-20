@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK BOT FINAL PROTECTED VERSION
+# SADIK ULTIMATE AI BOT FINAL VERSION
 # =========================================================
 
 import ccxt
@@ -51,6 +51,8 @@ bot_position = None
 LAST_API_CALL = 0
 
 signal_cache = {}
+
+coin_cooldown = {}
 
 # =========================================================
 # API SAFE
@@ -195,7 +197,7 @@ def btc_filter(direction):
         return False
 
 # =========================================================
-# DYNAMIC COIN SELECTOR
+# BEST COINS
 # =========================================================
 
 def get_best_coins():
@@ -578,6 +580,14 @@ def close_trade(pos, reason):
 
         print("CLOSE ERROR:", e)
 
+    # =========================
+    # COOLDOWN
+    # =========================
+
+    coin_cooldown[pos["sym"]] = (
+        time.time() + 3600
+    )
+
     bot_position = None
 
 # =========================================================
@@ -610,7 +620,7 @@ def manage():
             price = ticker["last"]
 
             # =================================================
-            # REAL USDT PNL
+            # REAL PNL USDT
             # =================================================
 
             if pos["type"] == "LONG":
@@ -662,7 +672,7 @@ def manage():
                 )
 
             # =================================================
-            # BREAKEVEN PROTECTION
+            # PROFIT LOCK
             # =================================================
 
             if pos["tp1"]:
@@ -671,7 +681,7 @@ def manage():
 
                     close_trade(
                         pos,
-                        "BREAKEVEN"
+                        "PROFIT LOCK"
                     )
 
                     continue
@@ -680,7 +690,7 @@ def manage():
             # TRAILING
             # =================================================
 
-            if pnl_usdt >= 0.80:
+            if pnl_usdt >= 1.00:
 
                 trail_gap = 0.35
 
@@ -734,12 +744,21 @@ def scanner():
             print("BEST COINS:", coins)
 
             for sym in coins:
-                if sym in coin_cooldown:
-
-    if time.time() < coin_cooldown[sym]:
-        continue
 
                 try:
+
+                    # =========================
+                    # COOLDOWN FILTER
+                    # =========================
+
+                    if sym in coin_cooldown:
+
+                        if (
+                            time.time()
+                            < coin_cooldown[sym]
+                        ):
+
+                            continue
 
                     safe = (
                         sym.replace("/", "")
@@ -792,7 +811,6 @@ def scanner():
                         sym,
                         signal
                     )
-                    coin_cooldown[sym] = time.time() + 3600
 
                     time.sleep(3)
 
@@ -847,7 +865,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK FINAL PROTECTED BOT STARTED"
+    "🤖 SADIK ULTIMATE AI BOT STARTED"
 )
 
 while True:
