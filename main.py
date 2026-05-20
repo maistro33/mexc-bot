@@ -688,6 +688,23 @@ def scanner():
             )
 
             for sym, data in pairs:
+                if any(x in sym for x in [
+
+    "BTC",
+    "ETH",
+    "BNB",
+
+    "SOL",
+    "XRP",
+    "DOGE",
+    "TON",
+    "PEPE",
+
+    "XAU",
+    "XAG"
+
+]):
+    continue
 
                 try:
 
