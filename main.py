@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK BOT DYNAMIC AI FINAL VERSION
+# SADIK BOT FINAL PROTECTED VERSION
 # =========================================================
 
 import ccxt
@@ -219,14 +219,6 @@ def get_best_coins():
                     continue
 
                 if any(x in sym for x in [
-                    "BTC",
-                    "ETH",
-                    "BNB",
-                    "XRP",
-                    "SOL",
-                    "DOGE",
-                    "ADA",
-                    "TRX",
                     "XAU",
                     "XAG"
                 ]):
@@ -617,9 +609,13 @@ def manage():
 
             price = ticker["last"]
 
+            # =================================================
+            # REAL USDT PNL
+            # =================================================
+
             if pos["type"] == "LONG":
 
-                pnl = (
+                pnl_percent = (
                     (
                         price
                         - pos["entry"]
@@ -629,7 +625,7 @@ def manage():
 
             else:
 
-                pnl = (
+                pnl_percent = (
                     (
                         pos["entry"]
                         - price
@@ -637,45 +633,80 @@ def manage():
                     / pos["entry"]
                 ) * 100
 
-            if pnl > pos["max"]:
-                pos["max"] = pnl
+            pnl_usdt = (
+                pnl_percent / 100
+            ) * (
+                MARGIN * LEVERAGE
+            )
 
-            # TP1
+            if pnl_usdt > pos["max"]:
+                pos["max"] = pnl_usdt
 
-            if (
-                pnl >= 0.7
-                and
-                not pos["tp1"]
-            ):
+            # =================================================
+            # TP1 / BREAKEVEN
+            # =================================================
+
+            if pnl_usdt >= 0.45 and not pos["tp1"]:
 
                 pos["tp1"] = True
 
                 bot.send_message(
                     CHAT_ID,
-                    f"✅ TP1 HIT\n{pos['sym']}"
+                    f"""
+✅ BREAKEVEN AKTIF
+
+📊 {pos['sym']}
+
+💰 PROFIT: {round(pnl_usdt,2)} USDT
+"""
                 )
 
-            # TRAIL
+            # =================================================
+            # BREAKEVEN PROTECTION
+            # =================================================
 
-            if pnl >= 1.2:
+            if pos["tp1"]:
 
-                if pnl < (
-                    pos["max"] - 0.4
+                if pnl_usdt <= 0.05:
+
+                    close_trade(
+                        pos,
+                        "BREAKEVEN"
+                    )
+
+                    continue
+
+            # =================================================
+            # TRAILING
+            # =================================================
+
+            if pnl_usdt >= 1.00:
+
+                trail_gap = 0.35
+
+                if pnl_usdt < (
+                    pos["max"] - trail_gap
                 ):
 
                     close_trade(
                         pos,
-                        "TRAIL"
+                        "TRAILING TAKE PROFIT"
                     )
 
-            # STOP
+                    continue
 
-            if pnl <= -0.8:
+            # =================================================
+            # STOP LOSS
+            # =================================================
+
+            if pnl_usdt <= -0.60:
 
                 close_trade(
                     pos,
                     "STOP LOSS"
                 )
+
+                continue
 
         except Exception as e:
 
@@ -811,7 +842,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK DYNAMIC AI BOT STARTED"
+    "🤖 SADIK FINAL PROTECTED BOT STARTED"
 )
 
 while True:
