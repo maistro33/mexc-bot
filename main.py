@@ -346,7 +346,7 @@ def analyze(sym):
                 return None
 
             pullback = (
-                price <= ema20_5 * 1.003
+                price <= ema20_5 * 1.008
             )
 
             if not pullback:
@@ -378,7 +378,7 @@ def analyze(sym):
                 return None
 
             pullback = (
-                price >= ema20_5 * 0.997
+                price >= ema20_5 * 0.992
             )
 
             if not pullback:
