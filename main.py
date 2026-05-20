@@ -346,7 +346,7 @@ def analyze(sym):
                 return None
 
             pullback = (
-                price <= ema20_5 * 1.008
+                price <= ema20_5 * 1.010
             )
 
             if not pullback:
@@ -374,11 +374,11 @@ def analyze(sym):
             if rsi < 26:
                 return None
 
-            if volume_ratio < 1.2:
+            if volume_ratio < 1.0:
                 return None
 
             pullback = (
-                price >= ema20_5 * 0.992
+                price >= ema20_5 * 0.990
             )
 
             if not pullback:
