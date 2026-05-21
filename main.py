@@ -580,10 +580,6 @@ def close_trade(pos, reason, is_manual=False):
 
         print("CLOSE ERROR:", e)
 
-    # =====================================================
-    # 1 SAAT YASAK
-    # =====================================================
-
     coin_cooldown[pos["sym"]] = (
         time.time() + 3600
     )
@@ -690,43 +686,48 @@ def manage():
                     )
 
                 # =================================================
-                # PROFIT LOCK
+                # SMART PROFIT LOCK
                 # =================================================
 
-                if pos["tp1"]:
+                if pos["max"] >= 0.45 and pnl <= 0.20:
 
-                    if pnl <= 0.20:
-
-                        close_trade(
-                            pos,
-                            "PROFIT LOCK",
-                            is_manual
-                        )
-
-                        continue
-
-                # =================================================
-                # TRAILING
-                # =================================================
-
-                if pnl >= 0.80:
-
-                    trail_gap = max(
-                        0.25,
-                        pos["max"] * 0.40
+                    close_trade(
+                        pos,
+                        "PROFIT LOCK 1",
+                        is_manual
                     )
 
-                    if pnl < (
-                        pos["max"] - trail_gap
-                    ):
+                    continue
 
-                        close_trade(
-                            pos,
-                            "TRAILING",
-                            is_manual
-                        )
+                elif pos["max"] >= 0.80 and pnl <= 0.50:
 
-                        continue
+                    close_trade(
+                        pos,
+                        "PROFIT LOCK 2",
+                        is_manual
+                    )
+
+                    continue
+
+                elif pos["max"] >= 1.20 and pnl <= 0.90:
+
+                    close_trade(
+                        pos,
+                        "PROFIT LOCK 3",
+                        is_manual
+                    )
+
+                    continue
+
+                elif pos["max"] >= 1.80 and pnl <= 1.40:
+
+                    close_trade(
+                        pos,
+                        "PROFIT LOCK 4",
+                        is_manual
+                    )
+
+                    continue
 
                 # =================================================
                 # STOP LOSS
@@ -769,10 +770,6 @@ def scanner():
                 time.sleep(5)
                 continue
 
-            # =====================================================
-            # ESKI COINLER TAM FILTRE
-            # =====================================================
-
             pairs = sorted(
 
                 [
@@ -790,13 +787,11 @@ def scanner():
                             "BTC",
                             "ETH",
                             "BNB",
-
                             "SOL",
                             "XRP",
                             "DOGE",
                             "TON",
                             "PEPE",
-
                             "XAU",
                             "XAG"
 
@@ -840,10 +835,6 @@ def scanner():
                         if time.time() < coin_cooldown[sym]:
                             continue
 
-                    if last_direction.get(sym):
-
-                        continue
-
                     safe = (
                         sym.replace("/", "")
                         .replace(":", "")
@@ -872,11 +863,9 @@ def scanner():
                     if sig is None:
                         continue
 
-                    price = df["c"].iloc[-1]
-
                     signal_cache[safe] = {
                         "sym": sym,
-                        "price": price,
+                        "price": df["c"].iloc[-1],
                         "signal": sig,
                         "signal_time": time.time()
                     }
@@ -904,10 +893,6 @@ def scanner():
 """,
                         reply_markup=markup
                     )
-
-                    # =================================================
-                    # AUTO OPEN
-                    # =================================================
 
                     if (
                         score >= 92
@@ -965,7 +950,7 @@ def callback(call):
 
 threading.Thread(
     target=scanner,
-   daemon=True
+    daemon=True
 ).start()
 
 threading.Thread(
