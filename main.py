@@ -58,7 +58,7 @@ exchange = ccxt.bitget({
 # =========================================================
 
 MARGIN = 3
-LEVERAGE = 10
+LEVERAGE = 20
 
 bot_position = None
 manual_positions = []
