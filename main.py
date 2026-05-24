@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK FINAL FAST QUALITY BOT
+# SADIK PRO HYBRID AI BOT
 # =========================================================
 
 import ccxt
@@ -65,8 +65,6 @@ manual_positions = []
 
 signal_cache = {}
 coin_cooldown = {}
-loss_streak = {}
-last_direction = {}
 
 lock = False
 
@@ -116,6 +114,26 @@ def safe_api_call(func, *args, **kwargs):
             time.sleep(2)
 
     return None
+
+# =========================================================
+# RSI
+# =========================================================
+
+def calculate_rsi(series, period=14):
+
+    delta = series.diff()
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
 
 # =========================================================
 # ADX
@@ -170,14 +188,14 @@ def calculate_adx(df, period=14):
 # GET DATA
 # =========================================================
 
-def get_data(sym):
+def get_data(sym, timeframe="5m"):
 
     try:
 
         ohlcv = safe_api_call(
             exchange.fetch_ohlcv,
             sym,
-            timeframe="5m",
+            timeframe=timeframe,
             limit=120
         )
 
@@ -204,6 +222,10 @@ def get_data(sym):
             span=50
         ).mean()
 
+        df["rsi"] = calculate_rsi(
+            df["c"]
+        )
+
         return df
 
     except Exception as e:
@@ -226,7 +248,10 @@ def btc_filter(signal):
 
         if now - btc_cache["time"] > 60:
 
-            df = get_data("BTC/USDT:USDT")
+            df = get_data(
+                "BTC/USDT:USDT",
+                "15m"
+            )
 
             if df is not None:
 
@@ -299,15 +324,28 @@ def analyze(df, sym):
 
     try:
 
+        df15 = get_data(
+            sym,
+            "15m"
+        )
+
+        if df15 is None:
+            return None, 0, "NO 15M"
+
         price = df["c"].iloc[-1]
 
         ema20 = df["ema20"].iloc[-1]
         ema50 = df["ema50"].iloc[-1]
 
+        ema20_15 = df15["ema20"].iloc[-1]
+        ema50_15 = df15["ema50"].iloc[-1]
+
+        rsi = df["rsi"].iloc[-1]
+
         adx = calculate_adx(df)
 
-        if adx < 18:
-            return None, 0, "CHOP"
+        if adx < 15:
+            return None, 0, "WEAK TREND"
 
         avg_vol = (
             df["v"]
@@ -324,61 +362,73 @@ def analyze(df, sym):
             / avg_vol
         )
 
-        if volume_ratio < 1.10:
+        if volume_ratio < 1.20:
             return None, 0, "LOW VOLUME"
 
         recent_move = abs(
             price - df["c"].iloc[-4]
         ) / df["c"].iloc[-4]
 
-        if recent_move > 0.03:
-            return None, 0, "PUMP"
+        if recent_move > 0.04:
+            return None, 0, "PUMP DETECTED"
 
         # =====================================================
         # LONG
         # =====================================================
 
-        if ema20 > ema50:
+        if ema20 > ema50 and ema20_15 > ema50_15:
 
             if not btc_filter("LONG"):
                 return None, 0, "BTC FILTER"
 
+            if rsi >= 70:
+                return None, 0, "RSI HIGH"
+
             pullback_ok = (
-                price <= ema20 * 1.008
+                price <= ema20 * 1.012
             )
 
             if not pullback_ok:
                 return None, 0, "NO PULLBACK"
 
-            score = 90
+            score = 92
 
             if adx > 25:
                 score += 2
 
-            return "LONG", score, "PULLBACK LONG"
+            if volume_ratio > 1.50:
+                score += 2
+
+            return "LONG", score, "AI LONG"
 
         # =====================================================
         # SHORT
         # =====================================================
 
-        if ema20 < ema50:
+        if ema20 < ema50 and ema20_15 < ema50_15:
 
             if not btc_filter("SHORT"):
                 return None, 0, "BTC FILTER"
 
+            if rsi <= 30:
+                return None, 0, "RSI LOW"
+
             pullback_ok = (
-                price >= ema20 * 0.992
+                price >= ema20 * 0.988
             )
 
             if not pullback_ok:
                 return None, 0, "NO PULLBACK"
 
-            score = 90
+            score = 92
 
             if adx > 25:
                 score += 2
 
-            return "SHORT", score, "PULLBACK SHORT"
+            if volume_ratio > 1.50:
+                score += 2
+
+            return "SHORT", score, "AI SHORT"
 
         return None, 0, "NO TREND"
 
@@ -583,8 +633,6 @@ def close_trade(pos, reason, is_manual=False):
     coin_cooldown[pos["sym"]] = (
         time.time() + 3600
     )
-
-    last_direction[pos["sym"]] = pos["type"]
 
     if is_manual:
 
@@ -799,7 +847,7 @@ def scanner():
 
                         and
 
-                        5000000
+                        10000000
                         <= (
                             x[1].get(
                                 "quoteVolume",
@@ -882,7 +930,7 @@ def scanner():
                     bot.send_message(
                         CHAT_ID,
                         f"""
-💀 SIGNAL
+💀 AI SIGNAL
 
 📊 {sym}
 📈 {sig}
@@ -894,8 +942,12 @@ def scanner():
                         reply_markup=markup
                     )
 
+                    # =================================================
+                    # SMART AUTO TRADE
+                    # =================================================
+
                     if (
-                        score >= 92
+                        score >= 94
                         and
                         not bot_position
                     ):
@@ -960,7 +1012,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK FINAL FAST QUALITY BOT STARTED"
+    "🤖 SADIK PRO HYBRID AI BOT STARTED"
 )
 
 while True:
