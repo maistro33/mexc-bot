@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK PRO HYBRID AI BOT
+# SADIK TREND MASTER AI BOT
 # =========================================================
 
 import ccxt
@@ -58,7 +58,7 @@ exchange = ccxt.bitget({
 # =========================================================
 
 MARGIN = 3
-LEVERAGE = 10
+LEVERAGE = 5
 
 bot_position = None
 manual_positions = []
@@ -90,7 +90,7 @@ def safe_api_call(func, *args, **kwargs):
 
             now = time.time()
 
-            wait_time = 0.8 - (now - LAST_API_CALL)
+            wait_time = 0.7 - (now - LAST_API_CALL)
 
             if wait_time > 0:
                 time.sleep(wait_time)
@@ -188,7 +188,7 @@ def calculate_adx(df, period=14):
 # GET DATA
 # =========================================================
 
-def get_data(sym, timeframe="5m"):
+def get_data(sym, timeframe="15m"):
 
     try:
 
@@ -196,7 +196,7 @@ def get_data(sym, timeframe="5m"):
             exchange.fetch_ohlcv,
             sym,
             timeframe=timeframe,
-            limit=120
+            limit=150
         )
 
         if not ohlcv:
@@ -222,6 +222,10 @@ def get_data(sym, timeframe="5m"):
             span=50
         ).mean()
 
+        df["ema100"] = df["c"].ewm(
+            span=100
+        ).mean()
+
         df["rsi"] = calculate_rsi(
             df["c"]
         )
@@ -235,7 +239,7 @@ def get_data(sym, timeframe="5m"):
         return None
 
 # =========================================================
-# BTC FILTER CACHE
+# BTC FILTER
 # =========================================================
 
 def btc_filter(signal):
@@ -246,11 +250,11 @@ def btc_filter(signal):
 
         now = time.time()
 
-        if now - btc_cache["time"] > 60:
+        if now - btc_cache["time"] > 120:
 
             df = get_data(
                 "BTC/USDT:USDT",
-                "15m"
+                "1h"
             )
 
             if df is not None:
@@ -324,27 +328,28 @@ def analyze(df, sym):
 
     try:
 
-        df15 = get_data(
+        df1h = get_data(
             sym,
-            "15m"
+            "1h"
         )
 
-        if df15 is None:
-            return None, 0, "NO 15M"
+        if df1h is None:
+            return None, 0, "NO 1H"
 
         price = df["c"].iloc[-1]
 
         ema20 = df["ema20"].iloc[-1]
         ema50 = df["ema50"].iloc[-1]
+        ema100 = df["ema100"].iloc[-1]
 
-        ema20_15 = df15["ema20"].iloc[-1]
-        ema50_15 = df15["ema50"].iloc[-1]
+        ema20_1h = df1h["ema20"].iloc[-1]
+        ema50_1h = df1h["ema50"].iloc[-1]
 
         rsi = df["rsi"].iloc[-1]
 
         adx = calculate_adx(df)
 
-        if adx < 15:
+        if adx < 20:
             return None, 0, "WEAK TREND"
 
         avg_vol = (
@@ -362,73 +367,89 @@ def analyze(df, sym):
             / avg_vol
         )
 
-        if volume_ratio < 1.20:
+        if volume_ratio < 1.40:
             return None, 0, "LOW VOLUME"
 
         recent_move = abs(
-            price - df["c"].iloc[-4]
-        ) / df["c"].iloc[-4]
+            price - df["c"].iloc[-5]
+        ) / df["c"].iloc[-5]
 
-        if recent_move > 0.04:
-            return None, 0, "PUMP DETECTED"
+        if recent_move > 0.05:
+            return None, 0, "FAKE PUMP"
 
         # =====================================================
         # LONG
         # =====================================================
 
-        if ema20 > ema50 and ema20_15 > ema50_15:
+        if (
+
+            ema20 > ema50 > ema100
+
+            and
+
+            ema20_1h > ema50_1h
+
+        ):
 
             if not btc_filter("LONG"):
                 return None, 0, "BTC FILTER"
 
-            if rsi >= 70:
+            if rsi >= 68:
                 return None, 0, "RSI HIGH"
 
             pullback_ok = (
-                price <= ema20 * 1.012
+                price <= ema20 * 1.015
             )
 
             if not pullback_ok:
                 return None, 0, "NO PULLBACK"
 
-            score = 92
+            score = 94
 
-            if adx > 25:
+            if adx > 28:
                 score += 2
 
-            if volume_ratio > 1.50:
+            if volume_ratio > 1.80:
                 score += 2
 
-            return "LONG", score, "AI LONG"
+            return "LONG", score, "TREND LONG"
 
         # =====================================================
         # SHORT
         # =====================================================
 
-        if ema20 < ema50 and ema20_15 < ema50_15:
+        if (
+
+            ema20 < ema50 < ema100
+
+            and
+
+            ema20_1h < ema50_1h
+
+        ):
 
             if not btc_filter("SHORT"):
                 return None, 0, "BTC FILTER"
 
-            if rsi <= 30:
+            if rsi <= 32:
                 return None, 0, "RSI LOW"
 
             pullback_ok = (
-                price >= ema20 * 0.988
+                price >= ema20 * 0.985
             )
 
             if not pullback_ok:
                 return None, 0, "NO PULLBACK"
 
-            score = 92
+            score = 94
 
-            if adx > 25:
+            if adx > 28:
                 score += 2
 
-            if volume_ratio > 1.50:
+            if volume_ratio > 1.80:
                 score += 2
 
-            return "SHORT", score, "AI SHORT"
+            return "SHORT", score, "TREND SHORT"
 
         return None, 0, "NO TREND"
 
@@ -631,7 +652,7 @@ def close_trade(pos, reason, is_manual=False):
         print("CLOSE ERROR:", e)
 
     coin_cooldown[pos["sym"]] = (
-        time.time() + 3600
+        time.time() + 7200
     )
 
     if is_manual:
@@ -717,7 +738,7 @@ def manage():
                 # TP1
                 # =================================================
 
-                if pnl >= 0.45 and not pos["tp1"]:
+                if pnl >= 0.80 and not pos["tp1"]:
 
                     pos["tp1"] = True
 
@@ -734,44 +755,44 @@ def manage():
                     )
 
                 # =================================================
-                # SMART PROFIT LOCK
+                # SMART TREND PROFIT LOCK
                 # =================================================
 
-                if pos["max"] >= 0.45 and pnl <= 0.20:
+                if pos["max"] >= 0.80 and pnl <= 0.45:
 
                     close_trade(
                         pos,
-                        "PROFIT LOCK 1",
+                        "LOCK 1",
                         is_manual
                     )
 
                     continue
 
-                elif pos["max"] >= 0.80 and pnl <= 0.50:
+                elif pos["max"] >= 1.50 and pnl <= 1.00:
 
                     close_trade(
                         pos,
-                        "PROFIT LOCK 2",
+                        "LOCK 2",
                         is_manual
                     )
 
                     continue
 
-                elif pos["max"] >= 1.20 and pnl <= 0.90:
+                elif pos["max"] >= 2.50 and pnl <= 1.80:
 
                     close_trade(
                         pos,
-                        "PROFIT LOCK 3",
+                        "LOCK 3",
                         is_manual
                     )
 
                     continue
 
-                elif pos["max"] >= 1.80 and pnl <= 1.40:
+                elif pos["max"] >= 4.00 and pnl <= 3.00:
 
                     close_trade(
                         pos,
-                        "PROFIT LOCK 4",
+                        "LOCK 4",
                         is_manual
                     )
 
@@ -781,7 +802,7 @@ def manage():
                 # STOP LOSS
                 # =================================================
 
-                if pnl <= -0.60:
+                if pnl <= -0.70:
 
                     close_trade(
                         pos,
@@ -847,7 +868,7 @@ def scanner():
 
                         and
 
-                        10000000
+                        15000000
                         <= (
                             x[1].get(
                                 "quoteVolume",
@@ -867,7 +888,7 @@ def scanner():
 
                 reverse=True
 
-            )[:100]
+            )[:80]
 
             print(
                 "TOP COINS:",
@@ -895,10 +916,13 @@ def scanner():
                             0
                         )
 
-                        if time.time() - old < 3600:
+                        if time.time() - old < 7200:
                             continue
 
-                    df = get_data(sym)
+                    df = get_data(
+                        sym,
+                        "15m"
+                    )
 
                     if df is None:
                         continue
@@ -930,7 +954,7 @@ def scanner():
                     bot.send_message(
                         CHAT_ID,
                         f"""
-💀 AI SIGNAL
+💀 TREND SIGNAL
 
 📊 {sym}
 📈 {sig}
@@ -942,12 +966,8 @@ def scanner():
                         reply_markup=markup
                     )
 
-                    # =================================================
-                    # SMART AUTO TRADE
-                    # =================================================
-
                     if (
-                        score >= 94
+                        score >= 96
                         and
                         not bot_position
                     ):
@@ -956,13 +976,13 @@ def scanner():
                             signal_cache[safe]
                         )
 
-                    time.sleep(0.5)
+                    time.sleep(1)
 
                 except Exception as e:
 
                     print("PAIR ERROR:", e)
 
-            time.sleep(8)
+            time.sleep(15)
 
         except Exception as e:
 
@@ -1012,7 +1032,7 @@ threading.Thread(
 
 bot.send_message(
     CHAT_ID,
-    "🤖 SADIK PRO HYBRID AI BOT STARTED"
+    "🤖 SADIK TREND MASTER AI BOT STARTED"
 )
 
 while True:
