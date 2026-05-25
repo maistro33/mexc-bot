@@ -1,5 +1,6 @@
 ccxt
-pandas
 pyTelegramBotAPI
-websocket-client
+pandas
+numpy
 supabase
+scikit-learn
