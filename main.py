@@ -387,17 +387,33 @@ def analyze(df):
 
         ]]
 
-        prediction = ai_model.predict(
-            features
-        )[0]
+features_df = pd.DataFrame(
 
-        probability = max(
+    features,
 
-            ai_model.predict_proba(
-                features
-            )[0]
+    columns=[
 
-        ) * 100
+        "momentum",
+        "volume_ratio",
+        "volatility",
+        "move_1",
+        "move_3"
+
+    ]
+
+)
+
+prediction = ai_model.predict(
+    features_df
+)[0]
+
+probability = max(
+
+    ai_model.predict_proba(
+        features_df
+    )[0]
+
+) * 100
 
         if probability < 75:
             return None
