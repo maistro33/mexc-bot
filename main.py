@@ -56,8 +56,8 @@ exchange = ccxt.bitget({
 # SETTINGS
 # =========================================================
 
-MARGIN = 2
-LEVERAGE = 20
+MARGIN = 1
+LEVERAGE = 30
 
 bot_position = None
 
@@ -387,33 +387,17 @@ def analyze(df):
 
         ]]
 
-features_df = pd.DataFrame(
+        prediction = ai_model.predict(
+            features
+        )[0]
 
-    features,
+        probability = max(
 
-    columns=[
+            ai_model.predict_proba(
+                features
+            )[0]
 
-        "momentum",
-        "volume_ratio",
-        "volatility",
-        "move_1",
-        "move_3"
-
-    ]
-
-)
-
-prediction = ai_model.predict(
-    features_df
-)[0]
-
-probability = max(
-
-    ai_model.predict_proba(
-        features_df
-    )[0]
-
-) * 100
+        ) * 100
 
         if probability < 75:
             return None
@@ -973,7 +957,7 @@ def manage():
 
             if (
 
-                max_pnl >= 1.050
+                max_pnl >= 1.50
 
                 and
 
