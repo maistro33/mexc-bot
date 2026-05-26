@@ -1108,7 +1108,7 @@ def scanner():
 
                 try:
 
-                    if bot_position:
+                    if False:
                         break
 
                     if sym in coin_cooldown:
