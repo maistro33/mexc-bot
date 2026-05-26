@@ -1186,7 +1186,7 @@ def scanner():
                     # REAL AI AUTO ENTRY
                     # =========================================
 
-                    if result["score"] >= 80:
+                    if result["score"] >= 70:
 
                         open_trade({
 
