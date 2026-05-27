@@ -957,11 +957,11 @@ def manage():
 
             if (
 
-                max_pnl >= 1.50
+                max_pnl >= 0.60
 
                 and
 
-                pnl <= 0.80
+                pnl <= 0.25
 
             ):
 
