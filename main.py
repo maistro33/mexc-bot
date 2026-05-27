@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK BTC AI SCALPER
+# SADIK BTC SCALP AI PRO
 # =========================================================
 
 import ccxt
@@ -59,11 +59,23 @@ exchange = ccxt.bitget({
 
 SYMBOL = "BTC/USDT:USDT"
 
-TIMEFRAME = "5m"
+TIMEFRAME = "1m"
+
+TREND_TIMEFRAME = "5m"
 
 MARGIN = 1
 
 LEVERAGE = 20
+
+TP1_USDT = 0.30
+
+TRAIL_TRIGGER = 0.50
+
+TRAIL_STOP = 0.20
+
+STOP_LOSS = -0.45
+
+MEGA_TP = 1.50
 
 bot_position = None
 
@@ -87,7 +99,7 @@ def safe_api_call(func, *args, **kwargs):
 
             now = time.time()
 
-            wait = 0.5 - (
+            wait = 0.3 - (
                 now - LAST_API_CALL
             )
 
@@ -190,14 +202,6 @@ def train_ai():
 
             print("NOT ENOUGH AI DATA")
 
-            bot.send_message(
-
-                CHAT_ID,
-
-                "⚠️ AI için minimum 50 kapanmış trade gerekli"
-
-            )
-
             return
 
         X = df[[
@@ -226,7 +230,7 @@ def train_ai():
 
         ai_model = model
 
-        print("BTC AI TRAINED")
+        print("AI TRAINED")
 
     except Exception as e:
 
@@ -236,7 +240,7 @@ def train_ai():
 # GET DATA
 # =========================================================
 
-def get_data():
+def get_data(tf="1m"):
 
     try:
 
@@ -246,7 +250,7 @@ def get_data():
 
             SYMBOL,
 
-            timeframe=TIMEFRAME,
+            timeframe=tf,
 
             limit=120
 
@@ -281,144 +285,182 @@ def get_data():
         return None
 
 # =========================================================
-# AI ANALYZE
+# ANALYZE
 # =========================================================
 
-def analyze(df):
+def analyze():
 
     global ai_model
 
     try:
 
-        if ai_model is None:
+        df = get_data(TIMEFRAME)
+
+        trend_df = get_data(TREND_TIMEFRAME)
+
+        if df is None or trend_df is None:
             return None
 
         closes = df["c"]
         volumes = df["v"]
 
+        trend_closes = trend_df["c"]
+
+        ema9 = closes.ewm(span=9).mean()
+
+        ema20 = closes.ewm(span=20).mean()
+
+        trend_ema20 = trend_closes.ewm(span=20).mean()
+
         price = closes.iloc[-1]
 
         move_1 = (
+
             (
                 closes.iloc[-1]
                 -
                 closes.iloc[-2]
             )
+
             /
+
             closes.iloc[-2]
+
         ) * 100
 
         move_3 = (
+
             (
                 closes.iloc[-1]
                 -
                 closes.iloc[-4]
             )
-            /
-            closes.iloc[-4]
-        ) * 100
 
-        move_5 = (
-            (
-                closes.iloc[-1]
-                -
-                closes.iloc[-6]
-            )
             /
-            closes.iloc[-6]
+
+            closes.iloc[-4]
+
         ) * 100
 
         momentum = abs(move_3)
 
         volume_avg = (
+
             volumes
             .rolling(20)
             .mean()
             .iloc[-1]
+
         )
 
         if volume_avg <= 0:
             return None
 
         volume_ratio = (
+
             volumes.iloc[-1]
+
             /
+
             volume_avg
+
         )
 
         volatility = (
+
             (
                 df["h"].iloc[-1]
                 -
                 df["l"].iloc[-1]
             )
+
             /
+
             price
-        ) * 100
-
-        if volatility < 0.08:
-            return None
-
-        if volume_ratio < 1.20:
-            return None
-
-        if abs(move_1) > 1.50:
-            return None
-
-        features = [[
-
-            momentum,
-            volume_ratio,
-            volatility,
-            move_1,
-            move_3
-
-        ]]
-
-        features_df = pd.DataFrame(
-
-            features,
-
-            columns=[
-
-                "momentum",
-                "volume_ratio",
-                "volatility",
-                "move_1",
-                "move_3"
-
-            ]
-
-        )
-
-        prediction = ai_model.predict(
-            features_df
-        )[0]
-
-        probability = max(
-
-            ai_model.predict_proba(
-                features_df
-            )[0]
 
         ) * 100
 
-        if probability < 80:
+        # =================================================
+        # FILTERS
+        # =================================================
+
+        if volatility < 0.05:
             return None
+
+        if volume_ratio < 1.30:
+            return None
+
+        # =================================================
+        # AI FILTER
+        # =================================================
+
+        ai_score = 70
+
+        if ai_model is not None:
+
+            features = [[
+
+                momentum,
+                volume_ratio,
+                volatility,
+                move_1,
+                move_3
+
+            ]]
+
+            features_df = pd.DataFrame(
+
+                features,
+
+                columns=[
+
+                    "momentum",
+                    "volume_ratio",
+                    "volatility",
+                    "move_1",
+                    "move_3"
+
+                ]
+
+            )
+
+            ai_score = max(
+
+                ai_model.predict_proba(
+                    features_df
+                )[0]
+
+            ) * 100
+
+        # =================================================
+        # LONG
+        # =================================================
 
         if (
-            prediction == 1
+
+            price > ema20.iloc[-1]
+
             and
-            move_3 > 0
+
+            ema9.iloc[-1] > ema20.iloc[-1]
+
             and
-            move_5 > 0
+
+            trend_closes.iloc[-1]
+            >
+            trend_ema20.iloc[-1]
+
+            and
+
+            move_1 > 0
+
         ):
 
             return {
 
                 "signal": "LONG",
 
-                "score": round(probability),
+                "score": round(ai_score),
 
                 "momentum": momentum,
 
@@ -432,19 +474,35 @@ def analyze(df):
 
             }
 
+        # =================================================
+        # SHORT
+        # =================================================
+
         if (
-            prediction == 1
+
+            price < ema20.iloc[-1]
+
             and
-            move_3 < 0
+
+            ema9.iloc[-1] < ema20.iloc[-1]
+
             and
-            move_5 < 0
+
+            trend_closes.iloc[-1]
+            <
+            trend_ema20.iloc[-1]
+
+            and
+
+            move_1 < 0
+
         ):
 
             return {
 
                 "signal": "SHORT",
 
-                "score": round(probability),
+                "score": round(ai_score),
 
                 "momentum": momentum,
 
@@ -488,10 +546,15 @@ def get_real_size():
         for p in positions:
 
             size = (
+
                 p.get("contracts")
+
                 or
+
                 p.get("size")
+
                 or 0
+
             )
 
             size = abs(float(size))
@@ -530,20 +593,31 @@ def open_trade(data):
             return
 
         side = (
+
             "buy"
+
             if data["signal"] == "LONG"
+
             else "sell"
+
         )
 
         safe_api_call(
+
             exchange.set_leverage,
+
             LEVERAGE,
+
             SYMBOL
+
         )
 
         ticker = safe_api_call(
+
             exchange.fetch_ticker,
+
             SYMBOL
+
         )
 
         if not ticker:
@@ -554,14 +628,19 @@ def open_trade(data):
         price = ticker["last"]
 
         amount = (
+
             MARGIN * LEVERAGE
+
         ) / price
 
         amount = float(
 
             exchange.amount_to_precision(
+
                 SYMBOL,
+
                 amount
+
             )
 
         )
@@ -571,7 +650,9 @@ def open_trade(data):
             exchange.create_market_order,
 
             SYMBOL,
+
             side,
+
             amount
 
         )
@@ -591,7 +672,7 @@ def open_trade(data):
 
             "max_pnl": 0,
 
-            "tp1": False,
+            "tp1_done": False,
 
             "open_time": time.time(),
 
@@ -619,7 +700,7 @@ def open_trade(data):
 
             f"""
 
-🤖 BTC AI OPEN
+🚀 BTC SCALP OPEN
 
 📈 {data['signal']}
 
@@ -697,9 +778,13 @@ def close_trade(reason):
             return
 
         side = (
+
             "sell"
+
             if bot_position["type"] == "LONG"
+
             else "buy"
+
         )
 
         size = get_real_size()
@@ -725,8 +810,11 @@ def close_trade(reason):
             )
 
         ticker = safe_api_call(
+
             exchange.fetch_ticker,
+
             SYMBOL
+
         )
 
         pnl = 0
@@ -738,31 +826,43 @@ def close_trade(reason):
             if bot_position["type"] == "LONG":
 
                 pnl_percent = (
+
                     (
                         current_price
                         -
                         bot_position["entry"]
                     )
+
                     /
+
                     bot_position["entry"]
+
                 ) * 100
 
             else:
 
                 pnl_percent = (
+
                     (
                         bot_position["entry"]
                         -
                         current_price
                     )
+
                     /
+
                     bot_position["entry"]
+
                 ) * 100
 
             pnl = (
+
                 pnl_percent / 100
+
             ) * (
+
                 MARGIN * LEVERAGE
+
             )
 
         save_trade_memory(pnl)
@@ -775,7 +875,7 @@ def close_trade(reason):
 
             f"""
 
-❌ BTC AI CLOSED
+❌ BTC SCALP CLOSED
 
 📉 {reason}
 
@@ -806,7 +906,7 @@ def manage():
 
             if not bot_position:
 
-                time.sleep(5)
+                time.sleep(3)
                 continue
 
             real_size = get_real_size()
@@ -818,8 +918,11 @@ def manage():
                 train_ai()
 
                 bot.send_message(
+
                     CHAT_ID,
+
                     "🧠 MANUAL CLOSE DETECTED"
+
                 )
 
                 bot_position = None
@@ -829,8 +932,11 @@ def manage():
                 continue
 
             ticker = safe_api_call(
+
                 exchange.fetch_ticker,
+
                 SYMBOL
+
             )
 
             if not ticker:
@@ -843,32 +949,48 @@ def manage():
             if bot_position["type"] == "LONG":
 
                 pnl_percent = (
+
                     (
                         price
                         -
                         bot_position["entry"]
                     )
+
                     /
+
                     bot_position["entry"]
+
                 ) * 100
 
             else:
 
                 pnl_percent = (
+
                     (
                         bot_position["entry"]
                         -
                         price
                     )
+
                     /
+
                     bot_position["entry"]
+
                 ) * 100
 
             pnl = (
+
                 pnl_percent / 100
+
             ) * (
+
                 MARGIN * LEVERAGE
+
             )
+
+            # =============================================
+            # MAX PNL
+            # =============================================
 
             if pnl > bot_position["max_pnl"]:
 
@@ -876,13 +998,21 @@ def manage():
 
             max_pnl = bot_position["max_pnl"]
 
+            # =============================================
+            # TP1
+            # =============================================
+
             if (
-                pnl >= 0.50
+
+                pnl >= TP1_USDT
+
                 and
-                not bot_position["tp1"]
+
+                not bot_position["tp1_done"]
+
             ):
 
-                bot_position["tp1"] = True
+                bot_position["tp1_done"] = True
 
                 bot.send_message(
 
@@ -899,39 +1029,43 @@ def manage():
 
                 )
 
-            if pnl <= -0.70:
+            # =============================================
+            # STOP LOSS
+            # =============================================
+
+            if pnl <= STOP_LOSS:
 
                 close_trade(
-                    "HARD STOP LOSS"
+                    "STOP LOSS"
                 )
 
                 continue
 
+            # =============================================
+            # TRAILING
+            # =============================================
+
             if (
-                max_pnl >= 0.80
+
+                max_pnl >= TRAIL_TRIGGER
+
                 and
-                pnl <= 0.35
+
+                pnl <= TRAIL_STOP
+
             ):
 
                 close_trade(
-                    "TRAILING PROFIT LOCK"
+                    "TRAILING STOP"
                 )
 
                 continue
 
-            if (
-                max_pnl >= 2.00
-                and
-                pnl <= 1.20
-            ):
+            # =============================================
+            # MEGA TP
+            # =============================================
 
-                close_trade(
-                    "BIG WIN LOCK"
-                )
-
-                continue
-
-            if pnl >= 3.50:
+            if pnl >= MEGA_TP:
 
                 close_trade(
                     "MEGA TAKE PROFIT"
@@ -939,7 +1073,7 @@ def manage():
 
                 continue
 
-            time.sleep(5)
+            time.sleep(3)
 
         except Exception as e:
 
@@ -959,39 +1093,16 @@ def scanner():
 
         try:
 
-            if ai_model is None:
-
-                print("AI MODEL NOT READY")
-
-                bot.send_message(
-
-                    CHAT_ID,
-
-                    "⚠️ AI MODEL NOT READY\nMinimum 50 trade memory gerekli"
-
-                )
-
-                time.sleep(30)
-
-                continue
-
             if bot_position:
 
-                time.sleep(5)
+                time.sleep(3)
                 continue
 
-            df = get_data()
-
-            if df is None:
-
-                time.sleep(5)
-                continue
-
-            result = analyze(df)
+            result = analyze()
 
             if not result:
 
-                time.sleep(10)
+                time.sleep(5)
                 continue
 
             bot.send_message(
@@ -1000,12 +1111,12 @@ def scanner():
 
                 f"""
 
-🧠 BTC AI SIGNAL
+🧠 BTC SCALP SIGNAL
 
 📈 {result['signal']}
 
 🔥 AI SCORE:
-%{result['score']}
+%{round(result['score'])}
 
 ⚡ MOMENTUM:
 {round(result['momentum'],2)}
@@ -1020,11 +1131,11 @@ def scanner():
 
             )
 
-            if result["score"] >= 85:
+            if result["score"] >= 70:
 
                 open_trade(result)
 
-            time.sleep(20)
+            time.sleep(10)
 
         except Exception as e:
 
@@ -1039,13 +1150,19 @@ def scanner():
 train_ai()
 
 threading.Thread(
+
     target=scanner,
+
     daemon=True
+
 ).start()
 
 threading.Thread(
+
     target=manage,
+
     daemon=True
+
 ).start()
 
 bot.send_message(
@@ -1054,12 +1171,19 @@ bot.send_message(
 
     f"""
 
-🤖 SADIK BTC AI SCALPER STARTED
+🚀 SADIK BTC SCALP AI STARTED
 
-📊 {SYMBOL}
+📊 SYMBOL:
+{SYMBOL}
 
 ⚡ LEVERAGE:
 {LEVERAGE}X
+
+💰 TP1:
+{TP1_USDT} USDT
+
+🛑 SL:
+{STOP_LOSS} USDT
 
 🧠 AI:
 ACTIVE
@@ -1079,6 +1203,7 @@ while True:
         bot.infinity_polling(
 
             timeout=30,
+
             long_polling_timeout=30
 
         )
