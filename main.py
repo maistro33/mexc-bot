@@ -403,7 +403,7 @@ def analyze(df):
 
         ) * 100
 
-        if probability < 85:
+        if probability < 80:
             return None
 
         if (
