@@ -63,7 +63,7 @@ TIMEFRAME = "5m"
 
 MARGIN = 1
 
-LEVERAGE = 10
+LEVERAGE = 20
 
 bot_position = None
 
