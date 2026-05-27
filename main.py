@@ -1,5 +1,5 @@
 # =========================================================
-# SADIK REAL AI BOT
+# SADIK BTC AI SCALPER
 # =========================================================
 
 import ccxt
@@ -8,10 +8,8 @@ import os
 import telebot
 import threading
 import pandas as pd
-import numpy as np
 
 from supabase import create_client
-
 from sklearn.ensemble import RandomForestClassifier
 
 # =========================================================
@@ -48,28 +46,32 @@ exchange = ccxt.bitget({
     "enableRateLimit": True,
 
     "options": {
+
         "defaultType": "swap"
+
     }
+
 })
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
+SYMBOL = "BTC/USDT:USDT"
+
+TIMEFRAME = "5m"
+
 MARGIN = 1
-LEVERAGE = 30
+
+LEVERAGE = 10
 
 bot_position = None
 
-coin_cooldown = {}
-
-signal_cache = {}
+ai_model = None
 
 LAST_API_CALL = 0
 
 lock = False
-
-ai_model = None
 
 # =========================================================
 # API SAFE
@@ -130,40 +132,31 @@ def load_ai_data():
 
             try:
 
-                momentum = float(
-                    r.get("momentum") or 0
-                )
-
-                volume_ratio = float(
-                    r.get("volume_ratio") or 0
-                )
-
-                volatility = float(
-                    r.get("volatility") or 0
-                )
-
-                move_1 = float(
-                    r.get("move_1") or 0
-                )
-
-                move_3 = float(
-                    r.get("move_3") or 0
-                )
-
-                pnl = float(
-                    r.get("pnl") or 0
-                )
-
-                result = 1 if pnl > 0 else 0
-
                 clean.append({
 
-                    "momentum": momentum,
-                    "volume_ratio": volume_ratio,
-                    "volatility": volatility,
-                    "move_1": move_1,
-                    "move_3": move_3,
-                    "result": result
+                    "momentum": float(
+                        r.get("momentum") or 0
+                    ),
+
+                    "volume_ratio": float(
+                        r.get("volume_ratio") or 0
+                    ),
+
+                    "volatility": float(
+                        r.get("volatility") or 0
+                    ),
+
+                    "move_1": float(
+                        r.get("move_1") or 0
+                    ),
+
+                    "move_3": float(
+                        r.get("move_3") or 0
+                    ),
+
+                    "result": 1 if float(
+                        r.get("pnl") or 0
+                    ) > 0 else 0
 
                 })
 
@@ -197,6 +190,14 @@ def train_ai():
 
             print("NOT ENOUGH AI DATA")
 
+            bot.send_message(
+
+                CHAT_ID,
+
+                "⚠️ AI için minimum 50 kapanmış trade gerekli"
+
+            )
+
             return
 
         X = df[[
@@ -213,9 +214,9 @@ def train_ai():
 
         model = RandomForestClassifier(
 
-            n_estimators=200,
+            n_estimators=300,
 
-            max_depth=6,
+            max_depth=8,
 
             random_state=42
 
@@ -225,22 +226,17 @@ def train_ai():
 
         ai_model = model
 
-        print(
-            "REAL AI TRAINED SUCCESS"
-        )
+        print("BTC AI TRAINED")
 
     except Exception as e:
 
-        print("AI TRAIN ERROR:", e)
+        print("TRAIN ERROR:", e)
 
 # =========================================================
 # GET DATA
 # =========================================================
 
-def get_data(
-    sym,
-    timeframe="5m"
-):
+def get_data():
 
     try:
 
@@ -248,11 +244,11 @@ def get_data(
 
             exchange.fetch_ohlcv,
 
-            sym,
+            SYMBOL,
 
-            timeframe=timeframe,
+            timeframe=TIMEFRAME,
 
-            limit=100
+            limit=120
 
         )
 
@@ -298,84 +294,76 @@ def analyze(df):
             return None
 
         closes = df["c"]
-
         volumes = df["v"]
 
         price = closes.iloc[-1]
 
-        # =================================================
-        # FEATURES
-        # =================================================
-
         move_1 = (
-
             (
                 closes.iloc[-1]
                 -
                 closes.iloc[-2]
             )
-
             /
-
             closes.iloc[-2]
-
         ) * 100
 
         move_3 = (
-
             (
                 closes.iloc[-1]
                 -
                 closes.iloc[-4]
             )
-
             /
-
             closes.iloc[-4]
+        ) * 100
 
+        move_5 = (
+            (
+                closes.iloc[-1]
+                -
+                closes.iloc[-6]
+            )
+            /
+            closes.iloc[-6]
         ) * 100
 
         momentum = abs(move_3)
 
         volume_avg = (
-
             volumes
             .rolling(20)
             .mean()
             .iloc[-1]
-
         )
 
         if volume_avg <= 0:
             return None
 
         volume_ratio = (
-
             volumes.iloc[-1]
-
             /
-
             volume_avg
-
         )
 
         volatility = (
-
             (
                 df["h"].iloc[-1]
                 -
                 df["l"].iloc[-1]
             )
-
             /
-
             price
-
         ) * 100
 
-        # =================================================
-        # AI PREDICT
-        # =================================================
+        if volatility < 0.08:
+            return None
+
+        if volume_ratio < 1.20:
+            return None
+
+        if abs(move_1) > 1.50:
+            return None
 
         features = [[
 
@@ -387,26 +375,44 @@ def analyze(df):
 
         ]]
 
+        features_df = pd.DataFrame(
+
+            features,
+
+            columns=[
+
+                "momentum",
+                "volume_ratio",
+                "volatility",
+                "move_1",
+                "move_3"
+
+            ]
+
+        )
+
         prediction = ai_model.predict(
-            features
+            features_df
         )[0]
 
         probability = max(
 
             ai_model.predict_proba(
-                features
+                features_df
             )[0]
 
         ) * 100
 
-        if probability < 75:
+        if probability < 85:
             return None
 
-        # =================================================
-        # LONG
-        # =================================================
-
-        if prediction == 1 and move_3 > 0:
+        if (
+            prediction == 1
+            and
+            move_3 > 0
+            and
+            move_5 > 0
+        ):
 
             return {
 
@@ -426,11 +432,13 @@ def analyze(df):
 
             }
 
-        # =================================================
-        # SHORT
-        # =================================================
-
-        if prediction == 1 and move_3 < 0:
+        if (
+            prediction == 1
+            and
+            move_3 < 0
+            and
+            move_5 < 0
+        ):
 
             return {
 
@@ -462,7 +470,7 @@ def analyze(df):
 # REAL POSITION SIZE
 # =========================================================
 
-def get_real_size(sym):
+def get_real_size():
 
     try:
 
@@ -470,7 +478,7 @@ def get_real_size(sym):
 
             exchange.fetch_positions,
 
-            [sym]
+            [SYMBOL]
 
         )
 
@@ -480,15 +488,10 @@ def get_real_size(sym):
         for p in positions:
 
             size = (
-
                 p.get("contracts")
-
                 or
-
                 p.get("size")
-
                 or 0
-
             )
 
             size = abs(float(size))
@@ -521,64 +524,44 @@ def open_trade(data):
 
     try:
 
-        sym = data["sym"]
-
-        if get_real_size(sym) > 0:
+        if get_real_size() > 0:
 
             lock = False
-
             return
 
         side = (
-
             "buy"
-
             if data["signal"] == "LONG"
-
             else "sell"
-
         )
 
         safe_api_call(
-
             exchange.set_leverage,
-
             LEVERAGE,
-
-            sym
-
+            SYMBOL
         )
 
         ticker = safe_api_call(
-
             exchange.fetch_ticker,
-
-            sym
-
+            SYMBOL
         )
 
         if not ticker:
 
             lock = False
-
             return
 
         price = ticker["last"]
 
         amount = (
-
             MARGIN * LEVERAGE
-
         ) / price
 
         amount = float(
 
             exchange.amount_to_precision(
-
-                sym,
-
+                SYMBOL,
                 amount
-
             )
 
         )
@@ -587,10 +570,8 @@ def open_trade(data):
 
             exchange.create_market_order,
 
-            sym,
-
+            SYMBOL,
             side,
-
             amount
 
         )
@@ -598,20 +579,19 @@ def open_trade(data):
         if not order:
 
             lock = False
-
             return
 
         entry = order.get("average") or price
 
         bot_position = {
 
-            "sym": sym,
-
             "type": data["signal"],
 
             "entry": float(entry),
 
             "max_pnl": 0,
+
+            "tp1": False,
 
             "open_time": time.time(),
 
@@ -639,9 +619,7 @@ def open_trade(data):
 
             f"""
 
-🤖 REAL AI OPEN
-
-📊 {sym}
+🤖 BTC AI OPEN
 
 📈 {data['signal']}
 
@@ -649,7 +627,10 @@ def open_trade(data):
 %{data['score']}
 
 💰 ENTRY:
-{round(entry,5)}
+{round(entry,2)}
+
+⚡ LEVERAGE:
+{LEVERAGE}X
 
 """
 
@@ -662,7 +643,7 @@ def open_trade(data):
     lock = False
 
 # =========================================================
-# SAVE TRADE AI MEMORY
+# SAVE MEMORY
 # =========================================================
 
 def save_trade_memory(pnl):
@@ -678,7 +659,7 @@ def save_trade_memory(pnl):
             "trades"
         ).insert({
 
-            "symbol": bot_position["sym"],
+            "symbol": SYMBOL,
 
             "signal": bot_position["type"],
 
@@ -700,7 +681,7 @@ def save_trade_memory(pnl):
 
     except Exception as e:
 
-        print("SAVE MEMORY ERROR:", e)
+        print("SAVE ERROR:", e)
 
 # =========================================================
 # CLOSE TRADE
@@ -715,19 +696,13 @@ def close_trade(reason):
         if not bot_position:
             return
 
-        sym = bot_position["sym"]
-
         side = (
-
             "sell"
-
             if bot_position["type"] == "LONG"
-
             else "buy"
-
         )
 
-        size = get_real_size(sym)
+        size = get_real_size()
 
         if size > 0:
 
@@ -735,7 +710,7 @@ def close_trade(reason):
 
                 exchange.create_market_order,
 
-                sym,
+                SYMBOL,
 
                 side,
 
@@ -750,11 +725,8 @@ def close_trade(reason):
             )
 
         ticker = safe_api_call(
-
             exchange.fetch_ticker,
-
-            sym
-
+            SYMBOL
         )
 
         pnl = 0
@@ -766,46 +738,35 @@ def close_trade(reason):
             if bot_position["type"] == "LONG":
 
                 pnl_percent = (
-
                     (
                         current_price
                         -
                         bot_position["entry"]
                     )
-
                     /
-
                     bot_position["entry"]
-
                 ) * 100
 
             else:
 
                 pnl_percent = (
-
                     (
                         bot_position["entry"]
                         -
                         current_price
                     )
-
                     /
-
                     bot_position["entry"]
-
                 ) * 100
 
             pnl = (
-
                 pnl_percent / 100
-
             ) * (
-
                 MARGIN * LEVERAGE
-
             )
 
         save_trade_memory(pnl)
+
         train_ai()
 
         bot.send_message(
@@ -814,9 +775,7 @@ def close_trade(reason):
 
             f"""
 
-❌ REAL AI CLOSED
-
-📊 {sym}
+❌ BTC AI CLOSED
 
 📉 {reason}
 
@@ -827,10 +786,6 @@ def close_trade(reason):
 
         )
 
-        coin_cooldown[sym] = (
-            time.time() + 1800
-        )
-
         bot_position = None
 
     except Exception as e:
@@ -838,7 +793,7 @@ def close_trade(reason):
         print("CLOSE ERROR:", e)
 
 # =========================================================
-# AI POSITION MANAGER
+# POSITION MANAGER
 # =========================================================
 
 def manage():
@@ -852,14 +807,20 @@ def manage():
             if not bot_position:
 
                 time.sleep(5)
-
                 continue
 
-            sym = bot_position["sym"]
-
-            real_size = get_real_size(sym)
+            real_size = get_real_size()
 
             if real_size <= 0:
+
+                save_trade_memory(0)
+
+                train_ai()
+
+                bot.send_message(
+                    CHAT_ID,
+                    "🧠 MANUAL CLOSE DETECTED"
+                )
 
                 bot_position = None
 
@@ -868,70 +829,46 @@ def manage():
                 continue
 
             ticker = safe_api_call(
-
                 exchange.fetch_ticker,
-
-                sym
-
+                SYMBOL
             )
 
             if not ticker:
 
                 time.sleep(2)
-
                 continue
 
             price = ticker["last"]
 
-            # =================================================
-            # PNL
-            # =================================================
-
             if bot_position["type"] == "LONG":
 
                 pnl_percent = (
-
                     (
                         price
                         -
                         bot_position["entry"]
                     )
-
                     /
-
                     bot_position["entry"]
-
                 ) * 100
 
             else:
 
                 pnl_percent = (
-
                     (
                         bot_position["entry"]
                         -
                         price
                     )
-
                     /
-
                     bot_position["entry"]
-
                 ) * 100
 
             pnl = (
-
                 pnl_percent / 100
-
             ) * (
-
                 MARGIN * LEVERAGE
-
             )
-
-            # =================================================
-            # MAX PROFIT
-            # =================================================
 
             if pnl > bot_position["max_pnl"]:
 
@@ -939,50 +876,53 @@ def manage():
 
             max_pnl = bot_position["max_pnl"]
 
-            # =================================================
-            # HARD STOP LOSS
-            # =================================================
+            if (
+                pnl >= 0.50
+                and
+                not bot_position["tp1"]
+            ):
 
-            if pnl <= -1.00:
+                bot_position["tp1"] = True
+
+                bot.send_message(
+
+                    CHAT_ID,
+
+                    f"""
+
+✅ TP1 HIT
+
+💰 PROFIT:
+{round(pnl,2)} USDT
+
+"""
+
+                )
+
+            if pnl <= -0.70:
 
                 close_trade(
-                    "AI STOP LOSS"
+                    "HARD STOP LOSS"
                 )
 
                 continue
 
-            # =================================================
-            # AI PROFIT LOCK
-            # =================================================
-
             if (
-
-                max_pnl >= 0.60
-
+                max_pnl >= 0.80
                 and
-
-                pnl <= 0.25
-
+                pnl <= 0.35
             ):
 
                 close_trade(
-                    "AI PROFIT LOCK"
+                    "TRAILING PROFIT LOCK"
                 )
 
                 continue
 
-            # =================================================
-            # BIG WIN LOCK
-            # =================================================
-
             if (
-
-                max_pnl >= 4.00
-
+                max_pnl >= 2.00
                 and
-
-                pnl <= 2.80
-
+                pnl <= 1.20
             ):
 
                 close_trade(
@@ -991,11 +931,7 @@ def manage():
 
                 continue
 
-            # =================================================
-            # MEGA TAKE PROFIT
-            # =================================================
-
-            if pnl >= 5:
+            if pnl >= 3.50:
 
                 close_trade(
                     "MEGA TAKE PROFIT"
@@ -1007,12 +943,12 @@ def manage():
 
         except Exception as e:
 
-            print("MANAGE ERROR:", e)
+            print("MANAGER ERROR:", e)
 
             time.sleep(5)
 
 # =========================================================
-# AI SCANNER
+# SCANNER
 # =========================================================
 
 def scanner():
@@ -1027,194 +963,68 @@ def scanner():
 
                 print("AI MODEL NOT READY")
 
-                time.sleep(10)
+                bot.send_message(
+
+                    CHAT_ID,
+
+                    "⚠️ AI MODEL NOT READY\nMinimum 50 trade memory gerekli"
+
+                )
+
+                time.sleep(30)
 
                 continue
 
-            tickers = safe_api_call(
-                exchange.fetch_tickers
-            )
-
-            if not tickers:
+            if bot_position:
 
                 time.sleep(5)
-
                 continue
 
-            pairs = sorted(
+            df = get_data()
 
-                [
+            if df is None:
 
-                    x for x in tickers.items()
+                time.sleep(5)
+                continue
 
-                    if (
+            result = analyze(df)
 
-                        ":USDT" in x[0]
+            if not result:
 
-                        and
+                time.sleep(10)
+                continue
 
-                        not any(
+            bot.send_message(
 
-                            bad in x[0]
+                CHAT_ID,
 
-                            for bad in [
+                f"""
 
-                                "BTC",
-                                "ETH",
-                                "BNB",
-                                "XRP",
-                                "DOGE"
-
-                            ]
-
-                        )
-
-                        and
-
-                        10000000
-
-                        <=
-
-                        (
-                            x[1].get(
-                                "quoteVolume",
-                                0
-                            ) or 0
-                        )
-
-                    )
-
-                ],
-
-                key=lambda x: (
-
-                    x[1].get(
-                        "quoteVolume",
-                        0
-                    ) or 0
-
-                ),
-
-                reverse=True
-
-            )[:40]
-
-            print(
-                "AI SCANNING:",
-                [x[0] for x in pairs]
-            )
-
-            for sym, data in pairs:
-
-                try:
-
-                    if False:
-                        break
-
-                    if sym in coin_cooldown:
-
-                        if (
-                            time.time()
-                            <
-                            coin_cooldown[sym]
-                        ):
-
-                            continue
-
-                    safe = (
-
-                        sym.replace("/", "")
-
-                        .replace(":", "")
-
-                    )
-
-                    if safe in signal_cache:
-
-                        old = signal_cache[safe].get(
-                            "time",
-                            0
-                        )
-
-                        if (
-                            time.time() - old
-                            <
-                            1800
-                        ):
-
-                            continue
-
-                    df = get_data(
-                        sym,
-                        "5m"
-                    )
-
-                    if df is None:
-                        continue
-
-                    result = analyze(df)
-
-                    if not result:
-                        continue
-
-                    signal_cache[safe] = {
-
-                        "time": time.time()
-
-                    }
-
-                    bot.send_message(
-
-                        CHAT_ID,
-
-                        f"""
-
-🤖 REAL AI SIGNAL
-
-📊 {sym}
+🧠 BTC AI SIGNAL
 
 📈 {result['signal']}
 
-🔥 AI PROBABILITY:
+🔥 AI SCORE:
 %{result['score']}
+
+⚡ MOMENTUM:
+{round(result['momentum'],2)}
+
+📊 VOLUME:
+{round(result['volume_ratio'],2)}X
+
+🌪 VOLATILITY:
+{round(result['volatility'],2)}%
 
 """
 
-                    )
+            )
 
-                    # =========================================
-                    # REAL AI AUTO ENTRY
-                    # =========================================
+            if result["score"] >= 85:
 
-                    if result["score"] >= 70:
+                open_trade(result)
 
-                        open_trade({
-
-                            "sym": sym,
-
-                            "signal": result["signal"],
-
-                            "score": result["score"],
-
-                            "momentum": result["momentum"],
-
-                            "volume_ratio": result["volume_ratio"],
-
-                            "volatility": result["volatility"],
-
-                            "move_1": result["move_1"],
-
-                            "move_3": result["move_3"]
-
-                        })
-
-                    time.sleep(1)
-
-                except Exception as e:
-
-                    print("PAIR ERROR:", e)
-
-            time.sleep(10)
+            time.sleep(20)
 
         except Exception as e:
 
@@ -1223,40 +1033,38 @@ def scanner():
             time.sleep(5)
 
 # =========================================================
-# TRAIN AI FIRST
+# START
 # =========================================================
 
 train_ai()
 
-# =========================================================
-# START THREADS
-# =========================================================
-
 threading.Thread(
-
     target=scanner,
-
     daemon=True
-
 ).start()
 
 threading.Thread(
-
     target=manage,
-
     daemon=True
-
 ).start()
-
-# =========================================================
-# START MESSAGE
-# =========================================================
 
 bot.send_message(
 
     CHAT_ID,
 
-    "🤖 REAL AI BOT STARTED"
+    f"""
+
+🤖 SADIK BTC AI SCALPER STARTED
+
+📊 {SYMBOL}
+
+⚡ LEVERAGE:
+{LEVERAGE}X
+
+🧠 AI:
+ACTIVE
+
+"""
 
 )
 
@@ -1271,7 +1079,6 @@ while True:
         bot.infinity_polling(
 
             timeout=30,
-
             long_polling_timeout=30
 
         )
