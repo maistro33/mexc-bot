@@ -87,6 +87,12 @@ LAST_API_CALL = 0
 
 lock = False
 
+# ================= V1 AI FILTERS =================
+PULLBACK_PERCENT = 0.03
+MARKET_AI_MIN_SCORE = 75
+VOLUME_SPIKE_MIN = 1.50
+
+
 # =========================================================
 # API SAFE
 # =========================================================
@@ -472,7 +478,8 @@ def analyze():
 
                 "move_1": move_1,
 
-                "move_3": move_3
+                "move_3": move_3,
+                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1])
 
             }
 
@@ -514,7 +521,8 @@ def analyze():
 
                 "move_1": move_1,
 
-                "move_3": move_3
+                "move_3": move_3,
+                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1])
 
             }
 
@@ -525,6 +533,24 @@ def analyze():
         print("ANALYZE ERROR:", e)
 
         return None
+
+
+# =========================================================
+# V1 HELPERS
+# =========================================================
+
+def market_ai_score(price, ema20, trend_price, trend_ema20):
+    score = 50
+    if price > ema20:
+        score += 15
+    if trend_price > trend_ema20:
+        score += 20
+    return score
+
+def pullback_ok(price, ema9):
+    distance = abs(price - ema9) / price * 100
+    return distance <= PULLBACK_PERCENT
+
 
 # =========================================================
 # REAL POSITION SIZE
@@ -1132,6 +1158,21 @@ def scanner():
 """
 
             )
+
+            if result["volume_ratio"] < VOLUME_SPIKE_MIN:
+                time.sleep(5)
+                continue
+
+            if result.get("risk_score", 0) < MARKET_AI_MIN_SCORE:
+                time.sleep(5)
+                continue
+
+            df_pb = get_data(TIMEFRAME)
+            if df_pb is not None:
+                ema9_pb = df_pb["c"].ewm(span=9).mean().iloc[-1]
+                if not pullback_ok(df_pb["c"].iloc[-1], ema9_pb):
+                    time.sleep(5)
+                    continue
 
             if result["score"] >= 70:
 
