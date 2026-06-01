@@ -1167,12 +1167,12 @@ def scanner():
                 time.sleep(5)
                 continue
 
-            df_pb = get_data(TIMEFRAME)
-            if df_pb is not None:
-                ema9_pb = df_pb["c"].ewm(span=9).mean().iloc[-1]
-                if not pullback_ok(df_pb["c"].iloc[-1], ema9_pb):
-                    time.sleep(5)
-                    continue
+            #df_pb = get_data(TIMEFRAME)
+            #if df_pb is not None:
+                #ema9_pb = df_pb["c"].ewm(span=9).mean().iloc[-1]
+                #if not pullback_ok(df_pb["c"].iloc[-1], ema9_pb):
+                    #time.sleep(5)
+                    #continue
 
             if result["score"] >= 70:
 
