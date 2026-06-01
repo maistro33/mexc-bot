@@ -90,7 +90,7 @@ lock = False
 # ================= V1 AI FILTERS =================
 PULLBACK_PERCENT = 0.03
 MARKET_AI_MIN_SCORE = 75
-VOLUME_SPIKE_MIN = 1.50
+VOLUME_SPIKE_MIN = 1.20
 
 
 # =========================================================
