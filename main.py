@@ -90,6 +90,8 @@ lock = False
 # ================= V1 AI FILTERS =================
 PULLBACK_PERCENT = 0.03
 MARKET_AI_MIN_SCORE = 65
+MIN_MOMENTUM = 0.15
+MIN_VOLATILITY = 0.08
 VOLUME_SPIKE_MIN = 1.20
 
 
@@ -541,10 +543,18 @@ def analyze():
 
 def market_ai_score(price, ema20, trend_price, trend_ema20):
     score = 50
+
+    # LONG ve SHORT trendlerini eşit değerlendir
     if price > ema20:
         score += 15
+    elif price < ema20:
+        score += 15
+
     if trend_price > trend_ema20:
         score += 20
+    elif trend_price < trend_ema20:
+        score += 20
+
     return score
 
 def pullback_ok(price, ema9):
@@ -1167,12 +1177,23 @@ def scanner():
                 time.sleep(5)
                 continue
 
-            #df_pb = get_data(TIMEFRAME)
-            #if df_pb is not None:
-                #ema9_pb = df_pb["c"].ewm(span=9).mean().iloc[-1]
-                #if not pullback_ok(df_pb["c"].iloc[-1], ema9_pb):
-                    #time.sleep(5)
-                    #continue
+            if result["momentum"] < MIN_MOMENTUM:
+                continue
+
+            if result["volatility"] < MIN_VOLATILITY:
+                continue
+
+            # V2.5 Fake breakout filter
+            df_check = get_data(TIMEFRAME)
+            if df_check is not None and len(df_check) > 5:
+                last_close = df_check["c"].iloc[-1]
+                avg_close = df_check["c"].tail(5).mean()
+
+                if result["signal"] == "LONG" and last_close < avg_close:
+                    continue
+
+                if result["signal"] == "SHORT" and last_close > avg_close:
+                    continue
 
             if result["score"] >= 70:
 
