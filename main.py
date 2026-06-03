@@ -1037,6 +1037,22 @@ def manage():
             max_pnl = bot_position["max_pnl"]
 
             # =============================================
+            # RISK MANAGER V2
+            # =============================================
+
+            if max_pnl >= 0.15 and pnl <= 0:
+                close_trade("BREAKEVEN PROTECT")
+                continue
+
+            if max_pnl >= 0.30 and pnl <= 0.10:
+                close_trade("PROFIT LOCK 0.10")
+                continue
+
+            if max_pnl >= 0.50 and pnl <= 0.25:
+                close_trade("PROFIT LOCK 0.25")
+                continue
+
+            # =============================================
             # TP1
             # =============================================
 
