@@ -562,6 +562,37 @@ def pullback_ok(price, ema9):
     return distance <= PULLBACK_PERCENT
 
 
+
+# =========================================================
+# V4-A MULTI AGENT SYSTEM
+# =========================================================
+
+def trend_agent(result):
+    score = 50
+    if result["momentum"] >= 0.15:
+        score += 25
+    if result["volume_ratio"] >= 1.5:
+        score += 25
+    return min(score, 100)
+
+def market_agent(result):
+    return int(result.get("risk_score", 50))
+
+def whale_agent(result):
+    score = 50
+    if result["volume_ratio"] >= 2:
+        score += 25
+    if result["momentum"] >= 0.25:
+        score += 25
+    return min(score, 100)
+
+def decision_agent(result):
+    t = trend_agent(result)
+    m = market_agent(result)
+    w = whale_agent(result)
+    final_score = round((t + m + w) / 3)
+    return final_score, t, m, w
+
 # =========================================================
 # REAL POSITION SIZE
 # =========================================================
@@ -1211,7 +1242,14 @@ def scanner():
                 if result["signal"] == "SHORT" and last_close > avg_close:
                     continue
 
-            if result["score"] >= 70:
+            final_score, trend_ai, market_ai, whale_ai = decision_agent(result)
+
+            bot.send_message(
+                CHAT_ID,
+                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nFinal Score: %{final_score}"
+            )
+
+            if final_score >= 75:
 
                 open_trade(result)
 
