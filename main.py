@@ -547,12 +547,8 @@ def market_ai_score(price, ema20, trend_price, trend_ema20):
     # LONG ve SHORT trendlerini eşit değerlendir
     if price > ema20:
         score += 15
-    elif price < ema20:
-        score += 15
-
+    
     if trend_price > trend_ema20:
-        score += 20
-    elif trend_price < trend_ema20:
         score += 20
 
     return score
@@ -590,7 +586,7 @@ def decision_agent(result):
     t = trend_agent(result)
     m = market_agent(result)
     w = whale_agent(result)
-    final_score = round((t + m + w) / 3)
+    final_score = round(((result["score"] + t + m + w) / 4))
     return final_score, t, m, w
 
 # =========================================================
@@ -1248,6 +1244,9 @@ def scanner():
                 CHAT_ID,
                 f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nFinal Score: %{final_score}"
             )
+
+            if result["score"] < 70:
+                continue
 
             if final_score >= 75:
 
