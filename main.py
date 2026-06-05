@@ -1245,7 +1245,7 @@ def scanner():
                 f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nFinal Score: %{final_score}"
             )
 
-            if result["score"] < 70:
+            if result["score"] < 75:
                 continue
 
             if final_score >= 75:
