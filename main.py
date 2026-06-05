@@ -1071,8 +1071,8 @@ def manage():
                 close_trade("BREAKEVEN PROTECT")
                 continue
 
-            if max_pnl >= 0.30 and pnl <= 0.10:
-                close_trade("PROFIT LOCK 0.10")
+            if max_pnl >= 0.50 and pnl <= 0.15:
+                close_trade("PROFIT LOCK 0.15")
                 continue
 
             if max_pnl >= 0.50 and pnl <= 0.25:
