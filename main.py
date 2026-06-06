@@ -62,6 +62,7 @@ SYMBOL = "BTC/USDT:USDT"
 TIMEFRAME = "1m"
 
 TREND_TIMEFRAME = "5m"
+TREND15_TIMEFRAME = "15m"
 
 MARGIN = 2
 
@@ -307,20 +308,23 @@ def analyze():
         df = get_data(TIMEFRAME)
 
         trend_df = get_data(TREND_TIMEFRAME)
+        trend15_df = get_data(TREND15_TIMEFRAME)
 
-        if df is None or trend_df is None:
+        if df is None or trend_df is None or trend15_df is None:
             return None
 
         closes = df["c"]
         volumes = df["v"]
 
         trend_closes = trend_df["c"]
+        trend15_closes = trend15_df["c"]
 
         ema9 = closes.ewm(span=9).mean()
 
         ema20 = closes.ewm(span=20).mean()
 
         trend_ema20 = trend_closes.ewm(span=20).mean()
+        trend15_ema20 = trend15_closes.ewm(span=20).mean()
 
         price = closes.iloc[-1]
 
@@ -462,6 +466,12 @@ def analyze():
 
             and
 
+            trend15_closes.iloc[-1]
+            >
+            trend15_ema20.iloc[-1]
+
+            and
+
             move_1 > 0
 
         ):
@@ -502,6 +512,12 @@ def analyze():
             trend_closes.iloc[-1]
             <
             trend_ema20.iloc[-1]
+
+            and
+
+            trend15_closes.iloc[-1]
+            <
+            trend15_ema20.iloc[-1]
 
             and
 
