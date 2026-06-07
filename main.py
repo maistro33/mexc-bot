@@ -328,6 +328,12 @@ def analyze():
 
         price = closes.iloc[-1]
 
+        low20 = closes.tail(20).min()
+        high20 = closes.tail(20).max()
+
+        move_from_low = ((price - low20) / low20) * 100
+        move_from_high = ((high20 - price) / high20) * 100
+
         move_1 = (
 
             (
@@ -491,7 +497,9 @@ def analyze():
                 "move_1": move_1,
 
                 "move_3": move_3,
-                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1])
+                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
+                "move_from_low": move_from_low,
+                "move_from_high": move_from_high
 
             }
 
@@ -540,7 +548,9 @@ def analyze():
                 "move_1": move_1,
 
                 "move_3": move_3,
-                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1])
+                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
+                "move_from_low": move_from_low,
+                "move_from_high": move_from_high
 
             }
 
@@ -598,12 +608,32 @@ def whale_agent(result):
         score += 25
     return min(score, 100)
 
+def position_agent(result):
+    score = 100
+    move_from_low = result.get("move_from_low", 0)
+    move_from_high = result.get("move_from_high", 0)
+
+    if result["signal"] == "LONG":
+        if move_from_low > 1.20:
+            score -= 50
+        elif move_from_low > 0.80:
+            score -= 25
+
+    if result["signal"] == "SHORT":
+        if move_from_high > 1.20:
+            score -= 50
+        elif move_from_high > 0.80:
+            score -= 25
+
+    return max(score, 0)
+
 def decision_agent(result):
     t = trend_agent(result)
     m = market_agent(result)
     w = whale_agent(result)
-    final_score = round(((result["score"] + t + m + w) / 4))
-    return final_score, t, m, w
+    p = position_agent(result)
+    final_score = round(((result["score"] + t + m + w + p) / 5))
+    return final_score, t, m, w, p
 
 # =========================================================
 # REAL POSITION SIZE
@@ -1254,11 +1284,11 @@ def scanner():
                 if result["signal"] == "SHORT" and last_close > avg_close:
                     continue
 
-            final_score, trend_ai, market_ai, whale_ai = decision_agent(result)
+            final_score, trend_ai, market_ai, whale_ai, position_ai = decision_agent(result)
 
             bot.send_message(
                 CHAT_ID,
-                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nFinal Score: %{final_score}"
+                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nFinal Score: %{final_score}"
             )
 
             if result["score"] < 75:
