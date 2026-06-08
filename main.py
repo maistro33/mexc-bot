@@ -1175,20 +1175,17 @@ def manage():
             # RISK MANAGER V2
             # =============================================
 
-            if max_pnl >= 0.20 and pnl <= 0.08:
-                close_trade("EARLY PROFIT LOCK")
+            # Dynamic Net Profit Lock
+            if max_pnl >= 0.25 and pnl <= 0.15:
+                close_trade("MIN NET PROFIT LOCK")
                 continue
 
-            if max_pnl >= 0.30 and pnl <= 0.15:
-                close_trade("PROFIT LOCK 0.15")
+            if max_pnl >= 0.50 and pnl <= 0.30:
+                close_trade("DYNAMIC PROFIT LOCK 0.30")
                 continue
 
-            if max_pnl >= 0.50 and pnl <= 0.25:
-                close_trade("PROFIT LOCK 0.25")
-                continue
-
-            if max_pnl >= 0.80 and pnl <= 0.40:
-                close_trade("PROFIT LOCK 0.40")
+            if max_pnl >= 1.00 and pnl <= 0.60:
+                close_trade("DYNAMIC PROFIT LOCK 0.60")
                 continue
 
             # =============================================
