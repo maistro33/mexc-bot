@@ -362,6 +362,8 @@ def analyze():
 
         ) * 100
 
+        move_10 = ((closes.iloc[-1]-closes.iloc[-11])/closes.iloc[-11])*100 if len(closes)>11 else 0
+
         momentum = abs(move_3)
 
         volume_avg = (
@@ -499,7 +501,10 @@ def analyze():
                 "move_3": move_3,
                 "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
                 "move_from_low": move_from_low,
-                "move_from_high": move_from_high
+                "move_from_high": move_from_high,
+                "move_10": move_10,
+                "distance_to_high": ((high20-price)/price)*100,
+                "distance_to_low": ((price-low20)/price)*100
 
             }
 
@@ -550,7 +555,10 @@ def analyze():
                 "move_3": move_3,
                 "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
                 "move_from_low": move_from_low,
-                "move_from_high": move_from_high
+                "move_from_high": move_from_high,
+                "move_10": move_10,
+                "distance_to_high": ((high20-price)/price)*100,
+                "distance_to_low": ((price-low20)/price)*100
 
             }
 
@@ -695,6 +703,44 @@ def late_entry_agent(result):
         score -= 25
 
     return max(score, 0)
+
+
+
+# =========================================================
+# MOVE EXHAUSTION + SWING AGENT
+# =========================================================
+
+def move_exhaustion_agent(result):
+    score = 100
+    move10 = abs(result.get("move_10", 0))
+
+    if move10 > 1.20:
+        score = 20
+    elif move10 > 0.80:
+        score = 50
+    elif move10 > 0.50:
+        score = 75
+
+    return score
+
+def swing_agent(result):
+    score = 100
+
+    if result["signal"] == "LONG":
+        dist = result.get("distance_to_high", 999)
+        if dist < 0.15:
+            score = 20
+        elif dist < 0.30:
+            score = 50
+
+    if result["signal"] == "SHORT":
+        dist = result.get("distance_to_low", 999)
+        if dist < 0.15:
+            score = 20
+        elif dist < 0.30:
+            score = 50
+
+    return score
 
 
 # =========================================================
