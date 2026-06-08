@@ -663,8 +663,39 @@ def decision_agent(result):
     w = whale_agent(result)
     p = position_agent(result)
     r = risk_agent(result)
-    final_score = round(((result["score"] + t + m + w + p + r) / 6))
-    return final_score, t, m, w, p, r
+    l = late_entry_agent(result)
+    final_score = round(((result["score"] + t + m + w + p + r + l) / 7))
+    return final_score, t, m, w, p, r, l
+
+
+# =========================================================
+# POSITION AGENT V2
+# =========================================================
+
+def late_entry_agent(result):
+    score = 100
+
+    move3 = abs(result.get("move_3", 0))
+    move_low = result.get("move_from_low", 0)
+    move_high = result.get("move_from_high", 0)
+
+    if result["signal"] == "LONG":
+        if move_low > 1.20:
+            score -= 60
+        elif move_low > 0.80:
+            score -= 35
+
+    if result["signal"] == "SHORT":
+        if move_high > 1.20:
+            score -= 60
+        elif move_high > 0.80:
+            score -= 35
+
+    if move3 > 0.80:
+        score -= 25
+
+    return max(score, 0)
+
 
 # =========================================================
 # REAL POSITION SIZE
@@ -1315,11 +1346,11 @@ def scanner():
                 if result["signal"] == "SHORT" and last_close > avg_close:
                     continue
 
-            final_score, trend_ai, market_ai, whale_ai, position_ai, risk_ai = decision_agent(result)
+            final_score, trend_ai, market_ai, whale_ai, position_ai, risk_ai, late_ai = decision_agent(result)
 
             bot.send_message(
                 CHAT_ID,
-                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nRisk AI: %{risk_ai}\nFinal Score: %{final_score}"
+                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nRisk AI: %{risk_ai}\nLate Entry AI: %{late_ai}\nFinal Score: %{final_score}"
             )
 
             if result["score"] < 75:
