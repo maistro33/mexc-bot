@@ -608,6 +608,36 @@ def whale_agent(result):
         score += 25
     return min(score, 100)
 
+
+def risk_agent(result):
+
+    score = 50
+
+    move_low = result.get("move_from_low", 0)
+    move_high = result.get("move_from_high", 0)
+
+    if result["signal"] == "LONG":
+        risk = max(move_low, 0.1)
+        reward = max(2.0 - move_low, 0.1)
+    else:
+        risk = max(move_high, 0.1)
+        reward = max(2.0 - move_high, 0.1)
+
+    rr = reward / risk
+
+    if rr >= 3:
+        score = 100
+    elif rr >= 2:
+        score = 85
+    elif rr >= 1.5:
+        score = 70
+    elif rr >= 1:
+        score = 50
+    else:
+        score = 20
+
+    return score
+
 def position_agent(result):
     score = 100
     move_from_low = result.get("move_from_low", 0)
@@ -632,8 +662,9 @@ def decision_agent(result):
     m = market_agent(result)
     w = whale_agent(result)
     p = position_agent(result)
-    final_score = round(((result["score"] + t + m + w + p) / 5))
-    return final_score, t, m, w, p
+    r = risk_agent(result)
+    final_score = round(((result["score"] + t + m + w + p + r) / 6))
+    return final_score, t, m, w, p, r
 
 # =========================================================
 # REAL POSITION SIZE
@@ -1284,11 +1315,11 @@ def scanner():
                 if result["signal"] == "SHORT" and last_close > avg_close:
                     continue
 
-            final_score, trend_ai, market_ai, whale_ai, position_ai = decision_agent(result)
+            final_score, trend_ai, market_ai, whale_ai, position_ai, risk_ai = decision_agent(result)
 
             bot.send_message(
                 CHAT_ID,
-                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nFinal Score: %{final_score}"
+                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nRisk AI: %{risk_ai}\nFinal Score: %{final_score}"
             )
 
             if result["score"] < 75:
