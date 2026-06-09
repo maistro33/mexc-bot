@@ -1,29 +1,25 @@
 # =========================================================
-# BTC SCALP PRO V2
-# Bitget | 20x Kaldıraç | Telegram Bildirim
-# Geliştirici notu: 20 USDT sermaye ile 20x kaldıraç
-# yüksek risk içerir. Lütfen dikkatli kullanın.
+# SADIK BTC SCALP AI PRO
 # =========================================================
 
 import ccxt
 import time
 import os
+import telebot
 import threading
 import pandas as pd
-import numpy as np
-import telebot
 
 from supabase import create_client
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_val_score
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-TOKEN   = os.getenv("TELE_TOKEN")
+TOKEN = os.getenv("TELE_TOKEN")
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
-bot     = telebot.TeleBot(TOKEN)
+
+bot = telebot.TeleBot(TOKEN)
 
 # =========================================================
 # SUPABASE
@@ -31,877 +27,1415 @@ bot     = telebot.TeleBot(TOKEN)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase     = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
 
 # =========================================================
-# EXCHANGE — Bitget Perpetual
+# EXCHANGE
 # =========================================================
 
 exchange = ccxt.bitget({
-    "apiKey":   os.getenv("BITGET_API"),
-    "secret":   os.getenv("BITGET_SEC"),
+
+    "apiKey": os.getenv("BITGET_API"),
+    "secret": os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
+
     "enableRateLimit": True,
-    "options": {"defaultType": "swap"}
+
+    "options": {
+
+        "defaultType": "swap"
+
+    }
+
 })
 
 # =========================================================
-# AYARLAR
+# SETTINGS
 # =========================================================
 
-SYMBOL          = "BTC/USDT:USDT"
-TIMEFRAME_1M    = "1m"
-TIMEFRAME_5M    = "5m"
-TIMEFRAME_15M   = "15m"
+SYMBOL = "BTC/USDT:USDT"
 
-MARGIN          = 1.5        # USDT — 20 USDT sermayede max %7.5 risk per işlem
-LEVERAGE        = 20
+TIMEFRAME = "1m"
 
-# --- Kâr / Zarar Hedefleri ---
-TP1_USDT        = 0.40       # İlk kâr hedefi (net)
-TP2_USDT        = 0.90       # İkinci kâr hedefi
-MEGA_TP_USDT    = 1.80       # Büyük hareket hedefi
-STOP_LOSS_USDT  = -0.40      # Maksimum zarar
+TREND_TIMEFRAME = "5m"
+TREND15_TIMEFRAME = "15m"
 
-# --- Trailing Stop ---
-TRAIL_TRIGGER   = 0.50       # Bu kârdan sonra trailing başlar
-TRAIL_STOP      = 0.25       # Kârın bu altına düşerse kapat
+MARGIN = 2
 
-# --- Dinamik Profit Lock ---
-LOCK_LEVELS = [
-    (0.30, 0.10),   # max_pnl >= 0.30 → min 0.10 koru
-    (0.60, 0.30),   # max_pnl >= 0.60 → min 0.30 koru
-    (1.00, 0.55),   # max_pnl >= 1.00 → min 0.55 koru
-    (1.50, 0.90),   # max_pnl >= 1.50 → min 0.90 koru
-]
+LEVERAGE = 20
 
-# --- Günlük Zarar Limiti ---
-MAX_DAILY_LOSS  = -3.0       # Gün içinde bu kadar zarar ederse bot durur
-MAX_DAILY_TRADES = 20        # Gün içinde max işlem sayısı
+NET_PROFIT_TARGET = 0.30
+FEE_BUFFER = 0.06
+TP1_USDT = NET_PROFIT_TARGET + FEE_BUFFER
 
-# --- Sinyal Filtreleri ---
-MIN_VOLUME_RATIO    = 1.40
-MIN_VOLATILITY      = 0.06
-MIN_MOMENTUM        = 0.12
-MIN_AI_SCORE        = 70
-MIN_FINAL_SCORE     = 72
-MIN_TRAIN_SAMPLES   = 60
+TRAIL_TRIGGER = 0.40
 
-# =========================================================
-# GLOBAL DURUM
-# =========================================================
+TRAIL_STOP = 0.30
 
-bot_position    = None
-ai_model        = None
-ai_accuracy     = 0.0
+STOP_LOSS = -0.45
 
-daily_pnl       = 0.0
-daily_trades    = 0
-day_start       = time.strftime("%Y-%m-%d")
+MEGA_TP = 1.50
 
-LAST_API_CALL   = 0
-_lock           = threading.Lock()   # Thread-safe lock
+bot_position = None
+
+ai_model = None
+
+LAST_API_CALL = 0
+
+lock = False
+
+# ================= V1 AI FILTERS =================
+PULLBACK_PERCENT = 0.03
+MARKET_AI_MIN_SCORE = 65
+MIN_MOMENTUM = 0.15
+MIN_VOLATILITY = 0.08
+VOLUME_SPIKE_MIN = 1.20
+
 
 # =========================================================
-# YARDIMCI: API GÜVENLI ÇAĞRI
+# API SAFE
 # =========================================================
 
-def safe_api(func, *args, **kwargs):
+def safe_api_call(func, *args, **kwargs):
+
     global LAST_API_CALL
-    for attempt in range(5):
+
+    for _ in range(5):
+
         try:
-            now  = time.time()
-            wait = 0.35 - (now - LAST_API_CALL)
+
+            now = time.time()
+
+            wait = 0.3 - (
+                now - LAST_API_CALL
+            )
+
             if wait > 0:
                 time.sleep(wait)
+
             LAST_API_CALL = time.time()
-            return func(*args, **kwargs)
-        except ccxt.RateLimitExceeded:
-            time.sleep(3 * (attempt + 1))
-        except ccxt.NetworkError:
-            time.sleep(2)
+
+            return func(
+                *args,
+                **kwargs
+            )
+
         except Exception as e:
-            print(f"[API] Hata ({attempt+1}/5): {e}")
+
+            print("API ERROR:", e)
+
             time.sleep(2)
+
     return None
 
 # =========================================================
-# YARDIMCI: GÜN SIFIRLA
-# =========================================================
-
-def check_day_reset():
-    global daily_pnl, daily_trades, day_start
-    today = time.strftime("%Y-%m-%d")
-    if today != day_start:
-        daily_pnl    = 0.0
-        daily_trades = 0
-        day_start    = today
-        bot.send_message(CHAT_ID, "🌅 Yeni gün — günlük sayaçlar sıfırlandı.")
-
-# =========================================================
-# VERİ ÇEK
-# =========================================================
-
-def get_ohlcv(tf="1m", limit=150):
-    try:
-        raw = safe_api(exchange.fetch_ohlcv, SYMBOL, timeframe=tf, limit=limit)
-        if not raw or len(raw) < 30:
-            return None
-        df = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
-        return df
-    except Exception as e:
-        print(f"[DATA] {e}")
-        return None
-
-# =========================================================
-# TEKNİK GÖSTERGELER
-# =========================================================
-
-def compute_indicators(df):
-    c = df["c"]
-    h = df["h"]
-    l = df["l"]
-    v = df["v"]
-
-    # EMA
-    ema9  = c.ewm(span=9,  adjust=False).mean()
-    ema20 = c.ewm(span=20, adjust=False).mean()
-    ema50 = c.ewm(span=50, adjust=False).mean()
-
-    # RSI
-    delta = c.diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14).mean()
-    rs    = gain / loss.replace(0, np.nan)
-    rsi   = 100 - (100 / (1 + rs))
-
-    # MACD
-    macd_line   = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()
-    macd_hist   = macd_line - signal_line
-
-    # Bollinger Bantları
-    bb_mid   = c.rolling(20).mean()
-    bb_std   = c.rolling(20).std()
-    bb_upper = bb_mid + 2 * bb_std
-    bb_lower = bb_mid - 2 * bb_std
-    bb_width = (bb_upper - bb_lower) / bb_mid * 100
-
-    # ATR
-    tr = pd.concat([
-        h - l,
-        (h - c.shift()).abs(),
-        (l - c.shift()).abs()
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(14).mean()
-
-    # Hacim
-    vol_avg   = v.rolling(20).mean()
-    vol_ratio = v / vol_avg.replace(0, np.nan)
-
-    # Momentum & Volatilite
-    move_1 = (c.iloc[-1] - c.iloc[-2]) / c.iloc[-2] * 100
-    move_3 = (c.iloc[-1] - c.iloc[-4]) / c.iloc[-4] * 100
-    move_5 = (c.iloc[-1] - c.iloc[-6]) / c.iloc[-6] * 100
-
-    price       = c.iloc[-1]
-    low20       = c.tail(20).min()
-    high20      = c.tail(20).max()
-    range20     = high20 - low20
-
-    volatility  = (h.iloc[-1] - l.iloc[-1]) / price * 100
-
-    return {
-        "price":       price,
-        "ema9":        ema9.iloc[-1],
-        "ema20":       ema20.iloc[-1],
-        "ema50":       ema50.iloc[-1],
-        "rsi":         rsi.iloc[-1],
-        "macd_hist":   macd_hist.iloc[-1],
-        "bb_upper":    bb_upper.iloc[-1],
-        "bb_lower":    bb_lower.iloc[-1],
-        "bb_width":    bb_width.iloc[-1],
-        "atr":         atr.iloc[-1],
-        "vol_ratio":   vol_ratio.iloc[-1],
-        "move_1":      move_1,
-        "move_3":      move_3,
-        "move_5":      move_5,
-        "momentum":    abs(move_3),
-        "volatility":  volatility,
-        "low20":       low20,
-        "high20":      high20,
-        "range20":     range20,
-        "move_from_low":  (price - low20) / low20 * 100  if low20 > 0 else 0,
-        "move_from_high": (high20 - price) / high20 * 100 if high20 > 0 else 0,
-    }
-
-# =========================================================
-# AI: VERİ YÜKLE
+# LOAD AI DATA
 # =========================================================
 
 def load_ai_data():
+
     try:
-        rows = supabase.table("trades").select("*").execute()
+
+        rows = supabase.table(
+            "trades"
+        ).select("*").execute()
+
         data = rows.data
+
         if not data:
             return None
 
-        records = []
+        clean = []
+
         for r in data:
+
             try:
-                records.append({
-                    "momentum":    float(r.get("momentum")    or 0),
-                    "vol_ratio":   float(r.get("volume_ratio") or 0),
-                    "volatility":  float(r.get("volatility")  or 0),
-                    "move_1":      float(r.get("move_1")      or 0),
-                    "move_3":      float(r.get("move_3")      or 0),
-                    "move_5":      float(r.get("move_5")      or 0),
-                    "rsi":         float(r.get("rsi")         or 50),
-                    "macd_hist":   float(r.get("macd_hist")   or 0),
-                    "bb_width":    float(r.get("bb_width")    or 0),
-                    "result":      1 if float(r.get("pnl") or 0) > 0 else 0
+
+                clean.append({
+
+                    "momentum": float(
+                        r.get("momentum") or 0
+                    ),
+
+                    "volume_ratio": float(
+                        r.get("volume_ratio") or 0
+                    ),
+
+                    "volatility": float(
+                        r.get("volatility") or 0
+                    ),
+
+                    "move_1": float(
+                        r.get("move_1") or 0
+                    ),
+
+                    "move_3": float(
+                        r.get("move_3") or 0
+                    ),
+
+                    "result": 1 if float(
+                        r.get("pnl") or 0
+                    ) > 0 else 0
+
                 })
+
             except:
                 pass
 
-        if len(records) < MIN_TRAIN_SAMPLES:
-            return None
-
-        return pd.DataFrame(records)
+        return pd.DataFrame(clean)
 
     except Exception as e:
-        print(f"[AI-LOAD] {e}")
+
+        print("LOAD AI ERROR:", e)
+
         return None
 
 # =========================================================
-# AI: EĞİT
+# TRAIN AI
 # =========================================================
 
-FEATURE_COLS = [
-    "momentum","vol_ratio","volatility",
-    "move_1","move_3","move_5",
-    "rsi","macd_hist","bb_width"
-]
-
 def train_ai():
-    global ai_model, ai_accuracy
+
+    global ai_model
+
     try:
+
         df = load_ai_data()
+
         if df is None:
-            print("[AI] Yetersiz veri, eğitim atlandı.")
             return
 
-        X = df[FEATURE_COLS]
+        if len(df) < 50:
+
+            print("NOT ENOUGH AI DATA")
+
+            return
+
+        X = df[[
+
+            "momentum",
+            "volume_ratio",
+            "volatility",
+            "move_1",
+            "move_3"
+
+        ]]
+
         y = df["result"]
 
         model = RandomForestClassifier(
-            n_estimators=400,
-            max_depth=6,
-            min_samples_leaf=5,
-            random_state=42,
-            class_weight="balanced"
+
+            n_estimators=300,
+
+            max_depth=8,
+
+            random_state=42
+
         )
 
-        # Cross-validation ile gerçek accuracy ölç
-        scores = cross_val_score(model, X, y, cv=5, scoring="accuracy")
-        ai_accuracy = round(scores.mean() * 100, 1)
-
         model.fit(X, y)
+
         ai_model = model
 
-        print(f"[AI] Eğitim tamamlandı — CV Accuracy: %{ai_accuracy}")
-        bot.send_message(CHAT_ID, f"🧠 AI Güncellendi\n📊 Doğruluk: %{ai_accuracy}\n📁 Veri: {len(df)} işlem")
+        print("AI TRAINED")
 
     except Exception as e:
-        print(f"[AI-TRAIN] {e}")
+
+        print("TRAIN ERROR:", e)
 
 # =========================================================
-# AI: SKOR HESAPLA
+# GET DATA
 # =========================================================
 
-def get_ai_score(ind):
-    if ai_model is None:
-        return 55  # Model yokken düşük tut, işlem açmasın
+def get_data(tf="1m"):
 
     try:
-        feat = pd.DataFrame([[
-            ind["momentum"],
-            ind["vol_ratio"],
-            ind["volatility"],
-            ind["move_1"],
-            ind["move_3"],
-            ind["move_5"],
-            ind["rsi"],
-            ind["macd_hist"],
-            ind["bb_width"],
-        ]], columns=FEATURE_COLS)
 
-        proba = ai_model.predict_proba(feat)[0]
-        return round(max(proba) * 100)
+        ohlcv = safe_api_call(
+
+            exchange.fetch_ohlcv,
+
+            SYMBOL,
+
+            timeframe=tf,
+
+            limit=120
+
+        )
+
+        if not ohlcv:
+            return None
+
+        df = pd.DataFrame(
+
+            ohlcv,
+
+            columns=[
+
+                "t",
+                "o",
+                "h",
+                "l",
+                "c",
+                "v"
+
+            ]
+
+        )
+
+        return df
 
     except Exception as e:
-        print(f"[AI-SCORE] {e}")
-        return 50
+
+        print("DATA ERROR:", e)
+
+        return None
 
 # =========================================================
-# MULTI-AGENT SİSTEM V2
-# =========================================================
-
-def agent_trend(ind, ind5, ind15):
-    """Trend uyumu: 1m, 5m, 15m hizalı mı?"""
-    score = 0
-    price = ind["price"]
-
-    # 1m trend
-    if price > ind["ema20"]:   score += 15
-    if ind["ema9"] > ind["ema20"]: score += 10
-
-    # 5m trend
-    if ind5["price"] > ind5["ema20"]: score += 20
-    if ind5["ema9"] > ind5["ema20"]:  score += 10
-
-    # 15m trend (en ağırlıklı)
-    if ind15["price"] > ind15["ema20"]: score += 25
-    if ind15["ema9"] > ind15["ema20"]:  score += 20
-
-    return min(score, 100)
-
-def agent_trend_short(ind, ind5, ind15):
-    score = 0
-    price = ind["price"]
-
-    if price < ind["ema20"]:   score += 15
-    if ind["ema9"] < ind["ema20"]: score += 10
-    if ind5["price"] < ind5["ema20"]: score += 20
-    if ind5["ema9"] < ind5["ema20"]:  score += 10
-    if ind15["price"] < ind15["ema20"]: score += 25
-    if ind15["ema9"] < ind15["ema20"]:  score += 20
-
-    return min(score, 100)
-
-def agent_momentum(ind):
-    """Momentum & hacim gücü"""
-    score = 40
-    if ind["momentum"] >= 0.20:  score += 20
-    if ind["momentum"] >= 0.35:  score += 15
-    if ind["vol_ratio"] >= 1.5:  score += 15
-    if ind["vol_ratio"] >= 2.0:  score += 10
-    return min(score, 100)
-
-def agent_rsi(ind, signal):
-    """RSI filtreleme — aşırı alım/satım kontrolü"""
-    rsi = ind["rsi"]
-    if signal == "LONG":
-        if rsi < 30:   return 95   # Aşırı satım, güçlü LONG
-        if rsi < 50:   return 80
-        if rsi < 65:   return 65
-        if rsi < 75:   return 40
-        return 20                  # Aşırı alım, tehlikeli LONG
-    else:
-        if rsi > 70:   return 95
-        if rsi > 50:   return 80
-        if rsi > 35:   return 65
-        if rsi > 25:   return 40
-        return 20
-
-def agent_position(ind, signal):
-    """Geç giriş tespiti"""
-    score = 100
-    if signal == "LONG":
-        mfl = ind["move_from_low"]
-        if mfl > 1.5:  score -= 60
-        elif mfl > 1.0: score -= 35
-        elif mfl > 0.7: score -= 15
-    else:
-        mfh = ind["move_from_high"]
-        if mfh > 1.5:  score -= 60
-        elif mfh > 1.0: score -= 35
-        elif mfh > 0.7: score -= 15
-    return max(score, 0)
-
-def agent_risk_reward(ind, signal):
-    """Risk/Ödül oranı"""
-    if signal == "LONG":
-        risk   = max(ind["move_from_low"], 0.1)
-        reward = max(2.0 - ind["move_from_low"], 0.1)
-    else:
-        risk   = max(ind["move_from_high"], 0.1)
-        reward = max(2.0 - ind["move_from_high"], 0.1)
-
-    rr = reward / risk
-    if rr >= 3:   return 100
-    if rr >= 2:   return 85
-    if rr >= 1.5: return 70
-    if rr >= 1:   return 50
-    return 20
-
-def agent_macd(ind, signal):
-    """MACD histogram yönü"""
-    hist = ind["macd_hist"]
-    if signal == "LONG":
-        if hist > 0:   return 80
-        if hist > -5:  return 55
-        return 30
-    else:
-        if hist < 0:   return 80
-        if hist < 5:   return 55
-        return 30
-
-def decision(ind, ind5, ind15, signal, ai_score):
-    """Tüm ajanları birleştir"""
-    if signal == "LONG":
-        t = agent_trend(ind, ind5, ind15)
-    else:
-        t = agent_trend_short(ind, ind5, ind15)
-
-    m   = agent_momentum(ind)
-    r   = agent_rsi(ind, signal)
-    p   = agent_position(ind, signal)
-    rr  = agent_risk_reward(ind, signal)
-    mac = agent_macd(ind, signal)
-
-    # Ağırlıklı ortalama
-    final = round(
-        ai_score * 0.25 +
-        t        * 0.20 +
-        m        * 0.15 +
-        r        * 0.15 +
-        p        * 0.10 +
-        rr       * 0.10 +
-        mac      * 0.05
-    )
-
-    return final, {"trend": t, "momentum": m, "rsi": r,
-                   "position": p, "rr": rr, "macd": mac}
-
-# =========================================================
-# ANALİZ
+# ANALYZE
 # =========================================================
 
 def analyze():
-    df1  = get_ohlcv(TIMEFRAME_1M)
-    df5  = get_ohlcv(TIMEFRAME_5M)
-    df15 = get_ohlcv(TIMEFRAME_15M)
 
-    if df1 is None or df5 is None or df15 is None:
-        return None
+    global ai_model
 
     try:
-        ind   = compute_indicators(df1)
-        ind5  = compute_indicators(df5)
-        ind15 = compute_indicators(df15)
+
+        df = get_data(TIMEFRAME)
+
+        trend_df = get_data(TREND_TIMEFRAME)
+        trend15_df = get_data(TREND15_TIMEFRAME)
+
+        if df is None or trend_df is None or trend15_df is None:
+            return None
+
+        closes = df["c"]
+        volumes = df["v"]
+
+        trend_closes = trend_df["c"]
+        trend15_closes = trend15_df["c"]
+
+        ema9 = closes.ewm(span=9).mean()
+
+        ema20 = closes.ewm(span=20).mean()
+
+        trend_ema20 = trend_closes.ewm(span=20).mean()
+        trend15_ema20 = trend15_closes.ewm(span=20).mean()
+
+        price = closes.iloc[-1]
+
+        low20 = closes.tail(20).min()
+        high20 = closes.tail(20).max()
+
+        move_from_low = ((price - low20) / low20) * 100
+        move_from_high = ((high20 - price) / high20) * 100
+
+        move_1 = (
+
+            (
+                closes.iloc[-1]
+                -
+                closes.iloc[-2]
+            )
+
+            /
+
+            closes.iloc[-2]
+
+        ) * 100
+
+        move_3 = (
+
+            (
+                closes.iloc[-1]
+                -
+                closes.iloc[-4]
+            )
+
+            /
+
+            closes.iloc[-4]
+
+        ) * 100
+
+        momentum = abs(move_3)
+
+        volume_avg = (
+
+            volumes
+            .rolling(20)
+            .mean()
+            .iloc[-1]
+
+        )
+
+        if volume_avg <= 0:
+            return None
+
+        volume_ratio = (
+
+            volumes.iloc[-1]
+
+            /
+
+            volume_avg
+
+        )
+
+        volatility = (
+
+            (
+                df["h"].iloc[-1]
+                -
+                df["l"].iloc[-1]
+            )
+
+            /
+
+            price
+
+        ) * 100
+
+        # =================================================
+        # FILTERS
+        # =================================================
+
+        if volatility < 0.05:
+            return None
+
+        if volume_ratio < 1.30:
+            return None
+
+        # =================================================
+        # AI FILTER
+        # =================================================
+
+        ai_score = 70
+
+        if ai_model is not None:
+
+            features = [[
+
+                momentum,
+                volume_ratio,
+                volatility,
+                move_1,
+                move_3
+
+            ]]
+
+            features_df = pd.DataFrame(
+
+                features,
+
+                columns=[
+
+                    "momentum",
+                    "volume_ratio",
+                    "volatility",
+                    "move_1",
+                    "move_3"
+
+                ]
+
+            )
+
+            ai_score = max(
+
+                ai_model.predict_proba(
+                    features_df
+                )[0]
+
+            ) * 100
+
+        # =================================================
+        # LONG
+        # =================================================
+
+        if (
+
+            price > ema20.iloc[-1]
+
+            and
+
+            ema9.iloc[-1] > ema20.iloc[-1]
+
+            and
+
+            trend_closes.iloc[-1]
+            >
+            trend_ema20.iloc[-1]
+
+            and
+
+            trend15_closes.iloc[-1]
+            >
+            trend15_ema20.iloc[-1]
+
+            and
+
+            move_1 > 0
+
+        ):
+
+            return {
+
+                "signal": "LONG",
+
+                "score": round(ai_score),
+
+                "momentum": momentum,
+
+                "volume_ratio": volume_ratio,
+
+                "volatility": volatility,
+
+                "move_1": move_1,
+
+                "move_3": move_3,
+                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
+                "move_from_low": move_from_low,
+                "move_from_high": move_from_high
+
+            }
+
+        # =================================================
+        # SHORT
+        # =================================================
+
+        if (
+
+            price < ema20.iloc[-1]
+
+            and
+
+            ema9.iloc[-1] < ema20.iloc[-1]
+
+            and
+
+            trend_closes.iloc[-1]
+            <
+            trend_ema20.iloc[-1]
+
+            and
+
+            trend15_closes.iloc[-1]
+            <
+            trend15_ema20.iloc[-1]
+
+            and
+
+            move_1 < 0
+
+        ):
+
+            return {
+
+                "signal": "SHORT",
+
+                "score": round(ai_score),
+
+                "momentum": momentum,
+
+                "volume_ratio": volume_ratio,
+
+                "volatility": volatility,
+
+                "move_1": move_1,
+
+                "move_3": move_3,
+                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
+                "move_from_low": move_from_low,
+                "move_from_high": move_from_high
+
+            }
+
+        return None
+
     except Exception as e:
-        print(f"[IND] {e}")
+
+        print("ANALYZE ERROR:", e)
+
         return None
 
-    # --- Temel Filtreler ---
-    if ind["volatility"] < MIN_VOLATILITY:  return None
-    if ind["vol_ratio"]  < MIN_VOLUME_RATIO: return None
-    if ind["momentum"]   < MIN_MOMENTUM:    return None
-
-    # --- RSI Aşırı Bölge Kontrolü ---
-    rsi = ind["rsi"]
-    if not (20 < rsi < 80):
-        return None  # Çok aşırı bölgelerde işlem açma
-
-    # --- Sinyal Belirle ---
-    price  = ind["price"]
-    signal = None
-
-    long_cond = (
-        price > ind["ema20"]
-        and ind["ema9"] > ind["ema20"]
-        and ind5["price"] > ind5["ema20"]
-        and ind15["price"] > ind15["ema20"]
-        and ind["move_1"] > 0
-        and ind["macd_hist"] > -10
-        and rsi < 70
-    )
-
-    short_cond = (
-        price < ind["ema20"]
-        and ind["ema9"] < ind["ema20"]
-        and ind5["price"] < ind5["ema20"]
-        and ind15["price"] < ind15["ema20"]
-        and ind["move_1"] < 0
-        and ind["macd_hist"] < 10
-        and rsi > 30
-    )
-
-    if long_cond:
-        signal = "LONG"
-    elif short_cond:
-        signal = "SHORT"
-    else:
-        return None
-
-    # --- Fake Breakout Filtresi ---
-    last5_avg = df1["c"].tail(5).mean()
-    if signal == "LONG" and price < last5_avg:  return None
-    if signal == "SHORT" and price > last5_avg: return None
-
-    # --- AI Skoru ---
-    ai_score = get_ai_score(ind)
-    if ai_score < MIN_AI_SCORE:
-        return None
-
-    # --- Multi-Agent Karar ---
-    final_score, agents = decision(ind, ind5, ind15, signal, ai_score)
-
-    if final_score < MIN_FINAL_SCORE:
-        return None
-
-    return {
-        "signal":       signal,
-        "price":        price,
-        "ai_score":     ai_score,
-        "final_score":  final_score,
-        "agents":       agents,
-        "momentum":     ind["momentum"],
-        "vol_ratio":    ind["vol_ratio"],
-        "volatility":   ind["volatility"],
-        "rsi":          ind["rsi"],
-        "move_1":       ind["move_1"],
-        "move_3":       ind["move_3"],
-        "move_5":       ind["move_5"],
-        "macd_hist":    ind["macd_hist"],
-        "bb_width":     ind["bb_width"],
-        "atr":          ind["atr"],
-    }
 
 # =========================================================
-# POZİSYON BOYUTU
+# V1 HELPERS
+# =========================================================
+
+def market_ai_score(price, ema20, trend_price, trend_ema20):
+    score = 50
+
+    # LONG ve SHORT trendlerini eşit değerlendir
+    if price > ema20:
+        score += 15
+    
+    if trend_price > trend_ema20:
+        score += 20
+
+    return score
+
+def pullback_ok(price, ema9):
+    distance = abs(price - ema9) / price * 100
+    return distance <= PULLBACK_PERCENT
+
+
+
+# =========================================================
+# V4-A MULTI AGENT SYSTEM
+# =========================================================
+
+def trend_agent(result):
+    score = 50
+    if result["momentum"] >= 0.15:
+        score += 25
+    if result["volume_ratio"] >= 1.5:
+        score += 25
+    return min(score, 100)
+
+def market_agent(result):
+    return int(result.get("risk_score", 50))
+
+def whale_agent(result):
+    score = 50
+    if result["volume_ratio"] >= 2:
+        score += 25
+    if result["momentum"] >= 0.25:
+        score += 25
+    return min(score, 100)
+
+
+def risk_agent(result):
+
+    score = 50
+
+    move_low = result.get("move_from_low", 0)
+    move_high = result.get("move_from_high", 0)
+
+    if result["signal"] == "LONG":
+        risk = max(move_low, 0.1)
+        reward = max(2.0 - move_low, 0.1)
+    else:
+        risk = max(move_high, 0.1)
+        reward = max(2.0 - move_high, 0.1)
+
+    rr = reward / risk
+
+    if rr >= 3:
+        score = 100
+    elif rr >= 2:
+        score = 85
+    elif rr >= 1.5:
+        score = 70
+    elif rr >= 1:
+        score = 50
+    else:
+        score = 20
+
+    return score
+
+def position_agent(result):
+    score = 100
+    move_from_low = result.get("move_from_low", 0)
+    move_from_high = result.get("move_from_high", 0)
+
+    if result["signal"] == "LONG":
+        if move_from_low > 1.20:
+            score -= 50
+        elif move_from_low > 0.80:
+            score -= 25
+
+    if result["signal"] == "SHORT":
+        if move_from_high > 1.20:
+            score -= 50
+        elif move_from_high > 0.80:
+            score -= 25
+
+    return max(score, 0)
+
+def decision_agent(result):
+    t = trend_agent(result)
+    m = market_agent(result)
+    w = whale_agent(result)
+    p = position_agent(result)
+    r = risk_agent(result)
+    l = late_entry_agent(result)
+    final_score = round(((result["score"] + t + m + w + p + r + l) / 7))
+    return final_score, t, m, w, p, r, l
+
+
+# =========================================================
+# POSITION AGENT V2
+# =========================================================
+
+def late_entry_agent(result):
+    score = 100
+
+    move3 = abs(result.get("move_3", 0))
+    move_low = result.get("move_from_low", 0)
+    move_high = result.get("move_from_high", 0)
+
+    if result["signal"] == "LONG":
+        if move_low > 1.20:
+            score -= 60
+        elif move_low > 0.80:
+            score -= 35
+
+    if result["signal"] == "SHORT":
+        if move_high > 1.20:
+            score -= 60
+        elif move_high > 0.80:
+            score -= 35
+
+    if move3 > 0.80:
+        score -= 25
+
+    return max(score, 0)
+
+
+# =========================================================
+# REAL POSITION SIZE
 # =========================================================
 
 def get_real_size():
+
     try:
-        positions = safe_api(exchange.fetch_positions, [SYMBOL])
+
+        positions = safe_api_call(
+
+            exchange.fetch_positions,
+
+            [SYMBOL]
+
+        )
+
         if not positions:
             return 0
+
         for p in positions:
-            size = abs(float(p.get("contracts") or p.get("size") or 0))
+
+            size = (
+
+                p.get("contracts")
+
+                or
+
+                p.get("size")
+
+                or 0
+
+            )
+
+            size = abs(float(size))
+
             if size > 0:
                 return size
+
     except Exception as e:
-        print(f"[SIZE] {e}")
+
+        print("SIZE ERROR:", e)
+
     return 0
 
 # =========================================================
-# İŞLEM AÇ
+# OPEN TRADE
 # =========================================================
 
 def open_trade(data):
-    global bot_position, daily_trades
 
-    with _lock:
-        if bot_position:
-            return
+    global bot_position
+    global lock
+
+    if lock:
+        return
+
+    if bot_position:
+        return
+
+    lock = True
+
+    try:
+
         if get_real_size() > 0:
+
+            lock = False
             return
 
-        check_day_reset()
+        side = (
 
-        # --- Günlük Limitler ---
-        if daily_pnl <= MAX_DAILY_LOSS:
-            bot.send_message(CHAT_ID, "🛑 Günlük zarar limitine ulaşıldı. Bot bugün işlem açmıyor.")
+            "buy"
+
+            if data["signal"] == "LONG"
+
+            else "sell"
+
+        )
+
+        safe_api_call(
+
+            exchange.set_leverage,
+
+            LEVERAGE,
+
+            SYMBOL
+
+        )
+
+        ticker = safe_api_call(
+
+            exchange.fetch_ticker,
+
+            SYMBOL
+
+        )
+
+        if not ticker:
+
+            lock = False
             return
-        if daily_trades >= MAX_DAILY_TRADES:
-            bot.send_message(CHAT_ID, "🛑 Günlük max işlem sayısına ulaşıldı.")
+
+        price = ticker["last"]
+
+        amount = (
+
+            MARGIN * LEVERAGE
+
+        ) / price
+
+        amount = float(
+
+            exchange.amount_to_precision(
+
+                SYMBOL,
+
+                amount
+
+            )
+
+        )
+
+        order = safe_api_call(
+
+            exchange.create_market_order,
+
+            SYMBOL,
+
+            side,
+
+            amount
+
+        )
+
+        if not order:
+
+            lock = False
             return
 
-        try:
-            side = "buy" if data["signal"] == "LONG" else "sell"
+        entry = order.get("average") or price
 
-            safe_api(exchange.set_leverage, LEVERAGE, SYMBOL)
+        bot_position = {
 
-            ticker = safe_api(exchange.fetch_ticker, SYMBOL)
-            if not ticker:
-                return
+            "type": data["signal"],
 
-            price  = ticker["last"]
-            amount = (MARGIN * LEVERAGE) / price
-            amount = float(exchange.amount_to_precision(SYMBOL, amount))
+            "entry": float(entry),
 
-            order = safe_api(exchange.create_market_order, SYMBOL, side, amount)
-            if not order:
-                return
+            "max_pnl": 0,
 
-            entry = float(order.get("average") or price)
+            "tp1_done": False,
 
-            bot_position = {
-                "type":      data["signal"],
-                "entry":     entry,
-                "max_pnl":   0.0,
-                "tp1_done":  False,
-                "tp2_done":  False,
-                "open_time": time.time(),
-                "ai_score":  data["ai_score"],
-                "features": {k: data[k] for k in [
-                    "momentum","vol_ratio","volatility",
-                    "move_1","move_3","move_5",
-                    "rsi","macd_hist","bb_width"
-                ]}
+            "open_time": time.time(),
+
+            "ai_score": data["score"],
+
+            "features": {
+
+                "momentum": data["momentum"],
+
+                "volume_ratio": data["volume_ratio"],
+
+                "volatility": data["volatility"],
+
+                "move_1": data["move_1"],
+
+                "move_3": data["move_3"]
+
             }
 
-            daily_trades += 1
+        }
 
-            ag = data["agents"]
-            bot.send_message(CHAT_ID, f"""
-🚀 İŞLEM AÇILDI
+        bot.send_message(
 
-📈 Yön: {data['signal']}
-💰 Giriş: {round(entry, 2)} USDT
-⚡ Kaldıraç: {LEVERAGE}x
-🧠 AI Skoru: %{data['ai_score']}
-🎯 Final Skor: %{data['final_score']}
+            CHAT_ID,
 
-📊 Ajan Skorları:
-  Trend:    %{ag['trend']}
-  Momentum: %{ag['momentum']}
-  RSI:      %{ag['rsi']}
-  Pozisyon: %{ag['position']}
-  R/R:      %{ag['rr']}
-  MACD:     %{ag['macd']}
+            f"""
 
-📉 RSI: {round(data['rsi'], 1)}
-🌪 Volatilite: {round(data['volatility'], 2)}%
-📦 Hacim Oranı: {round(data['vol_ratio'], 2)}x
-📅 Günlük İşlem: {daily_trades}/{MAX_DAILY_TRADES}
-""")
+🚀 BTC SCALP OPEN
 
-        except Exception as e:
-            print(f"[OPEN] {e}")
+📈 {data['signal']}
+
+🔥 AI SCORE:
+%{data['score']}
+
+💰 ENTRY:
+{round(entry,2)}
+
+⚡ LEVERAGE:
+{LEVERAGE}X
+
+"""
+
+        )
+
+    except Exception as e:
+
+        print("OPEN ERROR:", e)
+
+    lock = False
 
 # =========================================================
-# İŞLEM KAYDET
+# SAVE MEMORY
 # =========================================================
 
-def save_trade(pnl):
+def save_trade_memory(pnl):
+
     try:
+
         if not bot_position:
             return
-        f = bot_position["features"]
-        supabase.table("trades").insert({
-            "symbol":       SYMBOL,
-            "signal":       bot_position["type"],
-            "momentum":     f["momentum"],
-            "volume_ratio": f["vol_ratio"],
-            "volatility":   f["volatility"],
-            "move_1":       f["move_1"],
-            "move_3":       f["move_3"],
-            "move_5":       f["move_5"],
-            "rsi":          f["rsi"],
-            "macd_hist":    f["macd_hist"],
-            "bb_width":     f["bb_width"],
-            "pnl":          pnl,
-            "ai_score":     bot_position["ai_score"],
+
+        features = bot_position["features"]
+
+        supabase.table(
+            "trades"
+        ).insert({
+
+            "symbol": SYMBOL,
+
+            "signal": bot_position["type"],
+
+            "momentum": features["momentum"],
+
+            "volume_ratio": features["volume_ratio"],
+
+            "volatility": features["volatility"],
+
+            "move_1": features["move_1"],
+
+            "move_3": features["move_3"],
+
+            "pnl": pnl,
+
+            "ai_score": bot_position["ai_score"]
+
         }).execute()
+
     except Exception as e:
-        print(f"[SAVE] {e}")
+
+        print("SAVE ERROR:", e)
 
 # =========================================================
-# İŞLEM KAPAT
+# CLOSE TRADE
 # =========================================================
 
 def close_trade(reason):
-    global bot_position, daily_pnl
+
+    global bot_position
 
     try:
+
         if not bot_position:
             return
 
-        side = "sell" if bot_position["type"] == "LONG" else "buy"
+        side = (
+
+            "sell"
+
+            if bot_position["type"] == "LONG"
+
+            else "buy"
+
+        )
+
         size = get_real_size()
 
         if size > 0:
-            safe_api(
+
+            safe_api_call(
+
                 exchange.create_market_order,
-                SYMBOL, side, size,
-                params={"reduceOnly": True}
+
+                SYMBOL,
+
+                side,
+
+                size,
+
+                params={
+
+                    "reduceOnly": True
+
+                }
+
             )
 
-        ticker = safe_api(exchange.fetch_ticker, SYMBOL)
-        pnl    = 0.0
+        ticker = safe_api_call(
+
+            exchange.fetch_ticker,
+
+            SYMBOL
+
+        )
+
+        pnl = 0
 
         if ticker:
-            cp = ticker["last"]
+
+            current_price = ticker["last"]
+
             if bot_position["type"] == "LONG":
-                pnl_pct = (cp - bot_position["entry"]) / bot_position["entry"] * 100
+
+                pnl_percent = (
+
+                    (
+                        current_price
+                        -
+                        bot_position["entry"]
+                    )
+
+                    /
+
+                    bot_position["entry"]
+
+                ) * 100
+
             else:
-                pnl_pct = (bot_position["entry"] - cp) / bot_position["entry"] * 100
-            pnl = (pnl_pct / 100) * (MARGIN * LEVERAGE)
 
-        daily_pnl += pnl
+                pnl_percent = (
 
-        save_trade(pnl)
+                    (
+                        bot_position["entry"]
+                        -
+                        current_price
+                    )
+
+                    /
+
+                    bot_position["entry"]
+
+                ) * 100
+
+            pnl = (
+
+                pnl_percent / 100
+
+            ) * (
+
+                MARGIN * LEVERAGE
+
+            )
+
+        save_trade_memory(pnl)
+
         train_ai()
 
-        emoji = "✅" if pnl > 0 else "❌"
-        bot.send_message(CHAT_ID, f"""
-{emoji} İŞLEM KAPANDI
+        bot.send_message(
 
-📌 Neden: {reason}
-💰 PNL: {round(pnl, 3)} USDT
-📅 Günlük PNL: {round(daily_pnl, 3)} USDT
-""")
+            CHAT_ID,
+
+            f"""
+
+❌ BTC SCALP CLOSED
+
+📉 {reason}
+
+💰 PNL:
+{round(pnl,2)} USDT
+
+"""
+
+        )
 
         bot_position = None
 
     except Exception as e:
-        print(f"[CLOSE] {e}")
+
+        print("CLOSE ERROR:", e)
 
 # =========================================================
-# POZİSYON YÖNETİCİSİ
+# POSITION MANAGER
 # =========================================================
 
 def manage():
+
     global bot_position
 
     while True:
+
         try:
+
             if not bot_position:
+
                 time.sleep(3)
                 continue
 
-            # Manuel kapatma kontrolü
             real_size = get_real_size()
+
             if real_size <= 0:
-                save_trade(0)
-                bot.send_message(CHAT_ID, "🧠 Manuel kapatma tespit edildi.")
+
+                save_trade_memory(0)
+
+                train_ai()
+
+                bot.send_message(
+
+                    CHAT_ID,
+
+                    "🧠 MANUAL CLOSE DETECTED"
+
+                )
+
                 bot_position = None
+
                 time.sleep(2)
+
                 continue
 
-            ticker = safe_api(exchange.fetch_ticker, SYMBOL)
+            ticker = safe_api_call(
+
+                exchange.fetch_ticker,
+
+                SYMBOL
+
+            )
+
             if not ticker:
+
                 time.sleep(2)
                 continue
 
             price = ticker["last"]
 
-            # PNL hesapla
             if bot_position["type"] == "LONG":
-                pnl_pct = (price - bot_position["entry"]) / bot_position["entry"] * 100
+
+                pnl_percent = (
+
+                    (
+                        price
+                        -
+                        bot_position["entry"]
+                    )
+
+                    /
+
+                    bot_position["entry"]
+
+                ) * 100
+
             else:
-                pnl_pct = (bot_position["entry"] - price) / bot_position["entry"] * 100
 
-            pnl = (pnl_pct / 100) * (MARGIN * LEVERAGE)
+                pnl_percent = (
 
-            # Max PNL güncelle
+                    (
+                        bot_position["entry"]
+                        -
+                        price
+                    )
+
+                    /
+
+                    bot_position["entry"]
+
+                ) * 100
+
+            pnl = (
+
+                pnl_percent / 100
+
+            ) * (
+
+                MARGIN * LEVERAGE
+
+            )
+
+            # =============================================
+            # MAX PNL
+            # =============================================
+
             if pnl > bot_position["max_pnl"]:
+
                 bot_position["max_pnl"] = pnl
+
             max_pnl = bot_position["max_pnl"]
 
-            # --- Dinamik Profit Lock ---
-            for threshold, floor in reversed(LOCK_LEVELS):
-                if max_pnl >= threshold and pnl <= floor:
-                    close_trade(f"PROFIT LOCK (max:{round(max_pnl,2)}, şu an:{round(pnl,2)})")
-                    break
-            else:
+            # =============================================
+            # RISK MANAGER V2
+            # =============================================
 
-                # --- Stop Loss ---
-                if pnl <= STOP_LOSS_USDT:
-                    close_trade("STOP LOSS")
-                    continue
+            # Dynamic Net Profit Lock
+            if max_pnl >= 0.25 and pnl <= 0.15:
+                close_trade("MIN NET PROFIT LOCK")
+                continue
 
-                # --- Trailing Stop ---
-                if max_pnl >= TRAIL_TRIGGER and pnl <= TRAIL_STOP:
-                    close_trade("TRAILING STOP")
-                    continue
+            if max_pnl >= 0.50 and pnl <= 0.30:
+                close_trade("DYNAMIC PROFIT LOCK 0.30")
+                continue
 
-                # --- TP1 Bildirim ---
-                if pnl >= TP1_USDT and not bot_position["tp1_done"]:
-                    bot_position["tp1_done"] = True
-                    bot.send_message(CHAT_ID, f"✅ TP1 HIT — {round(pnl,2)} USDT")
+            if max_pnl >= 1.00 and pnl <= 0.60:
+                close_trade("DYNAMIC PROFIT LOCK 0.60")
+                continue
 
-                # --- TP2 Bildirim ---
-                if pnl >= TP2_USDT and not bot_position["tp2_done"]:
-                    bot_position["tp2_done"] = True
-                    bot.send_message(CHAT_ID, f"🎯 TP2 HIT — {round(pnl,2)} USDT")
+            # =============================================
+            # TP1
+            # =============================================
 
-                # --- Mega TP ---
-                if pnl >= MEGA_TP_USDT:
-                    close_trade("MEGA TAKE PROFIT")
-                    continue
+            if (
 
-                # --- Zaman Limiti (90 dk) ---
-                elapsed = time.time() - bot_position["open_time"]
-                if elapsed > 90 * 60 and pnl > 0:
-                    close_trade("ZAMAN LİMİTİ (kârda)")
-                    continue
+                pnl >= TP1_USDT
+
+                and
+
+                not bot_position["tp1_done"]
+
+            ):
+
+                bot_position["tp1_done"] = True
+
+                bot.send_message(
+
+                    CHAT_ID,
+
+                    f"""
+
+✅ TP1 HIT
+
+💰 PROFIT:
+{round(pnl,2)} USDT
+
+"""
+
+                )
+
+            # =============================================
+            # STOP LOSS
+            # =============================================
+
+            if pnl <= STOP_LOSS:
+
+                close_trade(
+                    "STOP LOSS"
+                )
+
+                continue
+
+            # =============================================
+            # TRAILING
+            # =============================================
+
+            if (
+
+                max_pnl >= TRAIL_TRIGGER
+
+                and
+
+                pnl <= TRAIL_STOP
+
+            ):
+
+                close_trade(
+                    "TRAILING STOP"
+                )
+
+                continue
+
+            # =============================================
+            # MEGA TP
+            # =============================================
+
+            if pnl >= MEGA_TP:
+
+                close_trade(
+                    "MEGA TAKE PROFIT"
+                )
+
+                continue
 
             time.sleep(3)
 
         except Exception as e:
-            print(f"[MANAGE] {e}")
+
+            print("MANAGER ERROR:", e)
+
             time.sleep(5)
 
 # =========================================================
-# TARAYICI
+# SCANNER
 # =========================================================
 
 def scanner():
+
     global bot_position
 
     while True:
-        try:
-            check_day_reset()
 
-            # Günlük zarar limiti
-            if daily_pnl <= MAX_DAILY_LOSS:
-                time.sleep(60)
-                continue
+        try:
 
             if bot_position:
-                time.sleep(5)
+
+                time.sleep(3)
                 continue
 
             result = analyze()
 
             if not result:
-                time.sleep(8)
+
+                time.sleep(5)
                 continue
 
-            open_trade(result)
-            time.sleep(15)
+            bot.send_message(
+
+                CHAT_ID,
+
+                f"""
+
+🧠 BTC SCALP SIGNAL
+
+📈 {result['signal']}
+
+🔥 AI SCORE:
+%{round(result['score'])}
+
+⚡ MOMENTUM:
+{round(result['momentum'],2)}
+
+📊 VOLUME:
+{round(result['volume_ratio'],2)}X
+
+🌪 VOLATILITY:
+{round(result['volatility'],2)}%
+
+"""
+
+            )
+
+            if result["volume_ratio"] < VOLUME_SPIKE_MIN:
+                time.sleep(5)
+                continue
+
+            if result.get("risk_score", 0) < MARKET_AI_MIN_SCORE:
+                time.sleep(5)
+                continue
+
+            if result["momentum"] < MIN_MOMENTUM:
+                continue
+
+            if result["volatility"] < MIN_VOLATILITY:
+                continue
+
+            # V2.5 Fake breakout filter
+            df_check = get_data(TIMEFRAME)
+            if df_check is not None and len(df_check) > 5:
+                last_close = df_check["c"].iloc[-1]
+                avg_close = df_check["c"].tail(5).mean()
+
+                if result["signal"] == "LONG" and last_close < avg_close:
+                    continue
+
+                if result["signal"] == "SHORT" and last_close > avg_close:
+                    continue
+
+            final_score, trend_ai, market_ai, whale_ai, position_ai, risk_ai, late_ai = decision_agent(result)
+
+            bot.send_message(
+                CHAT_ID,
+                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nRisk AI: %{risk_ai}\nLate Entry AI: %{late_ai}\nFinal Score: %{final_score}"
+            )
+
+            if result["score"] < 75:
+                continue
+
+            if final_score >= 75:
+
+                open_trade(result)
+
+            time.sleep(10)
 
         except Exception as e:
-            print(f"[SCANNER] {e}")
+
+            print("SCANNER ERROR:", e)
+
             time.sleep(5)
 
 # =========================================================
-# BAŞLAT
+# START
 # =========================================================
 
-print("Bot başlatılıyor...")
 train_ai()
 
-threading.Thread(target=scanner, daemon=True).start()
-threading.Thread(target=manage,  daemon=True).start()
+threading.Thread(
 
-bot.send_message(CHAT_ID, f"""
-🚀 BTC SCALP PRO V2 BAŞLADI
+    target=scanner,
 
-📊 Sembol: {SYMBOL}
-⚡ Kaldıraç: {LEVERAGE}x
-💰 Margin/İşlem: {MARGIN} USDT
-🧠 AI Modeli: {'Aktif' if ai_model else 'Veri bekleniyor'}
-🎯 Min Final Skor: %{MIN_FINAL_SCORE}
+    daemon=True
 
-🛑 Stop Loss: {STOP_LOSS_USDT} USDT
-✅ TP1: {TP1_USDT} USDT
-🎯 TP2: {TP2_USDT} USDT
-🚀 Mega TP: {MEGA_TP_USDT} USDT
-📅 Günlük Zarar Limiti: {MAX_DAILY_LOSS} USDT
-""")
+).start()
+
+threading.Thread(
+
+    target=manage,
+
+    daemon=True
+
+).start()
+
+bot.send_message(
+
+    CHAT_ID,
+
+    f"""
+
+🚀 SADIK BTC SCALP AI STARTED
+
+📊 SYMBOL:
+{SYMBOL}
+
+⚡ LEVERAGE:
+{LEVERAGE}X
+
+💰 TP1:
+{TP1_USDT} USDT
+
+🛑 SL:
+{STOP_LOSS} USDT
+
+🧠 AI:
+ACTIVE
+
+"""
+
+)
 
 # =========================================================
 # POLLING
 # =========================================================
 
 while True:
+
     try:
-        bot.infinity_polling(timeout=30, long_polling_timeout=30)
+
+        bot.infinity_polling(
+
+            timeout=30,
+
+            long_polling_timeout=30
+
+        )
+
     except Exception as e:
-        print(f"[POLLING] {e}")
+
+        print("POLLING ERROR:", e)
+
         time.sleep(5)
