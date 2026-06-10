@@ -78,7 +78,7 @@ TRAIL_TRIGGER = 0.50   # bu kara ulasinca trailing baslar
 TRAIL_STOP    = 0.30   # max_pnl'den bu kadar dusunce kapat
 
 # Stop loss
-STOP_LOSS = -0.50   # maksimum zarar
+STOP_LOSS = -0.20   # maksimum zarar
 
 # Breakeven ve kilitler
 BREAKEVEN_TRIGGER = 0.20   # bu kara ulasinca 0'in altinda kapat
