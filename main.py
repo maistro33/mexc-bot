@@ -1,5 +1,6 @@
 # =========================================================
-# SADIK BTC SCALP AI PRO
+# SADIK SCALP AI PRO — INJ & ZEC
+# Surekli islem acar, en iyi risk ayarlari
 # =========================================================
 
 import ccxt
@@ -16,21 +17,25 @@ from sklearn.ensemble import RandomForestClassifier
 # TELEGRAM
 # =========================================================
 
-TOKEN = os.getenv("TELE_TOKEN")
+TOKEN   = os.getenv("TELE_TOKEN")
 CHAT_ID = int(os.getenv("MY_CHAT_ID"))
 
 bot = telebot.TeleBot(TOKEN)
+
+def tg(msg: str):
+    """Guvenli mesaj gonder."""
+    try:
+        bot.send_message(CHAT_ID, msg)
+    except Exception as e:
+        print(f"[TG] {e}")
 
 # =========================================================
 # SUPABASE
 # =========================================================
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
 supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
 )
 
 # =========================================================
@@ -38,1404 +43,542 @@ supabase = create_client(
 # =========================================================
 
 exchange = ccxt.bitget({
-
-    "apiKey": os.getenv("BITGET_API"),
-    "secret": os.getenv("BITGET_SEC"),
+    "apiKey":   os.getenv("BITGET_API"),
+    "secret":   os.getenv("BITGET_SEC"),
     "password": os.getenv("BITGET_PASS"),
-
     "enableRateLimit": True,
-
-    "options": {
-
-        "defaultType": "swap"
-
-    }
-
+    "options": {"defaultType": "swap"},
 })
 
 # =========================================================
-# SETTINGS
+# SEMBOLLER — INJ ve ZEC surekli dongusel islem
 # =========================================================
 
-SYMBOL = "BTC/USDT:USDT"
+SYMBOLS = [
+    "INJ/USDT:USDT",
+    "ZEC/USDT:USDT",
+]
 
-TIMEFRAME = "1m"
-
+TIMEFRAME       = "1m"
 TREND_TIMEFRAME = "5m"
-TREND15_TIMEFRAME = "15m"
 
-MARGIN = 2
+# =========================================================
+# RISK AYARLARI (optimize edilmis)
+# =========================================================
 
-LEVERAGE = 20
+MARGIN   = 3      # her islem icin USDT marjin
+LEVERAGE = 15     # kaldırac — INJ/ZEC volatil, 15x dengeli
 
-NET_PROFIT_TARGET = 0.30
-FEE_BUFFER = 0.06
-TP1_USDT = NET_PROFIT_TARGET + FEE_BUFFER
+# Kar hedefleri (USDT net)
+TP1_USDT   = 0.40    # ilk TP bildirimi
+MEGA_TP    = 2.00    # tam kapat
 
-TRAIL_TRIGGER = 0.40
+# Trailing stop
+TRAIL_TRIGGER = 0.50   # bu kara ulasinca trailing baslar
+TRAIL_STOP    = 0.30   # max_pnl'den bu kadar dusunce kapat
 
-TRAIL_STOP = 0.30
+# Stop loss
+STOP_LOSS = -0.50   # maksimum zarar
 
-STOP_LOSS = -0.45
+# Breakeven ve kilitler
+BREAKEVEN_TRIGGER = 0.20   # bu kara ulasinca 0'in altinda kapat
+LOCK1_TRIGGER     = 0.40   # bu karda en az 0.15 kilitle
+LOCK1_FLOOR       = 0.15
+LOCK2_TRIGGER     = 0.70   # bu karda en az 0.35 kilitle
+LOCK2_FLOOR       = 0.35
 
-MEGA_TP = 1.50
+# AI ve filtreler
+MARKET_AI_MIN  = 60
+MIN_MOMENTUM   = 0.10
+MIN_VOLATILITY = 0.06
+VOLUME_MIN     = 1.20
 
-bot_position = None
+# =========================================================
+# GLOBAL STATE — her sembol icin ayri
+# =========================================================
 
-ai_model = None
-
-LAST_API_CALL = 0
-
-lock = False
-
-# ================= V1 AI FILTERS =================
-PULLBACK_PERCENT = 0.03
-MARKET_AI_MIN_SCORE = 65
-MIN_MOMENTUM = 0.15
-MIN_VOLATILITY = 0.08
-VOLUME_SPIKE_MIN = 1.20
-
+positions: dict = {s: None for s in SYMBOLS}   # sembol -> pozisyon dict
+ai_models: dict = {s: None for s in SYMBOLS}   # sembol -> model
+locks:     dict = {s: False for s in SYMBOLS}
+LAST_API   = 0
 
 # =========================================================
 # API SAFE
 # =========================================================
 
-def safe_api_call(func, *args, **kwargs):
-
-    global LAST_API_CALL
-
+def safe_api(func, *args, **kwargs):
+    global LAST_API
     for _ in range(5):
-
         try:
-
-            now = time.time()
-
-            wait = 0.3 - (
-                now - LAST_API_CALL
-            )
-
+            wait = 0.35 - (time.time() - LAST_API)
             if wait > 0:
                 time.sleep(wait)
-
-            LAST_API_CALL = time.time()
-
-            return func(
-                *args,
-                **kwargs
-            )
-
+            LAST_API = time.time()
+            return func(*args, **kwargs)
         except Exception as e:
-
-            print("API ERROR:", e)
-
+            print(f"[API] {e}")
             time.sleep(2)
-
     return None
 
 # =========================================================
-# LOAD AI DATA
+# AI — her sembol icin ayri model
 # =========================================================
 
-def load_ai_data():
-
+def load_ai_data(symbol: str):
     try:
-
-        rows = supabase.table(
-            "trades"
-        ).select("*").execute()
-
-        data = rows.data
-
-        if not data:
-            return None
-
+        rows = supabase.table("trades").select("*").eq("symbol", symbol).execute()
         clean = []
-
-        for r in data:
-
+        for r in rows.data or []:
             try:
-
                 clean.append({
-
-                    "momentum": float(
-                        r.get("momentum") or 0
-                    ),
-
-                    "volume_ratio": float(
-                        r.get("volume_ratio") or 0
-                    ),
-
-                    "volatility": float(
-                        r.get("volatility") or 0
-                    ),
-
-                    "move_1": float(
-                        r.get("move_1") or 0
-                    ),
-
-                    "move_3": float(
-                        r.get("move_3") or 0
-                    ),
-
-                    "result": 1 if float(
-                        r.get("pnl") or 0
-                    ) > 0 else 0
-
+                    "momentum":     float(r.get("momentum")     or 0),
+                    "volume_ratio": float(r.get("volume_ratio") or 0),
+                    "volatility":   float(r.get("volatility")   or 0),
+                    "move_1":       float(r.get("move_1")       or 0),
+                    "move_3":       float(r.get("move_3")       or 0),
+                    "result":       1 if float(r.get("pnl") or 0) > 0 else 0,
                 })
-
-            except:
+            except Exception:
                 pass
-
-        return pd.DataFrame(clean)
-
+        return pd.DataFrame(clean) if clean else None
     except Exception as e:
-
-        print("LOAD AI ERROR:", e)
-
+        print(f"[AI LOAD] {e}")
         return None
 
-# =========================================================
-# TRAIN AI
-# =========================================================
 
-def train_ai():
-
-    global ai_model
-
+def train_ai(symbol: str):
+    global ai_models
     try:
-
-        df = load_ai_data()
-
-        if df is None:
+        df = load_ai_data(symbol)
+        if df is None or len(df) < 30:
+            print(f"[AI] {symbol} veri yetersiz ({0 if df is None else len(df)})")
             return
-
-        if len(df) < 50:
-
-            print("NOT ENOUGH AI DATA")
-
-            return
-
-        X = df[[
-
-            "momentum",
-            "volume_ratio",
-            "volatility",
-            "move_1",
-            "move_3"
-
-        ]]
-
+        X = df[["momentum","volume_ratio","volatility","move_1","move_3"]]
         y = df["result"]
-
-        model = RandomForestClassifier(
-
-            n_estimators=300,
-
-            max_depth=8,
-
-            random_state=42
-
-        )
-
-        model.fit(X, y)
-
-        ai_model = model
-
-        print("AI TRAINED")
-
+        m = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42)
+        m.fit(X, y)
+        ai_models[symbol] = m
+        print(f"[AI] {symbol} egitildi ({len(df)} kayit)")
     except Exception as e:
+        print(f"[AI TRAIN] {e}")
 
-        print("TRAIN ERROR:", e)
 
-# =========================================================
-# GET DATA
-# =========================================================
-
-def get_data(tf="1m"):
-
+def ai_score(symbol: str, features: dict) -> int:
+    model = ai_models.get(symbol)
+    if model is None:
+        return 70   # varsayilan
     try:
+        df = pd.DataFrame([features])
+        prob = model.predict_proba(df)[0]
+        return int(max(prob) * 100)
+    except Exception:
+        return 70
 
-        ohlcv = safe_api_call(
+# =========================================================
+# VERI CEKME
+# =========================================================
 
-            exchange.fetch_ohlcv,
-
-            SYMBOL,
-
-            timeframe=tf,
-
-            limit=120
-
-        )
-
+def get_data(symbol: str, tf: str):
+    try:
+        ohlcv = safe_api(exchange.fetch_ohlcv, symbol, timeframe=tf, limit=120)
         if not ohlcv:
             return None
-
-        df = pd.DataFrame(
-
-            ohlcv,
-
-            columns=[
-
-                "t",
-                "o",
-                "h",
-                "l",
-                "c",
-                "v"
-
-            ]
-
-        )
-
-        return df
-
+        return pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
     except Exception as e:
-
-        print("DATA ERROR:", e)
-
+        print(f"[DATA] {e}")
         return None
 
 # =========================================================
-# ANALYZE
+# ANALİZ
 # =========================================================
 
-def analyze():
-
-    global ai_model
-
+def analyze(symbol: str):
     try:
-
-        df = get_data(TIMEFRAME)
-
-        trend_df = get_data(TREND_TIMEFRAME)
-        trend15_df = get_data(TREND15_TIMEFRAME)
-
-        if df is None or trend_df is None or trend15_df is None:
+        df      = get_data(symbol, TIMEFRAME)
+        df_trend = get_data(symbol, TREND_TIMEFRAME)
+        if df is None or df_trend is None:
             return None
 
-        closes = df["c"]
+        closes  = df["c"]
         volumes = df["v"]
+        tc      = df_trend["c"]
 
-        trend_closes = trend_df["c"]
-        trend15_closes = trend15_df["c"]
+        ema9     = closes.ewm(span=9).mean()
+        ema20    = closes.ewm(span=20).mean()
+        t_ema20  = tc.ewm(span=20).mean()
 
-        ema9 = closes.ewm(span=9).mean()
-
-        ema20 = closes.ewm(span=20).mean()
-
-        trend_ema20 = trend_closes.ewm(span=20).mean()
-        trend15_ema20 = trend15_closes.ewm(span=20).mean()
-
-        price = closes.iloc[-1]
-
-        low20 = closes.tail(20).min()
-        high20 = closes.tail(20).max()
-
-        move_from_low = ((price - low20) / low20) * 100
-        move_from_high = ((high20 - price) / high20) * 100
-
-        move_1 = (
-
-            (
-                closes.iloc[-1]
-                -
-                closes.iloc[-2]
-            )
-
-            /
-
-            closes.iloc[-2]
-
-        ) * 100
-
-        move_3 = (
-
-            (
-                closes.iloc[-1]
-                -
-                closes.iloc[-4]
-            )
-
-            /
-
-            closes.iloc[-4]
-
-        ) * 100
-
+        price   = closes.iloc[-1]
+        move_1  = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100
+        move_3  = (closes.iloc[-1] - closes.iloc[-4]) / closes.iloc[-4] * 100
         momentum = abs(move_3)
 
-        volume_avg = (
-
-            volumes
-            .rolling(20)
-            .mean()
-            .iloc[-1]
-
-        )
-
-        if volume_avg <= 0:
+        vol_avg  = volumes.rolling(20).mean().iloc[-1]
+        if vol_avg <= 0:
             return None
+        vol_ratio   = volumes.iloc[-1] / vol_avg
+        volatility  = (df["h"].iloc[-1] - df["l"].iloc[-1]) / price * 100
 
-        volume_ratio = (
+        # Temel filtreler
+        if volatility  < MIN_VOLATILITY: return None
+        if vol_ratio   < VOLUME_MIN:     return None
+        if momentum    < MIN_MOMENTUM:   return None
 
-            volumes.iloc[-1]
+        feats = {
+            "momentum":     momentum,
+            "volume_ratio": vol_ratio,
+            "volatility":   volatility,
+            "move_1":       move_1,
+            "move_3":       move_3,
+        }
 
-            /
+        score = ai_score(symbol, feats)
 
-            volume_avg
+        # Fake breakout filtresi
+        avg5 = closes.tail(5).mean()
 
-        )
-
-        volatility = (
-
-            (
-                df["h"].iloc[-1]
-                -
-                df["l"].iloc[-1]
-            )
-
-            /
-
-            price
-
-        ) * 100
-
-        # =================================================
-        # FILTERS
-        # =================================================
-
-        if volatility < 0.05:
-            return None
-
-        if volume_ratio < 1.30:
-            return None
-
-        # =================================================
-        # AI FILTER
-        # =================================================
-
-        ai_score = 70
-
-        if ai_model is not None:
-
-            features = [[
-
-                momentum,
-                volume_ratio,
-                volatility,
-                move_1,
-                move_3
-
-            ]]
-
-            features_df = pd.DataFrame(
-
-                features,
-
-                columns=[
-
-                    "momentum",
-                    "volume_ratio",
-                    "volatility",
-                    "move_1",
-                    "move_3"
-
-                ]
-
-            )
-
-            ai_score = max(
-
-                ai_model.predict_proba(
-                    features_df
-                )[0]
-
-            ) * 100
-
-        # =================================================
         # LONG
-        # =================================================
-
         if (
-
             price > ema20.iloc[-1]
-
-            and
-
-            ema9.iloc[-1] > ema20.iloc[-1]
-
-            and
-
-            trend_closes.iloc[-1]
-            >
-            trend_ema20.iloc[-1]
-
-            and
-
-            trend15_closes.iloc[-1]
-            >
-            trend15_ema20.iloc[-1]
-
-            and
-
-            move_1 > 0
-
+            and ema9.iloc[-1] > ema20.iloc[-1]
+            and tc.iloc[-1] > t_ema20.iloc[-1]
+            and move_1 > 0
+            and price >= avg5           # fake breakout degil
         ):
+            return {"signal": "LONG",  "score": score, **feats}
 
-            return {
-
-                "signal": "LONG",
-
-                "score": round(ai_score),
-
-                "momentum": momentum,
-
-                "volume_ratio": volume_ratio,
-
-                "volatility": volatility,
-
-                "move_1": move_1,
-
-                "move_3": move_3,
-                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
-                "move_from_low": move_from_low,
-                "move_from_high": move_from_high
-
-            }
-
-        # =================================================
         # SHORT
-        # =================================================
-
         if (
-
             price < ema20.iloc[-1]
-
-            and
-
-            ema9.iloc[-1] < ema20.iloc[-1]
-
-            and
-
-            trend_closes.iloc[-1]
-            <
-            trend_ema20.iloc[-1]
-
-            and
-
-            trend15_closes.iloc[-1]
-            <
-            trend15_ema20.iloc[-1]
-
-            and
-
-            move_1 < 0
-
+            and ema9.iloc[-1] < ema20.iloc[-1]
+            and tc.iloc[-1] < t_ema20.iloc[-1]
+            and move_1 < 0
+            and price <= avg5
         ):
-
-            return {
-
-                "signal": "SHORT",
-
-                "score": round(ai_score),
-
-                "momentum": momentum,
-
-                "volume_ratio": volume_ratio,
-
-                "volatility": volatility,
-
-                "move_1": move_1,
-
-                "move_3": move_3,
-                "risk_score": market_ai_score(price, ema20.iloc[-1], trend_closes.iloc[-1], trend_ema20.iloc[-1]),
-                "move_from_low": move_from_low,
-                "move_from_high": move_from_high
-
-            }
+            return {"signal": "SHORT", "score": score, **feats}
 
         return None
 
     except Exception as e:
-
-        print("ANALYZE ERROR:", e)
-
+        print(f"[ANALYZE] {e}")
         return None
 
-
 # =========================================================
-# V1 HELPERS
-# =========================================================
-
-def market_ai_score(price, ema20, trend_price, trend_ema20):
-    score = 50
-
-    # LONG ve SHORT trendlerini eşit değerlendir
-    if price > ema20:
-        score += 15
-    
-    if trend_price > trend_ema20:
-        score += 20
-
-    return score
-
-def pullback_ok(price, ema9):
-    distance = abs(price - ema9) / price * 100
-    return distance <= PULLBACK_PERCENT
-
-
-
-# =========================================================
-# V4-A MULTI AGENT SYSTEM
+# MULTI-AGENT KARAR
 # =========================================================
 
-def trend_agent(result):
-    score = 50
-    if result["momentum"] >= 0.15:
-        score += 25
-    if result["volume_ratio"] >= 1.5:
-        score += 25
-    return min(score, 100)
-
-def market_agent(result):
-    return int(result.get("risk_score", 50))
-
-def whale_agent(result):
-    score = 50
-    if result["volume_ratio"] >= 2:
-        score += 25
-    if result["momentum"] >= 0.25:
-        score += 25
-    return min(score, 100)
-
-
-def risk_agent(result):
-
-    score = 50
-
-    move_low = result.get("move_from_low", 0)
-    move_high = result.get("move_from_high", 0)
-
-    if result["signal"] == "LONG":
-        risk = max(move_low, 0.1)
-        reward = max(2.0 - move_low, 0.1)
-    else:
-        risk = max(move_high, 0.1)
-        reward = max(2.0 - move_high, 0.1)
-
-    rr = reward / risk
-
-    if rr >= 3:
-        score = 100
-    elif rr >= 2:
-        score = 85
-    elif rr >= 1.5:
-        score = 70
-    elif rr >= 1:
-        score = 50
-    else:
-        score = 20
-
-    return score
-
-def position_agent(result):
-    score = 100
-    move_from_low = result.get("move_from_low", 0)
-    move_from_high = result.get("move_from_high", 0)
-
-    if result["signal"] == "LONG":
-        if move_from_low > 1.20:
-            score -= 50
-        elif move_from_low > 0.80:
-            score -= 25
-
-    if result["signal"] == "SHORT":
-        if move_from_high > 1.20:
-            score -= 50
-        elif move_from_high > 0.80:
-            score -= 25
-
-    return max(score, 0)
-
-def decision_agent(result):
-    t = trend_agent(result)
-    m = market_agent(result)
-    w = whale_agent(result)
-    p = position_agent(result)
-    r = risk_agent(result)
-    l = late_entry_agent(result)
-    final_score = round(((result["score"] + t + m + w + p + r + l) / 7))
-    return final_score, t, m, w, p, r, l
-
+def decision(result: dict) -> int:
+    trend  = min(50 + (25 if result["momentum"]     >= 0.15 else 0)
+                    + (25 if result["volume_ratio"]  >= 1.5  else 0), 100)
+    market = min(50 + (25 if result["volume_ratio"]  >= 1.8  else 0)
+                    + (25 if result["volatility"]    >= 0.10 else 0), 100)
+    whale  = min(50 + (25 if result["volume_ratio"]  >= 2.0  else 0)
+                    + (25 if result["momentum"]      >= 0.25 else 0), 100)
+    return round((trend + market + whale) / 3)
 
 # =========================================================
-# POSITION AGENT V2
+# POZISYON AC
 # =========================================================
 
-def late_entry_agent(result):
-    score = 100
+def open_trade(symbol: str, data: dict):
+    global positions, locks
 
-    move3 = abs(result.get("move_3", 0))
-    move_low = result.get("move_from_low", 0)
-    move_high = result.get("move_from_high", 0)
+    if locks[symbol] or positions[symbol]:
+        return
 
-    if result["signal"] == "LONG":
-        if move_low > 1.20:
-            score -= 60
-        elif move_low > 0.80:
-            score -= 35
+    locks[symbol] = True
+    try:
+        # Borsada zaten pozisyon var mi?
+        if get_real_size(symbol) > 0:
+            return
 
-    if result["signal"] == "SHORT":
-        if move_high > 1.20:
-            score -= 60
-        elif move_high > 0.80:
-            score -= 35
+        side = "buy" if data["signal"] == "LONG" else "sell"
 
-    if move3 > 0.80:
-        score -= 25
+        safe_api(exchange.set_leverage, LEVERAGE, symbol)
 
-    return max(score, 0)
+        ticker = safe_api(exchange.fetch_ticker, symbol)
+        if not ticker:
+            return
 
+        price  = ticker["last"]
+        amount = float(exchange.amount_to_precision(
+            symbol, (MARGIN * LEVERAGE) / price
+        ))
+
+        order = safe_api(exchange.create_market_order, symbol, side, amount)
+        if not order:
+            return
+
+        entry = float(order.get("average") or price)
+
+        positions[symbol] = {
+            "type":      data["signal"],
+            "entry":     entry,
+            "max_pnl":   0,
+            "tp1_done":  False,
+            "open_time": time.time(),
+            "ai_score":  data["score"],
+            "features":  {k: data[k] for k in
+                          ["momentum","volume_ratio","volatility","move_1","move_3"]},
+        }
+
+        sym_short = symbol.split("/")[0]
+        tg(
+            f"🚀 {sym_short} ACILDI\n"
+            f"Yon: {data['signal']}\n"
+            f"AI: %{data['score']}\n"
+            f"Giris: {round(entry, 4)}\n"
+            f"Kaldırac: {LEVERAGE}X"
+        )
+
+    except Exception as e:
+        print(f"[OPEN] {e}")
+    finally:
+        locks[symbol] = False
 
 # =========================================================
-# REAL POSITION SIZE
+# KAYIT
 # =========================================================
 
-def get_real_size():
+def save_memory(symbol: str, pnl: float):
+    try:
+        pos = positions[symbol]
+        if not pos:
+            return
+        f = pos["features"]
+        supabase.table("trades").insert({
+            "symbol":       symbol,
+            "signal":       pos["type"],
+            "momentum":     f["momentum"],
+            "volume_ratio": f["volume_ratio"],
+            "volatility":   f["volatility"],
+            "move_1":       f["move_1"],
+            "move_3":       f["move_3"],
+            "pnl":          pnl,
+            "ai_score":     pos["ai_score"],
+        }).execute()
+    except Exception as e:
+        print(f"[SAVE] {e}")
+
+# =========================================================
+# POZISYON KAPAT
+# =========================================================
+
+def close_trade(symbol: str, reason: str):
+    global positions
+
+    pos = positions[symbol]
+    if not pos:
+        return
 
     try:
+        side = "sell" if pos["type"] == "LONG" else "buy"
+        size = get_real_size(symbol)
+        if size > 0:
+            safe_api(exchange.create_market_order, symbol, side, size,
+                     params={"reduceOnly": True})
 
-        positions = safe_api_call(
+        ticker = safe_api(exchange.fetch_ticker, symbol)
+        pnl    = 0.0
+        if ticker:
+            cp = ticker["last"]
+            if pos["type"] == "LONG":
+                pnl_pct = (cp - pos["entry"]) / pos["entry"] * 100
+            else:
+                pnl_pct = (pos["entry"] - cp) / pos["entry"] * 100
+            pnl = pnl_pct / 100 * (MARGIN * LEVERAGE)
 
-            exchange.fetch_positions,
+        save_memory(symbol, pnl)
+        train_ai(symbol)
 
-            [SYMBOL]
-
+        sym_short = symbol.split("/")[0]
+        icon = "🟢" if pnl >= 0 else "🔴"
+        sign = "+" if pnl >= 0 else ""
+        tg(
+            f"{icon} {sym_short} KAPANDI\n"
+            f"Sebep: {reason}\n"
+            f"PnL: {sign}{round(pnl, 2)} USDT"
         )
 
-        if not positions:
-            return 0
-
-        for p in positions:
-
-            size = (
-
-                p.get("contracts")
-
-                or
-
-                p.get("size")
-
-                or 0
-
-            )
-
-            size = abs(float(size))
-
-            if size > 0:
-                return size
-
     except Exception as e:
+        print(f"[CLOSE] {e}")
 
-        print("SIZE ERROR:", e)
+    positions[symbol] = None
 
+# =========================================================
+# GERCEK POZISYON BUYUKLUGU
+# =========================================================
+
+def get_real_size(symbol: str) -> float:
+    try:
+        ps = safe_api(exchange.fetch_positions, [symbol])
+        if not ps:
+            return 0
+        for p in ps:
+            sz = abs(float(p.get("contracts") or p.get("size") or 0))
+            if sz > 0:
+                return sz
+    except Exception as e:
+        print(f"[SIZE] {e}")
     return 0
 
 # =========================================================
-# OPEN TRADE
+# POZISYON YONETICI — her sembol icin ayri thread
 # =========================================================
 
-def open_trade(data):
-
-    global bot_position
-    global lock
-
-    if lock:
-        return
-
-    if bot_position:
-        return
-
-    lock = True
-
-    try:
-
-        if get_real_size() > 0:
-
-            lock = False
-            return
-
-        side = (
-
-            "buy"
-
-            if data["signal"] == "LONG"
-
-            else "sell"
-
-        )
-
-        safe_api_call(
-
-            exchange.set_leverage,
-
-            LEVERAGE,
-
-            SYMBOL
-
-        )
-
-        ticker = safe_api_call(
-
-            exchange.fetch_ticker,
-
-            SYMBOL
-
-        )
-
-        if not ticker:
-
-            lock = False
-            return
-
-        price = ticker["last"]
-
-        amount = (
-
-            MARGIN * LEVERAGE
-
-        ) / price
-
-        amount = float(
-
-            exchange.amount_to_precision(
-
-                SYMBOL,
-
-                amount
-
-            )
-
-        )
-
-        order = safe_api_call(
-
-            exchange.create_market_order,
-
-            SYMBOL,
-
-            side,
-
-            amount
-
-        )
-
-        if not order:
-
-            lock = False
-            return
-
-        entry = order.get("average") or price
-
-        bot_position = {
-
-            "type": data["signal"],
-
-            "entry": float(entry),
-
-            "max_pnl": 0,
-
-            "tp1_done": False,
-
-            "open_time": time.time(),
-
-            "ai_score": data["score"],
-
-            "features": {
-
-                "momentum": data["momentum"],
-
-                "volume_ratio": data["volume_ratio"],
-
-                "volatility": data["volatility"],
-
-                "move_1": data["move_1"],
-
-                "move_3": data["move_3"]
-
-            }
-
-        }
-
-        bot.send_message(
-
-            CHAT_ID,
-
-            f"""
-
-🚀 BTC SCALP OPEN
-
-📈 {data['signal']}
-
-🔥 AI SCORE:
-%{data['score']}
-
-💰 ENTRY:
-{round(entry,2)}
-
-⚡ LEVERAGE:
-{LEVERAGE}X
-
-"""
-
-        )
-
-    except Exception as e:
-
-        print("OPEN ERROR:", e)
-
-    lock = False
-
-# =========================================================
-# SAVE MEMORY
-# =========================================================
-
-def save_trade_memory(pnl):
-
-    try:
-
-        if not bot_position:
-            return
-
-        features = bot_position["features"]
-
-        supabase.table(
-            "trades"
-        ).insert({
-
-            "symbol": SYMBOL,
-
-            "signal": bot_position["type"],
-
-            "momentum": features["momentum"],
-
-            "volume_ratio": features["volume_ratio"],
-
-            "volatility": features["volatility"],
-
-            "move_1": features["move_1"],
-
-            "move_3": features["move_3"],
-
-            "pnl": pnl,
-
-            "ai_score": bot_position["ai_score"]
-
-        }).execute()
-
-    except Exception as e:
-
-        print("SAVE ERROR:", e)
-
-# =========================================================
-# CLOSE TRADE
-# =========================================================
-
-def close_trade(reason):
-
-    global bot_position
-
-    try:
-
-        if not bot_position:
-            return
-
-        side = (
-
-            "sell"
-
-            if bot_position["type"] == "LONG"
-
-            else "buy"
-
-        )
-
-        size = get_real_size()
-
-        if size > 0:
-
-            safe_api_call(
-
-                exchange.create_market_order,
-
-                SYMBOL,
-
-                side,
-
-                size,
-
-                params={
-
-                    "reduceOnly": True
-
-                }
-
-            )
-
-        ticker = safe_api_call(
-
-            exchange.fetch_ticker,
-
-            SYMBOL
-
-        )
-
-        pnl = 0
-
-        if ticker:
-
-            current_price = ticker["last"]
-
-            if bot_position["type"] == "LONG":
-
-                pnl_percent = (
-
-                    (
-                        current_price
-                        -
-                        bot_position["entry"]
-                    )
-
-                    /
-
-                    bot_position["entry"]
-
-                ) * 100
-
-            else:
-
-                pnl_percent = (
-
-                    (
-                        bot_position["entry"]
-                        -
-                        current_price
-                    )
-
-                    /
-
-                    bot_position["entry"]
-
-                ) * 100
-
-            pnl = (
-
-                pnl_percent / 100
-
-            ) * (
-
-                MARGIN * LEVERAGE
-
-            )
-
-        save_trade_memory(pnl)
-
-        train_ai()
-
-        bot.send_message(
-
-            CHAT_ID,
-
-            f"""
-
-❌ BTC SCALP CLOSED
-
-📉 {reason}
-
-💰 PNL:
-{round(pnl,2)} USDT
-
-"""
-
-        )
-
-        bot_position = None
-
-    except Exception as e:
-
-        print("CLOSE ERROR:", e)
-
-# =========================================================
-# POSITION MANAGER
-# =========================================================
-
-def manage():
-
-    global bot_position
+def manage(symbol: str):
+    global positions
 
     while True:
-
         try:
+            pos = positions[symbol]
 
-            if not bot_position:
-
+            if not pos:
                 time.sleep(3)
                 continue
 
-            real_size = get_real_size()
-
-            if real_size <= 0:
-
-                save_trade_memory(0)
-
-                train_ai()
-
-                bot.send_message(
-
-                    CHAT_ID,
-
-                    "🧠 MANUAL CLOSE DETECTED"
-
-                )
-
-                bot_position = None
-
+            # Manuel kapatma kontrolu
+            if get_real_size(symbol) <= 0:
+                save_memory(symbol, 0)
+                train_ai(symbol)
+                tg(f"⚠️ {symbol.split('/')[0]} MANUEL KAPATILDI")
+                positions[symbol] = None
                 time.sleep(2)
-
                 continue
 
-            ticker = safe_api_call(
-
-                exchange.fetch_ticker,
-
-                SYMBOL
-
-            )
-
+            ticker = safe_api(exchange.fetch_ticker, symbol)
             if not ticker:
-
                 time.sleep(2)
                 continue
 
             price = ticker["last"]
 
-            if bot_position["type"] == "LONG":
-
-                pnl_percent = (
-
-                    (
-                        price
-                        -
-                        bot_position["entry"]
-                    )
-
-                    /
-
-                    bot_position["entry"]
-
-                ) * 100
-
+            if pos["type"] == "LONG":
+                pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
             else:
+                pnl_pct = (pos["entry"] - price) / pos["entry"] * 100
 
-                pnl_percent = (
+            pnl     = pnl_pct / 100 * (MARGIN * LEVERAGE)
+            max_pnl = pos["max_pnl"]
 
-                    (
-                        bot_position["entry"]
-                        -
-                        price
-                    )
+            if pnl > max_pnl:
+                pos["max_pnl"] = pnl
+                max_pnl = pnl
 
-                    /
-
-                    bot_position["entry"]
-
-                ) * 100
-
-            pnl = (
-
-                pnl_percent / 100
-
-            ) * (
-
-                MARGIN * LEVERAGE
-
-            )
-
-            # =============================================
-            # MAX PNL
-            # =============================================
-
-            if pnl > bot_position["max_pnl"]:
-
-                bot_position["max_pnl"] = pnl
-
-            max_pnl = bot_position["max_pnl"]
-
-            # =============================================
-            # RISK MANAGER V2
-            # =============================================
-
-            # Dynamic Net Profit Lock
-            if max_pnl >= 0.25 and pnl <= 0.15:
-                close_trade("MIN NET PROFIT LOCK")
-                continue
-
-            if max_pnl >= 0.50 and pnl <= 0.30:
-                close_trade("DYNAMIC PROFIT LOCK 0.30")
-                continue
-
-            if max_pnl >= 1.00 and pnl <= 0.60:
-                close_trade("DYNAMIC PROFIT LOCK 0.60")
-                continue
-
-            # =============================================
-            # TP1
-            # =============================================
-
-            if (
-
-                pnl >= TP1_USDT
-
-                and
-
-                not bot_position["tp1_done"]
-
-            ):
-
-                bot_position["tp1_done"] = True
-
-                bot.send_message(
-
-                    CHAT_ID,
-
-                    f"""
-
-✅ TP1 HIT
-
-💰 PROFIT:
-{round(pnl,2)} USDT
-
-"""
-
-                )
-
-            # =============================================
-            # STOP LOSS
-            # =============================================
-
+            # ── STOP LOSS ──────────────────────────────
             if pnl <= STOP_LOSS:
-
-                close_trade(
-                    "STOP LOSS"
-                )
-
+                close_trade(symbol, "STOP LOSS")
                 continue
 
-            # =============================================
-            # TRAILING
-            # =============================================
-
-            if (
-
-                max_pnl >= TRAIL_TRIGGER
-
-                and
-
-                pnl <= TRAIL_STOP
-
-            ):
-
-                close_trade(
-                    "TRAILING STOP"
-                )
-
+            # ── BREAKEVEN ─────────────────────────────
+            if max_pnl >= BREAKEVEN_TRIGGER and pnl <= 0:
+                close_trade(symbol, "BREAKEVEN KORUMA")
                 continue
 
-            # =============================================
-            # MEGA TP
-            # =============================================
+            # ── KAR KİLİTLEME 1 ───────────────────────
+            if max_pnl >= LOCK1_TRIGGER and pnl <= LOCK1_FLOOR:
+                close_trade(symbol, f"KAR KİLİT {LOCK1_FLOOR} USDT")
+                continue
 
+            # ── KAR KİLİTLEME 2 ───────────────────────
+            if max_pnl >= LOCK2_TRIGGER and pnl <= LOCK2_FLOOR:
+                close_trade(symbol, f"KAR KİLİT {LOCK2_FLOOR} USDT")
+                continue
+
+            # ── TP1 BİLDİRİMİ ─────────────────────────
+            if pnl >= TP1_USDT and not pos["tp1_done"]:
+                pos["tp1_done"] = True
+                tg(f"✅ {symbol.split('/')[0]} TP1\nKar: +{round(pnl,2)} USDT")
+
+            # ── TRAILING STOP ──────────────────────────
+            if max_pnl >= TRAIL_TRIGGER and pnl <= TRAIL_STOP:
+                close_trade(symbol, "TRAILING STOP")
+                continue
+
+            # ── MEGA TP ────────────────────────────────
             if pnl >= MEGA_TP:
-
-                close_trade(
-                    "MEGA TAKE PROFIT"
-                )
-
+                close_trade(symbol, "MEGA TP 🎯")
                 continue
 
             time.sleep(3)
 
         except Exception as e:
-
-            print("MANAGER ERROR:", e)
-
+            print(f"[MANAGE {symbol}] {e}")
             time.sleep(5)
 
 # =========================================================
-# SCANNER
+# TARAYICI — her sembol icin ayri thread
 # =========================================================
 
-def scanner():
-
-    global bot_position
+def scanner(symbol: str):
+    sym_short = symbol.split("/")[0]
 
     while True:
-
         try:
-
-            if bot_position:
-
-                time.sleep(3)
+            if positions[symbol]:
+                time.sleep(5)
                 continue
 
-            result = analyze()
+            result = analyze(symbol)
 
             if not result:
+                time.sleep(8)
+                continue
 
+            # AI filtresi
+            if result["score"] < MARKET_AI_MIN:
                 time.sleep(5)
                 continue
 
-            bot.send_message(
+            # Multi-agent karar
+            final = decision(result)
 
-                CHAT_ID,
-
-                f"""
-
-🧠 BTC SCALP SIGNAL
-
-📈 {result['signal']}
-
-🔥 AI SCORE:
-%{round(result['score'])}
-
-⚡ MOMENTUM:
-{round(result['momentum'],2)}
-
-📊 VOLUME:
-{round(result['volume_ratio'],2)}X
-
-🌪 VOLATILITY:
-{round(result['volatility'],2)}%
-
-"""
-
+            tg(
+                f"🧠 {sym_short} SİNYAL\n"
+                f"Yon: {result['signal']}\n"
+                f"AI: %{result['score']}\n"
+                f"Agent: %{final}\n"
+                f"Momentum: {round(result['momentum'],2)}\n"
+                f"Hacim: {round(result['volume_ratio'],2)}X\n"
+                f"Volatilite: {round(result['volatility'],2)}%"
             )
 
-            if result["volume_ratio"] < VOLUME_SPIKE_MIN:
-                time.sleep(5)
-                continue
-
-            if result.get("risk_score", 0) < MARKET_AI_MIN_SCORE:
-                time.sleep(5)
-                continue
-
-            if result["momentum"] < MIN_MOMENTUM:
-                continue
-
-            if result["volatility"] < MIN_VOLATILITY:
-                continue
-
-            # V2.5 Fake breakout filter
-            df_check = get_data(TIMEFRAME)
-            if df_check is not None and len(df_check) > 5:
-                last_close = df_check["c"].iloc[-1]
-                avg_close = df_check["c"].tail(5).mean()
-
-                if result["signal"] == "LONG" and last_close < avg_close:
-                    continue
-
-                if result["signal"] == "SHORT" and last_close > avg_close:
-                    continue
-
-            final_score, trend_ai, market_ai, whale_ai, position_ai, risk_ai, late_ai = decision_agent(result)
-
-            bot.send_message(
-                CHAT_ID,
-                f"🤖 V4-A\nTrend AI: %{trend_ai}\nMarket AI: %{market_ai}\nWhale AI: %{whale_ai}\nPosition AI: %{position_ai}\nRisk AI: %{risk_ai}\nLate Entry AI: %{late_ai}\nFinal Score: %{final_score}"
-            )
-
-            if result["score"] < 75:
-                continue
-
-            if final_score >= 75:
-
-                open_trade(result)
+            if final >= 70:
+                open_trade(symbol, result)
 
             time.sleep(10)
 
         except Exception as e:
-
-            print("SCANNER ERROR:", e)
-
+            print(f"[SCANNER {symbol}] {e}")
             time.sleep(5)
 
 # =========================================================
-# START
+# BASLANGIC
 # =========================================================
 
-train_ai()
+# Her sembol icin AI egit
+for sym in SYMBOLS:
+    train_ai(sym)
 
-threading.Thread(
+# Her sembol icin scanner + manager thread
+for sym in SYMBOLS:
+    threading.Thread(target=scanner, args=(sym,), daemon=True).start()
+    threading.Thread(target=manage,  args=(sym,), daemon=True).start()
 
-    target=scanner,
-
-    daemon=True
-
-).start()
-
-threading.Thread(
-
-    target=manage,
-
-    daemon=True
-
-).start()
-
-bot.send_message(
-
-    CHAT_ID,
-
-    f"""
-
-🚀 SADIK BTC SCALP AI STARTED
-
-📊 SYMBOL:
-{SYMBOL}
-
-⚡ LEVERAGE:
-{LEVERAGE}X
-
-💰 TP1:
-{TP1_USDT} USDT
-
-🛑 SL:
-{STOP_LOSS} USDT
-
-🧠 AI:
-ACTIVE
-
-"""
-
+tg(
+    "🚀 SADIK SCALP AI BASLADI\n\n"
+    "Semboller: INJ + ZEC\n"
+    f"Kaldırac: {LEVERAGE}X\n"
+    f"Marjin: {MARGIN} USDT\n"
+    f"TP1: +{TP1_USDT} USDT\n"
+    f"Mega TP: +{MEGA_TP} USDT\n"
+    f"Stop: {STOP_LOSS} USDT\n"
+    "AI: AKTIF"
 )
 
-# =========================================================
-# POLLING
-# =========================================================
-
+# Polling
 while True:
-
     try:
-
-        bot.infinity_polling(
-
-            timeout=30,
-
-            long_polling_timeout=30
-
-        )
-
+        bot.infinity_polling(timeout=30, long_polling_timeout=30)
     except Exception as e:
-
-        print("POLLING ERROR:", e)
-
+        print(f"[POLLING] {e}")
         time.sleep(5)
