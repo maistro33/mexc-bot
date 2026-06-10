@@ -66,7 +66,7 @@ TREND_TIMEFRAME = "5m"
 # RISK AYARLARI (optimize edilmis)
 # =========================================================
 
-MARGIN   = 3      # her islem icin USDT marjin
+MARGIN   = 1     # her islem icin USDT marjin
 LEVERAGE = 15     # kaldırac — INJ/ZEC volatil, 15x dengeli
 
 # Kar hedefleri (USDT net)
