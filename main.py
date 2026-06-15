@@ -45,7 +45,11 @@ BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
     "BOME","SLERF","PNUT","ACT","GOAT",
+    "QCOM","AAPL","AMZN","GOOGL","META","MSFT","COIN","UBER",
+    "ABNB","SHOP","SQ","PLTR","RKLB","SMCI",
 }
+
+MAX_PRICE = 50  # $50 üstü = hisse tokenı
 
 # ─── TELEGRAM ───
 bot = telebot.TeleBot(TELE_TOKEN)
@@ -497,7 +501,7 @@ def scan_coins():
             if sym_name in BLACKLIST: continue
             if ticker.get("quoteVolume", 0) < MIN_QUOTE_VOL: continue
             price = ticker.get("last", 0) or 0
-            if price > 500: continue
+            if price > MAX_PRICE: continue
             pct = abs(ticker.get("percentage", 0) or 0)
             if pct < 0.2: continue
             active.append({
