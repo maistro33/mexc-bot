@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-SADIK DYNAMIC SCANNER BOT v5
-Baz: v2 + TP1/TP2/TP3 + Breakeven + Trailing + Pullback + Fake Breakout + ATR
+SADIK DYNAMIC SCANNER BOT v6
+Baz: v2 (çalışan) + TP1/TP2/TP3 + Breakeven + Trailing
 """
 
 import os, time, threading
@@ -21,31 +21,30 @@ SUPA_URL     = os.getenv("SUPABASE_URL","")
 SUPA_KEY     = os.getenv("SUPABASE_KEY","")
 OPENAI_KEY   = os.getenv("OPENAI_API_KEY","")
 
-# ─── RİSK ───
+# ─── RİSK — v2 ile aynı ───
 LEVERAGE      = 5
 MARGIN        = 10.0
 TP1_PCT       = 0.015   # %1.5 → %50 kapat + breakeven
-TP2_PCT       = 0.025   # %2.5 → %25 kapat
+TP2_PCT       = 0.025   # %2.5 → %25 kapat + trailing başlar
 TP3_PCT       = 0.040   # %4.0 → kalanı kapat
-SL_PCT        = 0.020   # %2 stop loss
+SL_PCT        = 0.020
 TRAIL_PCT     = 0.010   # Trailing %1 mesafe
 MAX_OPEN      = 3
-SCAN_INTERVAL = 30
+SCAN_INTERVAL = 20      # v2 ile aynı
 
-# ─── FİLTRELER ───
-MIN_VOLUME_RATIO = 1.2
-MIN_MOMENTUM     = 0.15
-MIN_RSI          = 38
-MAX_RSI          = 74
-AI_MIN_SCORE     = 55
-MIN_QUOTE_VOL    = 3_000_000
+# ─── FİLTRELER — v2 ile aynı ───
+MIN_VOLUME_RATIO = 2.0
+MIN_MOMENTUM     = 0.5
+MIN_RSI          = 45
+MAX_RSI          = 72
+AI_MIN_SCORE     = 60
+MIN_QUOTE_VOL    = 5_000_000
 
-# ─── KARA LİSTE ───
-BLACKLIST = {
-    "BANANAS31","BSB","JCT","MEGA","ALLO","MU","NVDA","TSLA","AAPL",
-    "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
-    "BOME","SLERF","PNUT","ACT","GOAT","FTM",
-}
+BLACKLIST = [
+    "BANANAS31","BSB","JCT","MEGA","ALLO","FTM",
+    "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR",
+    "CATI","DOGS","MYRO","BOME","SLERF",
+]
 
 # ─── TELEGRAM ───
 bot = telebot.TeleBot(TELE_TOKEN)
@@ -66,18 +65,19 @@ def save_trade(data):
     try: supa.table("trades").insert(data).execute()
     except Exception as e: print(f"[SAVE] {e}")
 
-def load_ai_data(symbol):
+def load_trades_for_ai(symbol):
     if not supa: return pd.DataFrame()
     try:
         r = supa.table("trades").select("*").eq("symbol", symbol).execute()
         rows = []
         for rec in r.data or []:
             try:
+                pnl = float(rec.get("pnl") or 0)
                 rows.append({
                     "momentum":     float(rec.get("momentum") or 0),
                     "volume_ratio": float(rec.get("volume_ratio") or 0),
                     "rsi":          float(rec.get("rsi") or 50),
-                    "win":          1 if float(rec.get("pnl") or 0) > 0 else 0,
+                    "win":          1 if pnl > 0 else 0,
                 })
             except: pass
         return pd.DataFrame(rows)
@@ -89,20 +89,20 @@ exchange = ccxt.bitget({
     "password": BITGET_PASS, "enableRateLimit": True,
     "options": {"defaultType": "swap"},
 })
-_last = 0
+LAST_API = 0
 
 def safe_api(func, *args, **kwargs):
-    global _last
-    for i in range(4):
+    global LAST_API
+    for attempt in range(4):
         try:
-            w = 0.6 - (time.time() - _last)
-            if w > 0: time.sleep(w)
-            _last = time.time()
+            wait = 0.4 - (time.time() - LAST_API)
+            if wait > 0: time.sleep(wait)
+            LAST_API = time.time()
             return func(*args, **kwargs)
         except ccxt.RateLimitExceeded:
-            time.sleep(10)
+            time.sleep(5)
         except Exception as e:
-            print(f"[API {i}] {e}")
+            print(f"[API {attempt}] {e}")
             time.sleep(2)
     return None
 
@@ -110,154 +110,121 @@ def safe_api(func, *args, **kwargs):
 positions = {}
 pos_lock  = threading.Lock()
 
-# ─── GÖSTERGELER ───
-def calc_rsi(c, n=14):
-    d = c.diff()
-    g = d.clip(lower=0).rolling(n).mean()
-    l = (-d.clip(upper=0)).rolling(n).mean()
-    return float((100 - 100/(1+g/l.replace(0,0.001))).iloc[-1])
-
-def calc_atr(df, n=14):
-    h = df["h"]; l = df["l"]; c = df["c"]
-    tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
-    return float(tr.rolling(n).mean().iloc[-1])
+# ─── GÖSTERGELER — v2 ile birebir aynı ───
+def calc_rsi(closes, period=14):
+    delta = closes.diff()
+    gain  = delta.clip(lower=0).rolling(period).mean()
+    loss  = (-delta.clip(upper=0)).rolling(period).mean()
+    rs    = gain / loss.replace(0, 0.0001)
+    return float((100 - (100 / (1 + rs))).iloc[-1])
 
 def calc_indicators(symbol):
     try:
-        # 1m — giriş sinyali
-        raw1 = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=100)
-        if not raw1 or len(raw1) < 50: return None
-        df1 = pd.DataFrame(raw1, columns=["t","o","h","l","c","v"])
+        ohlcv = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=100)
+        if not ohlcv or len(ohlcv) < 50: return None
+        df = pd.DataFrame(ohlcv, columns=["t","o","h","l","c","v"])
 
-        # 5m — trend teyidi
-        raw5 = safe_api(exchange.fetch_ohlcv, symbol, "5m", limit=30)
-        if not raw5: return None
-        df5 = pd.DataFrame(raw5, columns=["t","o","h","l","c","v"])
+        ohlcv5 = safe_api(exchange.fetch_ohlcv, symbol, "5m", limit=30)
+        if not ohlcv5: return None
+        df5 = pd.DataFrame(ohlcv5, columns=["t","o","h","l","c","v"])
 
-        # 1h — büyük trend
-        raw1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=50)
-        trend_1h = "NEUTRAL"
-        if raw1h and len(raw1h) >= 20:
-            c1h = pd.DataFrame(raw1h, columns=["t","o","h","l","c","v"])["c"]
-            e20_1h = float(c1h.ewm(span=20).mean().iloc[-1])
-            e50_1h = float(c1h.ewm(span=50).mean().iloc[-1])
-            p1h    = float(c1h.iloc[-1])
-            if p1h > e20_1h and e20_1h > e50_1h: trend_1h = "UP"
-            elif p1h < e20_1h and e20_1h < e50_1h: trend_1h = "DOWN"
+        ohlcv1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=50)
+        if not ohlcv1h: return None
+        df1h = pd.DataFrame(ohlcv1h, columns=["t","o","h","l","c","v"])
 
-        c1 = df1["c"]; v1 = df1["v"]; c5 = df5["c"]
+        c = df["c"]; v = df["v"]
+        c5 = df5["c"]; c1h = df1h["c"]
 
-        price    = float(c1.iloc[-1])
-        ema9     = float(c1.ewm(span=9).mean().iloc[-1])
-        ema20    = float(c1.ewm(span=20).mean().iloc[-1])
-        ema9_5   = float(c5.ewm(span=9).mean().iloc[-1])
-        ema20_5  = float(c5.ewm(span=20).mean().iloc[-1])
-        rsi_v    = calc_rsi(c1)
-        atr      = calc_atr(df1)
+        price   = float(c.iloc[-1])
+        ema9    = float(c.ewm(span=9).mean().iloc[-1])
+        ema20   = float(c.ewm(span=20).mean().iloc[-1])
+        ema9_5  = float(c5.ewm(span=9).mean().iloc[-1])
+        ema20_5 = float(c5.ewm(span=20).mean().iloc[-1])
 
-        vol_avg   = float(v1.rolling(20).mean().iloc[-1])
-        vol_ratio = float(v1.iloc[-1]) / max(vol_avg, 0.001)
-        move_1    = (price - float(c1.iloc[-2])) / float(c1.iloc[-2]) * 100
-        move_3    = (price - float(c1.iloc[-4])) / float(c1.iloc[-4]) * 100
-        momentum  = abs(move_3)
-        volatility= (float(df1["h"].iloc[-1]) - float(df1["l"].iloc[-1])) / price * 100
+        ema20_1h = float(c1h.ewm(span=20).mean().iloc[-1])
+        ema50_1h = float(c1h.ewm(span=50).mean().iloc[-1])
+        p1h      = float(c1h.iloc[-1])
+        if p1h > ema20_1h and ema20_1h > ema50_1h: trend_1h = "UP"
+        elif p1h < ema20_1h and ema20_1h < ema50_1h: trend_1h = "DOWN"
+        else: trend_1h = "NEUTRAL"
 
-        # Pullback filtresi — son 10 barda en yüksek/düşük
-        high10 = float(c1.tail(10).max())
-        low10  = float(c1.tail(10).min())
-        avg5   = float(c1.tail(5).mean())
-
-        # Fake breakout filtresi — son 3 barda zirve yapıp geri dönmüş mü?
-        last3_high = float(c1.tail(3).max())
-        last3_low  = float(c1.tail(3).min())
-        prev_high  = float(c1.tail(10).head(7).max())
-        prev_low   = float(c1.tail(10).head(7).min())
-        # Sahte breakout: son 3 bar önceki zirveyi kırdı ama geri döndü
-        fake_up   = last3_high > prev_high and price < prev_high  # Yukarı kırdı geri geldi
-        fake_down = last3_low  < prev_low  and price > prev_low   # Aşağı kırdı geri geldi
+        rsi_v    = calc_rsi(c)
+        vol_avg  = float(v.rolling(20).mean().iloc[-1])
+        if vol_avg <= 0: return None
+        vol_ratio  = float(v.iloc[-1]) / vol_avg
+        move_1     = (price - float(c.iloc[-2])) / float(c.iloc[-2]) * 100
+        move_3     = (price - float(c.iloc[-4])) / float(c.iloc[-4]) * 100
+        momentum   = abs(move_3)
+        volatility = (float(df["h"].iloc[-1]) - float(df["l"].iloc[-1])) / price * 100
+        avg5       = float(c.tail(5).mean())
 
         return {
             "symbol": symbol, "price": price,
             "ema9": ema9, "ema20": ema20,
             "ema9_5": ema9_5, "ema20_5": ema20_5,
-            "trend_1h": trend_1h, "rsi": rsi_v, "atr": atr,
+            "trend_1h": trend_1h, "rsi": rsi_v,
             "vol_ratio": vol_ratio, "move_1": move_1,
             "move_3": move_3, "momentum": momentum,
             "volatility": volatility, "avg5": avg5,
-            "high10": high10, "low10": low10,
-            "fake_up": fake_up, "fake_down": fake_down,
         }
     except Exception as e:
         print(f"[IND {symbol}] {e}")
         return None
 
-# ─── SİNYAL ───
+# ─── SİNYAL — v2 ile birebir aynı ───
 def get_signal(ind):
-    p    = ind["price"]
-    e9   = ind["ema9"];   e20  = ind["ema20"]
-    e9_5 = ind["ema9_5"]; e20_5= ind["ema20_5"]
-    t1h  = ind["trend_1h"]; rsi = ind["rsi"]
-    vr   = ind["vol_ratio"]; m1 = ind["move_1"]
-    mom  = ind["momentum"]; avg5 = ind["avg5"]
-    h10  = ind["high10"]; l10 = ind["low10"]
-    atr  = ind["atr"]
+    p     = ind["price"]
+    e9    = ind["ema9"];   e20  = ind["ema20"]
+    e9_5  = ind["ema9_5"]; e20_5= ind["ema20_5"]
+    t1h   = ind["trend_1h"]; rsi = ind["rsi"]
+    vr    = ind["vol_ratio"]; m1 = ind["move_1"]
+    mom   = ind["momentum"]; avg5= ind["avg5"]
 
-    # Temel filtreler
     if vr  < MIN_VOLUME_RATIO: return None
     if mom < MIN_MOMENTUM:     return None
     if rsi < MIN_RSI:          return None
     if rsi > MAX_RSI:          return None
 
-    # ATR filtresi — çok düşük volatilite
-    if atr / p * 100 < 0.03: return None
-
-    # LONG
-    if (p > e20 and e9 > e20          # 1m trend yukarı
-            and e9_5 > e20_5          # 5m trend yukarı
-            and m1 > 0                # son bar yeşil
-            and p >= avg5             # sahte breakout değil
-            and p <= h10 * 0.9995     # tepede değil (pullback)
-            and not ind["fake_up"]    # sahte yukarı kırılma değil
-            and t1h != "DOWN"):       # 1h düşüş değil
+    if (p > e20 and e9 > e20
+            and e9_5 > e20_5
+            and m1 > 0
+            and p >= avg5
+            and t1h != "DOWN"):
         return "LONG"
 
-    # SHORT
     if (p < e20 and e9 < e20
             and e9_5 < e20_5
             and m1 < -0.2
             and p <= avg5
-            and p >= l10 * 1.001      # dipte değil (pullback)
-            and not ind["fake_down"]  # sahte aşağı kırılma değil
-            and vr >= 2.0
+            and vr >= 2.5
             and t1h == "DOWN"):
         return "SHORT"
 
     return None
 
-# ─── AI SKOR ───
+# ─── AI SKOR — v2 ile aynı ───
 def ai_score(symbol, ind):
     try:
-        df = load_ai_data(symbol)
+        df = load_trades_for_ai(symbol)
         if df is None or len(df) < 20: return 65
         mask = (
             (df["volume_ratio"] >= ind["vol_ratio"] * 0.7) &
             (df["volume_ratio"] <= ind["vol_ratio"] * 1.3) &
             (df["momentum"]     >= ind["momentum"]  * 0.5)
         )
-        sim = df[mask]
-        if len(sim) < 5: return 65
-        wr = sim["win"].mean() * 100
+        similar = df[mask]
+        if len(similar) < 5: return 65
+        win_rate = similar["win"].mean() * 100
         bonus = 0
         if ind["vol_ratio"] >= 3.0: bonus += 10
         if ind["momentum"]  >= 1.5: bonus += 5
         if ind["rsi"] >= 55:        bonus += 5
-        return min(95, int(wr + bonus))
+        return min(95, int(win_rate + bonus))
     except: return 65
 
-# ─── GPT KARAR ───
+# ─── GPT KARAR — v2 ile aynı ───
 def gpt_karar(symbol, signal, ind):
-    if not OPENAI_KEY:
-        return True, "GPT yok"
+    if not OPENAI_KEY: return True, "GPT yok"
     try:
         sym = symbol.split("/")[0]
         prompt = f"""Kripto futures trading uzmanısın.
@@ -267,10 +234,8 @@ Sinyal: {signal}
 1h Trend: {ind['trend_1h']}
 RSI: {ind['rsi']:.1f}
 Hacim: {ind['vol_ratio']:.1f}x
-Momentum (3 bar): {ind['move_3']:+.2f}%
+Momentum: {ind['move_3']:+.2f}%
 Son bar: {ind['move_1']:+.2f}%
-Volatilite: {ind['volatility']:.2f}%
-Sahte kırılım: {'VAR' if (signal=='LONG' and ind['fake_up']) or (signal=='SHORT' and ind['fake_down']) else 'YOK'}
 
 Sadece:
 GİR — [1 cümle neden]
@@ -280,7 +245,7 @@ PAS — [1 cümle neden]"""
         r = req.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}",
                      "Content-Type": "application/json"},
-            json={"model": "gpt-4o-mini", "max_tokens": 80,
+            json={"model": "gpt-4o-mini", "max_tokens": 60,
                   "temperature": 0.2,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=10)
@@ -293,23 +258,22 @@ PAS — [1 cümle neden]"""
         print(f"[GPT] {e}")
     return True, "GPT hata"
 
-# ─── TARAMA ───
-def scan_coins():
+# ─── TARAMA — v2 ile aynı ───
+def scan_active_coins():
     try:
         tickers = safe_api(exchange.fetch_tickers)
         if not tickers: return []
         active = []
         for symbol, ticker in tickers.items():
             if not symbol.endswith("/USDT:USDT"): continue
+            if ticker.get("quoteVolume", 0) < MIN_QUOTE_VOL: continue
             sym_name = symbol.split("/")[0]
             if sym_name in BLACKLIST: continue
-            if ticker.get("quoteVolume", 0) < MIN_QUOTE_VOL: continue
-            price = ticker.get("last", 0) or 0
-            if price > 500: continue  # hisse tokenları
             pct = abs(ticker.get("percentage", 0) or 0)
             if pct < 0.3: continue
             active.append({
                 "symbol": symbol,
+                "price":  ticker.get("last", 0),
                 "volume": ticker.get("quoteVolume", 0),
                 "change": ticker.get("percentage", 0),
             })
@@ -347,7 +311,7 @@ def kismi_kapat(symbol, pos, oran, sebep):
         print(f"[KISMI {symbol}] {e}")
 
 # ─── POZİSYON AÇ ───
-def open_position(symbol, signal, ind, score, gpt_yorum):
+def open_position(symbol, signal, ind, score, gpt_yorum=""):
     with pos_lock:
         if symbol in positions: return
         if len(positions) >= MAX_OPEN: return
@@ -468,46 +432,45 @@ def manage_loop():
                     pos["max_pnl"] = pnl
                 max_pnl = pos["max_pnl"]
 
-                # ─── STOP LOSS ───
+                # SL
                 if pnl_pct <= -SL_PCT*100:
                     close_position(symbol, f"STOP LOSS -%{SL_PCT*100:.0f}")
                     continue
 
-                # ─── TP1 +%1.5 → %50 kapat + breakeven ───
+                # TP1 → %50 kapat + breakeven
                 if not pos["tp1_done"] and pnl_pct >= TP1_PCT*100:
                     kismi_kapat(symbol, pos, 0.5, f"TP1 +%{TP1_PCT*100:.1f}")
                     pos["tp1_done"] = True
-                    pos["sl"] = entry  # SL breakeven'e çek
+                    pos["sl"] = entry  # breakeven
                     continue
 
-                # ─── TP2 +%2.5 → %25 kapat ───
-                if pos["tp1_done"] and not pos["tp2_done"] and pnl_pct >= TP2_PCT*100:
-                    kismi_kapat(symbol, pos, 0.5, f"TP2 +%{TP2_PCT*100:.1f}")
-                    pos["tp2_done"] = True
-                    pos["trail_active"] = True  # Trailing başlat
-                    continue
-
-                # ─── TP3 +%4 → kalanı kapat ───
-                if pos["tp2_done"] and pnl_pct >= TP3_PCT*100:
-                    close_position(symbol, f"TP3 +%{TP3_PCT*100:.1f} 🎯")
-                    continue
-
-                # ─── BREAKEVEN KORUMA (TP1 sonrası) ───
+                # Breakeven koruma
                 if pos["tp1_done"] and pnl_pct <= 0:
                     close_position(symbol, "BREAKEVEN KORUMA")
                     continue
 
-                # ─── DYNAMIC TRAILING STOP (TP2 sonrası) ───
+                # TP2 → %25 kapat + trailing başlat
+                if pos["tp1_done"] and not pos["tp2_done"] and pnl_pct >= TP2_PCT*100:
+                    kismi_kapat(symbol, pos, 0.5, f"TP2 +%{TP2_PCT*100:.1f}")
+                    pos["tp2_done"] = True
+                    pos["trail_active"] = True
+                    continue
+
+                # TP3 → kalanı kapat
+                if pos["tp2_done"] and pnl_pct >= TP3_PCT*100:
+                    close_position(symbol, f"TP3 +%{TP3_PCT*100:.1f} 🎯")
+                    continue
+
+                # Trailing stop
                 if pos["trail_active"]:
                     trail_floor = max_pnl - TRAIL_PCT*100
                     if pnl_pct <= trail_floor:
                         close_position(symbol, f"TRAILING +{pnl:.2f} 🚀")
                         continue
 
-                # ─── ZAMAN AŞIMI 60dk ───
-                if time.time() - pos["open_time"] > 60*60:
-                    close_position(symbol, "ZAMAN AŞIMI 60dk")
-                    continue
+                # Zaman aşımı
+                if time.time() - pos["open_time"] > 45*60:
+                    close_position(symbol, "ZAMAN AŞIMI")
 
         except Exception as e:
             print(f"[MANAGE] {e}")
@@ -524,7 +487,7 @@ def scanner_loop():
                 time.sleep(10)
                 continue
 
-            active = scan_coins()
+            active = scan_active_coins()
             if not active:
                 time.sleep(SCAN_INTERVAL)
                 continue
@@ -610,24 +573,19 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__ == "__main__":
-    print("🚀 SADIK DYNAMIC SCANNER BOT v5 BAŞLIYOR...")
+    print("🚀 SADIK DYNAMIC SCANNER BOT v6 BAŞLIYOR...")
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=scanner_loop,  daemon=True).start()
     print("[OK] Health | Manage | Scanner")
     tg(
-        "🚀 SADIK DYNAMIC SCANNER BOT v5\n\n"
+        "🚀 SADIK DYNAMIC SCANNER BOT v6\n\n"
         f"Kaldıraç: {LEVERAGE}x  Marjin: {MARGIN} USDT\n"
         f"TP1: +%{TP1_PCT*100:.1f} → %50 + breakeven\n"
         f"TP2: +%{TP2_PCT*100:.1f} → %25 + trailing\n"
         f"TP3: +%{TP3_PCT*100:.1f} → tam kapat\n"
-        f"SL:  -%{SL_PCT*100:.0f}\n\n"
-        "Filtreler:\n"
-        "✅ 1h Trend filtresi\n"
-        "✅ Pullback filtresi\n"
-        "✅ Fake Breakout filtresi\n"
-        "✅ ATR volatilite filtresi\n"
-        "✅ GPT analizi\n\n"
+        f"SL:  -%{SL_PCT*100:.0f}\n"
+        f"Trailing: TP2 sonrası %{TRAIL_PCT*100:.0f} mesafe\n\n"
         "/durum /kapat SOL /hepsikapat"
     )
     while True:
