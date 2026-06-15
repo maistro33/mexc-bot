@@ -23,7 +23,9 @@ SUPA_KEY     = os.getenv("SUPABASE_KEY","")
 # Risk ayarları
 LEVERAGE     = 5       # 5x - güvenli
 MARGIN       = 10.0    # Her işlem 10 USDT
-TP_PCT       = 0.03    # %3 kar hedefi
+TP1_PCT      = 0.02    # %2 → %50 kapat, SL breakeven
+TP2_PCT      = 0.03    # %3 → %25 kapat
+TP3_PCT      = 0.05    # %5 → kalanı kapat
 SL_PCT       = 0.02    # %2 stop loss
 MAX_OPEN     = 3       # Max açık pozisyon
 SCAN_INTERVAL= 30      # Saniye
@@ -336,20 +338,21 @@ def open_position(symbol: str, signal: str, ind: dict, score: int):
 
         entry = float(order.get("average") or price)
 
-        # TP/SL hesapla
+        # SL hesapla
         if signal == "LONG":
-            tp = round(entry * (1 + TP_PCT), 6)
-            sl = round(entry * (1 - SL_PCT), 6)
+            sl = round(entry * (1 - SL_PCT), 8)
         else:
-            tp = round(entry * (1 - TP_PCT), 6)
-            sl = round(entry * (1 + SL_PCT), 6)
+            sl = round(entry * (1 + SL_PCT), 8)
 
         pos = {
             "symbol":    symbol,
             "signal":    signal,
             "entry":     entry,
-            "tp":        tp,
             "sl":        sl,
+            "amount":    MARGIN,
+            "contracts": amount,
+            "tp1_done":  False,
+            "tp2_done":  False,
             "max_pnl":   0.0,
             "score":     score,
             "open_time": time.time(),
@@ -363,12 +366,15 @@ def open_position(symbol: str, signal: str, ind: dict, score: int):
         tg(
             f"🚀 {sym} AÇILDI\n"
             f"Yön: {signal}\n"
-            f"Giriş: {entry:.4f}\n"
-            f"TP: {tp:.4f} (+{TP_PCT*100:.0f}%)\n"
-            f"SL: {sl:.4f} (-{SL_PCT*100:.0f}%)\n"
+            f"Giriş: {entry:.6f}\n"
+            f"TP1: +%{TP1_PCT*100:.0f} → %50 kapat\n"
+            f"TP2: +%{TP2_PCT*100:.0f} → %25 kapat\n"
+            f"TP3: +%{TP3_PCT*100:.0f} → tam kapat\n"
+            f"SL: -%{SL_PCT*100:.0f}\n"
             f"AI Skor: %{score}\n"
             f"Hacim: {ind['vol_ratio']:.1f}x\n"
             f"RSI: {ind['rsi']:.0f}\n"
+            f"1h Trend: {ind['trend_1h']}\n"
             f"Kaldıraç: {LEVERAGE}x"
         )
     except Exception as e:
@@ -437,7 +443,7 @@ def close_position(symbol: str, reason: str):
 
 # ─── POZİSYON YÖNETİCİ ───
 def manage_loop():
-    """Açık pozisyonları izle, TP/SL tetikle"""
+    """Açık pozisyonları izle, kademeli TP/SL tetikle"""
     while True:
         time.sleep(5)
         try:
@@ -459,36 +465,87 @@ def manage_loop():
                 signal = pos["signal"]
 
                 if signal == "LONG":
-                    pnl_pct = (price - entry) / entry * 100
+                    pnl_pct = (price - entry) / entry
                 else:
-                    pnl_pct = (entry - price) / entry * 100
+                    pnl_pct = (entry - price) / entry
 
-                pnl = pnl_pct / 100 * MARGIN * LEVERAGE
+                pnl = pnl_pct * MARGIN * LEVERAGE
 
                 # Max PnL güncelle
                 if pnl > pos["max_pnl"]:
                     pos["max_pnl"] = pnl
 
                 max_pnl = pos["max_pnl"]
+                sym     = symbol.split("/")[0]
 
                 # ─── STOP LOSS ───
-                if pnl_pct <= -SL_PCT * 100:
+                if pnl_pct <= -SL_PCT:
                     close_position(symbol, f"STOP LOSS -%{SL_PCT*100:.0f}")
                     continue
 
-                # ─── BREAKEVEN (max %1.5 kara ulaştıysa, 0'ın altında kapat) ───
-                if max_pnl >= MARGIN * 0.15 and pnl <= 0:
+                # ─── BREAKEVEN (TP1 sonrası SL breakeven'e çekildi) ───
+                if pos["tp1_done"] and pnl <= 0:
                     close_position(symbol, "BREAKEVEN KORUMA")
                     continue
 
-                # ─── TRAILING STOP (%2 kara ulaştıysa, max'tan %1 düşünce kapat) ───
-                if max_pnl >= MARGIN * 0.20 and pnl <= max_pnl - MARGIN * 0.10:
-                    close_position(symbol, f"TRAILING STOP +{pnl:.2f}")
+                # ─── TRAILING STOP ───
+                if max_pnl >= MARGIN * 0.15 and pnl <= max_pnl - MARGIN * 0.10:
+                    close_position(symbol, f"TRAILING +{pnl:.2f}")
                     continue
 
-                # ─── TAKE PROFIT ───
-                if pnl_pct >= TP_PCT * 100:
-                    close_position(symbol, f"TAKE PROFIT +%{TP_PCT*100:.0f}")
+                # ─── TP1 +%2 → %50 kapat ───
+                if not pos["tp1_done"] and pnl_pct >= TP1_PCT:
+                    try:
+                        # Yarısını kapat
+                        ps = safe_api(exchange.fetch_positions, [symbol])
+                        size = 0
+                        if ps:
+                            for p in ps:
+                                sz = abs(float(p.get("contracts") or p.get("size") or 0))
+                                if sz > 0:
+                                    size = sz
+                                    break
+                        if size > 0:
+                            half = float(exchange.amount_to_precision(symbol, size * 0.5))
+                            side = "sell" if signal == "LONG" else "buy"
+                            safe_api(exchange.create_market_order, symbol, side, half,
+                                     params={"reduceOnly": True})
+                        pos["tp1_done"] = True
+                        partial_pnl = pnl_pct * MARGIN * LEVERAGE * 0.5
+                        tg(f"🟡 {sym} TP1 +%{TP1_PCT*100:.0f}\n"
+                           f"%50 kapatıldı • +{partial_pnl:.2f} USDT\n"
+                           f"SL breakeven'e çekildi ✅")
+                    except Exception as e:
+                        print(f"[TP1 {symbol}] {e}")
+                    continue
+
+                # ─── TP2 +%3 → %25 kapat ───
+                if pos["tp1_done"] and not pos["tp2_done"] and pnl_pct >= TP2_PCT:
+                    try:
+                        ps = safe_api(exchange.fetch_positions, [symbol])
+                        size = 0
+                        if ps:
+                            for p in ps:
+                                sz = abs(float(p.get("contracts") or p.get("size") or 0))
+                                if sz > 0:
+                                    size = sz
+                                    break
+                        if size > 0:
+                            quarter = float(exchange.amount_to_precision(symbol, size * 0.5))
+                            side = "sell" if signal == "LONG" else "buy"
+                            safe_api(exchange.create_market_order, symbol, side, quarter,
+                                     params={"reduceOnly": True})
+                        pos["tp2_done"] = True
+                        partial_pnl = pnl_pct * MARGIN * LEVERAGE * 0.25
+                        tg(f"🟡 {sym} TP2 +%{TP2_PCT*100:.0f}\n"
+                           f"%25 kapatıldı • +{partial_pnl:.2f} USDT")
+                    except Exception as e:
+                        print(f"[TP2 {symbol}] {e}")
+                    continue
+
+                # ─── TP3 +%5 → tam kapat ───
+                if pos["tp2_done"] and pnl_pct >= TP3_PCT:
+                    close_position(symbol, f"TP3 +%{TP3_PCT*100:.0f} 🎯")
                     continue
 
                 # ─── ZAMAN AŞIMI (45 dakika) ───
@@ -638,10 +695,13 @@ if __name__ == "__main__":
         "🚀 SADIK DYNAMIC SCANNER BOT BAŞLADI\n\n"
         f"Kaldıraç: {LEVERAGE}x\n"
         f"Marjin: {MARGIN} USDT/işlem\n"
-        f"TP: +%{TP_PCT*100:.0f}\n"
+        f"TP1: +%{TP1_PCT*100:.0f} → %50 kapat\n"
+        f"TP2: +%{TP2_PCT*100:.0f} → %25 kapat\n"
+        f"TP3: +%{TP3_PCT*100:.0f} → tam kapat\n"
         f"SL: -%{SL_PCT*100:.0f}\n"
         f"Max pozisyon: {MAX_OPEN}\n"
-        f"Tüm coinler taranıyor...\n\n"
+        f"1h Trend filtresi: AKTİF ✅\n"
+        "Tüm coinler taranıyor...\n\n"
         "Komutlar:\n"
         "/durum — açık pozisyonlar\n"
         "/kapat BTC — manuel kapat\n"
