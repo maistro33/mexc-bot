@@ -452,13 +452,17 @@ def manage_loop():
                 if pnl_pct <= -SL_PCT * 100:
                     close_position(symbol, f"STOP LOSS -%{SL_PCT*100:.0f}")
                     continue
-                # Breakeven — %1 kâra ulaşınca SL'i sıfıra çek
-                if max_pnl >= MARGIN * 0.08 and pnl <= 0:
-                    close_position(symbol, "BREAKEVEN KORUMA")
-                    continue
-                # Trailing — %1.5 kâra ulaşınca takip et
-                if max_pnl >= MARGIN * 0.12 and pnl <= max_pnl - MARGIN * 0.07:
-                    close_position(symbol, f"TRAILING +{pnl:.2f}")
+                # Trailing Stop — her yükselişte SL yukarı taşı
+                # SL her zaman max kârın %1 altında
+                trail_sl_pct = max_pnl / (MARGIN * LEVERAGE) * 100 - 1.0
+                if trail_sl_pct > -SL_PCT * 100:  # SL başlangıç noktasını geçtiyse aktif
+                    if pnl_pct <= trail_sl_pct:
+                        close_position(symbol, f"TRAILING +{pnl:.2f} 🚀")
+                        continue
+
+                # TP — %3 hedef (trailing devreye girmediyse)
+                if pnl_pct >= TP_PCT * 100:
+                    close_position(symbol, f"TAKE PROFIT +%{TP_PCT*100:.0f} 🎯")
                     continue
                 # TP
                 if pnl_pct >= TP_PCT * 100:
