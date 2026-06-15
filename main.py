@@ -33,7 +33,14 @@ MIN_MOMENTUM     = 0.5   # %0.5 hareket
 MIN_RSI          = 45
 MAX_RSI          = 72
 AI_MIN_SCORE     = 60
-MIN_QUOTE_VOL    = 3_000_000  # Min $3M günlük hacim
+# Kara liste — manipülasyona açık, güvenilmez coinler
+BLACKLIST = [
+    "BANANAS31", "BSB", "JCT", "MEGA", "ALLO",
+    "TURBO", "MOODENG", "SUNDOG", "NEIRO", "HMSTR",
+    "CATI", "DOGS", "MYRO", "BOME", "SLERF",
+]
+
+MIN_QUOTE_VOL = 5_000_000  # Min $5M günlük hacim (3M'den artırdık)
 
 # Hareketli ama güvenilir coinler
 WHITELIST = [
@@ -238,12 +245,13 @@ def get_signal(ind: dict):
             and t1h != "DOWN"):
         return "LONG"
 
-    # SHORT — 1h UP ise açma
+    # SHORT — 1h UP ise açma, düşüş momentumu güçlü olmalı
     if (p < e20 and e9 < e20
             and e9_5 < e20_5
-            and m1 < 0
+            and m1 < -0.2           # güçlü düşüş barı
             and p <= avg5
-            and t1h != "UP"):
+            and vr >= 2.5           # hacim daha güçlü olmalı
+            and t1h == "DOWN"):     # sadece kesin düşüş trendinde
         return "SHORT"
 
     return None
@@ -323,6 +331,9 @@ def scan_active_coins() -> list:
         for symbol, ticker in tickers.items():
             if not symbol.endswith("/USDT:USDT"): continue
             if ticker.get("quoteVolume", 0) < MIN_QUOTE_VOL: continue
+            # Kara liste kontrolü
+            sym_name = symbol.split("/")[0]
+            if sym_name in BLACKLIST: continue
             pct = abs(ticker.get("percentage", 0) or 0)
             if pct < 0.3: continue
             active.append({
