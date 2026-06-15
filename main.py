@@ -320,9 +320,8 @@ def scan_active_coins() -> list:
         tickers = safe_api(exchange.fetch_tickers)
         if not tickers: return []
         active = []
-        for symbol in WHITELIST:
-            ticker = tickers.get(symbol)
-            if not ticker: continue
+        for symbol, ticker in tickers.items():
+            if not symbol.endswith("/USDT:USDT"): continue
             if ticker.get("quoteVolume", 0) < MIN_QUOTE_VOL: continue
             pct = abs(ticker.get("percentage", 0) or 0)
             if pct < 0.3: continue
@@ -334,7 +333,7 @@ def scan_active_coins() -> list:
             })
         active.sort(key=lambda x: x["volume"], reverse=True)
         print(f"[SCAN] {len(active)} coin aktif")
-        return active
+        return active[:60]
     except Exception as e:
         print(f"[SCAN] {e}")
         return []
