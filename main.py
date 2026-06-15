@@ -39,7 +39,7 @@ MIN_MOMENTUM  = 0.1
 MIN_RSI       = 35
 MAX_RSI       = 78
 AI_MIN_SCORE  = 45
-MIN_QUOTE_VOL = 5_000_000  # Min $5M — çöp coinleri eler
+MIN_QUOTE_VOL = 2_000_000  # $2M — daha fazla coin
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -49,7 +49,7 @@ BLACKLIST = {
     "ABNB","SHOP","SQ","PLTR","RKLB","SMCI",
 }
 
-MAX_PRICE = 50  # $50 üstü = hisse tokenı
+MAX_PRICE = 30  # $30 üstü büyük ihtimal hisse tokenı
 
 # ─── TELEGRAM ───
 bot = telebot.TeleBot(TELE_TOKEN)
