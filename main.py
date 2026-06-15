@@ -175,25 +175,22 @@ def calc_indicators(symbol: str):
         df5 = pd.DataFrame(ohlcv5, columns=["t","o","h","l","c","v"])
 
         ohlcv1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=50)
-        if not ohlcv1h: return None
-        df1h = pd.DataFrame(ohlcv1h, columns=["t","o","h","l","c","v"])
+        trend_1h = "NEUTRAL"
+        if ohlcv1h and len(ohlcv1h) >= 20:
+            df1h = pd.DataFrame(ohlcv1h, columns=["t","o","h","l","c","v"])
+            c1h  = df1h["c"]
+            ema20_1h = float(c1h.ewm(span=20).mean().iloc[-1])
+            ema50_1h = float(c1h.ewm(span=50).mean().iloc[-1])
+            p1h      = float(c1h.iloc[-1])
+            if p1h > ema20_1h and ema20_1h > ema50_1h: trend_1h = "UP"
+            elif p1h < ema20_1h and ema20_1h < ema50_1h: trend_1h = "DOWN"
 
-        c = df["c"]; v = df["v"]
-        c5 = df5["c"]; c1h = df1h["c"]
-
+        c = df["c"]; v = df["v"]; c5 = df5["c"]
         price    = float(c.iloc[-1])
         ema9     = float(c.ewm(span=9).mean().iloc[-1])
         ema20    = float(c.ewm(span=20).mean().iloc[-1])
         ema9_5   = float(c5.ewm(span=9).mean().iloc[-1])
         ema20_5  = float(c5.ewm(span=20).mean().iloc[-1])
-
-        ema20_1h = float(c1h.ewm(span=20).mean().iloc[-1])
-        ema50_1h = float(c1h.ewm(span=50).mean().iloc[-1])
-        p1h      = float(c1h.iloc[-1])
-        if p1h > ema20_1h and ema20_1h > ema50_1h: trend_1h = "UP"
-        elif p1h < ema20_1h and ema20_1h < ema50_1h: trend_1h = "DOWN"
-        else: trend_1h = "NEUTRAL"
-
         rsi      = calc_rsi(c)
         vol_avg  = float(v.rolling(20).mean().iloc[-1])
         if vol_avg <= 0: return None
