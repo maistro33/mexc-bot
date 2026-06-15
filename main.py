@@ -34,11 +34,11 @@ MAX_OPEN      = 3
 SCAN_INTERVAL = 40      # saniye
 
 # ─── FİLTRELER ───
-MIN_VOL_RATIO = 1.5     # Hacim artışı
-MIN_RSI       = 40
-MAX_RSI       = 68
-MIN_MOMENTUM  = 0.2     # %0.2 hareket
-PULLBACK_PCT  = 0.998   # Tepeden %0.2 aşağıda olmalı
+MIN_VOL_RATIO = 1.2     # 1.5'ten düşürdük
+MIN_RSI       = 38      # 40'tan düşürdük
+MAX_RSI       = 72      # 68'den artırdık
+MIN_MOMENTUM  = 0.15    # 0.2'den düşürdük
+PULLBACK_PCT  = 0.999   # Daha geniş pullback
 
 # ─── SABİT KOİN LİSTESİ ───
 # Hareketli, güvenilir, $50M+ günlük hacim
@@ -55,7 +55,6 @@ COINS = [
     "LINK/USDT:USDT",
     "AVAX/USDT:USDT",
     "NEAR/USDT:USDT",
-    "FTM/USDT:USDT",
     "ATOM/USDT:USDT",
     "DOT/USDT:USDT",
     "UNI/USDT:USDT",
@@ -219,17 +218,17 @@ def signal(ind):
     if rsi_v > MAX_RSI:       return None
 
     # LONG — 3m trend + 15m teyidi + pullback + 1h filtre
-    if (e9 > e21 > e50              # 3m EMA hizalaması
+    if (e9 > e21                    # 3m EMA9 > EMA21
             and e9_15 > e21_15      # 15m de yukarı
             and p > e21             # fiyat EMA21 üstünde
-            and p <= h10 * PULLBACK_PCT  # tepede değil
-            and m1 > 0              # son bar yeşil
-            and t1h != "DOWN"):     # 1h düşüş değil
+            and p <= h10 * PULLBACK_PCT
+            and m1 > 0
+            and t1h != "DOWN"):
         return "LONG"
 
-    # SHORT — 3m + 15m + pullback + 1h
-    if (e9 < e21 < e50
-            and e9_15 < e21_15      # 15m de aşağı
+    # SHORT
+    if (e9 < e21
+            and e9_15 < e21_15
             and p < e21
             and p >= l10 * (2-PULLBACK_PCT)
             and m1 < 0
