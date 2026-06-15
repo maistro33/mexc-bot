@@ -271,7 +271,50 @@ def ai_score(symbol: str, ind: dict) -> int:
     except:
         return 65
 
-# ─── TARAMA ───
+OPENAI_KEY = os.getenv("OPENAI_API_KEY","")
+
+import requests as req
+
+def gpt_karar(symbol: str, signal: str, ind: dict) -> tuple[bool, str]:
+    """GPT-4o-mini ile sinyal analizi — GİR veya PAS"""
+    if not OPENAI_KEY:
+        return True, "GPT yok, varsayılan geç"
+    try:
+        sym = symbol.split("/")[0]
+        prompt = f"""Kripto futures trading uzmanısın. Aşağıdaki teknik sinyali analiz et:
+
+Coin: {sym}/USDT (Bitget Futures)
+Sinyal: {signal}
+1h Trend: {ind['trend_1h']}
+RSI (1m): {ind['rsi']:.1f}
+Hacim Artışı: {ind['vol_ratio']:.1f}x normal
+Momentum (3 bar): {ind['move_3']:+.2f}%
+Son bar: {ind['move_1']:+.2f}%
+Volatilite: {ind['volatility']:.2f}%
+
+Bu sinyale göre {signal} pozisyonu açmalı mıyım?
+Sadece şu formatta cevap ver:
+GİR — [1 cümle gerekçe]
+veya
+PAS — [1 cümle gerekçe]"""
+
+        r = req.post("https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": "gpt-4o-mini", "max_tokens": 60,
+                  "temperature": 0.2,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=10)
+
+        if r.status_code == 200:
+            yanit = r.json()["choices"][0]["message"]["content"].strip()
+            gir   = yanit.upper().startswith("GİR") or yanit.upper().startswith("GIR")
+            return gir, yanit
+    except Exception as e:
+        print(f"[GPT] {e}")
+    return True, "GPT hatası, geç"
+
+
 def scan_active_coins() -> list:
     try:
         tickers = safe_api(exchange.fetch_tickers)
@@ -297,7 +340,7 @@ def scan_active_coins() -> list:
         return []
 
 # ─── POZİSYON AÇ ───
-def open_position(symbol: str, signal: str, ind: dict, score: int):
+def open_position(symbol: str, signal: str, ind: dict, score: int, gpt_yorum: str = ""):
     with pos_lock:
         if symbol in positions: return
         if len(positions) >= MAX_OPEN: return
@@ -333,7 +376,7 @@ def open_position(symbol: str, signal: str, ind: dict, score: int):
             f"SL: {sl:.6f} (-%{SL_PCT*100:.0f})\n"
             f"1h Trend: {ind['trend_1h']}\n"
             f"Hacim: {ind['vol_ratio']:.1f}x  RSI: {ind['rsi']:.0f}\n"
-            f"AI: %{score}  Kaldıraç: {LEVERAGE}x"
+            f"🤖 GPT: {gpt_yorum}"
         )
     except Exception as e:
         print(f"[OPEN {symbol}] {e}")
@@ -455,8 +498,16 @@ def scanner_loop():
                 if score < AI_MIN_SCORE:
                     print(f"[SKIP] {symbol} AI:%{score}")
                     continue
-                print(f"[SİNYAL] {symbol.split('/')[0]} {signal} RSI={ind['rsi']:.0f} vol={ind['vol_ratio']:.1f}x trend={ind['trend_1h']}")
-                open_position(symbol, signal, ind, score)
+
+                # GPT analizi
+                gir, gpt_yorum = gpt_karar(symbol, signal, ind)
+                sym_short = symbol.split("/")[0]
+                print(f"[GPT] {sym_short} {signal} → {'GİR ✅' if gir else 'PAS ❌'} | {gpt_yorum}")
+                if not gir:
+                    continue
+
+                print(f"[SİNYAL] {sym_short} {signal} RSI={ind['rsi']:.0f} vol={ind['vol_ratio']:.1f}x trend={ind['trend_1h']}")
+                open_position(symbol, signal, ind, score, gpt_yorum)
                 time.sleep(2)
             time.sleep(SCAN_INTERVAL)
         except Exception as e:
