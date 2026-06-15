@@ -28,16 +28,16 @@ MARGIN          = 10.0
 TP_PCT          = 0.03    # %3 TP
 SL_PCT          = 0.02    # %2 SL
 MAX_OPEN        = 3
-SCAN_INTERVAL   = 30
+SCAN_INTERVAL   = 45     # 30'dan 45 saniyeye — rate limit koruması
 CONFIRM_WAIT    = 0       # Bekleme yok — GPT anında karar verir
 
 # Filtreler
-MIN_VOLUME_RATIO = 2.0
-MIN_MOMENTUM     = 0.5
-MIN_RSI          = 45
-MAX_RSI          = 65
-AI_MIN_SCORE     = 60
-MIN_QUOTE_VOL    = 5_000_000  # Min $5M hacim
+MIN_VOLUME_RATIO = 1.5   # 2.0'dan düşürdük
+MIN_MOMENTUM     = 0.3   # 0.5'ten düşürdük
+MIN_RSI          = 42    # 45'ten düşürdük
+MAX_RSI          = 68    # 65'ten artırdık
+AI_MIN_SCORE     = 55    # 60'tan düşürdük
+MIN_QUOTE_VOL    = 3_000_000  # 5M'den 3M'e düşürdük
 MAX_PRICE        = 50         # $50 üstü = hisse tokenı, atla
 
 # Kara liste
@@ -98,15 +98,15 @@ def safe_api(func, *args, **kwargs):
     global LAST_API
     for attempt in range(4):
         try:
-            wait = 0.4 - (time.time() - LAST_API)
+            wait = 0.6 - (time.time() - LAST_API)  # 0.4'ten 0.6'ya
             if wait > 0: time.sleep(wait)
             LAST_API = time.time()
             return func(*args, **kwargs)
         except ccxt.RateLimitExceeded:
-            time.sleep(5)
+            time.sleep(10)
         except Exception as e:
             print(f"[API {attempt}] {e}")
-            time.sleep(2)
+            time.sleep(3)
     return None
 
 # ─── GLOBAL STATE ───
