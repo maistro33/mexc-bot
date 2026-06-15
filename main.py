@@ -600,6 +600,49 @@ def get_coins():
             print(f"[SCANNER] {e}")
             time.sleep(10)
 
+# ─── TARAYICI ───
+def scanner_loop():
+    while True:
+        try:
+            with pos_lock:
+                open_syms = set(positions.keys())
+                open_cnt  = len(positions)
+
+            if open_cnt >= MAX_OPEN:
+                time.sleep(15)
+                continue
+
+            coins = get_coins()
+
+            for symbol in coins:
+                if symbol in open_syms: continue
+                with pos_lock:
+                    if len(positions) >= MAX_OPEN: break
+
+                ind = indicators(symbol)
+                if not ind: continue
+
+                sig = signal(ind)
+                if not sig: continue
+
+                skor = ai_skor(symbol, ind)
+                sym  = symbol.split("/")[0]
+                print(f"[SİNYAL] {sym} {sig} RSI={ind['rsi']:.0f} vol={ind['vol_ratio']:.1f}x trend={ind['trend_1h']}")
+
+                gir, yorum = gpt_karar(symbol, sig, ind)
+                print(f"[GPT] {sym} → {'GİR ✅' if gir else 'PAS ❌'} | {yorum}")
+
+                if gir:
+                    ac(symbol, sig, ind, skor, yorum)
+
+                time.sleep(2)
+
+            time.sleep(SCAN_INTERVAL)
+
+        except Exception as e:
+            print(f"[SCANNER] {e}")
+            time.sleep(10)
+
 # ─── HEALTH ───
 def health():
     from http.server import HTTPServer, BaseHTTPRequestHandler
