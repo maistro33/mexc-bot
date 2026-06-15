@@ -33,12 +33,12 @@ MAX_OPEN      = 3
 SCAN_INTERVAL = 30
 
 # ─── FİLTRELER ───
-MIN_VOLUME_RATIO = 1.5
-MIN_MOMENTUM     = 0.3
-MIN_RSI          = 40
-MAX_RSI          = 72
-AI_MIN_SCORE     = 60
-MIN_QUOTE_VOL    = 5_000_000
+MIN_VOLUME_RATIO = 1.2
+MIN_MOMENTUM     = 0.15
+MIN_RSI          = 38
+MAX_RSI          = 74
+AI_MIN_SCORE     = 55
+MIN_QUOTE_VOL    = 3_000_000
 
 # ─── KARA LİSTE ───
 BLACKLIST = {
@@ -208,15 +208,15 @@ def get_signal(ind):
     if rsi < MIN_RSI:          return None
     if rsi > MAX_RSI:          return None
 
-    # ATR filtresi — çok düşük volatilite = sıkışma, sinyal güvenilmez
-    if atr / p * 100 < 0.05: return None
+    # ATR filtresi — çok düşük volatilite
+    if atr / p * 100 < 0.03: return None
 
     # LONG
     if (p > e20 and e9 > e20          # 1m trend yukarı
             and e9_5 > e20_5          # 5m trend yukarı
             and m1 > 0                # son bar yeşil
             and p >= avg5             # sahte breakout değil
-            and p <= h10 * 0.999      # tepede değil (pullback)
+            and p <= h10 * 0.9995     # tepede değil (pullback)
             and not ind["fake_up"]    # sahte yukarı kırılma değil
             and t1h != "DOWN"):       # 1h düşüş değil
         return "LONG"
