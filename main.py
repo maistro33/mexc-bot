@@ -39,7 +39,7 @@ MIN_MOMENTUM  = 0.1
 MIN_RSI       = 35
 MAX_RSI       = 78
 AI_MIN_SCORE  = 45
-MIN_QUOTE_VOL = 2_000_000
+MIN_QUOTE_VOL = 5_000_000  # Min $5M — çöp coinleri eler
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -413,8 +413,12 @@ def get_signal(ind):
                  and m1 < -0.2 and p <= avg5
                  and vr >= 2.0 and t1h == "DOWN")
 
-    if ict_long or std_long:  return "LONG"
-    if ict_short or std_short: return "SHORT"
+    if ict_long or std_long:
+        if btc_trend == "DOWN": return None  # BTC düşerken LONG açma
+        return "LONG"
+    if ict_short or std_short:
+        if btc_trend == "UP": return None    # BTC yükselirken SHORT açma
+        return "SHORT"
     return None
 
 # ─── AI SKOR ───
