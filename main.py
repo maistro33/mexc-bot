@@ -388,7 +388,7 @@ def calc_indicators(symbol):
         return None
 
 # ─── SİNYAL ───
-def get_signal(ind):
+def get_signal(ind, btc_trend="NEUTRAL"):
     p    = ind["price"];  e9 = ind["ema9"]; e20 = ind["ema20"]
     e9_5 = ind["ema9_5"]; e20_5 = ind["ema20_5"]
     t1h  = ind["trend_1h"]; rsi = ind["rsi"]
@@ -691,7 +691,7 @@ def scanner_loop():
                 ind = calc_indicators(symbol)
                 if not ind: continue
 
-                signal = get_signal(ind)
+                signal = get_signal(ind, btc_trend)
                 if not signal: continue
 
                 funding  = get_funding(symbol)
