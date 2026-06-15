@@ -326,10 +326,7 @@ def calc_indicators(symbol):
         rsi_v    = calc_rsi(c1)
         macd_d   = calc_macd(c1)
         bb_pos   = calc_bb(c1)
-
-        # RSI serisi (diverjans için)
-        rsi_s = pd.Series([calc_rsi(c1.iloc[max(0,i-14):i+1]) for i in range(len(c1))])
-        rsi_div = calc_rsi_div(c1, rsi_s)
+        rsi_div  = "YOK"  # Şimdilik basit tut
 
         vol_avg   = float(v1.rolling(20).mean().iloc[-1])
         vol_ratio = float(v1.iloc[-1]) / max(vol_avg, 0.001)
