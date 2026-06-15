@@ -139,15 +139,31 @@ def calc_indicators(symbol: str):
             return None
         df5 = pd.DataFrame(ohlcv5, columns=["t","o","h","l","c","v"])
 
-        c  = df["c"]
-        v  = df["v"]
-        c5 = df5["c"]
+        # 1h büyük trend — LONG/SHORT filtresi için
+        ohlcv1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=50)
+        if not ohlcv1h:
+            return None
+        df1h = pd.DataFrame(ohlcv1h, columns=["t","o","h","l","c","v"])
+
+        c   = df["c"]
+        v   = df["v"]
+        c5  = df5["c"]
+        c1h = df1h["c"]
 
         price    = float(c.iloc[-1])
         ema9     = float(c.ewm(span=9).mean().iloc[-1])
         ema20    = float(c.ewm(span=20).mean().iloc[-1])
         ema9_5   = float(c5.ewm(span=9).mean().iloc[-1])
         ema20_5  = float(c5.ewm(span=20).mean().iloc[-1])
+
+        # 1h büyük trend — bu filtre JCT gibi düşüş trendinde LONG açılmasını engeller
+        ema20_1h = float(c1h.ewm(span=20).mean().iloc[-1])
+        ema50_1h = float(c1h.ewm(span=50).mean().iloc[-1])
+        price_1h = float(c1h.iloc[-1])
+        # 1h trend yönü: yukarı mı aşağı mı?
+        trend_1h = "UP" if (price_1h > ema20_1h and ema20_1h > ema50_1h) else \
+                   "DOWN" if (price_1h < ema20_1h and ema20_1h < ema50_1h) else "NEUTRAL"
+
         rsi      = calc_rsi(c)
 
         vol_avg  = float(v.rolling(20).mean().iloc[-1])
@@ -170,6 +186,7 @@ def calc_indicators(symbol: str):
             "ema20":      ema20,
             "ema9_5":     ema9_5,
             "ema20_5":    ema20_5,
+            "trend_1h":   trend_1h,   # 1h büyük trend
             "rsi":        rsi,
             "vol_ratio":  vol_ratio,
             "move_1":     move_1,
@@ -185,16 +202,17 @@ def calc_indicators(symbol: str):
 # ─── SİNYAL ───
 def get_signal(ind: dict) -> str | None:
     """LONG veya SHORT sinyali döndür, yoksa None"""
-    p  = ind["price"]
-    e9 = ind["ema9"]
-    e20= ind["ema20"]
-    e9_5  = ind["ema9_5"]
-    e20_5 = ind["ema20_5"]
-    rsi = ind["rsi"]
-    vr  = ind["vol_ratio"]
-    m1  = ind["move_1"]
-    mom = ind["momentum"]
-    avg5= ind["avg5"]
+    p      = ind["price"]
+    e9     = ind["ema9"]
+    e20    = ind["ema20"]
+    e9_5   = ind["ema9_5"]
+    e20_5  = ind["ema20_5"]
+    t1h    = ind["trend_1h"]   # 1h büyük trend
+    rsi    = ind["rsi"]
+    vr     = ind["vol_ratio"]
+    m1     = ind["move_1"]
+    mom    = ind["momentum"]
+    avg5   = ind["avg5"]
 
     # Temel filtreler
     if vr    < MIN_VOLUME_RATIO: return None
@@ -202,18 +220,20 @@ def get_signal(ind: dict) -> str | None:
     if rsi   < MIN_RSI:          return None
     if rsi   > MAX_RSI:          return None
 
-    # LONG
+    # LONG — sadece 1h trend UP veya NEUTRAL ise
     if (p > e20 and e9 > e20           # 1m trend yukarı
         and e9_5 > e20_5               # 5m trend yukarı
         and m1 > 0                     # son bar yeşil
-        and p >= avg5):                # sahte breakout değil
+        and p >= avg5                  # sahte breakout değil
+        and t1h != "DOWN"):            # 1h düşüş trendinde LONG açma!
         return "LONG"
 
-    # SHORT
+    # SHORT — sadece 1h trend DOWN veya NEUTRAL ise
     if (p < e20 and e9 < e20           # 1m trend aşağı
         and e9_5 < e20_5               # 5m trend aşağı
         and m1 < 0                     # son bar kırmızı
-        and p <= avg5):                # sahte breakout değil
+        and p <= avg5                  # sahte breakout değil
+        and t1h != "UP"):              # 1h yükseliş trendinde SHORT açma!
         return "SHORT"
 
     return None
