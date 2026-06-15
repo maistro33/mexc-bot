@@ -20,6 +20,30 @@ BITGET_PASS  = os.getenv("BITGET_PASS","")
 SUPA_URL     = os.getenv("SUPABASE_URL","")
 SUPA_KEY     = os.getenv("SUPABASE_KEY","")
 
+# Güvenilir coin listesi — sadece bunlarda işlem yap
+WHITELIST = [
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT",
+    "SOL/USDT:USDT",
+    "BNB/USDT:USDT",
+    "XRP/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "ADA/USDT:USDT",
+    "AVAX/USDT:USDT",
+    "LINK/USDT:USDT",
+    "DOT/USDT:USDT",
+    "OP/USDT:USDT",
+    "ARB/USDT:USDT",
+    "SUI/USDT:USDT",
+    "APT/USDT:USDT",
+    "MATIC/USDT:USDT",
+    "LTC/USDT:USDT",
+    "UNI/USDT:USDT",
+    "ATOM/USDT:USDT",
+    "INJ/USDT:USDT",
+    "TRX/USDT:USDT",
+]
+
 # Risk ayarları
 LEVERAGE     = 5       # 5x - güvenli
 MARGIN       = 10.0    # Her işlem 10 USDT
@@ -28,14 +52,15 @@ TP2_PCT      = 0.03    # %3 → %25 kapat
 TP3_PCT      = 0.05    # %5 → kalanı kapat
 SL_PCT       = 0.02    # %2 stop loss
 MAX_OPEN     = 3       # Max açık pozisyon
-SCAN_INTERVAL= 30      # Saniye
+SCAN_INTERVAL= 20      # Saniye
 
 # Filtreler
-MIN_VOLUME_RATIO = 2.0   # Normal hacmin 2x+ artması
-MIN_MOMENTUM     = 0.8   # %0.8 fiyat hareketi
+MIN_VOLUME_RATIO = 2.0   # Normal hacmin 2x artması
+MIN_MOMENTUM     = 0.3   # %0.3 fiyat hareketi
 MIN_RSI          = 45    # RSI minimum
-MAX_RSI          = 75    # RSI maximum (aşırı alım değil)
+MAX_RSI          = 70    # RSI maximum
 AI_MIN_SCORE     = 60    # AI minimum skor
+MIN_MARKET_VOL   = 5000000  # Min $5M günlük hacim
 
 # ─── TELEGRAM ───
 bot = telebot.TeleBot(TELE_TOKEN)
@@ -178,8 +203,10 @@ def calc_indicators(symbol: str):
         momentum = abs(move_3)
         volatility = (float(df["h"].iloc[-1]) - float(df["l"].iloc[-1])) / price * 100
 
-        # Sahte breakout filtresi
-        avg5 = float(c.tail(5).mean())
+        # Sahte breakout filtresi + geri çekilme noktası
+        avg5  = float(c.tail(5).mean())
+        high5 = float(c.tail(5).max())   # Son 5 barın en yükseği
+        low5  = float(c.tail(5).min())   # Son 5 barın en düşüğü
 
         return {
             "symbol":     symbol,
@@ -188,7 +215,7 @@ def calc_indicators(symbol: str):
             "ema20":      ema20,
             "ema9_5":     ema9_5,
             "ema20_5":    ema20_5,
-            "trend_1h":   trend_1h,   # 1h büyük trend
+            "trend_1h":   trend_1h,
             "rsi":        rsi,
             "vol_ratio":  vol_ratio,
             "move_1":     move_1,
@@ -196,6 +223,8 @@ def calc_indicators(symbol: str):
             "momentum":   momentum,
             "volatility": volatility,
             "avg5":       avg5,
+            "high5":      high5,
+            "low5":       low5,
         }
     except Exception as e:
         print(f"[IND {symbol}] {e}")
@@ -203,39 +232,44 @@ def calc_indicators(symbol: str):
 
 # ─── SİNYAL ───
 def get_signal(ind: dict) -> str | None:
-    """LONG veya SHORT sinyali döndür, yoksa None"""
+    """LONG veya SHORT sinyali döndür — geri çekilme noktasında gir"""
     p      = ind["price"]
     e9     = ind["ema9"]
     e20    = ind["ema20"]
     e9_5   = ind["ema9_5"]
     e20_5  = ind["ema20_5"]
-    t1h    = ind["trend_1h"]   # 1h büyük trend
+    t1h    = ind["trend_1h"]
     rsi    = ind["rsi"]
     vr     = ind["vol_ratio"]
     m1     = ind["move_1"]
+    m3     = ind["move_3"]
     mom    = ind["momentum"]
     avg5   = ind["avg5"]
+    high5  = ind["high5"]
+    low5   = ind["low5"]
 
     # Temel filtreler
-    if vr    < MIN_VOLUME_RATIO: return None
-    if mom   < MIN_MOMENTUM:     return None
-    if rsi   < MIN_RSI:          return None
-    if rsi   > MAX_RSI:          return None
+    if vr  < MIN_VOLUME_RATIO: return None
+    if mom < MIN_MOMENTUM:     return None
+    if rsi < MIN_RSI:          return None
+    if rsi > MAX_RSI:          return None
 
-    # LONG — sadece 1h trend UP veya NEUTRAL ise
-    if (p > e20 and e9 > e20           # 1m trend yukarı
-        and e9_5 > e20_5               # 5m trend yukarı
-        and m1 > 0                     # son bar yeşil
-        and p >= avg5                  # sahte breakout değil
-        and t1h != "DOWN"):            # 1h düşüş trendinde LONG açma!
+    # LONG koşulları
+    long_trend = (p > e20 and e9 > e20 and e9_5 > e20_5 and t1h != "DOWN")
+    # Geri çekilme kontrolü: fiyat son 5 barın en yükseğinden biraz aşağıda
+    # Bu sayede pump tepesinde değil, sağlıklı geri çekilmede gireriz
+    pullback_long = p <= high5 * 0.995  # Tepeden max %0.5 geri çekilmiş
+    momentum_long = m3 > 0 and m1 > -0.3  # Genel yön yukarı ama son bar çok düşmemiş
+
+    if long_trend and pullback_long and momentum_long:
         return "LONG"
 
-    # SHORT — sadece 1h trend DOWN veya NEUTRAL ise
-    if (p < e20 and e9 < e20           # 1m trend aşağı
-        and e9_5 < e20_5               # 5m trend aşağı
-        and m1 < 0                     # son bar kırmızı
-        and p <= avg5                  # sahte breakout değil
-        and t1h != "UP"):              # 1h yükseliş trendinde SHORT açma!
+    # SHORT koşulları
+    short_trend = (p < e20 and e9 < e20 and e9_5 < e20_5 and t1h != "UP")
+    pullback_short = p >= low5 * 1.005   # Dipten max %0.5 geri sekmiş
+    momentum_short = m3 < 0 and m1 < 0.3
+
+    if short_trend and pullback_short and momentum_short:
         return "SHORT"
 
     return None
@@ -272,38 +306,32 @@ def ai_score(symbol: str, ind: dict) -> int:
 
 # ─── AKTİF KOİN TARAMASI ───
 def scan_active_coins() -> list:
-    """Hacmi patlayan coinleri bul"""
+    """Sadece whitelist coinleri tara"""
     try:
         tickers = safe_api(exchange.fetch_tickers)
         if not tickers:
             return []
 
         active = []
-        for symbol, ticker in tickers.items():
-            # Sadece USDT perpetual
-            if not symbol.endswith("/USDT:USDT"):
+        for symbol in WHITELIST:
+            ticker = tickers.get(symbol)
+            if not ticker:
                 continue
-            # Temel veri kontrolü
             if not ticker.get("quoteVolume"):
                 continue
-            # Çok küçük coinleri atla
-            if ticker.get("quoteVolume", 0) < 100000:
-                continue
-            # Fiyat hareketi var mı?
-            pct = abs(ticker.get("percentage", 0) or 0)
-            if pct < 0.5:
+            # Min hacim kontrolü
+            if ticker.get("quoteVolume", 0) < MIN_MARKET_VOL:
                 continue
 
             active.append({
-                "symbol":  symbol,
-                "price":   ticker.get("last", 0),
-                "volume":  ticker.get("quoteVolume", 0),
-                "change":  ticker.get("percentage", 0),
+                "symbol": symbol,
+                "price":  ticker.get("last", 0),
+                "volume": ticker.get("quoteVolume", 0),
+                "change": ticker.get("percentage", 0),
             })
 
-        # Hacme göre sırala, top 50
-        active.sort(key=lambda x: x["volume"], reverse=True)
-        return active[:50]
+        print(f"[SCAN] {len(active)} whitelist coin taranıyor...")
+        return active
     except Exception as e:
         print(f"[SCAN] {e}")
         return []
