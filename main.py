@@ -29,7 +29,7 @@ TP_PCT          = 0.03    # %3 TP
 SL_PCT          = 0.02    # %2 SL
 MAX_OPEN        = 3
 SCAN_INTERVAL   = 30
-CONFIRM_WAIT    = 180     # 3 dakika bekleme — sahte pump filtresi
+CONFIRM_WAIT    = 0       # Bekleme yok — GPT anında karar verir
 
 # Filtreler
 MIN_VOLUME_RATIO = 2.0
@@ -635,18 +635,18 @@ def scanner_loop():
                     continue
 
                 sym = symbol.split("/")[0]
-                print(f"[SİNYAL] {sym} {signal} RSI={ind['rsi']:.0f} vol={ind['vol_ratio']:.1f}x trend={ind['trend_1h']} — 3dk onay bekleniyor")
+                print(f"[SİNYAL] {sym} {signal} RSI={ind['rsi']:.0f} vol={ind['vol_ratio']:.1f}x trend={ind['trend_1h']} — GPT analiz ediliyor...")
 
-                # Bekleme listesine al
-                with pending_lock:
-                    pending[symbol] = {
-                        "signal":    signal,
-                        "ind":       ind,
-                        "score":     score,
-                        "ilk_fiyat": ind["price"],
-                        "zaman":     time.time(),
-                    }
-                tg(f"🔍 {sym} {signal} sinyali — 3 dakika izleniyor...\nRSI:{ind['rsi']:.0f} Hacim:{ind['vol_ratio']:.1f}x Trend:{ind['trend_1h']}")
+                # CoinGlass + GPT anında karar
+                cg  = get_coinglass(symbol)
+                gir, yorum = gpt_analiz(symbol, signal, ind, cg, mod="giris")
+                print(f"[GPT] {sym} → {'GİR ✅' if gir else 'PAS ❌'} | {yorum}")
+
+                if gir:
+                    open_position(symbol, signal, ind, score, yorum)
+                else:
+                    tg(f"⛔ {sym} GPT reddetti: {yorum}")
+
                 time.sleep(2)
 
             time.sleep(SCAN_INTERVAL)
