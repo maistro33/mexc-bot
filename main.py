@@ -617,6 +617,11 @@ def close_paper(symbol, reason, exit_price=None):
         "macd_durum":   ind.get("macd", ""),
         "bb_pozisyon":  ind.get("bb", ""),
         "mum_form":     ind.get("displacement", "YOK"),
+        "vol_devam":    1 if ind.get("vol_devam") else 0,
+        "rsi_div":      0,
+        "destek_uzaklik": ind.get("sup_uzaklik", 0),
+        "direnc_uzaklik": ind.get("res_uzaklik", 0),
+        "onceki_sonuc": "",
         "paper":        1,
     })
 
