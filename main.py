@@ -748,30 +748,29 @@ def cmd_stats(msg):
     if not supa:
         bot.send_message(msg.chat.id, "Supabase yok."); return
     try:
-        r = supa.table("trades").select("*").eq("paper", 1).execute()
+        r = supa.table("trades").select("pnl,choch,fvg_icinde").execute()
         data = r.data or []
         if not data:
-            bot.send_message(msg.chat.id, "Henüz paper kayıt yok."); return
+            bot.send_message(msg.chat.id, "Henüz kayıt yok."); return
         toplam = len(data)
-        kazan  = sum(1 for d in data if float(d.get("pnl",0)) > 0)
+        kazan  = sum(1 for d in data if float(d.get("pnl") or 0) > 0)
         kayip  = toplam - kazan
-        net    = sum(float(d.get("pnl",0)) for d in data)
+        net    = sum(float(d.get("pnl") or 0) for d in data)
 
-        # ICT analizi
-        fvg_win = [d for d in data if d.get("fvg_icinde") == 1 and float(d.get("pnl",0)) > 0]
+        # FVG analizi
         fvg_top = [d for d in data if d.get("fvg_icinde") == 1]
-        choch_win = [d for d in data if d.get("choch") == 1 and float(d.get("pnl",0)) > 0]
+        fvg_win = [d for d in fvg_top if float(d.get("pnl") or 0) > 0]
         choch_top = [d for d in data if d.get("choch") == 1]
+        choch_win = [d for d in choch_top if float(d.get("pnl") or 0) > 0]
 
         bot.send_message(msg.chat.id,
-            f"📊 PAPER TRADİNG İSTATİSTİK\n\n"
+            f"📊 İSTATİSTİK\n\n"
             f"Toplam: {toplam} işlem\n"
             f"Kazanan: {kazan} (%{kazan/toplam*100:.0f})\n"
             f"Kaybeden: {kayip} (%{kayip/toplam*100:.0f})\n"
             f"Net PnL: {net:+.2f} USDT\n\n"
-            f"ICT Analiz:\n"
-            f"FVG içinde: {len(fvg_top)} işlem, %{len(fvg_win)/max(len(fvg_top),1)*100:.0f} kazanç\n"
-            f"CHoCH var: {len(choch_top)} işlem, %{len(choch_win)/max(len(choch_top),1)*100:.0f} kazanç"
+            f"FVG içinde: {len(fvg_top)} işlem → %{len(fvg_win)/max(len(fvg_top),1)*100:.0f} kazanç\n"
+            f"CHoCH var: {len(choch_top)} işlem → %{len(choch_win)/max(len(choch_top),1)*100:.0f} kazanç"
         )
     except Exception as e:
         bot.send_message(msg.chat.id, f"Hata: {e}")
