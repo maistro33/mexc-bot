@@ -44,7 +44,7 @@ MIN_QUOTE_VOL = 2_000_000  # $2M — daha fazla coin
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
-    "BOME","SLERF","PNUT","ACT","GOAT",
+    "BOME","SLERF","PNUT","ACT","GOAT","RGTI","SATL","WET",
     "QCOM","AAPL","AMZN","GOOGL","META","MSFT","COIN","UBER",
     "ABNB","SHOP","SQ","PLTR","RKLB","SMCI",
 }
