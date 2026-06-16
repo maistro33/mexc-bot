@@ -417,10 +417,13 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     if rsi < 42:   return None
     if rsi > 74:   return None
 
+    # LONG — CHoCH varsa öncelikli, yoksa standart filtrelerle
     if (e9 > e20 and e9_5 > e20_5
-            and m1 > 0 and p >= avg5 and t1h != "DOWN"):
+            and m1 > 0 and p >= avg5
+            and t1h != "DOWN"):
         return "LONG"
 
+    # SHORT
     if (e9 < e20 and e9_5 < e20_5
             and m1 < -0.2 and p <= avg5
             and vr >= 2.0 and t1h == "DOWN"):
