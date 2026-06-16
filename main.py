@@ -333,7 +333,9 @@ def calc_indicators(symbol):
         rsi_div  = "YOK"  # Şimdilik basit tut
 
         vol_avg   = float(v1.rolling(20).mean().iloc[-1])
-        vol_ratio = float(v1.iloc[-1]) / max(vol_avg, 0.001)
+        if vol_avg <= 0: return None
+        vol_ratio = float(v1.iloc[-1]) / vol_avg
+        if vol_ratio != vol_ratio: vol_ratio = 1.0  # NaN kontrolü
         move_1    = (price - float(c1.iloc[-2])) / float(c1.iloc[-2]) * 100
         move_3    = (price - float(c1.iloc[-4])) / float(c1.iloc[-4]) * 100
         momentum  = abs(move_3)
@@ -341,12 +343,21 @@ def calc_indicators(symbol):
         avg5      = float(c1.tail(5).mean())
 
         # ICT analizleri (5m üzerinde)
-        fvgs      = detect_fvg(df5)
-        in_fvg, fvg_data = price_in_fvg(price, fvgs)
-        swings    = swing_points(df5)
-        choch     = detect_choch(df5, swings)
-        displace  = detect_displacement(df5)
-        liq       = liquidity_taken(df5, swings)
+        try:
+            fvgs             = detect_fvg(df5)
+            in_fvg, fvg_data = price_in_fvg(price, fvgs)
+            swings           = swing_points(df5)
+            choch            = detect_choch(df5, swings)
+            displace         = detect_displacement(df5)
+            liq              = liquidity_taken(df5, swings)
+            nearest_res      = min([s[1] for s in swings["highs"] if s[1] > price], default=price*1.05)
+            nearest_sup      = max([s[1] for s in swings["lows"]  if s[1] < price], default=price*0.95)
+            res_uzaklik      = (nearest_res - price) / price * 100
+            sup_uzaklik      = (price - nearest_sup) / price * 100
+        except:
+            fvgs=[]; in_fvg=False; fvg_data=None
+            choch="YOK"; displace="YOK"; liq="YOK"
+            res_uzaklik=5.0; sup_uzaklik=5.0
 
         # Sahte pump
         last3_high = float(c1.tail(3).max())
