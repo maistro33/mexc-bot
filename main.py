@@ -412,18 +412,18 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     vr   = ind["vol_ratio"]; m1 = ind["move_1"]
     mom  = ind["momentum"]; avg5 = ind["avg5"]
 
-    if vr  < 2.0:  return None   # Hacim 2x+
-    if mom < 0.5:  return None   # Momentum %0.5+
-    if rsi < 45:   return None   # RSI min
-    if rsi > 72:   return None   # RSI max
+    if vr  < 1.5:  return None
+    if mom < 0.3:  return None
+    if rsi < 42:   return None
+    if rsi > 74:   return None
 
-    if (p > e20 and e9 > e20 and e9_5 > e20_5
+    if (e9 > e20 and e9_5 > e20_5
             and m1 > 0 and p >= avg5 and t1h != "DOWN"):
         return "LONG"
 
-    if (p < e20 and e9 < e20 and e9_5 < e20_5
+    if (e9 < e20 and e9_5 < e20_5
             and m1 < -0.2 and p <= avg5
-            and vr >= 2.5 and t1h == "DOWN"):
+            and vr >= 2.0 and t1h == "DOWN"):
         return "SHORT"
 
     return None
