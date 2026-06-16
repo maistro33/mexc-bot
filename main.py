@@ -31,14 +31,14 @@ TP2_PCT       = 0.025
 TP3_PCT       = 0.040
 SL_PCT        = 0.020
 TRAIL_PCT     = 0.010
-MAX_OPEN      = 8       # Daha fazla eş zamanlı
-SCAN_INTERVAL = 10      # 10 saniyede bir tara
+MAX_OPEN      = 10       # Daha fazla eş zamanlı
+SCAN_INTERVAL = 15      # 429 koruması
 
-MIN_VOL_RATIO = 1.0     # Çok gevşek
-MIN_MOMENTUM  = 0.1
-MIN_RSI       = 35
-MAX_RSI       = 78
-AI_MIN_SCORE  = 45
+MIN_VOL_RATIO = 0.5     # Çok gevşek
+MIN_MOMENTUM  = 0.05
+MIN_RSI       = 30
+MAX_RSI       = 80
+AI_MIN_SCORE  = 40
 MIN_QUOTE_VOL = 2_000_000  # $2M — daha fazla coin
 
 BLACKLIST = {
