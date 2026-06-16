@@ -335,11 +335,18 @@ def calc_indicators(symbol):
         vol_avg   = float(v1.rolling(20).mean().iloc[-1])
         if vol_avg <= 0: return None
         vol_ratio = float(v1.iloc[-1]) / vol_avg
-        if vol_ratio != vol_ratio: vol_ratio = 1.0  # NaN kontrolü
-        move_1    = (price - float(c1.iloc[-2])) / float(c1.iloc[-2]) * 100
-        move_3    = (price - float(c1.iloc[-4])) / float(c1.iloc[-4]) * 100
+        if vol_ratio != vol_ratio or vol_ratio <= 0: vol_ratio = 1.0
+
+        prev1 = float(c1.iloc[-2])
+        prev3 = float(c1.iloc[-4])
+        if prev1 <= 0 or prev3 <= 0 or price <= 0: return None
+
+        move_1    = (price - prev1) / prev1 * 100
+        move_3    = (price - prev3) / prev3 * 100
         momentum  = abs(move_3)
-        volatility= (float(df1["h"].iloc[-1]) - float(df1["l"].iloc[-1])) / price * 100
+        high1     = float(df1["h"].iloc[-1])
+        low1      = float(df1["l"].iloc[-1])
+        volatility= (high1 - low1) / price * 100 if price > 0 else 0
         avg5      = float(c1.tail(5).mean())
 
         # ICT analizleri (5m üzerinde)
