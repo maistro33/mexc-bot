@@ -44,9 +44,9 @@ MIN_QUOTE_VOL = 2_000_000  # $2M — daha fazla coin
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
-    "BOME","SLERF","PNUT","ACT","GOAT","RGTI","SATL","WET",
+    "BOME","SLERF","PNUT","ACT","GOAT","RGTI","SATL","WET","POET",
     "QCOM","AAPL","AMZN","GOOGL","META","MSFT","COIN","UBER",
-    "ABNB","SHOP","SQ","PLTR","RKLB","SMCI",
+    "ABNB","SHOP","SQ","PLTR","RKLB","SMCI","ARQQ",
 }
 
 MAX_PRICE = 30  # $30 üstü büyük ihtimal hisse tokenı
@@ -401,38 +401,20 @@ def calc_indicators(symbol):
             "res_uzaklik": res_uzaklik,
             "sup_uzaklik": sup_uzaklik,
         }
-    except Exception as e:
-        print(f"[IND {symbol}] {e}")
+    except Exception:
         return None
 
 # ─── SİNYAL ───
 def get_signal(ind, btc_trend="NEUTRAL"):
     p    = ind["price"];  e9 = ind["ema9"]; e20 = ind["ema20"]
     e9_5 = ind["ema9_5"]; e20_5 = ind["ema20_5"]
-    t1h  = ind["trend_1h"]; rsi = ind["rsi"]
-    vr   = ind["vol_ratio"]; m1 = ind["move_1"]
-    mom  = ind["momentum"]; avg5 = ind["avg5"]
+    m1   = ind["move_1"]
 
-    if vr  < MIN_VOL_RATIO: return None
-    if mom < MIN_MOMENTUM:  return None
-    if rsi < MIN_RSI:       return None
-    if rsi > MAX_RSI:       return None
-    if ind["fake_up"] and m1 > 0: return None
-    if ind["fake_down"] and m1 < 0: return None
-
-    # ICT bonus sinyal — CHoCH + FVG içinde = güçlü giriş
-    ict_long  = ind["choch"] == "YUKARI" and ind["fvg_icinde"]
-    ict_short = ind["choch"] == "ASAGI"  and ind["fvg_icinde"]
-
-    # Standart sinyal
-    std_long  = (p > e20 and e9 > e20 and e9_5 > e20_5
-                 and m1 > 0 and p >= avg5 and t1h != "DOWN")
-    std_short = (p < e20 and e9 < e20 and e9_5 < e20_5
-                 and m1 < -0.2 and p <= avg5
-                 and vr >= 2.0 and t1h == "DOWN")
-
-    if ict_long or std_long:  return "LONG"
-    if ict_short or std_short: return "SHORT"
+    # Basit EMA sinyali — hemen açsın
+    if e9 > e20 and e9_5 > e20_5 and m1 > 0:
+        return "LONG"
+    if e9 < e20 and e9_5 < e20_5 and m1 < 0:
+        return "SHORT"
     return None
 
 # ─── AI SKOR ───
