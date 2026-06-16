@@ -37,7 +37,7 @@ SCAN_INTERVAL = 15      # 429 koruması
 MIN_VOL_RATIO = 0.5     # Çok gevşek
 MIN_MOMENTUM  = 0.05
 MIN_RSI       = 30
-MAX_RSI       = 80
+MAX_RSI       = 75
 AI_MIN_SCORE  = 40
 MIN_QUOTE_VOL = 2_000_000  # $2M — daha fazla coin
 
