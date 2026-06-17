@@ -411,26 +411,25 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     t1h  = ind["trend_1h"]; rsi = ind["rsi"]
     vr   = ind["vol_ratio"]; m1 = ind["move_1"]
     mom  = ind["momentum"]; avg5 = ind["avg5"]
-    choch   = ind.get("choch", "YOK")
-    fvg_var = ind.get("fvg_icinde", False)
 
     if vr  < 1.5:  return None
     if mom < 0.3:  return None
-    if rsi < 50:   return None   # RSI 50+ — veriye göre
-    if rsi > 65:   return None   # RSI 65 altı — veriye göre
+    if rsi < 50:   return None
+    if rsi > 65:   return None
 
-    # LONG — BTC DOWN iken açma
+    # LONG — BTC UP veya NEUTRAL, 1h DOWN değil
     if (e9 > e20 and e9_5 > e20_5
             and m1 > 0 and p >= avg5
             and t1h != "DOWN"
-            and btc_trend != "DOWN"):
+            and btc_trend in ["UP", "NEUTRAL"]):
         return "LONG"
 
-    # SHORT — BTC UP iken açma
+    # SHORT — BTC DOWN veya NEUTRAL, 1h UP değil
     if (e9 < e20 and e9_5 < e20_5
             and m1 < -0.2 and p <= avg5
-            and vr >= 2.0 and t1h == "DOWN"
-            and btc_trend != "UP"):
+            and vr >= 1.5
+            and t1h != "UP"
+            and btc_trend in ["DOWN", "NEUTRAL"]):
         return "SHORT"
 
     return None
