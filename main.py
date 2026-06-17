@@ -26,9 +26,9 @@ CG_KEY       = os.getenv("COINGLASS_API_KEY", os.getenv("COINGL_API_KEY",""))
 # ─── RİSK (Paper) ───
 LEVERAGE      = 5
 MARGIN        = 10.0
-TP1_PCT       = 0.015
-TP2_PCT       = 0.025
-TP3_PCT       = 0.040
+TP1_PCT       = 0.010
+TP2_PCT       = 0.020
+TP3_PCT       = 0.035
 SL_PCT        = 0.020
 TRAIL_PCT     = 0.010
 MAX_OPEN      = 10       # Daha fazla eş zamanlı
@@ -636,6 +636,10 @@ def manage_loop():
 
                 if pnl_pct <= -SL_PCT*100:
                     close_paper(symbol, f"STOP LOSS", price); continue
+
+                # TP1 öncesi mini trailing — %0.8 kâra ulaşıp geri dönerse koru
+                if not pos["tp1_done"] and max_pnl >= 0.8 and pnl_pct <= max_pnl - 0.6:
+                    close_paper(symbol, f"ERKEN TRAILING +{pnl_pct:.2f}%", price); continue
 
                 if not pos["tp1_done"] and pnl_pct >= TP1_PCT*100:
                     pos["tp1_done"] = True
