@@ -419,16 +419,18 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     if rsi < 50:   return None   # RSI 50+ — veriye göre
     if rsi > 65:   return None   # RSI 65 altı — veriye göre
 
-    # LONG
+    # LONG — BTC DOWN iken açma
     if (e9 > e20 and e9_5 > e20_5
             and m1 > 0 and p >= avg5
-            and t1h != "DOWN"):
+            and t1h != "DOWN"
+            and btc_trend != "DOWN"):
         return "LONG"
 
-    # SHORT
+    # SHORT — BTC UP iken açma
     if (e9 < e20 and e9_5 < e20_5
             and m1 < -0.2 and p <= avg5
-            and vr >= 2.0 and t1h == "DOWN"):
+            and vr >= 2.0 and t1h == "DOWN"
+            and btc_trend != "UP"):
         return "SHORT"
 
     return None
@@ -647,7 +649,7 @@ def manage_loop():
                     tg(f"🟡 [PAPER] {symbol.split('/')[0]} TP1 +%{TP1_PCT*100:.1f} — breakeven")
                     continue
 
-                if pos["tp1_done"] and pnl_pct <= 0:
+                if pos["tp1_done"] and pnl_pct <= -0.2:
                     close_paper(symbol, "BREAKEVEN", price); continue
 
                 if pos["tp1_done"] and not pos["tp2_done"] and pnl_pct >= TP2_PCT*100:
