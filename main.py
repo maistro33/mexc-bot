@@ -605,6 +605,7 @@ def close_paper(symbol, reason, exit_price=None):
         "fvg_icinde":   1 if ind.get("fvg_icinde") else 0,
         "fvg_buyukluk": ind.get("fvg_buyukluk", 0),
         "vol_devam":    1 if ind.get("vol_devam") else 0,
+        "btc_trend":    pos.get("btc_trend", "NEUTRAL"),
     })
 
     sym  = symbol.split("/")[0]
