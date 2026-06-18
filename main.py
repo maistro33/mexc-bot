@@ -361,10 +361,37 @@ def calc_indicators(symbol):
             nearest_sup      = max([s[1] for s in swings["lows"]  if s[1] < price], default=price*0.95)
             res_uzaklik      = (nearest_res - price) / price * 100
             sup_uzaklik      = (price - nearest_sup) / price * 100
+
+            # Order Block tespiti
+            # Bullish OB: son güçlü yukarı hareketten önceki son düşüş mumu
+            # Bearish OB: son güçlü aşağı hareketten önceki son yükseliş mumu
+            ob_bull = None
+            ob_bear = None
+            c5 = df5["c"]; o5 = df5["o"]; h5 = df5["h"]; l5 = df5["l"]
+            for i in range(len(df5)-3, max(len(df5)-15, 0), -1):
+                # Bullish OB: kırmızı mum + ardından güçlü yeşil mum
+                if float(c5.iloc[i]) < float(o5.iloc[i]):  # kırmızı
+                    next_move = (float(c5.iloc[i+1]) - float(o5.iloc[i+1])) / float(o5.iloc[i+1]) * 100
+                    if next_move > 0.5:  # güçlü yeşil
+                        ob_bull = {"high": float(h5.iloc[i]), "low": float(l5.iloc[i])}
+                        break
+            for i in range(len(df5)-3, max(len(df5)-15, 0), -1):
+                # Bearish OB: yeşil mum + ardından güçlü kırmızı mum
+                if float(c5.iloc[i]) > float(o5.iloc[i]):  # yeşil
+                    next_move = (float(c5.iloc[i+1]) - float(o5.iloc[i+1])) / float(o5.iloc[i+1]) * 100
+                    if next_move < -0.5:  # güçlü kırmızı
+                        ob_bear = {"high": float(h5.iloc[i]), "low": float(l5.iloc[i])}
+                        break
+
+            # Fiyat OB içinde mi?
+            in_bull_ob = ob_bull and ob_bull["low"] <= price <= ob_bull["high"]
+            in_bear_ob = ob_bear and ob_bear["low"] <= price <= ob_bear["high"]
+
         except:
             fvgs=[]; in_fvg=False; fvg_data=None
             choch="YOK"; displace="YOK"; liq="YOK"
             res_uzaklik=5.0; sup_uzaklik=5.0
+            in_bull_ob=False; in_bear_ob=False
 
         # Sahte pump
         last3_high = float(c1.tail(3).max())
@@ -400,6 +427,8 @@ def calc_indicators(symbol):
             "likidite": liq,
             "res_uzaklik": res_uzaklik,
             "sup_uzaklik": sup_uzaklik,
+            "in_bull_ob": in_bull_ob,
+            "in_bear_ob": in_bear_ob,
         }
     except Exception:
         return None
@@ -560,9 +589,11 @@ def open_paper(symbol, signal, ind, score, gpt_yorum, btc_trend, funding, long_p
 
     sym = symbol.split("/")[0]
     ict_tag = ""
-    if ind["choch"] != "YOK":    ict_tag += "CHoCH✅ "
-    if ind["fvg_icinde"]:         ict_tag += "FVG✅ "
-    if ind["displacement"] != "YOK": ict_tag += "DISP✅"
+    if ind["choch"] != "YOK":          ict_tag += "CHoCH✅ "
+    if ind["fvg_icinde"]:               ict_tag += "FVG✅ "
+    if ind["displacement"] != "YOK":    ict_tag += "DISP✅ "
+    if ind.get("in_bull_ob"):           ict_tag += "BullOB✅ "
+    if ind.get("in_bear_ob"):           ict_tag += "BearOB✅ "
 
     tg(
         f"📋 [PAPER] {sym} {signal}\n"
@@ -607,6 +638,8 @@ def close_paper(symbol, reason, exit_price=None):
         "fvg_buyukluk": ind.get("fvg_buyukluk", 0),
         "vol_devam":    1 if ind.get("vol_devam") else 0,
         "btc_trend":    pos.get("btc_trend", "NEUTRAL"),
+        "ob_bull":      1 if ind.get("in_bull_ob") else 0,
+        "ob_bear":      1 if ind.get("in_bear_ob") else 0,
     })
 
     sym  = symbol.split("/")[0]
