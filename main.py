@@ -696,7 +696,7 @@ def manage_loop():
                 if pos["trail_active"] and pnl_pct <= max_pnl - TRAIL_PCT*100:
                     close_paper(symbol, f"TRAILING 🚀", price); continue
 
-                if time.time() - pos["open_time"] > 20*60:
+                if time.time() - pos["open_time"] > 60*60:
                     close_paper(symbol, "ZAMAN AŞIMI 20dk", price)
 
         except Exception as e:
