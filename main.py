@@ -443,8 +443,8 @@ def get_signal(ind, btc_trend="NEUTRAL"):
 
     if vr  < 1.5:  return None
     if mom < 0.3:  return None
-    if rsi < 50:   return None
-    if rsi > 65:   return None
+    if rsi < 45:   return None
+    if rsi > 70:   return None
 
     # LONG — BTC UP veya NEUTRAL, 1h DOWN değil
     if (e9 > e20 and e9_5 > e20_5
