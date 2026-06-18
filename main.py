@@ -32,7 +32,7 @@ TP3_PCT       = 0.035
 SL_PCT        = 0.020
 TRAIL_PCT     = 0.010
 MAX_OPEN      = 10       # Daha fazla eş zamanlı
-SCAN_INTERVAL = 15      # 429 koruması
+SCAN_INTERVAL = 40      # 429 koruması
 
 MIN_VOL_RATIO = 0.5     # Çok gevşek
 MIN_MOMENTUM  = 0.05
