@@ -446,18 +446,16 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     if rsi < 45:   return None
     if rsi > 70:   return None
 
-    # LONG — BTC UP veya NEUTRAL, 1h DOWN değil
+    # LONG — BTC UP veya NEUTRAL
     if (e9 > e20 and e9_5 > e20_5
             and m1 > 0 and p >= avg5
             and t1h != "DOWN"
             and btc_trend in ["UP", "NEUTRAL"]):
         return "LONG"
 
-    # SHORT — BTC DOWN veya NEUTRAL, 1h UP değil
+    # SHORT — BTC DOWN veya NEUTRAL
     if (e9 < e20 and e9_5 < e20_5
-            and m1 < -0.2 and p <= avg5
-            and vr >= 1.5
-            and t1h != "UP"
+            and m1 < 0 and p <= avg5
             and btc_trend in ["DOWN", "NEUTRAL"]):
         return "SHORT"
 
