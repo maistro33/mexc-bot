@@ -446,17 +446,26 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     if rsi < 45:   return None
     if rsi > 70:   return None
 
-    # LONG — BTC UP veya NEUTRAL
+    fvg_yon    = ind.get("fvg_yon", "YOK")
+    in_bull_ob = ind.get("in_bull_ob", False)
+    in_bear_ob = ind.get("in_bear_ob", False)
+    choch      = ind.get("choch", "YOK")
+
+    # LONG — Bull OB içinde değil, Bear OB içinde (geri sekme beklenir)
     if (e9 > e20 and e9_5 > e20_5
             and m1 > 0 and p >= avg5
             and t1h != "DOWN"
             and btc_trend in ["UP", "NEUTRAL"]):
+        if ind.get("fvg_icinde") and fvg_yon != "UP": return None
+        if choch != "YOK" and choch != "YUKARI": return None
         return "LONG"
 
-    # SHORT — BTC DOWN veya NEUTRAL
+    # SHORT — Bear OB içinde değil, Bull OB içinde (geri düşme beklenir)
     if (e9 < e20 and e9_5 < e20_5
             and m1 < 0 and p <= avg5
             and btc_trend in ["DOWN", "NEUTRAL"]):
+        if ind.get("fvg_icinde") and fvg_yon != "DOWN": return None
+        if choch != "YOK" and choch != "ASAGI": return None
         return "SHORT"
 
     return None
@@ -632,6 +641,7 @@ def close_paper(symbol, reason, exit_price=None):
         "move_3":       ind.get("move_3", 0),
         "fake":         1 if ind.get("fake_up") or ind.get("fake_down") else 0,
         "choch":        1 if ind.get("choch") != "YOK" else 0,
+        "choch_yon":    ind.get("choch", "YOK"),
         "fvg_icinde":   1 if ind.get("fvg_icinde") else 0,
         "fvg_buyukluk": ind.get("fvg_buyukluk", 0),
         "vol_devam":    1 if ind.get("vol_devam") else 0,
