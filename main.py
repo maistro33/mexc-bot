@@ -790,29 +790,52 @@ def cmd_stats(msg):
     if not supa:
         bot.send_message(msg.chat.id, "Supabase yok."); return
     try:
-        r = supa.table("trades").select("pnl,choch,fvg_icinde").execute()
+        r = supa.table("trades").select("pnl,choch,fvg_icinde,created_at,ob_bull,ob_bear").execute()
         data = r.data or []
         if not data:
             bot.send_message(msg.chat.id, "Henüz kayıt yok."); return
+
         toplam = len(data)
         kazan  = sum(1 for d in data if float(d.get("pnl") or 0) > 0)
         kayip  = toplam - kazan
         net    = sum(float(d.get("pnl") or 0) for d in data)
 
-        # FVG analizi
-        fvg_top = [d for d in data if d.get("fvg_icinde") == 1]
-        fvg_win = [d for d in fvg_top if float(d.get("pnl") or 0) > 0]
+        # Bugünkü işlemler
+        bugun = []
+        from datetime import datetime, timezone
+        simdi = datetime.now(timezone.utc)
+        for d in data:
+            try:
+                t = d.get("created_at","")[:10]
+                if t == simdi.strftime("%Y-%m-%d"):
+                    bugun.append(d)
+            except: pass
+
+        bugun_kazan = sum(1 for d in bugun if float(d.get("pnl") or 0) > 0)
+        bugun_kayip = len(bugun) - bugun_kazan
+        bugun_net   = sum(float(d.get("pnl") or 0) for d in bugun)
+
+        # ICT analizi
+        fvg_top   = [d for d in data if d.get("fvg_icinde") == 1]
+        fvg_win   = [d for d in fvg_top if float(d.get("pnl") or 0) > 0]
         choch_top = [d for d in data if d.get("choch") == 1]
         choch_win = [d for d in choch_top if float(d.get("pnl") or 0) > 0]
+        ob_top    = [d for d in data if d.get("ob_bull") == 1 or d.get("ob_bear") == 1]
+        ob_win    = [d for d in ob_top if float(d.get("pnl") or 0) > 0]
 
         bot.send_message(msg.chat.id,
             f"📊 İSTATİSTİK\n\n"
-            f"Toplam: {toplam} işlem\n"
-            f"Kazanan: {kazan} (%{kazan/toplam*100:.0f})\n"
-            f"Kaybeden: {kayip} (%{kayip/toplam*100:.0f})\n"
-            f"Net PnL: {net:+.2f} USDT\n\n"
-            f"FVG içinde: {len(fvg_top)} işlem → %{len(fvg_win)/max(len(fvg_top),1)*100:.0f} kazanç\n"
-            f"CHoCH var: {len(choch_top)} işlem → %{len(choch_win)/max(len(choch_top),1)*100:.0f} kazanç"
+            f"🗓 Bugün: {len(bugun)} işlem\n"
+            f"  ✅ {bugun_kazan} kazanan | ❌ {bugun_kayip} kaybeden\n"
+            f"  Net: {bugun_net:+.2f} USDT\n\n"
+            f"📈 Toplam: {toplam} işlem\n"
+            f"  Kazanan: {kazan} (%{kazan/toplam*100:.0f})\n"
+            f"  Kaybeden: {kayip} (%{kayip/toplam*100:.0f})\n"
+            f"  Net PnL: {net:+.2f} USDT\n\n"
+            f"🔍 ICT Analiz:\n"
+            f"  FVG: {len(fvg_top)} işlem → %{len(fvg_win)/max(len(fvg_top),1)*100:.0f} kazanç\n"
+            f"  CHoCH: {len(choch_top)} işlem → %{len(choch_win)/max(len(choch_top),1)*100:.0f} kazanç\n"
+            f"  OB: {len(ob_top)} işlem → %{len(ob_win)/max(len(ob_top),1)*100:.0f} kazanç"
         )
     except Exception as e:
         bot.send_message(msg.chat.id, f"Hata: {e}")
