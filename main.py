@@ -442,6 +442,7 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     mom  = ind["momentum"]; avg5 = ind["avg5"]
 
     if vr  < 1.5:  return None
+    if vr  < 1.5:  return None
     if mom < 0.3:  return None
     if rsi < 45:   return None
     if rsi > 70:   return None
@@ -450,20 +451,19 @@ def get_signal(ind, btc_trend="NEUTRAL"):
     in_bull_ob = ind.get("in_bull_ob", False)
     in_bear_ob = ind.get("in_bear_ob", False)
     choch      = ind.get("choch", "YOK")
+    sym        = ind.get("symbol","").split("/")[0]
 
-    # LONG — Bull OB içinde değil, Bear OB içinde (geri sekme beklenir)
-    if (e9 > e20 and e9_5 > e20_5
-            and m1 > 0 and p >= avg5
-            and t1h != "DOWN"
-            and btc_trend in ["UP", "NEUTRAL"]):
+    # LONG
+    if e9 > e20 and e9_5 > e20_5 and m1 > 0 and p >= avg5:
+        if t1h == "DOWN": return None
+        if btc_trend not in ["UP", "NEUTRAL"]: return None
         if ind.get("fvg_icinde") and fvg_yon != "UP": return None
         if choch != "YOK" and choch != "YUKARI": return None
         return "LONG"
 
-    # SHORT — Bear OB içinde değil, Bull OB içinde (geri düşme beklenir)
-    if (e9 < e20 and e9_5 < e20_5
-            and m1 < 0 and p <= avg5
-            and btc_trend in ["DOWN", "NEUTRAL"]):
+    # SHORT
+    if e9 < e20 and e9_5 < e20_5 and m1 < 0 and p <= avg5:
+        if btc_trend not in ["DOWN", "NEUTRAL"]: return None
         if ind.get("fvg_icinde") and fvg_yon != "DOWN": return None
         if choch != "YOK" and choch != "ASAGI": return None
         return "SHORT"
