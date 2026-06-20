@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SADIK PAPER TRADING BOT v11 FIX
+SADIK PAPER TRADING BOT v11b
 XGBoost Ana Karar Verici — Ayrı LONG/SHORT modelleri
 """
 
@@ -34,9 +34,9 @@ TP2_PCT       = 0.020
 TP3_PCT       = 0.035
 SL_PCT        = 0.020
 TRAIL_PCT     = 0.010
-MAX_OPEN      = 10
+MAX_OPEN      = 7
 SCAN_INTERVAL = 40
-AI_MIN_SCORE  = 55
+AI_MIN_SCORE  = 65
 MIN_QUOTE_VOL = 2_000_000
 MAX_PRICE     = 30
 
@@ -769,14 +769,14 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__=="__main__":
-    print("📋 SADIK PAPER TRADING BOT v11 FIX BAŞLIYOR...")
+    print("📋 SADIK PAPER TRADING BOT v11b BAŞLIYOR...")
     load_ai_model()
     threading.Thread(target=health_server,daemon=True).start()
     threading.Thread(target=manage_loop,daemon=True).start()
     threading.Thread(target=scanner_loop,daemon=True).start()
     threading.Thread(target=retrain_loop,daemon=True).start()
     print("[OK] Health | Manage | Scanner | AI Retrain | Online Learning")
-    tg("📋 SADIK PAPER TRADING BOT v11 FIX\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
+    tg("📋 SADIK PAPER TRADING BOT v11b\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
     threading.Thread(target=train_ai_model,daemon=True).start()
     while True:
         try: bot.infinity_polling(timeout=30,long_polling_timeout=30)
