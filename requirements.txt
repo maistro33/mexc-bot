@@ -1,6 +1,9 @@
 ccxt
-pyTelegramBotAPI
 pandas
 numpy
+requests
+pyTelegramBotAPI
 supabase
+xgboost
 scikit-learn
+
