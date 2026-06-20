@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SADIK PAPER TRADING BOT v11b
+SADIK PAPER TRADING BOT v11c
 XGBoost Ana Karar Verici — Ayrı LONG/SHORT modelleri
 """
 
@@ -39,6 +39,7 @@ SCAN_INTERVAL = 40
 AI_MIN_SCORE  = 65
 MIN_QUOTE_VOL = 2_000_000
 MAX_PRICE     = 30
+COMMISSION    = 0.0006  # %0.06 açış + %0.06 kapanış = %0.12 toplam
 
 MODEL_LONG_PATH  = "/tmp/sadik_model_long.pkl"
 MODEL_SHORT_PATH = "/tmp/sadik_model_short.pkl"
@@ -610,7 +611,13 @@ def close_paper(symbol,reason,exit_price=None):
         t=safe_api(exchange.fetch_ticker,symbol)
         exit_price=t["last"] if t else pos["entry"]
     sig=pos["signal"]; entry=pos["entry"]
-    pnl=(exit_price-entry)/entry*MARGIN*LEVERAGE if sig=="LONG" else (entry-exit_price)/entry*MARGIN*LEVERAGE
+    # Komisyon dahil PnL (%0.06 açış + %0.06 kapanış)
+    position_size = MARGIN * LEVERAGE
+    commission = position_size * COMMISSION
+    if sig == "LONG":
+        pnl = (exit_price-entry)/entry * position_size - commission
+    else:
+        pnl = (entry-exit_price)/entry * position_size - commission
     sure=int((time.time()-pos["open_time"])/60)
     ind=pos.get("ind",{})
     threading.Thread(target=online_update,args=(ind,pos.get("btc_trend","NEUTRAL"),sig,pnl),daemon=True).start()
@@ -651,7 +658,9 @@ def manage_loop():
                     with pos_lock:
                         if symbol in positions: positions[symbol]["tp1_done"]=True
                     tg(f"🟡 [PAPER] {symbol.split('/')[0]} TP1 — breakeven"); continue
-                if tp1_done and pnl_pct<=-0.2: close_paper(symbol,"BREAKEVEN",price); continue
+                # TP1 sonrası SL sıfıra çekildi — en kötü ihtimal 0
+                if tp1_done and pnl_pct <= 0.0:
+                    close_paper(symbol, "BREAKEVEN SIFIR", price); continue
                 if tp1_done and not tp2_done and pnl_pct>=TP2_PCT*100:
                     with pos_lock:
                         if symbol in positions: positions[symbol]["tp2_done"]=True; positions[symbol]["trail_active"]=True
@@ -769,14 +778,14 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__=="__main__":
-    print("📋 SADIK PAPER TRADING BOT v11b BAŞLIYOR...")
+    print("📋 SADIK PAPER TRADING BOT v11c BAŞLIYOR...")
     load_ai_model()
     threading.Thread(target=health_server,daemon=True).start()
     threading.Thread(target=manage_loop,daemon=True).start()
     threading.Thread(target=scanner_loop,daemon=True).start()
     threading.Thread(target=retrain_loop,daemon=True).start()
     print("[OK] Health | Manage | Scanner | AI Retrain | Online Learning")
-    tg("📋 SADIK PAPER TRADING BOT v11b\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
+    tg("📋 SADIK PAPER TRADING BOT v11c\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
     threading.Thread(target=train_ai_model,daemon=True).start()
     while True:
         try: bot.infinity_polling(timeout=30,long_polling_timeout=30)
