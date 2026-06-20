@@ -2,6 +2,7 @@
 """
 SADIK PAPER TRADING BOT v9
 ICT Strateji + XGBoost AI (Kendi Kendine Öğrenen)
+simple_trades + trades birleşik eğitim
 """
 
 import os, time, threading, pickle
@@ -83,14 +84,20 @@ def train_ai_model():
         print("[AI] Eğitim başlıyor...")
         if not supa: return
 
-        r = supa.table("trades").select("*").execute()
-        data = r.data or []
-        if len(data) < 50:
-            print(f"[AI] Yeterli veri yok: {len(data)} işlem")
-            return
+        # ─── v9 verisi ───
+        r1 = supa.table("trades").select("*").execute()
+        data1 = r1.data or []
+
+        # ─── simple bot verisi ───
+        r2 = supa.table("simple_trades").select("*").execute()
+        data2 = r2.data or []
+
+        print(f"[AI] v9: {len(data1)} | simple: {len(data2)} işlem")
 
         rows = []
-        for rec in data:
+
+        # v9 işlemleri
+        for rec in data1:
             try:
                 rows.append({
                     "rsi":          float(rec.get("rsi") or 50),
@@ -111,6 +118,33 @@ def train_ai_model():
                     "win":          1 if float(rec.get("pnl") or 0) > 0 else 0,
                 })
             except: pass
+
+        # simple bot işlemleri (eksik alanlar 0)
+        for rec in data2:
+            try:
+                rows.append({
+                    "rsi":          float(rec.get("rsi") or 50),
+                    "volume_ratio": float(rec.get("vol_ratio") or 1),
+                    "momentum":     0,
+                    "move_1":       0,
+                    "move_3":       float(rec.get("move_3") or 0),
+                    "volatility":   0,
+                    "choch":        0,
+                    "fvg_icinde":   0,
+                    "fvg_buyukluk": 0,
+                    "ob_bull":      0,
+                    "ob_bear":      0,
+                    "fake":         0,
+                    "btc_up":       1 if rec.get("btc_trend") == "UP" else 0,
+                    "btc_down":     1 if rec.get("btc_trend") == "DOWN" else 0,
+                    "signal_long":  1 if rec.get("signal") == "LONG" else 0,
+                    "win":          1 if float(rec.get("pnl") or 0) > 0 else 0,
+                })
+            except: pass
+
+        if len(rows) < 50:
+            print(f"[AI] Yeterli veri yok: {len(rows)} işlem")
+            return
 
         df = pd.DataFrame(rows)
         features = ["rsi","volume_ratio","momentum","move_1","move_3",
@@ -145,22 +179,20 @@ def train_ai_model():
         _model_trained = True
 
         print(f"[AI] Model eğitildi! Doğruluk: %{acc*100:.1f} | {len(df)} işlem")
-        tg(f"🤖 XGBoost modeli güncellendi!\nDoğruluk: %{acc*100:.1f} | {len(df)} işlem")
+        tg(f"🤖 XGBoost güncellendi!\nDoğruluk: %{acc*100:.1f} | {len(df)} işlem\n(v9: {len(data1)} + simple: {len(data2)})")
 
     except ImportError:
-        print("[AI] xgboost kurulu değil! pip install xgboost scikit-learn")
+        print("[AI] xgboost kurulu değil!")
     except Exception as e:
         print(f"[AI] Eğitim hatası: {e}")
 
 def retrain_loop():
-    """Her 6 saatte bir modeli yeniden eğit"""
-    time.sleep(300)  # İlk 5 dakika bekle
+    time.sleep(300)
     while True:
         train_ai_model()
-        time.sleep(6 * 60 * 60)  # 6 saat
+        time.sleep(6 * 60 * 60)
 
 def xgboost_score(ind, btc_trend):
-    """XGBoost ile kazanma olasılığı tahmini"""
     global _model, _scaler
     if not _model_trained or _model is None or _scaler is None:
         return None
@@ -180,7 +212,7 @@ def xgboost_score(ind, btc_trend):
             "fake":         1 if ind.get("fake_up") or ind.get("fake_down") else 0,
             "btc_up":       1 if btc_trend == "UP" else 0,
             "btc_down":     1 if btc_trend == "DOWN" else 0,
-            "signal_long":  1,  # sinyal zaten LONG/SHORT filtreden geçti
+            "signal_long":  1,
         }
         X = pd.DataFrame([features])
         X_s = _scaler.transform(X)
@@ -532,15 +564,12 @@ def get_signal(ind, btc_trend="NEUTRAL"):
 
     return None
 
-# ─── AI SKOR (XGBoost + Fallback) ───
+# ─── AI SKOR ───
 def ai_score(symbol, ind, btc_trend, funding):
-    # Önce XGBoost dene
     xgb = xgboost_score(ind, btc_trend)
     if xgb is not None:
         print(f"[AI] {symbol.split('/')[0]} XGBoost: {xgb}")
         return xgb
-
-    # Fallback: eski sistem
     score = 60
     if ind.get("vol_ratio", 0) >= 3.0:      score += 8
     if ind.get("momentum", 0) >= 1.0:        score += 5
@@ -924,7 +953,7 @@ if __name__ == "__main__":
     tg(
         "📋 SADIK PAPER TRADING BOT v9\n\n"
         "⚠️ GERÇEK İŞLEM YOK\n\n"
-        "✅ XGBoost AI eklendi!\n"
+        "✅ XGBoost AI (trades + simple_trades)\n"
         "✅ Her 6 saatte otomatik yeniden eğitim\n"
         "✅ ICT: FVG, CHoCH, OB, Displacement\n"
         "✅ GPT-4o-mini onayı\n"
@@ -932,7 +961,6 @@ if __name__ == "__main__":
         f"Max {MAX_OPEN} eş zamanlı\n\n"
         "/durum /istatistik /aitrain /kapat SOL /hepsikapat"
     )
-    # İlk eğitimi hemen başlat
     threading.Thread(target=train_ai_model, daemon=True).start()
     while True:
         try: bot.infinity_polling(timeout=30, long_polling_timeout=30)
