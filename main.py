@@ -394,7 +394,7 @@ def open_paper(symbol, karar, price, btc_trend):
     guven  = int(karar.get("guven",60))
     neden  = karar.get("neden","")
 
-    if guven < 60: return
+    if guven < 50: return
     if tp_pct <= sl_pct: tp_pct = sl_pct * 1.5
 
     with pos_lock:
@@ -681,9 +681,11 @@ def cmd_sor(msg):
 @bot.message_handler(commands=["analiz"])
 def cmd_analiz(msg):
     if not OPENAI_KEY: bot.send_message(msg.chat.id,"OpenAI key yok."); return
-    coin_adi = msg.text.replace("/analiz","").strip().upper().replace("USDT","").replace("/","").strip()
-    if not coin_adi:
-        bot.send_message(msg.chat.id,"Kullanim: /analiz AVAX"); return
+    parts = msg.text.replace("/analiz","").strip().split()
+    if not parts:
+        bot.send_message(msg.chat.id,"Kullanim: /analiz AVAX veya /analiz AVAX SHORT"); return
+    coin_adi = parts[0].upper().replace("USDT","").replace("/","").strip()
+    ek_bilgi = " ".join(parts[1:]) if len(parts) > 1 else ""
     bot.send_message(msg.chat.id,f"[...] {coin_adi} analiz ediyorum...")
     try:
         btc_trend,btc_price,btc_change = get_btc_data()
@@ -698,6 +700,7 @@ def cmd_analiz(msg):
             bot.send_message(msg.chat.id,f"[ERR] {coin_adi} verisi alinamadi. Sembol dogru mu?"); return
 
         user_msg = f"""Kullanici bu coini oneriyor: {coin_adi}
+Kullanici notu: {ek_bilgi if ek_bilgi else "Yok"}
 BTC: {btc_trend} ${btc_price:,.0f} ({btc_change:+.2f}%)
 
 {coin_adi} GOSTERGELER:
@@ -737,7 +740,7 @@ veya
                 neden  = karar.get("neden","")
                 guven  = int(karar.get("guven",0))
 
-                if action in ["LONG","SHORT"] and not pos_dolu and guven >= 60:
+                if action in ["LONG","SHORT"] and not pos_dolu and guven >= 50:
                     t = safe_api(exchange.fetch_ticker, symbol)
                     if t:
                         price = t["last"]
