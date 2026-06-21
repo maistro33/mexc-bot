@@ -673,6 +673,93 @@ def cmd_sor(msg):
     except Exception as e:
         bot.send_message(msg.chat.id,f"[ERR] {e}")
 
+
+@bot.message_handler(commands=["analiz"])
+def cmd_analiz(msg):
+    if not OPENAI_KEY: bot.send_message(msg.chat.id,"OpenAI key yok."); return
+    coin_adi = msg.text.replace("/analiz","").strip().upper().replace("USDT","").replace("/","").strip()
+    if not coin_adi:
+        bot.send_message(msg.chat.id,"Kullanim: /analiz AVAX"); return
+    bot.send_message(msg.chat.id,f"[...] {coin_adi} analiz ediyorum...")
+    try:
+        btc_trend,btc_price,btc_change = get_btc_data()
+        history = load_gpt_history(8)
+        with pos_lock:
+            pos_bilgi = f"{len(positions)} acik pozisyon"
+            pos_dolu = len(positions) >= MAX_OPEN
+
+        symbol = f"{coin_adi}/USDT:USDT"
+        data = get_coin_data(symbol)
+        if not data:
+            bot.send_message(msg.chat.id,f"[ERR] {coin_adi} verisi alinamadi. Sembol dogru mu?"); return
+
+        user_msg = f"""Kullanici bu coini oneriyor: {coin_adi}
+BTC: {btc_trend} ${btc_price:,.0f} ({btc_change:+.2f}%)
+
+{coin_adi} GOSTERGELER:
+Fiyat: {data['price']:.6f}
+RSI: {data['rsi']:.1f}
+EMA(1m): {data['ema_1m']} | EMA(5m): {data['ema_5m']} | EMA(1h): {data['ema_1h']}
+MACD: {data['macd']} | BB: %{data['bb_pct']:.0f}
+Hacim: {data['vol_ratio']:.1f}x
+Hareket: 1dk={data['move_1']:+.2f}% 5dk={data['move_5']:+.2f}% 1s={data['move_1h']:+.2f}%
+Son 5 mum: {data['candles']}
+
+Gecmis islemlerim:
+{history}
+
+Su an {pos_bilgi}. {'MAX POZISYON DOLU.' if pos_dolu else 'Yeni islem acabilirim.'}
+
+Bu coin icin islem ac mi? Karli gorunuyorsa JSON ver:
+{{"karar":"LONG","tp_pct":2.0,"sl_pct":1.0,"guven":80,"neden":"analiz"}}
+veya
+{{"karar":"PAS","neden":"neden acmadigini acikla"}}"""
+
+        messages = [
+            {"role":"system","content":SYSTEM_PROMPT},
+            {"role":"user","content":user_msg}
+        ]
+        yanit = call_gpt(messages, model="gpt-4o", max_tokens=400)
+        if not yanit:
+            bot.send_message(msg.chat.id,"GPT cevap vermedi"); return
+
+        # JSON bul
+        import re
+        json_match = re.search(r'\{[^{}]+\}', yanit, re.DOTALL)
+        if json_match:
+            try:
+                karar = json.loads(json_match.group())
+                action = karar.get("karar","PAS")
+                neden  = karar.get("neden","")
+                guven  = int(karar.get("guven",0))
+
+                if action in ["LONG","SHORT"] and not pos_dolu and guven >= 60:
+                    t = safe_api(exchange.fetch_ticker, symbol)
+                    if t:
+                        price = t["last"]
+                        with msg_lock:
+                            pos_messages[symbol] = [
+                                {"role":"system","content":SYSTEM_PROMPT},
+                                {"role":"user","content":user_msg},
+                                {"role":"assistant","content":yanit}
+                            ]
+                        open_paper(symbol, karar, price, btc_trend)
+                        bot.send_message(msg.chat.id,f"[OK] {coin_adi} {action} acildi! Guven:{guven}%\n{neden[:200]}")
+                    else:
+                        bot.send_message(msg.chat.id,"Fiyat alinamadi")
+                elif pos_dolu and action != "PAS":
+                    bot.send_message(msg.chat.id,f"[BOT] {coin_adi} icin {action} sinyali var (Guven:{guven}%) ama max pozisyon dolu.\n{neden[:200]}")
+                else:
+                    bot.send_message(msg.chat.id,f"[BOT] {coin_adi} icin islem acilmadi.\nSebep: {neden[:300]}")
+            except:
+                bot.send_message(msg.chat.id,f"[BOT] {yanit[:500]}")
+        else:
+            bot.send_message(msg.chat.id,f"[BOT] {yanit[:500]}")
+
+    except Exception as e:
+        log.error(f"[ANALIZ] {e}")
+        bot.send_message(msg.chat.id,f"Hata: {e}")
+
 @bot.message_handler(commands=["kapat"])
 def cmd_kapat(msg):
     text=msg.text.replace("/kapat","").strip().upper()
