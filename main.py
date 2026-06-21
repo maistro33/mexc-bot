@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SADIK GPT TRADING BOT v1
+SADIK GPT TRADING BOT v2
 Tam Otonom — GPT-4o Her Karara Karar Verir
 TP/SL/Yön/Büyüklük hepsini GPT belirler
 """
@@ -394,12 +394,84 @@ def close_paper(symbol, reason, exit_price=None):
     with closed_lock:
         recently_closed[symbol] = time.time()
 
+# ─── GPT POZİSYON YÖNETİMİ ───
+def gpt_manage_position(symbol, pos, current_price):
+    """GPT açık pozisyonu yönetir — kapat/devam et/TP yükselt/SL ayarla"""
+    if not OPENAI_KEY:
+        return None
+
+    try:
+        sig    = pos["signal"]
+        entry  = pos["entry"]
+        tp     = pos["tp"]
+        sl     = pos["sl"]
+        sure   = int((time.time() - pos["open_time"]) / 60)
+        pos_size = MARGIN * LEVERAGE
+
+        if sig == "LONG":
+            pnl_pct = (current_price - entry) / entry * 100
+            pnl     = (current_price - entry) / entry * pos_size
+        else:
+            pnl_pct = (entry - current_price) / entry * 100
+            pnl     = (entry - current_price) / entry * pos_size
+
+        sym = symbol.split("/")[0]
+        btc_trend, btc_price, _ = get_btc_data()
+
+        prompt = f"""Sen bir kripto futures trading botusun. Açık pozisyonu yönetiyorsun.
+Komisyon: %0.12 | Kaldıraç: 5x | Margin: 10 USDT
+
+═══ AÇIK POZİSYON ═══
+Coin: {sym} {sig}
+Giriş: {entry:.6f}
+Şu an: {current_price:.6f}
+PnL: {pnl:+.2f} USDT ({pnl_pct:+.2f}%)
+Süre: {sure} dakika
+Mevcut TP: {tp:.6f} ({pos['tp_pct']:.1f}%)
+Mevcut SL: {sl:.6f} ({pos['sl_pct']:.1f}%)
+
+BTC: {btc_trend} ${btc_price:,.0f}
+
+═══ KARAR VER ═══
+SADECE JSON formatında cevap ver:
+{{
+  "karar": "DEVAM" veya "KAPAT" veya "TP_YUKSEL" veya "SL_AYARLA",
+  "yeni_tp_pct": 2.0,
+  "yeni_sl_pct": 0.5,
+  "neden": "kısa açıklama"
+}}
+
+Kurallar:
+- KAPAT: trend döndü, zarar büyüyor, hedef ulaşılamaz
+- DEVAM: trend güçlü, bekle
+- TP_YUKSEL: trend çok güçlü, TP'yi yükselt
+- SL_AYARLA: riski azalt, SL'i sıkılaştır
+- Komisyon %0.12 olduğunu unutma
+- 60 dakikadan fazla açık kalmış pozisyonu kapat"""
+
+        r = req.post("https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
+            json={"model": "gpt-4o-mini", "max_tokens": 150, "temperature": 0.2,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=10)
+
+        if r.status_code == 200:
+            yanit = r.json()["choices"][0]["message"]["content"].strip()
+            yanit_clean = yanit.replace("```json","").replace("```","").strip()
+            return json.loads(yanit_clean)
+        return None
+
+    except Exception as e:
+        log.warning(f"[MANAGE_GPT] {symbol}: {e}")
+        return None
+
 # ─── YÖNETİCİ ───
 def manage_loop():
     while True:
-        time.sleep(5)
+        time.sleep(5 * 60)  # Her 5 dakikada bir GPT'ye sor
         try:
             with pos_lock: syms = list(positions.keys())
+
             for symbol in syms:
                 with pos_lock:
                     pos = positions.get(symbol)
@@ -408,25 +480,58 @@ def manage_loop():
                 t = safe_api(exchange.fetch_ticker, symbol)
                 if not t: continue
                 price  = t["last"]
+                sig    = pos["signal"]
                 entry  = pos["entry"]
-                signal = pos["signal"]
-                tp     = pos["tp"]
-                sl     = pos["sl"]
+                sure   = int((time.time() - pos["open_time"]) / 60)
 
-                if signal == "LONG":
-                    if price >= tp:
-                        close_paper(symbol, f"TP 🎯 +%{pos['tp_pct']:.1f}", price)
-                    elif price <= sl:
-                        close_paper(symbol, f"SL -%{pos['sl_pct']:.1f}", price)
-                    elif time.time() - pos["open_time"] > 90 * 60:
-                        close_paper(symbol, "ZAMAN AŞIMI 90dk", price)
-                else:
-                    if price <= tp:
-                        close_paper(symbol, f"TP 🎯 +%{pos['tp_pct']:.1f}", price)
-                    elif price >= sl:
-                        close_paper(symbol, f"SL -%{pos['sl_pct']:.1f}", price)
-                    elif time.time() - pos["open_time"] > 90 * 60:
-                        close_paper(symbol, "ZAMAN AŞIMI 90dk", price)
+                # Zaman aşımı — 2 saat
+                if sure > 120:
+                    close_paper(symbol, "ZAMAN AŞIMI 2 saat", price)
+                    continue
+
+                # GPT pozisyon yönetimi
+                karar = gpt_manage_position(symbol, pos, price)
+                if not karar:
+                    continue
+
+                action = karar.get("karar", "DEVAM")
+                neden  = karar.get("neden", "")
+                sym    = symbol.split("/")[0]
+
+                log.info(f"[MANAGE] {sym} → {action} | {neden}")
+
+                if action == "KAPAT":
+                    close_paper(symbol, f"GPT KAPAT: {neden}", price)
+
+                elif action == "TP_YUKSEL":
+                    yeni_tp_pct = float(karar.get("yeni_tp_pct", pos["tp_pct"])) / 100
+                    yeni_tp_pct = max(0.010, min(yeni_tp_pct, 0.080))  # %1-%8 arası
+                    if sig == "LONG":
+                        yeni_tp = entry * (1 + yeni_tp_pct)
+                    else:
+                        yeni_tp = entry * (1 - yeni_tp_pct)
+                    with pos_lock:
+                        if symbol in positions:
+                            positions[symbol]["tp"] = yeni_tp
+                            positions[symbol]["tp_pct"] = yeni_tp_pct * 100
+                    tg(f"📈 [GPT] {sym} TP yükseltildi → %{yeni_tp_pct*100:.1f}
+{neden}")
+
+                elif action == "SL_AYARLA":
+                    yeni_sl_pct = float(karar.get("yeni_sl_pct", pos["sl_pct"])) / 100
+                    yeni_sl_pct = max(0.003, min(yeni_sl_pct, 0.020))  # %0.3-%2 arası
+                    if sig == "LONG":
+                        yeni_sl = entry * (1 - yeni_sl_pct)
+                    else:
+                        yeni_sl = entry * (1 + yeni_sl_pct)
+                    with pos_lock:
+                        if symbol in positions:
+                            positions[symbol]["sl"] = yeni_sl
+                            positions[symbol]["sl_pct"] = yeni_sl_pct * 100
+                    tg(f"🛡 [GPT] {sym} SL ayarlandı → %{yeni_sl_pct*100:.1f}
+{neden}")
+
+                # DEVAM — hiçbir şey yapma, bekle
 
         except Exception as e:
             log.error(f"[MANAGE] {e}")
@@ -622,13 +727,13 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__ == "__main__":
-    print("🤖 SADIK GPT TRADING BOT v1 BAŞLIYOR...")
+    print("🤖 SADIK GPT TRADING BOT v2 BAŞLIYOR...")
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=scanner_loop,  daemon=True).start()
     print("[OK] Health | Manage | Scanner")
     tg(
-        "🤖 SADIK GPT TRADING BOT v1\n\n"
+        "🤖 SADIK GPT TRADING BOT v2\n\n"
         "TAM OTONOM — GPT Her Karara Karar Verir!\n\n"
         "✅ GPT-4o-mini piyasayı analiz eder\n"
         "✅ Yön, TP, SL hepsini GPT belirler\n"
