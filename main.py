@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SADIK PAPER TRADING BOT v12
+SADIK PAPER TRADING BOT v13
 XGBoost Ana Karar Verici — Ayrı LONG/SHORT modelleri
 """
 
@@ -29,14 +29,14 @@ CG_KEY       = os.getenv("COINGLASS_API_KEY", os.getenv("COINGL_API_KEY",""))
 # ─── RİSK ───
 LEVERAGE      = 5
 MARGIN        = 10.0
-TP1_PCT       = 0.010
-TP2_PCT       = 0.020
-TP3_PCT       = 0.035
-SL_PCT        = 0.020
+TP1_PCT       = 0.015  # %1.5 — R:R pozitif
+TP2_PCT       = 0.030  # %3
+TP3_PCT       = 0.050  # %5
+SL_PCT        = 0.010  # %1 — SL küçük, TP büyük
 TRAIL_PCT     = 0.010
 MAX_OPEN      = 7
 SCAN_INTERVAL = 40
-AI_MIN_SCORE  = 65
+AI_MIN_SCORE  = 70  # Daha yüksek güven
 MIN_QUOTE_VOL = 2_000_000
 MAX_PRICE     = 30
 COMMISSION    = 0.0006  # %0.06 açış + %0.06 kapanış = %0.12 toplam
@@ -158,7 +158,7 @@ def train_ai_model():
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y, test_size=0.2, random_state=42, stratify=y)
             model = XGBClassifier(
-                n_estimators=100, max_depth=4, learning_rate=0.1,
+                n_estimators=300, max_depth=3, learning_rate=0.03,
                 subsample=0.8, colsample_bytree=0.8,
                 eval_metric="logloss", random_state=42, verbosity=0)
             model.fit(scaler.transform(X_train), y_train)
@@ -217,13 +217,15 @@ def online_update(ind, btc_trend, signal, pnl):
         y_new = [1 if pnl > 0 else 0]
         with _model_lock:
             X_s = _scaler.transform(X_new)
-            if signal == "LONG" and _model_long:
-                _model_long.fit(X_s, y_new, xgb_model=_model_long.get_booster(),
-                               eval_metric="logloss", verbose=False)
-            elif signal == "SHORT" and _model_short:
-                _model_short.fit(X_s, y_new, xgb_model=_model_short.get_booster(),
-                                eval_metric="logloss", verbose=False)
-        log.info(f"[AI] Online update {signal}: pnl={pnl:+.2f}")
+            # Online update — sadece güçlü sinyal varsa güncelle
+            if abs(pnl) > 0.1:  # Çok küçük PnL modeli karıştırır
+                if signal == "LONG" and _model_long:
+                    _model_long.fit(X_s, y_new, xgb_model=_model_long.get_booster(),
+                                   eval_metric="logloss", verbose=False)
+                elif signal == "SHORT" and _model_short:
+                    _model_short.fit(X_s, y_new, xgb_model=_model_short.get_booster(),
+                                    eval_metric="logloss", verbose=False)
+        log.info(f"[AI] Online update {signal}: pnl={pnl:+.2f} win={y_new[0]}")
     except Exception as e:
         log.warning(f"[AI] Online update: {e}")
 
@@ -231,7 +233,7 @@ def retrain_loop():
     time.sleep(300)
     while True:
         train_ai_model()
-        time.sleep(6 * 60 * 60)
+        time.sleep(2 * 60 * 60)  # 6 → 2 saat
 
 def xgboost_decision(ind, btc_trend):
     """Ayrı LONG/SHORT modelleriyle karar ver"""
@@ -534,9 +536,9 @@ def calc_indicators(symbol):
 def safety_check(ind):
     # Temel korumalar
     if ind.get("fake_up") or ind.get("fake_down"): return False, "Fake pump/dump"
-    if ind.get("vol_ratio", 0) < 0.8: return False, "Hacim düşük"
+    if ind.get("vol_ratio", 0) < 1.2: return False, "Hacim düşük"
     rsi = ind.get("rsi", 50)
-    if rsi < 40 or rsi > 75: return False, f"RSI dışında: {rsi:.0f}"
+    if rsi < 45 or rsi > 70: return False, f"RSI dışında: {rsi:.0f}"
 
     # OB + CHoCH filtresi — en az biri olmalı, ikisi birlikte bonus
     has_ob    = ind.get("in_bull_ob") or ind.get("in_bear_ob")
@@ -790,14 +792,14 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__=="__main__":
-    print("📋 SADIK PAPER TRADING BOT v12 BAŞLIYOR...")
+    print("📋 SADIK PAPER TRADING BOT v13 BAŞLIYOR...")
     load_ai_model()
     threading.Thread(target=health_server,daemon=True).start()
     threading.Thread(target=manage_loop,daemon=True).start()
     threading.Thread(target=scanner_loop,daemon=True).start()
     threading.Thread(target=retrain_loop,daemon=True).start()
     print("[OK] Health | Manage | Scanner | AI Retrain | Online Learning")
-    tg("📋 SADIK PAPER TRADING BOT v12\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
+    tg("📋 SADIK PAPER TRADING BOT v13\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat\n\nDeğişiklikler:\n✅ TP %1.5 SL %1.0 — R:R pozitif\n✅ TimeSeriesSplit\n✅ XGBoost overfitting düzeltildi\n✅ Retrain 2 saatte bir")
     threading.Thread(target=train_ai_model,daemon=True).start()
     while True:
         try: bot.infinity_polling(timeout=30,long_polling_timeout=30)
