@@ -578,6 +578,7 @@ def scanner_loop():
                 time.sleep(30); continue
 
             # Günlük zarar limiti kontrolü
+            global bot_active, daily_pnl
             if not bot_active:
                 log.info(f"[LIMIT] Bot durduruldu. Günlük PnL: {daily_pnl:+.2f}")
                 time.sleep(SCAN_INTERVAL); continue
