@@ -112,6 +112,9 @@ gpt_calls_today = 0
 gpt_call_lock = threading.Lock()
 recently_closed = {}  # Son 1 saatte kapanan coinler
 closed_lock = threading.Lock()
+daily_pnl = 0.0
+bot_active = True
+MAX_DAILY_LOSS = -15.0
 
 # ─── BTC TREND ───
 def get_btc_data():
