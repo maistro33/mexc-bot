@@ -627,11 +627,16 @@ def cmd_durum(msg):
                 pos_size=MARGIN*LEVERAGE
                 pnl=(price-entry)/entry*pos_size if signal=="LONG" else (entry-price)/entry*pos_size
                 sure=int((time.time()-pos["open_time"])/60)
+                pnl_pct = (price-entry)/entry*100 if signal=="LONG" else (entry-price)/entry*100
+                icon = "🟢" if pnl>=0 else "🔴"
+                sig_icon = "📈" if signal=="LONG" else "📉"
                 lines.append(
-                    f"{'[+]' if pnl>=0 else '[-]'} {sym.split('/')[0]} {signal}\n"
-                    f"Giriş:{entry:.6f}→{price:.6f}\n"
-                    f"PnL:{pnl:+.2f} | {sure}dk\n"
-                    f"TP:%{pos['tp_pct']:.1f} SL:%{pos['sl_pct']:.1f} (TP:{pos.get('tp_yukselme',0)}/2)\n"
+                    f"{icon} {sig_icon} {sym.split('/')[0]} {signal}\n"
+                    f"   Giriş: {entry:.6f}\n"
+                    f"   Şimdi: {price:.6f}\n"
+                    f"   PnL: {pnl:+.2f} USDT ({pnl_pct:+.2f}%)\n"
+                    f"   Süre: {sure} dk | Max: %{pos.get('max_pnl_pct',0):.2f}\n"
+                    f"   💬 {pos.get('neden','')[:50]}\n"
                 )
         bot.send_message(msg.chat.id,"\n".join(lines))
 
