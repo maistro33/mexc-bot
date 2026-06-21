@@ -6,7 +6,7 @@ SADIK GPT TRADING BOT v5
 - Konuşma hafızası ile tam otonom
 """
 
-import os, time, threading, logging, json
+import os, time, threading, logging, json, re
 import ccxt
 import pandas as pd
 import numpy as np
@@ -736,7 +736,6 @@ veya
             bot.send_message(msg.chat.id,"GPT cevap vermedi"); return
 
         # JSON bul
-        import re
         json_match = re.search(r'\{[^{}]+\}', yanit, re.DOTALL)
         if json_match:
             try:
