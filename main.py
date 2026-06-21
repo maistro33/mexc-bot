@@ -110,6 +110,8 @@ positions = {}
 pos_lock  = threading.Lock()
 gpt_calls_today = 0
 gpt_call_lock = threading.Lock()
+recently_closed = {}  # Son 1 saatte kapanan coinler
+closed_lock = threading.Lock()
 
 # ─── BTC TREND ───
 def get_btc_data():
@@ -312,6 +314,9 @@ def open_paper(symbol, karar, data, btc_trend):
         log.info(f"[SKIP] {symbol.split('/')[0]} güven düşük: {guven}")
         return
 
+    # TP/SL makul aralıkta olmalı
+    tp_pct = max(0.010, min(tp_pct, 0.050))  # %1 - %5 arası
+    sl_pct = max(0.005, min(sl_pct, 0.020))  # %0.5 - %2 arası
     # TP her zaman SL'den büyük olmalı
     if tp_pct <= sl_pct:
         tp_pct = sl_pct * 1.5
@@ -385,6 +390,9 @@ def close_paper(symbol, reason, exit_price=None):
     icon = "🟢" if pnl >= 0 else "🔴"
     tg(f"{icon} [GPT BOT] {sym} KAPANDI\n{reason}\nPnL: {pnl:+.2f} USDT | {sure}dk")
     log.info(f"[KAPAT] {sym} {reason} pnl={pnl:+.2f}")
+    # Son 1 saat tekrar açma
+    with closed_lock:
+        recently_closed[symbol] = time.time()
 
 # ─── YÖNETİCİ ───
 def manage_loop():
@@ -470,6 +478,14 @@ def scanner_loop():
                 with pos_lock:
                     if len(positions) >= MAX_OPEN: break
                     if symbol in positions: continue
+
+                # Son 1 saatte kapandıysa atla
+                with closed_lock:
+                    if symbol in recently_closed:
+                        if time.time() - recently_closed[symbol] < 3600:
+                            continue
+                        else:
+                            del recently_closed[symbol]
 
                 # Veri hazırla
                 data = get_market_data(symbol)
