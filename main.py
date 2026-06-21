@@ -162,6 +162,45 @@ def get_coin(symbol):
         move_1h = (price-float(df1h["c"].iloc[-2]))/float(df1h["c"].iloc[-2])*100
         candles = "".join(["+" if float(df1["c"].iloc[i])>float(df1["o"].iloc[i]) else "-" for i in range(-5,0)])
 
+        # Son 15m mumlar - grafik verisi
+        raw15 = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=20)
+        chart_str = ""
+        support = price; resistance = price
+        if raw15:
+            df15 = pd.DataFrame(raw15, columns=["t","o","h","l","c","v"])
+            highs = df15["h"].values
+            lows  = df15["l"].values
+            closes = df15["c"].values
+            opens  = df15["o"].values
+            
+            # Destek/direnc
+            support    = float(min(lows[-10:]))
+            resistance = float(max(highs[-10:]))
+            
+            # Trend gucu - kac mum yukari/asagi
+            up_count   = sum(1 for i in range(len(closes)) if closes[i] > opens[i])
+            down_count = len(closes) - up_count
+            
+            # Son 10 mumun ozeti
+            chart_lines = []
+            for i in range(-10, 0):
+                o = float(opens[i]); c = float(closes[i])
+                h = float(highs[i]); l = float(lows[i])
+                direction = "+" if c > o else "-"
+                change = (c-o)/o*100
+                body = abs(c-o)/o*100
+                wick_up = (h-max(c,o))/o*100
+                wick_down = (min(c,o)-l)/o*100
+                chart_lines.append(f"  {direction}{change:+.2f}% (beden:{body:.2f}% ust_fitil:{wick_up:.2f}% alt_fitil:{wick_down:.2f}%)")
+            
+            chart_str = f"""
+15 Dakikalik Son 10 Mum:
+{chr(10).join(chart_lines)}
+Yukari mum: {up_count}/20 | Asagi mum: {down_count}/20
+Destek: {support:.6f} | Direnc: {resistance:.6f}
+Direnc uzakligi: %{(resistance-price)/price*100:.2f}
+Destek uzakligi: %{(price-support)/price*100:.2f}"""
+
         return {
             "symbol": symbol, "price": price, "rsi": rsi,
             "ema_1m": "YUKARI" if ema9>ema20 else "ASAGI",
@@ -171,6 +210,9 @@ def get_coin(symbol):
             "bb_pct": bb_pct, "vol_ratio": vol_ratio,
             "move_1": move_1, "move_5": move_5, "move_1h": move_1h,
             "candles": candles,
+            "chart_str": chart_str,
+            "support": support,
+            "resistance": resistance,
         }
     except Exception as e:
         log.warning(f"[COIN] {symbol}: {e}")
@@ -209,8 +251,11 @@ TRADING KURALLARI:
 KONUSMA:
 - Kullanici dogal Turkce ile konusuyor, sen de ayni sekilde cevap ver
 - Coin sordugunda gercek verilere bak ve karar ver
-- "Analiz edeyim" deme, direkt sonucu soy le
+- "Analiz edeyim" deme, direkt sonucu soyle
 - Kisa ve net ol
+- Kullanici bir islemi acmami istiyorsa ve israr ediyorsa AC - kullanici grafigi goruyor olabilir
+- "aç", "ac", "long aç", "short aç" gibi ifadeler varsa kullanici istiyor demektir, AC
+- Kullanicinin kararina saygi goster, sen sadece risk uyarisi yap ama yine de ac
 
 ISLEM ACMAK ICIN JSON:
 {"ac": true, "symbol": "AVAX/USDT:USDT", "yon": "LONG", "tp": 2.0, "sl": 1.0, "guven": 80, "not": "neden"}
@@ -593,7 +638,8 @@ def handle(msg):
                     f"MACD: {data['macd']} | BB: %{data['bb_pct']:.0f}\n"
                     f"Hacim: {data['vol_ratio']:.1f}x\n"
                     f"Hareket: 1dk={data['move_1']:+.2f}% 5dk={data['move_5']:+.2f}% 1s={data['move_1h']:+.2f}%\n"
-                    f"Son mumlar: {data['candles']}"
+                    f"Son 1dk mumlar: {data['candles']}\n"
+                    f"{data.get('chart_str', '')}"
                 )
 
         user_content = (
