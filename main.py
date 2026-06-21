@@ -803,7 +803,116 @@ if __name__=="__main__":
         f"Max {MAX_OPEN} pozisyon\n\n"
         "/durum /istatistik /sor [soru] /kapat SOL /hepsikapat"
     )
-    while True:
+    
+@bot.message_handler(func=lambda msg: True)
+def cmd_genel(msg):
+    """Her mesaji GPT'ye gönder — dogal konusma"""
+    if not OPENAI_KEY: return
+    if msg.text and msg.text.startswith("/"): return  # Komutlar zaten isleniyor
+
+    bot.send_message(msg.chat.id, "🤔 Anliyorum...")
+
+    try:
+        btc_trend, btc_price, btc_change = get_btc_data()
+        history = load_gpt_history(5)
+
+        with pos_lock:
+            pos_bilgi = ""
+            if positions:
+                for sym, pos in positions.items():
+                    t = safe_api(exchange.fetch_ticker, sym)
+                    if t:
+                        price = t["last"]
+                        entry = pos["entry"]
+                        signal = pos["signal"]
+                        pos_size = MARGIN * LEVERAGE
+                        pnl = (price-entry)/entry*pos_size if signal=="LONG" else (entry-price)/entry*pos_size
+                        sure = int((time.time()-pos["open_time"])/60)
+                        pos_bilgi += f"{sym.split('/')[0]} {signal} PnL:{pnl:+.2f} USDT {sure}dk\n"
+            else:
+                pos_bilgi = "Acik pozisyon yok"
+
+        system = f"""{SYSTEM_PROMPT}
+
+Sen ayni zamanda kullanicinin trading asistanisin.
+Kullanici sana dogal dilde soru soruyor — anliyorsun ve cevap veriyorsun.
+
+Eger kullanici bir coin analizi istiyorsa, o coini analiz et ve uygunsa JSON ile islem ac:
+{{"islem_ac": true, "symbol": "AVAX/USDT:USDT", "karar": "LONG", "tp_pct": 2.0, "sl_pct": 1.0, "guven": 80, "neden": "..."}}
+
+Eger sadece soru soruyorsa veya konusuyorsa, normal Turkce cevap ver.
+Eger pozisyon kapatmak istiyorsa: {{"kapat": "AVAX"}} veya {{"hepsini_kapat": true}}
+
+Kisa ve net cevap ver."""
+
+        messages = [
+            {{"role": "system", "content": system}},
+            {{"role": "user", "content": f"""BTC: {{btc_trend}} ${{btc_price:,.0f}} ({{btc_change:+.2f}}%)
+Acik pozisyonlar:
+{{pos_bilgi}}
+Son islemler:
+{{history}}
+
+Kullanici mesaji: {{msg.text}}"""}}
+        ]
+
+        yanit = call_gpt(messages, model="gpt-4o", max_tokens=400)
+        if not yanit:
+            bot.send_message(msg.chat.id, "❌ GPT cevap vermedi")
+            return
+
+        # JSON islem komutu var mi?
+        import re
+        json_match = re.search(r'\{{[^{{}}]+\}}', yanit, re.DOTALL)
+        if json_match:
+            try:
+                karar = json.loads(json_match.group())
+
+                # Islem ac
+                if karar.get("islem_ac") and karar.get("symbol"):
+                    symbol = karar["symbol"]
+                    with pos_lock:
+                        pos_dolu = len(positions) >= MAX_OPEN
+                        zaten_var = symbol in positions
+
+                    if not pos_dolu and not zaten_var:
+                        t = safe_api(exchange.fetch_ticker, symbol)
+                        if t:
+                            price = t["last"]
+                            with msg_lock:
+                                pos_messages[symbol] = [
+                                    {{"role": "system", "content": SYSTEM_PROMPT}},
+                                    {{"role": "user", "content": f"{{symbol}} analiz et"}},
+                                    {{"role": "assistant", "content": yanit}}
+                                ]
+                            open_paper(symbol, karar, price, btc_trend)
+
+                # Pozisyon kapat
+                elif karar.get("kapat"):
+                    sym = karar["kapat"].upper()
+                    symbol = f"{{sym}}/USDT:USDT"
+                    with pos_lock:
+                        if symbol in positions:
+                            close_paper(symbol, "Kullanici istegi")
+
+                elif karar.get("hepsini_kapat"):
+                    with pos_lock: syms = list(positions.keys())
+                    for s in syms: close_paper(s, "Kullanici hepsini kapat")
+
+            except: pass
+
+        # Metni temizle ve gönder
+        temiz = re.sub(r'\{{[^{{}}]+\}}', '', yanit).strip()
+        if temiz:
+            bot.send_message(msg.chat.id, f"🤖 {{temiz}}")
+        elif not json_match:
+            bot.send_message(msg.chat.id, f"🤖 {{yanit[:500]}}")
+
+    except Exception as e:
+        log.error(f"[GENEL] {{e}}")
+        bot.send_message(msg.chat.id, f"❌ Hata: {{e}}")
+
+while True:
         try: bot.infinity_polling(timeout=30,long_polling_timeout=30)
         except Exception as e:
             log.error(f"[POLLING] {e}"); time.sleep(5)
