@@ -86,7 +86,7 @@ def load_gpt_history(limit=10):
         if not data: return "Henüz geçmiş işlem yok."
         lines = []
         for d in data:
-            icon = "[OK]" if float(d.get("pnl") or 0) > 0 else "[ERR]"
+            icon = "✅" if float(d.get("pnl") or 0) > 0 else "❌"
             lines.append(f"{icon} {d.get('symbol','').split('/')[0]} {d.get('signal','')} {float(d.get('pnl') or 0):+.2f}$ | Kapanış:{d.get('reason','')} | {d.get('neden','')[:40]}")
         return "\n".join(lines)
     except: return "Geçmiş yüklenemedi."
@@ -187,7 +187,7 @@ def get_coin_data(symbol):
         candles = []
         for i in range(-5,0):
             o=float(df1["o"].iloc[i]); cc=float(df1["c"].iloc[i])
-            candles.append("[+]" if cc>o else "[-]")
+            candles.append("🟢" if cc>o else "🔴")
 
         return {
             "symbol": symbol,
@@ -412,7 +412,7 @@ def open_paper(symbol, karar, price, btc_trend):
         }
 
     sym = symbol.split("/")[0]
-    tg(f"[POS] [GPT] {sym} {signal}\nGiriş:{price:.6f}\nTP:+%{tp_pct*100:.1f} | SL:-%{sl_pct*100:.1f}\nGüven:{guven}% BTC:{btc_trend}\n[>]{neden}")
+    tg(f"📋 [GPT] {sym} {signal}\nGiriş:{price:.6f}\nTP:+%{tp_pct*100:.1f} | SL:-%{sl_pct*100:.1f}\nGüven:{guven}% BTC:{btc_trend}\n[>]{neden}")
 
 # ─── PAPER KAPAT ───
 def close_paper(symbol, reason, exit_price=None):
@@ -446,12 +446,12 @@ def close_paper(symbol, reason, exit_price=None):
     daily_pnl += pnl
     if daily_pnl <= MAX_DAILY_LOSS and bot_active:
         bot_active = False
-        tg(f"[STOP] GÜNLÜK LİMİT! {daily_pnl:+.2f} USDT — Bot durduruldu.")
+        tg(f"⛔ GÜNLÜK LİMİT! {daily_pnl:+.2f} USDT — Bot durduruldu.")
 
     with closed_lock:
         recently_closed[symbol] = time.time()
 
-    icon = "[+]" if pnl>=0 else "[-]"
+    icon = "🟢" if pnl>=0 else "🔴"
     tg(f"{icon} [GPT] {symbol.split('/')[0]} KAPANDI\n{reason}\nPnL:{pnl:+.2f} USDT | {sure}dk")
 
 # ─── YÖNETİCİ ───
@@ -501,7 +501,7 @@ def manage_loop():
                             positions[symbol]["tp"] = yeni_tp
                             positions[symbol]["tp_pct"] = yeni*100
                             positions[symbol]["tp_yukselme"] = pos.get("tp_yukselme",0)+1
-                    tg(f"[UP] [GPT] {sym} TP→%{yeni*100:.1f} ({pos.get('tp_yukselme',0)+1}/2)\n{neden}")
+                    tg(f"📈 [GPT] {sym} TP→%{yeni*100:.1f} ({pos.get('tp_yukselme',0)+1}/2)\n{neden}")
 
                 elif action == "SL_AYARLA":
                     yeni = max(0.003, min(float(karar.get("yeni_sl_pct", pos["sl_pct"]))/100, 0.020))
@@ -511,7 +511,7 @@ def manage_loop():
                         if symbol in positions:
                             positions[symbol]["sl"] = yeni_sl
                             positions[symbol]["sl_pct"] = yeni*100
-                    tg(f"[SL] [GPT] {sym} SL→%{yeni*100:.1f}\n{neden}")
+                    tg(f"🛡 [GPT] {sym} SL→%{yeni*100:.1f}\n{neden}")
 
         except Exception as e:
             log.error(f"[MANAGE] {e}")
@@ -618,8 +618,8 @@ def health_server():
 def cmd_durum(msg):
     with pos_lock:
         if not positions:
-            bot.send_message(msg.chat.id,"[POS] Pozisyon yok."); return
-        lines=["[POS] GPT BOT POZİSYONLAR\n"]
+            bot.send_message(msg.chat.id,"📋 Pozisyon yok."); return
+        lines=["📋 GPT BOT POZİSYONLAR\n"]
         for sym,pos in positions.items():
             t=safe_api(exchange.fetch_ticker,sym)
             if t:
@@ -648,11 +648,11 @@ def cmd_stats(msg):
         yuksek=[d for d in data if int(d.get("guven") or 0)>=75]
         yuksek_win=[d for d in yuksek if float(d.get("pnl") or 0)>0]
         bot.send_message(msg.chat.id,
-            f"[STAT] GPT BOT v5\n\n"
+            f"📊 GPT BOT v5\n\n"
             f"Toplam:{toplam} | Kazanan:{kazan}(%{kazan/toplam*100:.0f})\n"
             f"Net PnL:{net:+.2f} USDT\n"
             f"Günlük PnL:{daily_pnl:+.2f} USDT\n\n"
-            f"[TP] Güven≥75: {len(yuksek)} işlem → %{len(yuksek_win)/max(len(yuksek),1)*100:.0f}\n"
+            f"🎯 Güven≥75: {len(yuksek)} işlem → %{len(yuksek_win)/max(len(yuksek),1)*100:.0f}\n"
             f"[TEL] GPT çağrısı:{gpt_calls_today}"
         )
     except Exception as e:
@@ -660,10 +660,10 @@ def cmd_stats(msg):
 
 @bot.message_handler(commands=["sor","ask","ai"])
 def cmd_sor(msg):
-    if not OPENAI_KEY: bot.send_message(msg.chat.id,"[ERR] OpenAI key yok."); return
+    if not OPENAI_KEY: bot.send_message(msg.chat.id,"❌ OpenAI key yok."); return
     soru=msg.text.replace("/sor","").replace("/ask","").replace("/ai","").strip()
     if not soru: bot.send_message(msg.chat.id,"Kullanım: /sor BTC ne yapar?"); return
-    bot.send_message(msg.chat.id,"[...] Düşünüyorum...")
+    bot.send_message(msg.chat.id,"🤔 Düşünüyorum...")
     try:
         btc_trend,btc_price,btc_change=get_btc_data()
         history=load_gpt_history(5)
@@ -673,9 +673,9 @@ def cmd_sor(msg):
             {"role":"user","content":f"Şu an:{pos_bilgi} | BTC:{btc_trend} ${btc_price:,.0f}\nSon işlemler:\n{history}\n\nSoru:{soru}"}
         ]
         yanit=call_gpt(messages,model="gpt-4o",max_tokens=400)
-        bot.send_message(msg.chat.id,f"[BOT] {yanit}" if yanit else "[ERR] Cevap yok")
+        bot.send_message(msg.chat.id,f"🤖 {yanit}" if yanit else "❌ Cevap yok")
     except Exception as e:
-        bot.send_message(msg.chat.id,f"[ERR] {e}")
+        bot.send_message(msg.chat.id,f"❌ {e}")
 
 
 @bot.message_handler(commands=["analiz"])
@@ -686,7 +686,7 @@ def cmd_analiz(msg):
         bot.send_message(msg.chat.id,"Kullanim: /analiz AVAX veya /analiz AVAX SHORT"); return
     coin_adi = parts[0].upper().replace("USDT","").replace("/","").strip()
     ek_bilgi = " ".join(parts[1:]) if len(parts) > 1 else ""
-    bot.send_message(msg.chat.id,f"[...] {coin_adi} analiz ediyorum...")
+    bot.send_message(msg.chat.id,f"🤔 {coin_adi} analiz ediyorum...")
     try:
         btc_trend,btc_price,btc_change = get_btc_data()
         history = load_gpt_history(8)
@@ -697,7 +697,7 @@ def cmd_analiz(msg):
         symbol = f"{coin_adi}/USDT:USDT"
         data = get_coin_data(symbol)
         if not data:
-            bot.send_message(msg.chat.id,f"[ERR] {coin_adi} verisi alinamadi. Sembol dogru mu?"); return
+            bot.send_message(msg.chat.id,f"❌ {coin_adi} verisi alinamadi. Sembol dogru mu?"); return
 
         user_msg = f"""Kullanici bu coini oneriyor: {coin_adi}
 Kullanici notu: {ek_bilgi if ek_bilgi else "Yok"}
@@ -751,17 +751,17 @@ veya
                                 {"role":"assistant","content":yanit}
                             ]
                         open_paper(symbol, karar, price, btc_trend)
-                        bot.send_message(msg.chat.id,f"[OK] {coin_adi} {action} acildi! Guven:{guven}%\n{neden[:200]}")
+                        bot.send_message(msg.chat.id,f"✅ {coin_adi} {action} acildi! Guven:{guven}%\n{neden[:200]}")
                     else:
                         bot.send_message(msg.chat.id,"Fiyat alinamadi")
                 elif pos_dolu and action != "PAS":
-                    bot.send_message(msg.chat.id,f"[BOT] {coin_adi} icin {action} sinyali var (Guven:{guven}%) ama max pozisyon dolu.\n{neden[:200]}")
+                    bot.send_message(msg.chat.id,f"🤖 {coin_adi} icin {action} sinyali var (Guven:{guven}%) ama max pozisyon dolu.\n{neden[:200]}")
                 else:
-                    bot.send_message(msg.chat.id,f"[BOT] {coin_adi} icin islem acilmadi.\nSebep: {neden[:300]}")
+                    bot.send_message(msg.chat.id,f"🤖 {coin_adi} icin islem acilmadi.\nSebep: {neden[:300]}")
             except:
-                bot.send_message(msg.chat.id,f"[BOT] {yanit[:500]}")
+                bot.send_message(msg.chat.id,f"🤖 {yanit[:500]}")
         else:
-            bot.send_message(msg.chat.id,f"[BOT] {yanit[:500]}")
+            bot.send_message(msg.chat.id,f"🤖 {yanit[:500]}")
 
     except Exception as e:
         log.error(f"[ANALIZ] {e}")
@@ -773,7 +773,7 @@ def cmd_kapat(msg):
     if not text: bot.send_message(msg.chat.id,"Kullanım: /kapat SOL"); return
     symbol=f"{text}/USDT:USDT"
     with pos_lock:
-        if symbol not in positions: bot.send_message(msg.chat.id,f"[ERR] {text} yok."); return
+        if symbol not in positions: bot.send_message(msg.chat.id,f"❌ {text} yok."); return
     close_paper(symbol,"MANUEL")
 
 @bot.message_handler(commands=["hepsikapat"])
@@ -783,18 +783,18 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__=="__main__":
-    print("[BOT] SADIK GPT TRADING BOT v5 BAŞLIYOR...")
+    print("🤖 SADIK GPT TRADING BOT v5 BAŞLIYOR...")
     threading.Thread(target=health_server,daemon=True).start()
     threading.Thread(target=manage_loop,  daemon=True).start()
     threading.Thread(target=scanner_loop, daemon=True).start()
-    print("[OK] Health | Manage | Scanner")
+    print("✅ Health | Manage | Scanner")
     tg(
-        "[BOT] SADIK GPT TRADING BOT v5\n\n"
-        "[OK] 10 coini birden analiz et → en iyisini seç\n"
-        "[OK] Analiz: gpt-4o | Yönetim: gpt-4o-mini\n"
-        "[OK] Konuşma hafızası — geçmişi hatırlıyor\n"
-        "[OK] TP max 2 kez yükseltilebilir\n"
-        "[OK] Günlük -15 USDT limit\n\n"
+        "🤖 SADIK GPT TRADING BOT v5\n\n"
+        "✅ 10 coini birden analiz et → en iyisini seç\n"
+        "✅ Analiz: gpt-4o | Yönetim: gpt-4o-mini\n"
+        "✅ Konuşma hafızası — geçmişi hatırlıyor\n"
+        "✅ TP max 2 kez yükseltilebilir\n"
+        "✅ Günlük -15 USDT limit\n\n"
         f"Max {MAX_OPEN} pozisyon\n\n"
         "/durum /istatistik /sor [soru] /kapat SOL /hepsikapat"
     )
