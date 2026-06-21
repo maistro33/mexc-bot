@@ -714,16 +714,16 @@ Gecmis islemlerim:
 
 Su an {pos_bilgi}. {'MAX POZISYON DOLU.' if pos_dolu else 'Yeni islem acabilirim.'}
 
-Bu coin icin islem ac mi? Karli gorunuyorsa JSON ver:
-{{"karar":"LONG","tp_pct":2.0,"sl_pct":1.0,"guven":80,"neden":"analiz"}}
+ONCE JSON ver, sonra aciklama yap:
+{{"karar":"LONG","tp_pct":2.0,"sl_pct":1.0,"guven":80,"neden":"kisa neden"}}
 veya
-{{"karar":"PAS","neden":"neden acmadigini acikla"}}"""
+{{"karar":"PAS","neden":"kisa neden"}}"""
 
         messages = [
             {"role":"system","content":SYSTEM_PROMPT},
             {"role":"user","content":user_msg}
         ]
-        yanit = call_gpt(messages, model="gpt-4o", max_tokens=400)
+        yanit = call_gpt(messages, model="gpt-4o", max_tokens=250)
         if not yanit:
             bot.send_message(msg.chat.id,"GPT cevap vermedi"); return
 
