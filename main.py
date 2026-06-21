@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SADIK GPT TRADING BOT v2
+SADIK GPT TRADING BOT v3
 Tam Otonom — GPT-4o Her Karara Karar Verir
 TP/SL/Yön/Büyüklük hepsini GPT belirler
 """
@@ -200,6 +200,24 @@ def get_market_data(symbol):
                         funding = float(d.get("fundingRate", 0) or 0)
             except: pass
 
+        # MACD
+        ema12 = c1.ewm(span=12).mean()
+        ema26 = c1.ewm(span=26).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9).mean()
+        macd_hist = float((macd_line - signal_line).iloc[-1])
+        macd_status = "YUKARI" if macd_hist > 0 else "ASAGI"
+
+        # Bollinger Bands
+        bb_ma = float(c1.rolling(20).mean().iloc[-1])
+        bb_std = float(c1.rolling(20).std().iloc[-1])
+        bb_upper = bb_ma + 2 * bb_std
+        bb_lower = bb_ma - 2 * bb_std
+        bb_pct = (price - bb_lower) / (bb_upper - bb_lower) * 100 if bb_upper != bb_lower else 50
+        if bb_pct > 80: bb_pos = "ÜST BANT"
+        elif bb_pct < 20: bb_pos = "ALT BANT"
+        else: bb_pos = "ORTA"
+
         return {
             "symbol": symbol,
             "price": price,
@@ -211,6 +229,10 @@ def get_market_data(symbol):
             "move_1": move_1, "move_5": move_5, "move_1h": move_1h,
             "candles": candles,
             "funding": funding,
+            "macd_hist": macd_hist,
+            "macd_status": macd_status,
+            "bb_pos": bb_pos,
+            "bb_pct": bb_pct,
         }
     except Exception as e:
         log.warning(f"[DATA] {symbol}: {e}")
@@ -249,6 +271,8 @@ EMA9/20 (5m): {data['ema9_5']:.6f} / {data['ema20_5']:.6f} → {'YUKARI' if data
 EMA20 (1h): {data['ema20_1h']:.6f} → Fiyat {'üstünde' if data['price'] > data['ema20_1h'] else 'altında'}
 Hacim: {data['vol_ratio']:.1f}x ortalama
 Hareket: 1dk={data['move_1']:+.2f}% 5dk={data['move_5']:+.2f}% 1s={data['move_1h']:+.2f}%
+MACD: {data['macd_status']} (histogram: {data['macd_hist']:+.6f})
+Bollinger: {data['bb_pos']} (%{data['bb_pct']:.0f})
 Funding: {data['funding']*100:.4f}%
 
 Son 5 mum:
@@ -279,7 +303,7 @@ Notlar:
 
         r = req.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-4o-mini", "max_tokens": 200, "temperature": 0.3,
+            json={"model": "gpt-4o", "max_tokens": 200, "temperature": 0.3,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=15)
 
@@ -390,9 +414,15 @@ def close_paper(symbol, reason, exit_price=None):
     icon = "🟢" if pnl >= 0 else "🔴"
     tg(f"{icon} [GPT BOT] {sym} KAPANDI\n{reason}\nPnL: {pnl:+.2f} USDT | {sure}dk")
     log.info(f"[KAPAT] {sym} {reason} pnl={pnl:+.2f}")
-    # Son 1 saat tekrar açma
     with closed_lock:
         recently_closed[symbol] = time.time()
+    # Günlük PnL güncelle
+    global daily_pnl, bot_active
+    daily_pnl += pnl
+    if daily_pnl <= MAX_DAILY_LOSS and bot_active:
+        bot_active = False
+        tg(f"⛔ GÜNLÜK ZARAR LİMİTİ AŞILDI!\nGünlük PnL: {daily_pnl:+.2f} USDT\nBot durduruldu. Yarın devam eder.")
+        log.warning(f"[LIMIT] Günlük zarar limiti: {daily_pnl:+.2f}")
 
 # ─── GPT POZİSYON YÖNETİMİ ───
 def gpt_manage_position(symbol, pos, current_price):
@@ -453,7 +483,7 @@ Kurallar:
 
         r = req.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-4o-mini", "max_tokens": 150, "temperature": 0.2,
+            json={"model": "gpt-4o", "max_tokens": 150, "temperature": 0.2,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=10)
 
@@ -546,6 +576,11 @@ def scanner_loop():
 
             if open_count >= MAX_OPEN:
                 time.sleep(30); continue
+
+            # Günlük zarar limiti kontrolü
+            if not bot_active:
+                log.info(f"[LIMIT] Bot durduruldu. Günlük PnL: {daily_pnl:+.2f}")
+                time.sleep(SCAN_INTERVAL); continue
 
             btc_trend, btc_price, btc_change = get_btc_data()
 
@@ -674,7 +709,8 @@ def cmd_stats(msg):
             f"Net PnL: {net:+.2f} USDT\n\n"
             f"🎯 Güven ≥75:\n"
             f"  {len(yuksek_guven)} işlem → %{len(yuksek_win)/max(len(yuksek_guven),1)*100:.0f} kazanç\n\n"
-            f"📞 GPT çağrısı bugün: {gpt_calls_today}"
+            f"📞 GPT çağrısı bugün: {gpt_calls_today}\n"
+            f"💰 Günlük PnL: {daily_pnl:+.2f} USDT (limit: {MAX_DAILY_LOSS})"
         )
     except Exception as e:
         bot.send_message(msg.chat.id, f"Hata: {e}")
@@ -698,7 +734,7 @@ Soru: {soru}
 Kısa ve net cevap ver, Türkçe."""
         r = req.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": "gpt-4o-mini", "max_tokens": 300, "temperature": 0.7,
+            json={"model": "gpt-4o", "max_tokens": 300, "temperature": 0.7,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=15)
         if r.status_code == 200:
@@ -727,13 +763,13 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__ == "__main__":
-    print("🤖 SADIK GPT TRADING BOT v2 BAŞLIYOR...")
+    print("🤖 SADIK GPT TRADING BOT v3 BAŞLIYOR...")
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=scanner_loop,  daemon=True).start()
     print("[OK] Health | Manage | Scanner")
     tg(
-        "🤖 SADIK GPT TRADING BOT v2\n\n"
+        "🤖 SADIK GPT TRADING BOT v3\n\n"
         "TAM OTONOM — GPT Her Karara Karar Verir!\n\n"
         "✅ GPT-4o-mini piyasayı analiz eder\n"
         "✅ Yön, TP, SL hepsini GPT belirler\n"
