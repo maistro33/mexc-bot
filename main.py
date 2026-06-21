@@ -668,6 +668,26 @@ def handle(msg):
         bot.send_message(msg.chat.id, f"\u274c {type(e).__name__}: {str(e)[:100]}")
 
 # MAIN
+import signal, sys
+
+def shutdown_handler(signum, frame):
+    """Bot kapanirken acik pozisyonlari kaydet"""
+    log.info("[SHUTDOWN] Bot kapaniyor, pozisyonlar kaydediliyor...")
+    with pos_lock:
+        syms = list(positions.keys())
+    for symbol in syms:
+        try:
+            t = safe_api(exchange.fetch_ticker, symbol)
+            price = t["last"] if t else None
+            close_pos(symbol, "BOT RESTART", price)
+            log.info(f"[SHUTDOWN] {symbol} kaydedildi")
+        except Exception as e:
+            log.error(f"[SHUTDOWN] {symbol} hata: {e}")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+
 if __name__ == "__main__":
     print("SADIK CHAT BOT BASLIYOR...")
     threading.Thread(target=health_server, daemon=True).start()
