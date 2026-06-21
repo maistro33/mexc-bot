@@ -273,11 +273,9 @@ def xgboost_decision(ind, btc_trend):
         log.info(f"[AI] {ind.get('symbol','').split('/')[0]} LONG:{score_long} SHORT:{score_short}")
 
         # BTC trende göre filtrele
+        # BTC NEUTRAL'da işlem açma — yön belirsiz
         if btc_trend == "UP"   and score_long  >= AI_MIN_SCORE: return "LONG",  score_long
         if btc_trend == "DOWN" and score_short >= AI_MIN_SCORE: return "SHORT", score_short
-        if btc_trend == "NEUTRAL":
-            if score_long >= AI_MIN_SCORE and score_long >= score_short:  return "LONG",  score_long
-            if score_short >= AI_MIN_SCORE and score_short > score_long:  return "SHORT", score_short
 
         return None, max(score_long, score_short)
 
