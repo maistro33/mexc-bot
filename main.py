@@ -482,6 +482,10 @@ def manage_loop():
                 sym    = symbol.split("/")[0]
 
                 if action == "KAPAT":
+                    # Minimum kar kontrolu — %1.2 altinda kapatma
+                    if pnl_pct > 0 and pnl_pct < 1.2:
+                        log.info(f"[YON] {symbol.split('/')[0]} GPT KAPAT dedi ama kar az (%{pnl_pct:.2f}), DEVAM")
+                        continue
                     close_paper(symbol, f"GPT:{neden[:50]}", price)
 
                 elif action == "TP_YUKSEL":
