@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SADIK PAPER TRADING BOT v11c
+SADIK PAPER TRADING BOT v12
 XGBoost Ana Karar Verici — Ayrı LONG/SHORT modelleri
 """
 
@@ -532,11 +532,23 @@ def calc_indicators(symbol):
 
 # ─── KORUMA FİLTRELERİ ───
 def safety_check(ind):
+    # Temel korumalar
     if ind.get("fake_up") or ind.get("fake_down"): return False, "Fake pump/dump"
-    if ind.get("vol_ratio", 0) < 0.5: return False, "Hacim düşük"
+    if ind.get("vol_ratio", 0) < 0.8: return False, "Hacim düşük"
     rsi = ind.get("rsi", 50)
-    if rsi < 35 or rsi > 80: return False, f"RSI dışında: {rsi:.0f}"
-    return True, "OK"
+    if rsi < 40 or rsi > 75: return False, f"RSI dışında: {rsi:.0f}"
+
+    # OB + CHoCH filtresi — en az biri olmalı, ikisi birlikte bonus
+    has_ob    = ind.get("in_bull_ob") or ind.get("in_bear_ob")
+    has_choch = ind.get("choch", "YOK") != "YOK"
+    has_fvg   = ind.get("fvg_icinde", False)
+
+    # En az 2 ICT sinyali olmalı
+    ict_count = sum([bool(has_ob), bool(has_choch), bool(has_fvg)])
+    if ict_count < 2:
+        return False, f"ICT yetersiz: OB={has_ob} CHoCH={has_choch} FVG={has_fvg}"
+
+    return True, f"ICT:{ict_count}/3 OK"
 
 # ─── GPT ───
 def gpt_karar(symbol, signal, ind, btc_trend, funding, long_pct, short_pct):
@@ -778,14 +790,14 @@ def cmd_hepsi(msg):
 
 # ─── MAIN ───
 if __name__=="__main__":
-    print("📋 SADIK PAPER TRADING BOT v11c BAŞLIYOR...")
+    print("📋 SADIK PAPER TRADING BOT v12 BAŞLIYOR...")
     load_ai_model()
     threading.Thread(target=health_server,daemon=True).start()
     threading.Thread(target=manage_loop,daemon=True).start()
     threading.Thread(target=scanner_loop,daemon=True).start()
     threading.Thread(target=retrain_loop,daemon=True).start()
     print("[OK] Health | Manage | Scanner | AI Retrain | Online Learning")
-    tg("📋 SADIK PAPER TRADING BOT v11c\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
+    tg("📋 SADIK PAPER TRADING BOT v12\n\n🤖 Ayrı LONG + SHORT modelleri!\n✅ LONG model kendi verisinden öğrenir\n✅ SHORT model kendi verisinden öğrenir\n✅ RSI filtresi: 35-80\n✅ Online Learning\n✅ Her 6 saatte yeniden eğitim\n\n/durum /istatistik /aitrain /kapat SOL /hepsikapat")
     threading.Thread(target=train_ai_model,daemon=True).start()
     while True:
         try: bot.infinity_polling(timeout=30,long_polling_timeout=30)
