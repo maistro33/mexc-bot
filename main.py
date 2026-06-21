@@ -442,12 +442,14 @@ SADECE JSON formatında cevap ver:
 }}
 
 Kurallar:
-- KAPAT: trend döndü, zarar büyüyor, hedef ulaşılamaz
-- DEVAM: trend güçlü, bekle
-- TP_YUKSEL: trend çok güçlü, TP'yi yükselt
-- SL_AYARLA: riski azalt, SL'i sıkılaştır
-- Komisyon %0.12 olduğunu unutma
-- 60 dakikadan fazla açık kalmış pozisyonu kapat"""
+- Zarar %1.5'i geçtiyse → MUTLAKA KAPAT, bekletme
+- Zarar %1'i geçti VE trend aleyhine döndüyse → KAPAT
+- Zarar var ama trend hâlâ lehimize → DEVAM veya SL_AYARLA
+- Kazanç var ve trend güçlü → TP_YUKSEL
+- Kazanç var ama trend zayıflıyor → KAPAT, karı koru
+- DEVAM: trend güçlü, zarar küçük, bekle
+- Komisyon %0.12 — küçük kazançta bile kapatmaya değebilir
+- 60 dakikadan fazla açık → KAPAT"""
 
         r = req.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
@@ -468,7 +470,7 @@ Kurallar:
 # ─── YÖNETİCİ ───
 def manage_loop():
     while True:
-        time.sleep(5 * 60)  # Her 5 dakikada bir GPT'ye sor
+        time.sleep(30)  # Her 30 saniyede kontrol et
         try:
             with pos_lock: syms = list(positions.keys())
 
@@ -484,8 +486,8 @@ def manage_loop():
                 entry  = pos["entry"]
                 sure   = int((time.time() - pos["open_time"]) / 60)
 
-                # Zaman aşımı — 2 saat
-                if sure > 120:
+                # Zaman aşımı — 1 saat
+                if sure > 60:
                     close_paper(symbol, "ZAMAN AŞIMI 2 saat", price)
                     continue
 
