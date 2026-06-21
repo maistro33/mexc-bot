@@ -348,7 +348,7 @@ def gpt_manage(symbol, pos, current_price):
         pnl     = (entry-current_price)/entry*pos_size - pos_size*COMMISSION
 
     sym = symbol.split("/")[0]
-    tp_yukselme = pos.get("tp_yukselme", 0)
+    max_pnl = pos.get("max_pnl_pct", 0)
 
     update_msg = f"""{sym} {sig} — {sure}. dakika güncelleme:
 Giriş:{entry:.6f} → Şu an:{current_price:.6f}
@@ -437,7 +437,7 @@ def close_paper(symbol, reason, exit_price=None):
 
     save_trade({
         "symbol":symbol,"signal":sig,"pnl":round(pnl,4),
-        "tp_pct":pos.get("tp_pct",0),"sl_pct":pos.get("sl_pct",0),
+        "tp_pct":pos.get("ref_tp",0),"sl_pct":pos.get("ref_sl",0),
         "guven":pos.get("guven",0),"btc_trend":pos.get("btc_trend",""),
         "sure_dk":sure,"reason":reason,"neden":pos.get("neden",""),
     })
