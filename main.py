@@ -514,8 +514,7 @@ def manage_loop():
                         if symbol in positions:
                             positions[symbol]["tp"] = yeni_tp
                             positions[symbol]["tp_pct"] = yeni_tp_pct * 100
-                    tg(f"📈 [GPT] {sym} TP yükseltildi → %{yeni_tp_pct*100:.1f}
-{neden}")
+                    tg(f"📈 [GPT] {sym} TP yükseltildi → %{yeni_tp_pct*100:.1f}\n{neden}")
 
                 elif action == "SL_AYARLA":
                     yeni_sl_pct = float(karar.get("yeni_sl_pct", pos["sl_pct"])) / 100
@@ -528,8 +527,7 @@ def manage_loop():
                         if symbol in positions:
                             positions[symbol]["sl"] = yeni_sl
                             positions[symbol]["sl_pct"] = yeni_sl_pct * 100
-                    tg(f"🛡 [GPT] {sym} SL ayarlandı → %{yeni_sl_pct*100:.1f}
-{neden}")
+                    tg(f"🛡 [GPT] {sym} SL ayarlandı → %{yeni_sl_pct*100:.1f}\n{neden}")
 
                 # DEVAM — hiçbir şey yapma, bekle
 
