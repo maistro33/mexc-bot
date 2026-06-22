@@ -37,7 +37,7 @@ MIN_VOL        = 1_000_000
 MAX_PRICE      = 30
 COMMISSION     = 0.0006
 MAX_DAILY_LOSS = -15.0
-ONERI_INTERVAL = 300
+ONERI_INTERVAL = 120  # Her 2 dakikada tara
 
 # STATE
 positions     = {}
@@ -602,7 +602,7 @@ def oneri_loop():
 
             with pos_lock: open_syms = set(positions.keys())
 
-            # AKILLI FİLTRE
+            # PUMP DEDEKTORU - Ani hacim ve fiyat hareketi
             candidates = []
             for symbol, ticker in tickers.items():
                 if not symbol.endswith("/USDT:USDT"): continue
@@ -614,15 +614,27 @@ def oneri_loop():
                 price = ticker.get("last") or 0
                 if not price or price > MAX_PRICE: continue
                 pct = ticker.get("percentage") or 0
-                if abs(pct) < 1.0: continue
                 # BTC ile uyumlu
                 if btc_trend == "UP" and pct < 0: continue
                 if btc_trend == "DOWN" and pct > 0: continue
-                # Cok yukselmis coinlere short acma
-                if btc_trend == "DOWN" and pct < -20: continue
-                candidates.append({"symbol": symbol, "volume": qv, "pct": abs(pct)})
+                if abs(pct) < 0.5: continue
+                
+                # Pump skoru hesapla
+                pump_score = 0
+                if abs(pct) > 5: pump_score += 40   # Guclu hareket
+                elif abs(pct) > 2: pump_score += 20
+                elif abs(pct) > 1: pump_score += 10
+                if qv > 5_000_000: pump_score += 30  # Yuksek hacim
+                elif qv > 2_000_000: pump_score += 15
+                elif qv > 1_000_000: pump_score += 5
+                
+                candidates.append({
+                    "symbol": symbol, "volume": qv, 
+                    "pct": abs(pct), "pump_score": pump_score
+                })
 
-            candidates.sort(key=lambda x: x["volume"], reverse=True)
+            # Pump skoruna gore sirala - en iyi firsatlar once
+            candidates.sort(key=lambda x: x["pump_score"], reverse=True)
             candidates = candidates[:8]
 
             if not candidates:
@@ -664,11 +676,15 @@ def oneri_loop():
                     f"{lessons}\n\n"
                     f"ANALIZ EDILECEK COİNLER:\n{summary}\n\n"
                     f"Deneyimli trader olarak en iyi 1 firsat sec.\n"
-                    f"BTC NEUTRAL olsa bile guclu sinyal varsa ac.\n"
-                    f"Momentum 60+ ve hacim artan coinleri tercih et.\n"
+                    f"PUMP yakalama odakli dusun:\n"
+                    f"- Ani hacim artisi olan coinler\n"
+                    f"- Guclu yukselis momentumu\n"
+                    f"- EMA yukari, MACD pozitif\n"
+                    f"- BTC NEUTRAL olsa bile guclu sinyal varsa AC\n"
+                    f"- Az islem acmak yerine PUMP firsatlarini kacirma\n"
                     f"Varsa: JSON {{\"oneri\": true, \"symbol\": \"X/USDT:USDT\", "
                     f"\"yon\": \"LONG\", \"mesaj\": \"neden iyi\"}}\n"
-                    f"Gercekten hic yoksa: {{\"oneri\": false, \"mesaj\": \"neden\"}}"
+                    f"Sadece gercekten hic yoksa pas gec: {{\"oneri\": false}}"
                 )}
             ]
 
