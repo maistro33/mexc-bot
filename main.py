@@ -44,8 +44,10 @@ positions     = {}
 pos_lock      = threading.Lock()
 pos_messages  = {}
 msg_lock      = threading.Lock()
-daily_pnl     = 0.0
-gpt_calls     = 0
+daily_pnl       = 0.0
+gpt_calls       = 0
+recently_closed = {}   # Kapanan coinler - 30dk tekrar acma
+closed_lock     = threading.Lock()
 # bekleyen kaldirild - tamamen otomatik mod
 
 # EXCHANGE
@@ -392,12 +394,17 @@ def open_pos(symbol, yon, neden, btc_trend):
     sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
 
     with pos_lock:
-        # Ayni coin varsa acma
-        sym_base = symbol.split("/")[0]
+        # Ayni coin varsa acma (hem pozisyon hem recently_closed)
+        sym_base = symbol.split("/")[0].upper()
         for existing in positions.keys():
-            if existing.split("/")[0] == sym_base:
+            if existing.split("/")[0].upper() == sym_base:
                 log.info(f"[SKIP] {sym_base} zaten acik")
                 return False
+        with closed_lock:
+            if sym_base in recently_closed:
+                if time.time() - recently_closed[sym_base] < 1800:
+                    log.info(f"[SKIP] {sym_base} 30dk bekleme")
+                    return False
         if len(positions) >= MAX_OPEN:
             tg(f"Max {MAX_OPEN} pozisyon."); return False
         # Gunluk limit kontrolu
@@ -505,6 +512,11 @@ def close_pos(symbol, reason, exit_price=None):
 
     # Lesson kaydet - bagimsiz, hata toleransli
     threading.Thread(target=ders_cikar, daemon=True).start()
+
+    # 30 dakika tekrar acma - coin adina gore sakla
+    sym_base = symbol.split("/")[0].upper()
+    with closed_lock:
+        recently_closed[sym_base] = time.time()
 
     icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
     tg(f"{icon} {symbol.split('/')[0]} KAPANDI\n{reason}\nPnL: {pnl:+.2f}$ | {sure}dk\nGunluk: {daily_pnl:+.2f}$")
