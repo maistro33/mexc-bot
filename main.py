@@ -560,6 +560,11 @@ def health_server():
 @bot.message_handler(func=lambda msg: True)
 def handle(msg):
     if not msg.text: return
+    # Her mesaji ayri thread'de isle - bot donmasin
+    threading.Thread(target=handle_async, args=(msg,), daemon=True).start()
+
+def handle_async(msg):
+    if not msg.text: return
     text = msg.text.strip()
 
     # /durum komutu
