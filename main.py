@@ -33,7 +33,7 @@ OPENAI_KEY  = os.getenv("OPENAI_API_KEY","")
 LEVERAGE       = 5
 MARGIN         = 10.0
 MAX_OPEN       = 4
-MIN_VOL        = 3_000_000
+MIN_VOL        = 1_000_000
 MAX_PRICE      = 30
 COMMISSION     = 0.0006
 MAX_DAILY_LOSS = -15.0
@@ -593,8 +593,8 @@ def oneri_loop():
 
             btc_trend, btc_price, btc_chg, regime = get_market()
 
-            if btc_trend == "NEUTRAL":
-                time.sleep(ONERI_INTERVAL); continue
+            # BTC NEUTRAL'da da tara ama daha dikkatli ol
+            # Sadece cok guclu sinyallerde ac
 
             tickers = safe_api(exchange.fetch_tickers)
             if not tickers:
@@ -663,10 +663,12 @@ def oneri_loop():
                     f"Acik pozisyon: {len(positions)}/{MAX_OPEN}\n\n"
                     f"{lessons}\n\n"
                     f"ANALIZ EDILECEK COİNLER:\n{summary}\n\n"
-                    f"Deneyimli trader olarak: En iyi 1 firsat var mi?\n"
+                    f"Deneyimli trader olarak en iyi 1 firsat sec.\n"
+                    f"BTC NEUTRAL olsa bile guclu sinyal varsa ac.\n"
+                    f"Momentum 60+ ve hacim artan coinleri tercih et.\n"
                     f"Varsa: JSON {{\"oneri\": true, \"symbol\": \"X/USDT:USDT\", "
-                    f"\"yon\": \"LONG\", \"mesaj\": \"neden iyi, risk/odul nedir\"}}\n"
-                    f"Yoksa: {{\"oneri\": false, \"mesaj\": \"neden bekliyoruz\"}}"
+                    f"\"yon\": \"LONG\", \"mesaj\": \"neden iyi\"}}\n"
+                    f"Gercekten hic yoksa: {{\"oneri\": false, \"mesaj\": \"neden\"}}"
                 )}
             ]
 
