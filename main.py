@@ -518,7 +518,7 @@ def close_pos(symbol, reason, exit_price=None):
 # YÖNETİCİ
 def manage_loop():
     while True:
-        time.sleep(30)
+        time.sleep(60)  # Her 60 saniyede kontrol - daha az GPT cagrisi
         try:
             with pos_lock: syms = list(positions.keys())
             for symbol in syms:
