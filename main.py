@@ -223,18 +223,39 @@ def gpt(messages, model="gpt-4o", max_tokens=400):
     global gpt_calls
     if not OPENAI_KEY: return None
     gpt_calls += 1
-    if gpt_calls > 500: return None
-    try:
-        r = req.post("https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": max_tokens, "temperature": 0.3, "messages": messages},
-            timeout=25)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"].strip()
+    if gpt_calls > 500:
+        log.warning("[GPT] Gunluk limit asild")
         return None
-    except Exception as e:
-        log.warning(f"[GPT] {e}")
+    
+    result = [None]
+    error  = [None]
+    
+    def call():
+        try:
+            r = req.post("https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
+                json={"model": model, "max_tokens": max_tokens, "temperature": 0.3, "messages": messages},
+                timeout=12)
+            if r.status_code == 200:
+                result[0] = r.json()["choices"][0]["message"]["content"].strip()
+            else:
+                error[0] = f"HTTP {r.status_code}"
+        except Exception as e:
+            error[0] = str(e)
+    
+    t = threading.Thread(target=call, daemon=True)
+    t.start()
+    t.join(timeout=15)  # Max 15 saniye bekle
+    
+    if t.is_alive():
+        log.warning("[GPT] Timeout - 15 saniye gecti")
         return None
+    
+    if error[0]:
+        log.warning(f"[GPT] {error[0]}")
+        return None
+        
+    return result[0]
 
 # SYSTEM PROMPT
 SYSTEM = """Sen SADIK, bir kripto futures paper trading botusun.
@@ -427,8 +448,14 @@ def manage_loop():
                     if j:
                         karar = json.loads(j.group())
                         if karar.get("kapat"):
-                            if pnl_pct > 0 and pnl_pct < 1.2:
-                                continue  # Min kar yok, devam
+                            # KURAL 1: 15 dakika dolmadan kapatma
+                            if sure < 15:
+                                log.info(f"[YON] {sym} GPT kapat dedi ama {sure}dk, min 15dk lazim")
+                                continue
+                            # KURAL 2: Zarar %1.5 gecmemisse kapatma
+                            if pnl_pct > -1.5 and pnl_pct < 1.2:
+                                log.info(f"[YON] {sym} GPT kapat dedi ama zarar kucuk %{pnl_pct:.2f}, devam")
+                                continue
                             neden = karar.get("neden", "GPT kapat")
                             close_pos(symbol, neden, price)
                         else:
