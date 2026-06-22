@@ -76,6 +76,56 @@ def save_trade(data):
     try: supa.table("gpt_trades").insert(data).execute()
     except Exception as e: log.error(f"[SAVE] {e}")
 
+def save_lesson(symbol, signal, pnl, ders, btc_trend, piyasa):
+    """GPT dersini ayri tabloya kaydet"""
+    if not supa: return
+    try:
+        sonuc = "KAZANC" if pnl > 0 else "KAYIP"
+        supa.table("gpt_lessons").insert({
+            "symbol": symbol, "signal": signal,
+            "pnl": round(pnl, 4), "sonuc": sonuc,
+            "ders": ders[:500], "piyasa": piyasa,
+            "btc_trend": btc_trend,
+        }).execute()
+        log.info(f"[DERS] Kaydedildi: {symbol.split('/')[0]} {sonuc}")
+    except Exception as e:
+        log.error(f"[DERS SAVE] {e}")
+
+def load_lessons(limit=8):
+    """Gecmis islemler + dersler"""
+    if not supa: return "Gecmis yok."
+    try:
+        # Dersler
+        lessons_r = supa.table("gpt_lessons").select(
+            "symbol,signal,pnl,sonuc,ders,btc_trend"
+        ).order("created_at", desc=True).limit(6).execute()
+        
+        # Islemler
+        trades_r = supa.table("gpt_trades").select(
+            "symbol,signal,pnl,neden,reason,sure_dk,btc_trend"
+        ).order("created_at", desc=True).limit(limit).execute()
+
+        lines = ["=== GECMIS ISLEMLER ==="]
+        data = trades_r.data or []
+        if data:
+            kazanc = sum(1 for d in data if float(d.get("pnl") or 0) > 0)
+            lines.append(f"Son {len(data)}: {kazanc} kazanc, {len(data)-kazanc} kayip")
+            for d in data:
+                pnl = float(d.get("pnl") or 0)
+                icon = "+" if pnl > 0 else "-"
+                lines.append(f"[{icon}] {d.get('symbol','').split('/')[0]} {d.get('signal','')} {pnl:+.2f}$ | {d.get('sure_dk',0)}dk | {d.get('reason','')[:30]}")
+
+        lessons = lessons_r.data or []
+        if lessons:
+            lines.append("\n=== OGRENILENLER ===")
+            for l in lessons:
+                icon = "+" if float(l.get("pnl") or 0) > 0 else "-"
+                lines.append(f"[{icon}] {l.get('symbol','').split('/')[0]}: {l.get('ders','')[:80]}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Gecmis yuklenemedi: {e}"
+
 def save_lesson(lesson):
     """GPT'nin ogrendigi dersi kaydet"""
     if not supa: return
@@ -442,13 +492,9 @@ def close_pos(symbol, reason, exit_price=None):
                 {"role": "user", "content": ders_prompt}
             ]
             ders = gpt(msgs, model="gpt-4o-mini", max_tokens=150)
-            neden_final = f"{pos.get('neden','')} | DERS: {ders}" if ders else pos.get("neden","")
-            save_trade({
-                "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
-                "tp_pct": pos.get("max_pnl",0), "sl_pct": 2.0,
-                "guven": 0, "btc_trend": pos.get("btc_trend",""),
-                "sure_dk": sure, "reason": reason, "neden": neden_final[:500],
-            })
+            if ders:
+                # Ayri lessons tablosuna kaydet
+                save_lesson(symbol, sig, pnl, ders, pos.get("btc_trend",""), "")
         except Exception as e:
             log.warning(f"[DERS] {e}")
             save_trade({
