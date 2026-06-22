@@ -683,18 +683,12 @@ def oneri_loop():
                         yon    = karar.get("yon", "LONG")
                         mesaj  = karar.get("mesaj", "")
                         sym    = symbol.split("/")[0]
-                        bekleyen[sym] = {
-                            "symbol": symbol, "yon": yon,
-                            "neden": mesaj, "btc_trend": btc_trend,
-                            "zaman": time.time()
-                        }
-                        icon = "\U0001f4c8" if yon=="LONG" else "\U0001f4c9"
-                        tg(
-                            f"\U0001f4a1 ONERİ: {icon} {sym} {yon}\n\n"
-                            f"{mesaj}\n\n"
-                            f"BTC:{btc_trend} | Rejim:{regime}\n\n"
-                            f"\U0001f449 'evet' veya 'evet {sym}' yaz"
-                        )
+                        # Direkt ac - onay bekleme
+                        with msg_lock:
+                            pos_messages[symbol] = [{"role": "system", "content": SYSTEM}]
+                        acildi = open_pos(symbol, yon, mesaj, btc_trend)
+                        if not acildi:
+                            log.info(f"[ONERI] {sym} acilamadi")
                     elif not karar.get("oneri"):
                         mesaj = karar.get("mesaj","")
                         if mesaj:
