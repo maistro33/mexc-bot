@@ -264,15 +264,24 @@ def pos_info():
 # COİN BUL
 def find_coin(text):
     text_upper = text.upper()
+    # Kelimelere ayir - tam kelime eslesmesi
+    words = re.findall(r'[A-Z0-9]+', text_upper)
     try:
         tickers = safe_api(exchange.fetch_tickers)
         if not tickers: return None
+        # Once tam kelime eslesmesi dene
+        for word in words:
+            if len(word) < 2: continue
+            symbol = f"{word}/USDT:USDT"
+            if symbol in tickers and word not in BLACKLIST:
+                return symbol
+        # Bulamazsa en uzun eslesen sembolu bul
         best = None; best_len = 0
         for symbol in tickers.keys():
             if not symbol.endswith("/USDT:USDT"): continue
             sym = symbol.split("/")[0].upper()
             if sym in BLACKLIST: continue
-            if len(sym) >= 2 and sym in text_upper and len(sym) > best_len:
+            if sym in words and len(sym) > best_len:
                 best = symbol; best_len = len(sym)
         return best
     except: return None
