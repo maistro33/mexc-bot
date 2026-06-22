@@ -48,6 +48,15 @@ daily_pnl     = 0.0
 gpt_calls     = 0
 # bekleyen kaldirild - tamamen otomatik mod
 
+# EXCHANGE
+exchange = ccxt.bitget({
+    "apiKey": BITGET_API, "secret": BITGET_SEC,
+    "password": BITGET_PASS, "enableRateLimit": True,
+    "options": {"defaultType": "swap"},
+})
+LAST_API  = 0
+api_lock  = threading.Lock()
+
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
