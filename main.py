@@ -126,13 +126,6 @@ def load_lessons(limit=8):
     except Exception as e:
         return f"Gecmis yuklenemedi: {e}"
 
-def save_lesson(lesson):
-    """GPT'nin ogrendigi dersi kaydet"""
-    if not supa: return
-    try:
-        supa.table("gpt_trades").update({"neden": lesson}).eq("id", lesson.get("id","")).execute()
-    except: pass
-
 def load_lessons(limit=10):
     """Gecmis islemler ve dersler"""
     if not supa: return "Gecmis yok."
@@ -421,8 +414,12 @@ def find_coin(text):
 # ISLEM AC
 def open_pos(symbol, yon, neden, btc_trend):
     with pos_lock:
-        if symbol in positions:
-            tg(f"{symbol.split('/')[0]} zaten acik!"); return False
+        # Ayni coin veya ayni sembol basi varsa acma
+        sym_base = symbol.split("/")[0]
+        for existing in positions.keys():
+            if existing.split("/")[0] == sym_base:
+                log.info(f"[SKIP] {sym_base} zaten acik")
+                return False
         if len(positions) >= MAX_OPEN:
             tg(f"Max {MAX_OPEN} pozisyon."); return False
         t = safe_api(exchange.fetch_ticker, symbol)
