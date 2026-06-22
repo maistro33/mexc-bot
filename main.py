@@ -46,7 +46,7 @@ pos_messages  = {}
 msg_lock      = threading.Lock()
 daily_pnl     = 0.0
 gpt_calls     = 0
-bekleyen      = {}
+# bekleyen kaldirild - tamamen otomatik mod
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -126,43 +126,6 @@ def load_lessons(limit=8):
     except Exception as e:
         return f"Gecmis yuklenemedi: {e}"
 
-def load_lessons(limit=10):
-    """Gecmis islemler ve dersler"""
-    if not supa: return "Gecmis yok."
-    try:
-        r = supa.table("gpt_trades").select(
-            "symbol,signal,pnl,neden,reason,sure_dk,btc_trend"
-        ).order("created_at", desc=True).limit(limit).execute()
-        data = r.data or []
-        if not data: return "Henuz islem yok."
-        lines = ["=== GECMIS ISLEMLER VE DERSLER ==="]
-        kazanc = [d for d in data if float(d.get("pnl") or 0) > 0]
-        kayip  = [d for d in data if float(d.get("pnl") or 0) <= 0]
-        
-        lines.append(f"Son {len(data)} islem: {len(kazanc)} kazanc, {len(kayip)} kayip")
-        lines.append("")
-        
-        for d in data:
-            pnl = float(d.get("pnl") or 0)
-            icon = "KAZANC" if pnl > 0 else "KAYIP"
-            sure = d.get("sure_dk", 0)
-            lines.append(
-                f"[{icon}] {d.get('symbol','').split('/')[0]} {d.get('signal','')} "
-                f"{pnl:+.2f}$ | {sure}dk | BTC:{d.get('btc_trend','')} | "
-                f"{d.get('reason','')} | {d.get('neden','')[:50]}"
-            )
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Gecmis yuklenemedi: {e}"
-
-# EXCHANGE
-exchange = ccxt.bitget({
-    "apiKey": BITGET_API, "secret": BITGET_SEC,
-    "password": BITGET_PASS, "enableRateLimit": True,
-    "options": {"defaultType": "swap"},
-})
-LAST_API = 0
-api_lock = threading.Lock()
 
 def safe_api(func, *args, **kwargs):
     global LAST_API
@@ -413,8 +376,14 @@ def find_coin(text):
 
 # ISLEM AC
 def open_pos(symbol, yon, neden, btc_trend):
+    # Once fiyati al
+    t = safe_api(exchange.fetch_ticker, symbol)
+    if not t: return False
+    price = t["last"]
+    sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
+
     with pos_lock:
-        # Ayni coin veya ayni sembol basi varsa acma
+        # Ayni coin varsa acma
         sym_base = symbol.split("/")[0]
         for existing in positions.keys():
             if existing.split("/")[0] == sym_base:
@@ -422,10 +391,11 @@ def open_pos(symbol, yon, neden, btc_trend):
                 return False
         if len(positions) >= MAX_OPEN:
             tg(f"Max {MAX_OPEN} pozisyon."); return False
-        t = safe_api(exchange.fetch_ticker, symbol)
-        if not t: return False
-        price = t["last"]
-        sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
+        # Gunluk limit kontrolu
+        if daily_pnl <= MAX_DAILY_LOSS:
+            tg(f"\u26d4 Gunluk limit asimi, islem acilmiyor.")
+            return False
+        # Pozisyonu kaydet
         positions[symbol] = {
             "signal": yon, "entry": price,
             "sl_price": sl_price,
@@ -433,6 +403,8 @@ def open_pos(symbol, yon, neden, btc_trend):
             "neden": neden, "btc_trend": btc_trend,
             "open_time": time.time(),
         }
+
+    # Pozisyon acildiktan SONRA mesaj at
     sym = symbol.split("/")[0]
     icon = "\U0001f4c8" if yon == "LONG" else "\U0001f4c9"
     tg(
@@ -468,7 +440,11 @@ def close_pos(symbol, reason, exit_price=None):
     daily_pnl += pnl
 
     if daily_pnl <= MAX_DAILY_LOSS:
-        tg(f"\u26d4 GUNLUK LİMİT! {daily_pnl:+.2f}$ — Bugun yeterli.")
+        tg(f"\u26d4 GUNLUK LİMİT! {daily_pnl:+.2f}$ — Bot durduruldu.")
+        # Tum acik pozisyonlari kapat
+        with pos_lock: syms = list(positions.keys())
+        for s in syms:
+            close_pos(s, "Gunluk limit asimi", None)
 
     # GPT ders cikariyor
     def ders_cikar():
@@ -490,8 +466,14 @@ def close_pos(symbol, reason, exit_price=None):
             ]
             ders = gpt(msgs, model="gpt-4o-mini", max_tokens=150)
             if ders:
-                # Ayri lessons tablosuna kaydet
                 save_lesson(symbol, sig, pnl, ders, pos.get("btc_trend",""), "")
+            else:
+                # GPT cevap vermediyse kural bazli fallback ders
+                if pnl > 0:
+                    fallback = f"Kazanc: {pos.get('neden','')[:100]} - {reason} ile kapandi"
+                else:
+                    fallback = f"Kayip: {reason} - Sebep: {pos.get('neden','')[:100]}"
+                save_lesson(symbol, sig, pnl, fallback, pos.get("btc_trend",""), "fallback")
         except Exception as e:
             log.warning(f"[DERS] {e}")
             save_trade({
@@ -501,15 +483,18 @@ def close_pos(symbol, reason, exit_price=None):
                 "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
             })
 
-    # ONCE KAYDET - sonra GPT ders cikarin
-    save_trade({
-        "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
-        "tp_pct": pos.get("max_pnl",0), "sl_pct": 2.0, "guven": 0,
-        "btc_trend": pos.get("btc_trend",""),
-        "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
-    })
+    # Trade kaydet - bagimsiz, hata toleransli
+    try:
+        save_trade({
+            "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
+            "tp_pct": pos.get("max_pnl",0), "sl_pct": 2.0, "guven": 0,
+            "btc_trend": pos.get("btc_trend",""),
+            "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
+        })
+    except Exception as e:
+        log.error(f"[SAVE_TRADE] {e}")
 
-    # SONRA GPT ders cikarin (async)
+    # Lesson kaydet - bagimsiz, hata toleransli
     threading.Thread(target=ders_cikar, daemon=True).start()
 
     icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
@@ -578,18 +563,18 @@ def manage_loop():
                 if not msgs:
                     msgs = [{"role": "system", "content": SYSTEM}]
 
-                # Guncel coin verisi
-                coin_d = get_coin(symbol)
+                # Guncel coin verisi - her 3 dakikada bir cek (maliyet azalt)
                 coin_ozet = ""
-                if coin_d:
-                    coin_ozet = (
-                        f"RSI:{coin_d['rsi']:.0f} | "
-                        f"EMA1m:{coin_d['ema_1m']} | EMA5m:{coin_d['ema_5m']} | "
-                        f"MACD:{coin_d['macd']}({coin_d['macd_guc']}) | "
-                        f"Hacim:{coin_d['vol_ratio']:.1f}x({coin_d['vol_trend']}) | "
-                        f"Momentum:{coin_d['momentum']}/100\n"
-                        f"{coin_d.get('chart_str','')}"
-                    )
+                if sure % 3 == 0:  # 3 dakikada bir guncelle
+                    coin_d = get_coin(symbol)
+                    if coin_d:
+                        coin_ozet = (
+                            f"RSI:{coin_d['rsi']:.0f} | "
+                            f"EMA1m:{coin_d['ema_1m']} | EMA5m:{coin_d['ema_5m']} | "
+                            f"MACD:{coin_d['macd']}({coin_d['macd_guc']}) | "
+                            f"Hacim:{coin_d['vol_ratio']:.1f}x({coin_d['vol_trend']}) | "
+                            f"Momentum:{coin_d['momentum']}/100"
+                        )
 
                 update = (
                     f"{sym} {sig} — {sure}. dakika\n"
@@ -648,6 +633,7 @@ def oneri_loop():
             # BTC NEUTRAL'da da tara ama daha dikkatli ol
             # Sadece cok guclu sinyallerde ac
 
+            # Sadece gerekli alanlari cek - daha hizli
             tickers = safe_api(exchange.fetch_tickers)
             if not tickers:
                 time.sleep(ONERI_INTERVAL); continue
@@ -793,8 +779,8 @@ def handle_async(msg):
     text = msg.text.strip()
     text_lower = text.lower()
 
-    # /durum
-    if "/durum" in text_lower:
+    # ONCELIK 1: Komutlar (/ ile baslayanlar)
+    if "/durum" in text_lower or "/status" in text_lower:
         with pos_lock:
             if not positions:
                 bot.send_message(msg.chat.id, "\U0001f4cb Acik pozisyon yok."); return
