@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-SADIK TRADING BOT v2
-- Otomatik tarama YOK
-- Bot coin onerir, sen onaylarsın
-- GPT pozisyon takip eder
-- Sen de kapat diyebilirsin
+SADIK TRADER BOT
+- GPT her islemden ders cikarir ve ogrenır
+- Piyasa rejimi analizi
+- Risk/odul dengesi
+- Trailing stop + SL
+- Konusma hafizasi
+- Sen onaylarsın, GPT yönetir
 """
 
 import os, time, threading, logging, json, re
@@ -30,12 +32,12 @@ OPENAI_KEY  = os.getenv("OPENAI_API_KEY","")
 
 LEVERAGE       = 5
 MARGIN         = 10.0
-MAX_OPEN       = 5
-MIN_QUOTE_VOL  = 2_000_000
+MAX_OPEN       = 4
+MIN_VOL        = 3_000_000
 MAX_PRICE      = 30
 COMMISSION     = 0.0006
 MAX_DAILY_LOSS = -15.0
-ONERI_INTERVAL = 300  # Her 5 dakikada bir öneri
+ONERI_INTERVAL = 300
 
 # STATE
 positions     = {}
@@ -44,7 +46,7 @@ pos_messages  = {}
 msg_lock      = threading.Lock()
 daily_pnl     = 0.0
 gpt_calls     = 0
-bekleyen_oneri = {}  # Onay bekleyen öneriler
+bekleyen      = {}
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -74,18 +76,41 @@ def save_trade(data):
     try: supa.table("gpt_trades").insert(data).execute()
     except Exception as e: log.error(f"[SAVE] {e}")
 
-def load_history(limit=6):
+def save_lesson(lesson):
+    """GPT'nin ogrendigi dersi kaydet"""
+    if not supa: return
+    try:
+        supa.table("gpt_trades").update({"neden": lesson}).eq("id", lesson.get("id","")).execute()
+    except: pass
+
+def load_lessons(limit=10):
+    """Gecmis islemler ve dersler"""
     if not supa: return "Gecmis yok."
     try:
-        r = supa.table("gpt_trades").select("symbol,signal,pnl,neden,reason").order("created_at", desc=True).limit(limit).execute()
+        r = supa.table("gpt_trades").select(
+            "symbol,signal,pnl,neden,reason,sure_dk,btc_trend"
+        ).order("created_at", desc=True).limit(limit).execute()
         data = r.data or []
         if not data: return "Henuz islem yok."
-        lines = []
+        lines = ["=== GECMIS ISLEMLER VE DERSLER ==="]
+        kazanc = [d for d in data if float(d.get("pnl") or 0) > 0]
+        kayip  = [d for d in data if float(d.get("pnl") or 0) <= 0]
+        
+        lines.append(f"Son {len(data)} islem: {len(kazanc)} kazanc, {len(kayip)} kayip")
+        lines.append("")
+        
         for d in data:
-            icon = "+" if float(d.get("pnl") or 0) > 0 else "-"
-            lines.append(f"[{icon}] {d.get('symbol','').split('/')[0]} {d.get('signal','')} {float(d.get('pnl') or 0):+.2f}$ | {d.get('neden','')[:30]}")
+            pnl = float(d.get("pnl") or 0)
+            icon = "KAZANC" if pnl > 0 else "KAYIP"
+            sure = d.get("sure_dk", 0)
+            lines.append(
+                f"[{icon}] {d.get('symbol','').split('/')[0]} {d.get('signal','')} "
+                f"{pnl:+.2f}$ | {sure}dk | BTC:{d.get('btc_trend','')} | "
+                f"{d.get('reason','')} | {d.get('neden','')[:50]}"
+            )
         return "\n".join(lines)
-    except: return "Gecmis yuklenemedi."
+    except Exception as e:
+        return f"Gecmis yuklenemedi: {e}"
 
 # EXCHANGE
 exchange = ccxt.bitget({
@@ -112,109 +137,170 @@ def safe_api(func, *args, **kwargs):
             time.sleep(2)
     return None
 
-# BTC
-def get_btc():
+# BTC + PIYASA REJİMİ
+def get_market():
     try:
-        raw = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h", limit=24)
-        if not raw: return "NEUTRAL", 0, 0
-        df = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
-        c = df["c"]
-        e20 = float(c.ewm(span=20).mean().iloc[-1])
-        price = float(c.iloc[-1])
-        chg = (price - float(c.iloc[0])) / float(c.iloc[0]) * 100
-        if price > e20 * 1.001: return "UP", price, chg
-        if price < e20 * 0.999: return "DOWN", price, chg
-        return "NEUTRAL", price, chg
-    except: return "NEUTRAL", 0, 0
+        raw1h = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h", limit=48)
+        raw4h = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "4h", limit=24)
+        if not raw1h: return "NEUTRAL", 0, 0, "BELIRSIZ"
+        
+        df1h = pd.DataFrame(raw1h, columns=["t","o","h","l","c","v"])
+        price = float(df1h["c"].iloc[-1])
+        e20 = float(df1h["c"].ewm(span=20).mean().iloc[-1])
+        e50 = float(df1h["c"].ewm(span=50).mean().iloc[-1])
+        chg24 = (price - float(df1h["c"].iloc[-24])) / float(df1h["c"].iloc[-24]) * 100
+        
+        # 4h trend
+        regime = "YATAY"
+        if raw4h:
+            df4h = pd.DataFrame(raw4h, columns=["t","o","h","l","c","v"])
+            e20_4h = float(df4h["c"].ewm(span=20).mean().iloc[-1])
+            price_4h = float(df4h["c"].iloc[-1])
+            chg_4h = (price_4h - float(df4h["c"].iloc[-12])) / float(df4h["c"].iloc[-12]) * 100
+            
+            if price_4h > e20_4h * 1.02 and chg_4h > 3: regime = "BOGASI"
+            elif price_4h < e20_4h * 0.98 and chg_4h < -3: regime = "AYISI"
+            else: regime = "YATAY"
 
-# COIN VERİSİ
+        if price > e20 * 1.001 and price > e50: trend = "UP"
+        elif price < e20 * 0.999 and price < e50: trend = "DOWN"
+        elif price > e20 * 1.001: trend = "UP"
+        elif price < e20 * 0.999: trend = "DOWN"
+        else: trend = "NEUTRAL"
+        
+        return trend, price, chg24, regime
+    except:
+        return "NEUTRAL", 0, 0, "BELIRSIZ"
+
+# COIN VERİSİ - KAPSAMLI
 def get_coin(symbol):
     try:
-        raw1 = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=30)
-        if not raw1: return None
-        df1 = pd.DataFrame(raw1, columns=["t","o","h","l","c","v"])
-        raw5 = safe_api(exchange.fetch_ohlcv, symbol, "5m", limit=20)
-        if not raw5: return None
-        df5 = pd.DataFrame(raw5, columns=["t","o","h","l","c","v"])
-        raw1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=10)
-        if not raw1h: return None
-        df1h = pd.DataFrame(raw1h, columns=["t","o","h","l","c","v"])
+        raw1  = safe_api(exchange.fetch_ohlcv, symbol, "1m",  limit=50)
+        raw5  = safe_api(exchange.fetch_ohlcv, symbol, "5m",  limit=30)
         raw15 = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=20)
+        raw1h = safe_api(exchange.fetch_ohlcv, symbol, "1h",  limit=24)
+        if not raw1 or not raw5: return None
+
+        df1  = pd.DataFrame(raw1,  columns=["t","o","h","l","c","v"])
+        df5  = pd.DataFrame(raw5,  columns=["t","o","h","l","c","v"])
+        df1h = pd.DataFrame(raw1h, columns=["t","o","h","l","c","v"]) if raw1h else df5
 
         c1 = df1["c"]; v1 = df1["v"]
         price = float(c1.iloc[-1])
+
+        # RSI
         d = c1.diff()
         g = d.clip(lower=0).rolling(14).mean()
         l = (-d.clip(upper=0)).rolling(14).mean()
         rsi = float((100 - 100/(1+g/l.replace(0,0.001))).iloc[-1])
-        ema9 = float(c1.ewm(span=9).mean().iloc[-1])
-        ema20 = float(c1.ewm(span=20).mean().iloc[-1])
-        ema9_5 = float(df5["c"].ewm(span=9).mean().iloc[-1])
-        ema20_5 = float(df5["c"].ewm(span=20).mean().iloc[-1])
-        ema20_1h = float(df1h["c"].ewm(span=20).mean().iloc[-1])
-        ema12 = c1.ewm(span=12).mean()
-        ema26 = c1.ewm(span=26).mean()
-        macd_hist = float((ema12-ema26-(ema12-ema26).ewm(span=9).mean()).iloc[-1])
-        bb_ma = float(c1.rolling(20).mean().iloc[-1])
-        bb_std = float(c1.rolling(20).std().iloc[-1])
-        bb_upper = bb_ma + 2*bb_std; bb_lower = bb_ma - 2*bb_std
-        bb_pct = (price-bb_lower)/(bb_upper-bb_lower)*100 if bb_upper != bb_lower else 50
-        vol_avg = float(v1.rolling(20).mean().iloc[-1])
-        vol_ratio = float(v1.iloc[-1]) / max(vol_avg, 0.001)
-        move_1 = (price-float(c1.iloc[-2]))/float(c1.iloc[-2])*100
-        move_5 = (price-float(c1.iloc[-6]))/float(c1.iloc[-6])*100
-        move_1h = (price-float(df1h["c"].iloc[-2]))/float(df1h["c"].iloc[-2])*100
-        candles = "".join(["+" if float(df1["c"].iloc[i])>float(df1["o"].iloc[i]) else "-" for i in range(-5,0)])
 
-        # 15m grafik
+        # EMA'lar
+        ema9   = float(c1.ewm(span=9).mean().iloc[-1])
+        ema20  = float(c1.ewm(span=20).mean().iloc[-1])
+        ema50  = float(c1.ewm(span=50).mean().iloc[-1]) if len(c1) >= 50 else ema20
+        ema9_5 = float(df5["c"].ewm(span=9).mean().iloc[-1])
+        ema20_5= float(df5["c"].ewm(span=20).mean().iloc[-1])
+        ema20_1h = float(df1h["c"].ewm(span=20).mean().iloc[-1])
+
+        # MACD
+        macd_line   = c1.ewm(span=12).mean() - c1.ewm(span=26).mean()
+        signal_line = macd_line.ewm(span=9).mean()
+        macd_hist   = float((macd_line - signal_line).iloc[-1])
+        macd_trend  = "YUKARI" if macd_hist > 0 else "ASAGI"
+        macd_guc    = "GUCLU" if abs(macd_hist) > abs(float((macd_line - signal_line).iloc[-2])) else "ZAYIF"
+
+        # Bollinger
+        bb_ma    = float(c1.rolling(20).mean().iloc[-1])
+        bb_std   = float(c1.rolling(20).std().iloc[-1])
+        bb_upper = bb_ma + 2*bb_std
+        bb_lower = bb_ma - 2*bb_std
+        bb_pct   = (price-bb_lower)/(bb_upper-bb_lower)*100 if bb_upper != bb_lower else 50
+        bb_pos   = "UST" if bb_pct > 80 else "ALT" if bb_pct < 20 else "ORTA"
+
+        # Hacim analizi
+        vol_avg   = float(v1.rolling(20).mean().iloc[-1])
+        vol_son   = float(v1.iloc[-1])
+        vol_ratio = vol_son / max(vol_avg, 0.001)
+        vol_trend = "ARTIYOR" if float(v1.iloc[-1]) > float(v1.iloc[-3]) else "AZALIYOR"
+
+        # Fiyat hareketleri
+        move_1m  = (price - float(c1.iloc[-2])) / float(c1.iloc[-2]) * 100
+        move_5m  = (price - float(c1.iloc[-6])) / float(c1.iloc[-6]) * 100
+        move_15m = (price - float(c1.iloc[-16])) / float(c1.iloc[-16]) * 100
+        move_1h  = (price - float(df1h["c"].iloc[-2])) / float(df1h["c"].iloc[-2]) * 100 if raw1h else 0
+
+        # 15m mum analizi
         chart_str = ""
+        destek = price; direnc = price
         if raw15:
             df15 = pd.DataFrame(raw15, columns=["t","o","h","l","c","v"])
-            highs = df15["h"].values; lows = df15["l"].values
-            closes = df15["c"].values; opens = df15["o"].values
-            support = float(min(lows[-10:]))
-            resistance = float(max(highs[-10:]))
-            up_count = sum(1 for i in range(len(closes)) if closes[i] > opens[i])
-            chart_lines = []
-            for i in range(-8, 0):
-                o = float(opens[i]); c = float(closes[i])
-                h = float(highs[i]); l = float(lows[i])
-                direction = "+" if c > o else "-"
-                change = (c-o)/o*100
-                chart_lines.append(f"  {direction}{change:+.2f}%")
+            highs  = df15["h"].values
+            lows   = df15["l"].values
+            closes = df15["c"].values
+            opens  = df15["o"].values
+
+            destek  = float(min(lows[-8:]))
+            direnc  = float(max(highs[-8:]))
+            up_cnt  = sum(1 for i in range(-8,0) if closes[i] > opens[i])
+            
+            mum_ozet = ""
+            for i in range(-6, 0):
+                o=float(opens[i]); c=float(closes[i])
+                h=float(highs[i]); l=float(lows[i])
+                yon = "+" if c > o else "-"
+                deg = (c-o)/o*100
+                mum_ozet += f"{yon}{deg:+.1f}% "
+
             chart_str = (
-                f"15m Son 8 Mum: {''.join(chart_lines)}\n"
-                f"Yukari:{up_count}/20 Asagi:{20-up_count}/20\n"
-                f"Destek:{support:.6f} Direnc:{resistance:.6f}"
+                f"15m Mumlar: {mum_ozet}\n"
+                f"Yukari:{up_cnt}/8 | Asagi:{8-up_cnt}/8\n"
+                f"Destek:{destek:.6f} | Direnc:{direnc:.6f}\n"
+                f"Destek Uzakligi: %{(price-destek)/price*100:.2f} | "
+                f"Direnc Uzakligi: %{(direnc-price)/price*100:.2f}"
             )
 
+        # Momentum skoru (0-100)
+        momentum = 0
+        if ema9 > ema20: momentum += 20
+        if ema9_5 > ema20_5: momentum += 20
+        if price > ema20_1h: momentum += 20
+        if macd_hist > 0: momentum += 20
+        if vol_ratio > 1.5: momentum += 20
+        if move_5m > 0: momentum = momentum
+        else: momentum = max(0, momentum - 10)
+
         return {
-            "symbol": symbol, "price": price, "rsi": rsi,
+            "symbol": symbol, "price": price,
+            "rsi": rsi, "bb_pos": bb_pos, "bb_pct": bb_pct,
             "ema_1m": "YUKARI" if ema9>ema20 else "ASAGI",
             "ema_5m": "YUKARI" if ema9_5>ema20_5 else "ASAGI",
             "ema_1h": "USTUNDE" if price>ema20_1h else "ALTINDA",
-            "macd": "POZ" if macd_hist>0 else "NEG",
-            "bb_pct": bb_pct, "vol_ratio": vol_ratio,
-            "move_1": move_1, "move_5": move_5, "move_1h": move_1h,
-            "candles": candles, "chart_str": chart_str,
+            "ema50":  "USTUNDE" if price>ema50 else "ALTINDA",
+            "macd": macd_trend, "macd_guc": macd_guc,
+            "vol_ratio": vol_ratio, "vol_trend": vol_trend,
+            "move_1m": move_1m, "move_5m": move_5m,
+            "move_15m": move_15m, "move_1h": move_1h,
+            "momentum": momentum,
+            "destek": destek, "direnc": direnc,
+            "chart_str": chart_str,
         }
     except Exception as e:
         log.warning(f"[COIN] {symbol}: {e}")
         return None
 
 # GPT - TIMEOUT ILE
-def gpt(messages, model="gpt-4o", max_tokens=400):
+def gpt(messages, model="gpt-4o", max_tokens=500):
     global gpt_calls
     if not OPENAI_KEY: return None
     gpt_calls += 1
-    if gpt_calls > 500: return None
+    if gpt_calls > 600: return None
 
     result = [None]
     def call():
         try:
             r = req.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-                json={"model": model, "max_tokens": max_tokens, "temperature": 0.3, "messages": messages},
+                json={"model": model, "max_tokens": max_tokens, "temperature": 0.2, "messages": messages},
                 timeout=12)
             if r.status_code == 200:
                 result[0] = r.json()["choices"][0]["message"]["content"].strip()
@@ -222,60 +308,56 @@ def gpt(messages, model="gpt-4o", max_tokens=400):
             log.warning(f"[GPT] {e}")
 
     t = threading.Thread(target=call, daemon=True)
-    t.start()
-    t.join(timeout=15)
+    t.start(); t.join(timeout=15)
     if t.is_alive():
         log.warning("[GPT] Timeout")
         return None
     return result[0]
 
-# SYSTEM PROMPT
-SYSTEM = """Sen SADIK, kripto futures paper trading asistanisin.
-Kullanici ile BIRLIKTE karar veriyorsun - sen oneri yapiyorsun, kullanici onayi veriyor.
+# SISTEM PROMPT - TRADER RUHU
+SYSTEM = """Sen SADIK, deneyimli bir kripto futures trader'isin.
+Yillar once cok kayip yasamis, simdi disiplinli ve sabırlı bir trader olmusun.
 
-TRADING KURALLARI:
-- Komisyon: %0.12 | Kaldirac: 5x | Margin: 10 USDT
-- BTC UP = LONG icin ideal | BTC DOWN = SHORT icin ideal
-- Min kar %1.2 olmadan kapatma
-- 15 dakika dolmadan kapatma
-- Zarar %2 gecince kapat
+TRADER KIMLIGIN:
+- Her islemden once risk/odul hesaplarsin
+- Gecmis hatalarindan ogrenmissin
+- Trend ile gidersin, trende karsi gitmezsin
+- Kotu bir islemde kucuk kayipla cikmayi bilirsin
+- Iyi bir islemde karı buyutursun
 
-KONUSMA TARZI:
-- Kisa ve net konusuyorsun
-- Grafik verilerini yorumluyorsun
-- "Acalim mi?" diye soruyorsun, kullanici karar veriyor
-- Pozisyon takibinde "Trend devam ediyor, bekle" veya "Kar iyi, kapatalim mi?" diyorsun"""
+KESIN KURALLAR:
+- Komisyon %0.12 | Kaldirac 5x | Margin 10$ | Pozisyon 50$
+- BTC UP → sadece LONG | BTC DOWN → sadece SHORT | NEUTRAL → bekliyorsun
+- %30+ yukselmus coinlere SHORT ACMA — momentum cok guclu
+- Dusuk hacim (turnover < 1M) → RİSKLİ, kac
+- SL %2 otomatik — bunun disinda zarar buyutme
+- Min %1.2 kar olmadan kapatma — komisyon yiyor
+- 15 dakika dolmadan kapanmiyorsun — pozisyonun oturmasini bekle
 
-# POZİSYON BİLGİSİ
-def pos_info():
-    if not positions: return "Acik pozisyon yok."
-    lines = []
-    for sym, pos in positions.items():
-        t = safe_api(exchange.fetch_ticker, sym)
-        if t:
-            price = t["last"]; entry = pos["entry"]; signal = pos["signal"]
-            pnl = (price-entry)/entry*MARGIN*LEVERAGE if signal=="LONG" else (entry-price)/entry*MARGIN*LEVERAGE
-            pnl_pct = (price-entry)/entry*100 if signal=="LONG" else (entry-price)/entry*100
-            sure = int((time.time()-pos["open_time"])/60)
-            icon = "+" if pnl >= 0 else "-"
-            lines.append(f"[{icon}] {sym.split('/')[0]} {signal} {pnl:+.2f}$ ({pnl_pct:+.2f}%) {sure}dk")
-    return "\n".join(lines)
+POZISYON YONETIMI:
+- Kar %2+ ve trend zayifliyorsa → kapat, kar al
+- Kar %3+ → mutlaka kapat
+- Trailing: kar %2 olunca SL'i maliyete cek
+- Zarar var ama trend devam ediyorsa → bekle, SL korur
+- Trend NET aleyhine donduyse → erken cik, kucuk zarar
 
-# COİN BUL
+OGRENMEK:
+- Her kapanan islemi analiz et
+- "Neden kazandim/kaybettim?" sorusunu sor
+- Ayni hatay tekrarlama
+- Basarili pattern'leri tekrarla"""
+
+# COİN BUL - TAM KELIME
 def find_coin(text):
-    text_upper = text.upper()
-    # Kelimelere ayir - tam kelime eslesmesi
-    words = re.findall(r'[A-Z0-9]+', text_upper)
+    words = re.findall(r'[A-Z0-9]+', text.upper())
     try:
         tickers = safe_api(exchange.fetch_tickers)
         if not tickers: return None
-        # Once tam kelime eslesmesi dene
         for word in words:
             if len(word) < 2: continue
             symbol = f"{word}/USDT:USDT"
             if symbol in tickers and word not in BLACKLIST:
                 return symbol
-        # Bulamazsa en uzun eslesen sembolu bul
         best = None; best_len = 0
         for symbol in tickers.keys():
             if not symbol.endswith("/USDT:USDT"): continue
@@ -288,26 +370,34 @@ def find_coin(text):
 
 # ISLEM AC
 def open_pos(symbol, yon, neden, btc_trend):
-    global daily_pnl
     with pos_lock:
         if symbol in positions:
             tg(f"{symbol.split('/')[0]} zaten acik!"); return False
         if len(positions) >= MAX_OPEN:
-            tg(f"Max {MAX_OPEN} pozisyon dolu."); return False
+            tg(f"Max {MAX_OPEN} pozisyon."); return False
         t = safe_api(exchange.fetch_ticker, symbol)
         if not t: return False
         price = t["last"]
+        sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
         positions[symbol] = {
             "signal": yon, "entry": price,
-            "max_pnl": 0.0, "neden": neden,
-            "btc_trend": btc_trend, "open_time": time.time(),
+            "sl_price": sl_price,
+            "max_pnl": 0.0, "trailing_aktif": False,
+            "neden": neden, "btc_trend": btc_trend,
+            "open_time": time.time(),
         }
     sym = symbol.split("/")[0]
-    icon = "\U0001f4c8" if yon=="LONG" else "\U0001f4c9"
-    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nBTC: {btc_trend}\n\U0001f4ac {neden}")
+    icon = "\U0001f4c8" if yon == "LONG" else "\U0001f4c9"
+    tg(
+        f"\U0001f4cb {icon} {sym} {yon}\n"
+        f"Giris: {price:.6f}\n"
+        f"SL: {sl_price:.6f} (-%2.0)\n"
+        f"BTC: {btc_trend}\n"
+        f"\U0001f4ac {neden}"
+    )
     return True
 
-# ISLEM KAPAT
+# ISLEM KAPAT + DERS CİKAR
 def close_pos(symbol, reason, exit_price=None):
     global daily_pnl
     with pos_lock:
@@ -315,27 +405,65 @@ def close_pos(symbol, reason, exit_price=None):
     if not pos: return
     with msg_lock:
         pos_messages.pop(symbol, None)
+
     if exit_price is None:
         t = safe_api(exchange.fetch_ticker, symbol)
         exit_price = t["last"] if t else pos["entry"]
+
     sig = pos["signal"]; entry = pos["entry"]
     pos_size = MARGIN * LEVERAGE
     if sig == "LONG":
         pnl = (exit_price-entry)/entry*pos_size - pos_size*COMMISSION
     else:
         pnl = (entry-exit_price)/entry*pos_size - pos_size*COMMISSION
+
     sure = int((time.time()-pos["open_time"])/60)
     daily_pnl += pnl
-    save_trade({
-        "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
-        "tp_pct": 0, "sl_pct": 0, "guven": 0,
-        "btc_trend": pos.get("btc_trend",""),
-        "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
-    })
+
+    if daily_pnl <= MAX_DAILY_LOSS:
+        tg(f"\u26d4 GUNLUK LİMİT! {daily_pnl:+.2f}$ — Bugun yeterli.")
+
+    # GPT ders cikariyor
+    def ders_cikar():
+        try:
+            ders_prompt = (
+                f"Bir islem kapandi. Analiz et ve ders cikar:\n\n"
+                f"Coin: {symbol.split('/')[0]} {sig}\n"
+                f"Giris: {entry:.6f} | Cikis: {exit_price:.6f}\n"
+                f"PnL: {pnl:+.2f}$ | Sure: {sure}dk\n"
+                f"Kapanma sebebi: {reason}\n"
+                f"BTC trendi: {pos.get('btc_trend','')}\n"
+                f"Neden acilmisti: {pos.get('neden','')}\n\n"
+                f"Kisa analiz yaz (max 2 cumle): Ne yapildi dogru/yanlis? "
+                f"Bir dahaki benzer durumda ne yapilmali?"
+            )
+            msgs = [
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": ders_prompt}
+            ]
+            ders = gpt(msgs, model="gpt-4o-mini", max_tokens=150)
+            neden_final = f"{pos.get('neden','')} | DERS: {ders}" if ders else pos.get("neden","")
+            save_trade({
+                "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
+                "tp_pct": pos.get("max_pnl",0), "sl_pct": 2.0,
+                "guven": 0, "btc_trend": pos.get("btc_trend",""),
+                "sure_dk": sure, "reason": reason, "neden": neden_final[:500],
+            })
+        except Exception as e:
+            log.warning(f"[DERS] {e}")
+            save_trade({
+                "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
+                "tp_pct": 0, "sl_pct": 2.0, "guven": 0,
+                "btc_trend": pos.get("btc_trend",""),
+                "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
+            })
+
+    threading.Thread(target=ders_cikar, daemon=True).start()
+
     icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
     tg(f"{icon} {symbol.split('/')[0]} KAPANDI\n{reason}\nPnL: {pnl:+.2f}$ | {sure}dk\nGunluk: {daily_pnl:+.2f}$")
 
-# YÖNETİCİ - GPT takip eder
+# YÖNETİCİ
 def manage_loop():
     while True:
         time.sleep(30)
@@ -345,47 +473,81 @@ def manage_loop():
                 with pos_lock:
                     pos = positions.get(symbol)
                 if not pos: continue
+
                 t = safe_api(exchange.fetch_ticker, symbol)
                 if not t: continue
                 price = t["last"]
-                sig = pos["signal"]; entry = pos["entry"]
-                sure = int((time.time()-pos["open_time"])/60)
+                sig   = pos["signal"]; entry = pos["entry"]
+                sure  = int((time.time()-pos["open_time"])/60)
                 pos_size = MARGIN * LEVERAGE
+                sym = symbol.split("/")[0]
+
                 if sig == "LONG":
                     pnl_pct = (price-entry)/entry*100
-                    pnl = (price-entry)/entry*pos_size - pos_size*COMMISSION
+                    pnl     = (price-entry)/entry*pos_size - pos_size*COMMISSION
                 else:
                     pnl_pct = (entry-price)/entry*100
-                    pnl = (entry-price)/entry*pos_size - pos_size*COMMISSION
+                    pnl     = (entry-price)/entry*pos_size - pos_size*COMMISSION
 
+                # MAX KAR GUNCELLE
                 with pos_lock:
-                    if symbol in positions and pnl_pct > positions[symbol].get("max_pnl", 0):
-                        positions[symbol]["max_pnl"] = pnl_pct
-                max_pnl = pos.get("max_pnl", 0)
+                    if symbol in positions:
+                        if pnl_pct > positions[symbol]["max_pnl"]:
+                            positions[symbol]["max_pnl"] = pnl_pct
+                max_pnl = pos["max_pnl"]
 
-                # Zaman asimi
+                # ZAMAN ASIMI
                 if sure > 120:
-                    close_pos(symbol, "ZAMAN ASIMI 2 saat", price)
+                    close_pos(symbol, "Zaman asimi 2 saat", price)
                     continue
 
-                # Ilk 15 dakika sadece izle
+                # SABIT SL %2
+                if pnl_pct <= -2.0:
+                    close_pos(symbol, "Stop Loss -%2.0", price)
+                    continue
+
+                # TRAILING STOP - Kar %2 olunca aktif
+                if max_pnl >= 2.0:
+                    with pos_lock:
+                        if symbol in positions:
+                            positions[symbol]["trailing_aktif"] = True
+                    # Zirveden %1 dustuyse kapat
+                    if pnl_pct < max_pnl - 1.0:
+                        close_pos(symbol, f"Trailing Stop (zirve:%{max_pnl:.1f})", price)
+                        continue
+
+                # ILK 15 DAKİKA - sadece SL kontrol et
                 if sure < 15:
                     continue
 
-                # GPT takip
+                # GPT YÖNETİM
                 with msg_lock:
                     msgs = list(pos_messages.get(symbol, []))
                 if not msgs:
                     msgs = [{"role": "system", "content": SYSTEM}]
 
-                sym = symbol.split("/")[0]
+                # Guncel coin verisi
+                coin_d = get_coin(symbol)
+                coin_ozet = ""
+                if coin_d:
+                    coin_ozet = (
+                        f"RSI:{coin_d['rsi']:.0f} | "
+                        f"EMA1m:{coin_d['ema_1m']} | EMA5m:{coin_d['ema_5m']} | "
+                        f"MACD:{coin_d['macd']}({coin_d['macd_guc']}) | "
+                        f"Hacim:{coin_d['vol_ratio']:.1f}x({coin_d['vol_trend']}) | "
+                        f"Momentum:{coin_d['momentum']}/100\n"
+                        f"{coin_d.get('chart_str','')}"
+                    )
+
                 update = (
-                    f"{sym} {sig} - {sure}. dakika\n"
-                    f"Giris: {entry:.6f} | Simdi: {price:.6f}\n"
+                    f"{sym} {sig} — {sure}. dakika\n"
+                    f"Giris:{entry:.6f} | Simdi:{price:.6f}\n"
                     f"PnL: {pnl:+.2f}$ ({pnl_pct:+.2f}%)\n"
-                    f"En yuksek kar: %{max_pnl:.2f}\n\n"
-                    f"Trend devam mi? Kapat mi?\n"
-                    f"JSON: {{\"devam\": true}} veya {{\"kapat\": true, \"mesaj\": \"kullaniciya bildir\"}}"
+                    f"En yuksek kar: %{max_pnl:.2f}\n"
+                    f"Trailing: {'Aktif' if pos.get('trailing_aktif') else 'Bekliyor'}\n"
+                    f"{coin_ozet}\n"
+                    f"Karar: DEVAM mi KAPAT mi?\n"
+                    f"JSON: {{\"devam\": true}} veya {{\"kapat\": true, \"mesaj\": \"neden\"}}"
                 )
 
                 new_msgs = msgs + [{"role": "user", "content": update}]
@@ -397,20 +559,21 @@ def manage_loop():
                     if j:
                         karar = json.loads(j.group())
                         if karar.get("kapat"):
-                            # Kurallar
                             if sure < 15: continue
-                            if pnl_pct > 0 and pnl_pct < 1.2: continue
-                            if pnl_pct > -1.5 and pnl_pct < 0: continue
+                            if 0 < pnl_pct < 1.2: continue  # Min kar yok
+                            if -1.5 < pnl_pct < 0: continue  # Kucuk zarar, SL bekle
                             mesaj = karar.get("mesaj", "GPT kapat")
                             close_pos(symbol, mesaj, price)
                         else:
-                            # Kullaniciye bilgi ver
-                            temiz = re.sub(r'\{[^{}]+\}', '', yanit).strip()
-                            if temiz and sure % 10 == 0:  # Her 10 dakikada bilgi ver
-                                tg(f"\U0001f916 {sym}: {temiz[:200]}")
+                            # Her 15 dakikada kullaniciya bilgi
+                            if sure % 15 == 0 and sure > 0:
+                                temiz = re.sub(r'\{[^{}]+\}','',yanit).strip()
+                                if temiz:
+                                    icon = "\U0001f7e2" if pnl>=0 else "\U0001f534"
+                                    tg(f"{icon} {sym} | {pnl:+.2f}$ ({pnl_pct:+.2f}%) | {sure}dk\n\U0001f916 {temiz[:150]}")
                             new_msgs.append({"role": "assistant", "content": yanit})
-                            if len(new_msgs) > 16:
-                                new_msgs = [new_msgs[0]] + new_msgs[-8:]
+                            if len(new_msgs) > 20:
+                                new_msgs = [new_msgs[0]] + new_msgs[-10:]
                             with msg_lock:
                                 pos_messages[symbol] = new_msgs
                 except Exception as e:
@@ -419,16 +582,17 @@ def manage_loop():
         except Exception as e:
             log.error(f"[MANAGE] {e}")
 
-# ÖNERİ LOOP - Her 5 dakikada en iyi fırsatı öner
+# ÖNERİ LOOP
 def oneri_loop():
-    time.sleep(60)  # Başlangıçta bekle
+    time.sleep(90)
     while True:
         try:
             with pos_lock:
                 if len(positions) >= MAX_OPEN:
                     time.sleep(ONERI_INTERVAL); continue
 
-            btc_trend, btc_price, btc_change = get_btc()
+            btc_trend, btc_price, btc_chg, regime = get_market()
+
             if btc_trend == "NEUTRAL":
                 time.sleep(ONERI_INTERVAL); continue
 
@@ -438,17 +602,25 @@ def oneri_loop():
 
             with pos_lock: open_syms = set(positions.keys())
 
+            # AKILLI FİLTRE
             candidates = []
             for symbol, ticker in tickers.items():
                 if not symbol.endswith("/USDT:USDT"): continue
-                if symbol.split("/")[0] in BLACKLIST: continue
+                sym = symbol.split("/")[0]
+                if sym in BLACKLIST: continue
                 if symbol in open_syms: continue
                 qv = ticker.get("quoteVolume") or 0
-                if qv < MIN_QUOTE_VOL: continue
+                if qv < MIN_VOL: continue
                 price = ticker.get("last") or 0
                 if not price or price > MAX_PRICE: continue
-                if abs(ticker.get("percentage") or 0) < 0.8: continue
-                candidates.append({"symbol": symbol, "volume": qv, "pct": abs(ticker.get("percentage") or 0)})
+                pct = ticker.get("percentage") or 0
+                if abs(pct) < 1.0: continue
+                # BTC ile uyumlu
+                if btc_trend == "UP" and pct < 0: continue
+                if btc_trend == "DOWN" and pct > 0: continue
+                # Cok yukselmis coinlere short acma
+                if btc_trend == "DOWN" and pct < -20: continue
+                candidates.append({"symbol": symbol, "volume": qv, "pct": abs(pct)})
 
             candidates.sort(key=lambda x: x["volume"], reverse=True)
             candidates = candidates[:8]
@@ -466,26 +638,39 @@ def oneri_loop():
             if not coins_data:
                 time.sleep(ONERI_INTERVAL); continue
 
-            history = load_history(4)
+            # DERSLER
+            lessons = load_lessons(8)
+
+            # GPT BATCH ANALİZ
             summary = ""
             for d in coins_data:
-                sym = d["symbol"].split("/")[0]
-                summary += f"\n{sym}: RSI={d['rsi']:.0f} EMA1m={d['ema_1m']} EMA5m={d['ema_5m']} MACD={d['macd']} Hacim={d['vol_ratio']:.1f}x 5dk={d['move_5']:+.2f}%\n{d.get('chart_str','')}"
+                s = d["symbol"].split("/")[0]
+                summary += (
+                    f"\n{s}: Fiyat:{d['price']:.6f} | RSI:{d['rsi']:.0f} | "
+                    f"Momentum:{d['momentum']}/100 | "
+                    f"EMA1m:{d['ema_1m']} EMA5m:{d['ema_5m']} EMA1h:{d['ema_1h']} | "
+                    f"MACD:{d['macd']}({d['macd_guc']}) | "
+                    f"Hacim:{d['vol_ratio']:.1f}x({d['vol_trend']}) | "
+                    f"5dk:{d['move_5m']:+.2f}%\n"
+                    f"{d.get('chart_str','')}\n"
+                )
 
             msgs = [
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": (
-                    f"BTC: {btc_trend} ${btc_price:,.0f} ({btc_change:+.2f}%)\n"
-                    f"Gecmis: {history}\n\n"
-                    f"Bu coinleri analiz et:\n{summary}\n\n"
-                    f"En iyi 1 firsat var mi? Varsa kullaniciya sor.\n"
-                    f"Yoksa sessiz kal.\n"
-                    f"JSON: {{\"oneri\": true, \"symbol\": \"COIN/USDT:USDT\", \"yon\": \"LONG\", \"mesaj\": \"neden iyi\"}}\n"
-                    f"Yoksa: {{\"oneri\": false}}"
+                    f"PIYASA DURUMU:\n"
+                    f"BTC: {btc_trend} ${btc_price:,.0f} ({btc_chg:+.2f}%) | Rejim: {regime}\n"
+                    f"Acik pozisyon: {len(positions)}/{MAX_OPEN}\n\n"
+                    f"{lessons}\n\n"
+                    f"ANALIZ EDILECEK COİNLER:\n{summary}\n\n"
+                    f"Deneyimli trader olarak: En iyi 1 firsat var mi?\n"
+                    f"Varsa: JSON {{\"oneri\": true, \"symbol\": \"X/USDT:USDT\", "
+                    f"\"yon\": \"LONG\", \"mesaj\": \"neden iyi, risk/odul nedir\"}}\n"
+                    f"Yoksa: {{\"oneri\": false, \"mesaj\": \"neden bekliyoruz\"}}"
                 )}
             ]
 
-            yanit = gpt(msgs, model="gpt-4o", max_tokens=300)
+            yanit = gpt(msgs, model="gpt-4o", max_tokens=350)
             if not yanit:
                 time.sleep(ONERI_INTERVAL); continue
 
@@ -495,11 +680,10 @@ def oneri_loop():
                     karar = json.loads(j.group())
                     if karar.get("oneri") and karar.get("symbol"):
                         symbol = karar["symbol"]
-                        yon = karar.get("yon", "LONG")
-                        mesaj = karar.get("mesaj", "")
-                        sym = symbol.split("/")[0]
-                        # Kullaniciya sor
-                        bekleyen_oneri[sym] = {
+                        yon    = karar.get("yon", "LONG")
+                        mesaj  = karar.get("mesaj", "")
+                        sym    = symbol.split("/")[0]
+                        bekleyen[sym] = {
                             "symbol": symbol, "yon": yon,
                             "neden": mesaj, "btc_trend": btc_trend,
                             "zaman": time.time()
@@ -508,11 +692,15 @@ def oneri_loop():
                         tg(
                             f"\U0001f4a1 ONERİ: {icon} {sym} {yon}\n\n"
                             f"{mesaj}\n\n"
-                            f"BTC: {btc_trend}\n\n"
-                            f"Açalım mı? \U0001f449 'evet {sym}' veya 'pas {sym}'"
+                            f"BTC:{btc_trend} | Rejim:{regime}\n\n"
+                            f"\U0001f449 'evet' veya 'evet {sym}' yaz"
                         )
+                    elif not karar.get("oneri"):
+                        mesaj = karar.get("mesaj","")
+                        if mesaj:
+                            log.info(f"[ONERI] Pas: {mesaj[:100]}")
             except Exception as e:
-                log.warning(f"[ONERI] {e}")
+                log.warning(f"[ONERI JSON] {e}")
 
             time.sleep(ONERI_INTERVAL)
 
@@ -542,11 +730,11 @@ def handle_async(msg):
     text_lower = text.lower()
 
     # /durum
-    if "/durum" in text_lower or "/status" in text_lower:
+    if "/durum" in text_lower:
         with pos_lock:
             if not positions:
                 bot.send_message(msg.chat.id, "\U0001f4cb Acik pozisyon yok."); return
-            lines = ["\U0001f4cb POZISYONLAR\n"]
+            lines = ["\U0001f4cb POZİSYONLAR\n"]
             for sym, pos in positions.items():
                 t = safe_api(exchange.fetch_ticker, sym)
                 if t:
@@ -556,34 +744,42 @@ def handle_async(msg):
                     sure = int((time.time()-pos["open_time"])/60)
                     icon = "\U0001f7e2" if pnl>=0 else "\U0001f534"
                     sig_icon = "\U0001f4c8" if signal=="LONG" else "\U0001f4c9"
-                    lines.append(f"{icon} {sig_icon} {sym.split('/')[0]} {signal}\n   Giris:{entry:.6f} \u2192 {price:.6f}\n   PnL: {pnl:+.2f}$ ({pnl_pct:+.2f}%)\n   Sure: {sure}dk\n")
+                    trailing = " | Trailing aktif" if pos.get("trailing_aktif") else ""
+                    lines.append(
+                        f"{icon} {sig_icon} {sym.split('/')[0]} {signal}\n"
+                        f"   {entry:.6f} \u2192 {price:.6f}\n"
+                        f"   PnL: {pnl:+.2f}$ ({pnl_pct:+.2f}%) | {sure}dk{trailing}\n"
+                        f"   Max kar: %{pos.get('max_pnl',0):.2f}\n"
+                    )
             bot.send_message(msg.chat.id, "\n".join(lines))
         return
 
     # /istatistik
-    if "/istatistik" in text_lower or "/stats" in text_lower:
+    if "/istatistik" in text_lower:
         if not supa:
             bot.send_message(msg.chat.id, "Supabase yok."); return
         try:
-            r = supa.table("gpt_trades").select("pnl,signal").execute()
+            r = supa.table("gpt_trades").select("pnl,signal,sure_dk").execute()
             data = r.data or []
             if not data:
                 bot.send_message(msg.chat.id, "Kayit yok."); return
             toplam = len(data)
-            kazan = sum(1 for d in data if float(d.get("pnl") or 0) > 0)
-            net = sum(float(d.get("pnl") or 0) for d in data)
+            kazan  = sum(1 for d in data if float(d.get("pnl") or 0) > 0)
+            net    = sum(float(d.get("pnl") or 0) for d in data)
+            avg_sure = sum(int(d.get("sure_dk") or 0) for d in data) / max(toplam,1)
             bot.send_message(msg.chat.id,
-                f"\U0001f4ca ISTATISTIK\n\n"
+                f"\U0001f4ca İSTATİSTİK\n\n"
                 f"Toplam: {toplam} | Kazanan: {kazan} (%{kazan/toplam*100:.0f})\n"
                 f"Net PnL: {net:+.2f}$\n"
                 f"Gunluk: {daily_pnl:+.2f}$\n"
+                f"Ort sure: {avg_sure:.0f}dk\n"
                 f"GPT cagri: {gpt_calls}"
             )
         except Exception as e:
             bot.send_message(msg.chat.id, f"Hata: {e}")
         return
 
-    # KAPAT - aninda, GPT beklemeden
+    # KAPAT - anlık
     if "kapat" in text_lower:
         with pos_lock: syms = list(positions.keys())
         if not syms:
@@ -592,44 +788,51 @@ def handle_async(msg):
         for symbol in syms:
             sym_name = symbol.split("/")[0].upper()
             if sym_name in text.upper() or "hepsi" in text_lower or "hepsini" in text_lower:
-                close_pos(symbol, "Kullanici istegi")
+                close_pos(symbol, "Kullanici kapatma istedı")
                 kapatildi = True
         if not kapatildi:
             isimler = [s.split("/")[0] for s in syms]
             bot.send_message(msg.chat.id, f"Hangisini kapatayim? {', '.join(isimler)}")
         return
 
-    # EVET - oneri onayi
-    if text_lower.startswith("evet"):
+    # EVET - onay
+    if text_lower.startswith("evet") or text_lower == "evet":
         parts = text.split()
         coin_adi = parts[1].upper() if len(parts) > 1 else ""
-        if coin_adi in bekleyen_oneri:
-            oneri = bekleyen_oneri.pop(coin_adi)
-            # 5 dakikadan eski oneri gecersiz
-            if time.time() - oneri["zaman"] > 300:
-                bot.send_message(msg.chat.id, f"Oneri suresi gecti, yeniden analiz lazim.")
-                return
+        if not coin_adi and len(bekleyen) == 1:
+            coin_adi = list(bekleyen.keys())[0]
+        if coin_adi in bekleyen:
+            oneri = bekleyen.pop(coin_adi)
+            if time.time() - oneri["zaman"] > 600:
+                bot.send_message(msg.chat.id, "Oneri suresi gecti."); return
+            with msg_lock:
+                pos_messages[oneri["symbol"]] = [{"role": "system", "content": SYSTEM}]
             open_pos(oneri["symbol"], oneri["yon"], oneri["neden"], oneri["btc_trend"])
+        elif bekleyen:
+            bot.send_message(msg.chat.id, f"Hangi oneri? Bekleyen: {', '.join(bekleyen.keys())}")
         else:
-            bot.send_message(msg.chat.id, f"Hangi oneri? Bekleyen: {list(bekleyen_oneri.keys())}")
+            bot.send_message(msg.chat.id, "Bekleyen oneri yok.")
         return
 
-    # PAS - oneri reddi
-    if text_lower.startswith("pas"):
+    # PAS
+    if text_lower.startswith("pas") or text_lower == "pas":
         parts = text.split()
         coin_adi = parts[1].upper() if len(parts) > 1 else ""
-        if coin_adi in bekleyen_oneri:
-            bekleyen_oneri.pop(coin_adi)
-            bot.send_message(msg.chat.id, f"\U0001f44d {coin_adi} pas gecildi.")
+        if not coin_adi:
+            bekleyen.clear()
+            bot.send_message(msg.chat.id, "\U0001f44d Tum oneriler pas gecildi.")
+        elif coin_adi in bekleyen:
+            bekleyen.pop(coin_adi)
+            bot.send_message(msg.chat.id, f"\U0001f44d {coin_adi} pas.")
         return
 
-    # DIREKT AC - "X long ac" veya "X short ac"
-    ac_keywords = ["long ac", "short ac", "long aç", "short aç"]
-    if any(kw in text_lower for kw in ac_keywords):
+    # DIREKT AC
+    ac_keys = ["long ac", "short ac", "long aç", "short aç"]
+    if any(k in text_lower for k in ac_keys):
         coin_symbol = find_coin(text)
         if coin_symbol:
             yon = "LONG" if "long" in text_lower else "SHORT"
-            btc_trend, _, _ = get_btc()
+            btc_trend, _, _, _ = get_market()
             with msg_lock:
                 pos_messages[coin_symbol] = [{"role": "system", "content": SYSTEM}]
             open_pos(coin_symbol, yon, "Kullanici istegi", btc_trend)
@@ -637,33 +840,43 @@ def handle_async(msg):
             bot.send_message(msg.chat.id, "Coin bulunamadi. Ornek: 'AVAX long ac'")
         return
 
-    # DOGAL DIL - GPT'ye sor
+    # DOGAL DIL - GPT
     bot.send_message(msg.chat.id, "\U0001f914 Bakiyorum...")
     try:
-        btc_trend, btc_price, btc_change = get_btc()
-        history = load_history(5)
-        current_pos = pos_info()
+        btc_trend, btc_price, btc_chg, regime = get_market()
+        lessons = load_lessons(4)
+        current = ""
+        with pos_lock:
+            if positions:
+                for sym, pos in positions.items():
+                    t = safe_api(exchange.fetch_ticker, sym)
+                    if t:
+                        price = t["last"]; entry = pos["entry"]; signal = pos["signal"]
+                        pnl = (price-entry)/entry*MARGIN*LEVERAGE if signal=="LONG" else (entry-price)/entry*MARGIN*LEVERAGE
+                        sure = int((time.time()-pos["open_time"])/60)
+                        current += f"{sym.split('/')[0]} {signal} {pnl:+.2f}$ {sure}dk\n"
+            else:
+                current = "Acik pozisyon yok"
 
-        # Coin var mi?
         coin_str = ""
         coin_symbol = find_coin(text)
         if coin_symbol:
             data = get_coin(coin_symbol)
             if data:
-                sym = coin_symbol.split("/")[0]
+                s = coin_symbol.split("/")[0]
                 coin_str = (
-                    f"\n{sym} VERILER:\n"
-                    f"Fiyat:{data['price']:.6f} RSI:{data['rsi']:.1f}\n"
-                    f"EMA(1m):{data['ema_1m']} EMA(5m):{data['ema_5m']} EMA(1h):{data['ema_1h']}\n"
-                    f"MACD:{data['macd']} BB:%{data['bb_pct']:.0f} Hacim:{data['vol_ratio']:.1f}x\n"
-                    f"Hareket: 1dk={data['move_1']:+.2f}% 5dk={data['move_5']:+.2f}% 1s={data['move_1h']:+.2f}%\n"
+                    f"\n{s} VERILER:\n"
+                    f"Fiyat:{data['price']:.6f} | RSI:{data['rsi']:.0f} | Momentum:{data['momentum']}/100\n"
+                    f"EMA1m:{data['ema_1m']} | EMA5m:{data['ema_5m']} | EMA1h:{data['ema_1h']}\n"
+                    f"MACD:{data['macd']}({data['macd_guc']}) | Hacim:{data['vol_ratio']:.1f}x({data['vol_trend']})\n"
+                    f"Hareket: 1m={data['move_1m']:+.2f}% 5m={data['move_5m']:+.2f}% 1s={data['move_1h']:+.2f}%\n"
                     f"{data.get('chart_str','')}"
                 )
 
         user_content = (
-            f"BTC: {btc_trend} ${btc_price:,.0f} ({btc_change:+.2f}%)\n"
-            f"Pozisyonlar: {current_pos}\n"
-            f"Gecmis: {history}\n"
+            f"BTC:{btc_trend} ${btc_price:,.0f} ({btc_chg:+.2f}%) | Rejim:{regime}\n"
+            f"Pozisyonlar: {current}\n"
+            f"{lessons}\n"
             f"{coin_str}\n\n"
             f"Kullanici: {text}"
         )
@@ -673,7 +886,7 @@ def handle_async(msg):
             {"role": "user", "content": user_content}
         ]
 
-        yanit = gpt(msgs, model="gpt-4o", max_tokens=350)
+        yanit = gpt(msgs, model="gpt-4o", max_tokens=400)
         if not yanit:
             bot.send_message(msg.chat.id, "GPT cevap vermedi."); return
 
@@ -684,37 +897,41 @@ def handle_async(msg):
         bot.send_message(msg.chat.id, f"\u274c {type(e).__name__}")
 
 # MAIN
-import signal as signal_module, sys
+import signal as sig_mod, sys
 
 def shutdown(signum, frame):
-    log.info("[SHUTDOWN] Pozisyonlar kaydediliyor...")
+    log.info("[SHUTDOWN] Kapanıyor...")
     with pos_lock: syms = list(positions.keys())
     for symbol in syms:
         try:
             t = safe_api(exchange.fetch_ticker, symbol)
-            close_pos(symbol, "BOT RESTART", t["last"] if t else None)
+            close_pos(symbol, "Bot restart", t["last"] if t else None)
         except: pass
     sys.exit(0)
 
-signal_module.signal(signal_module.SIGTERM, shutdown)
-signal_module.signal(signal_module.SIGINT, shutdown)
+sig_mod.signal(sig_mod.SIGTERM, shutdown)
+sig_mod.signal(sig_mod.SIGINT, shutdown)
 
 if __name__ == "__main__":
-    print("SADIK v2 BASLIYOR...")
+    print("SADIK TRADER BASLIYOR...")
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=oneri_loop,    daemon=True).start()
     tg(
-        "\U0001f916 SADIK TRADING BOT v2\n\n"
-        "Birlikte karar veriyoruz!\n\n"
-        "Ben coin oneriyorum \u2192 sen onayliyorsun\n\n"
+        "\U0001f916 SADIK TRADER\n\n"
+        "Deneyimli trader gibi davranıyorum!\n"
+        "Her islemden ders cikariyorum.\n\n"
+        "\u2705 SL %2 otomatik\n"
+        "\u2705 Trailing stop (kar %2+)\n"
+        "\u2705 Her islemden GPT ders cikariyor\n"
+        "\u2705 Gecmis hatalardan ogreniyor\n"
+        "\u2705 Piyasa rejimi analizi\n\n"
         "Komutlar:\n"
         "- 'AVAX analiz et'\n"
-        "- 'evet AVAX' (oneri onayla)\n"
-        "- 'pas AVAX' (oneri reddet)\n"
-        "- 'AVAX long ac' (direkt ac)\n"
-        "- 'AVAX kapat'\n"
-        "- 'hepsini kapat'\n"
+        "- 'evet' veya 'evet AVAX'\n"
+        "- 'pas'\n"
+        "- 'AVAX long ac'\n"
+        "- 'AVAX kapat' / 'hepsini kapat'\n"
         "- /durum /istatistik"
     )
     while True:
