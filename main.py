@@ -458,6 +458,15 @@ def close_pos(symbol, reason, exit_price=None):
                 "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
             })
 
+    # ONCE KAYDET - sonra GPT ders cikarin
+    save_trade({
+        "symbol": symbol, "signal": sig, "pnl": round(pnl,4),
+        "tp_pct": pos.get("max_pnl",0), "sl_pct": 2.0, "guven": 0,
+        "btc_trend": pos.get("btc_trend",""),
+        "sure_dk": sure, "reason": reason, "neden": pos.get("neden",""),
+    })
+
+    # SONRA GPT ders cikarin (async)
     threading.Thread(target=ders_cikar, daemon=True).start()
 
     icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
