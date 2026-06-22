@@ -244,9 +244,12 @@ TRADING KURALLARI:
 - Komisyon: %0.12 | Kaldirac: 5x | Margin: 10 USDT
 - BTC UP = LONG icin ideal | BTC DOWN = SHORT icin ideal
 - BTC NEUTRAL = dikkatli ol
-- Minimum kar %1.2 olmadan kapatma
-- Zarar %2 gecince kapat
+- Minimum kar %1.2 olmadan ASLA kapatma
+- Zarar %2 gecince kapat — ama once trend kontrolu yap
+- Kisa vadeli dalgalanmaya paniklemE — 5-10dk bekle
+- Fiyat geri cekildiyse ama trend hala yukari ise DEVAM de
 - Gunluk max zarar -15 USDT
+- 10dk dolmadan KAPAT deme — pozisyon olgunlasmali
 
 KONUSMA:
 - Kullanici dogal Turkce ile konusuyor, sen de ayni sekilde cevap ver
