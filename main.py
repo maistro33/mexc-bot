@@ -33,8 +33,8 @@ ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY","")
 LEVERAGE       = 5
 MARGIN         = 10.0
 MAX_OPEN       = 4
-MIN_VOL        = 1_000_000
-MAX_PRICE      = 30
+MIN_VOL        = 500_000  # Daha fazla coin gorsun
+MAX_PRICE      = 999  # Fiyat filtresi kaldirildi
 COMMISSION     = 0.0006
 MAX_DAILY_LOSS = -15.0
 ONERI_INTERVAL = 120  # Her 2 dakikada tara
@@ -65,20 +65,21 @@ SYSTEM = """Sen SADIK, deneyimli bir kripto futures trader'isin.
 Yillar once cok kayip yasamis, simdi disiplinli ve sabırlı bir trader olmusun.
 
 TRADER KIMLIGIN:
-- Her islemden once risk/odul hesaplarsin
-- Gecmis hatalarindan ogrenmissin
-- Trend ile gidersin, trende karsi gitmezsin
-- Kotu bir islemde kucuk kayipla cikmayi bilirsin
-- Iyi bir islemde kari buyutursun
+- Fursatci trader'sin - pump baslarken yakalarsın, kar alir cikarsın
+- Bir coin pump yapip kar alinca BIR DAHA KOVALAMAZSIN - o firsat bitti
+- Yeni fursatlar ararsın, gecikmis firsat pesinde kosmassın
+- Kotu islemde kucuk kayipla cikarsın
+- Iyi islemde kari maksimize edersin, trailing ile buyutursun
 
 KESIN KURALLAR:
 - Komisyon %0.12 | Kaldirac 5x | Margin 10$ | Pozisyon 50$
-- BTC UP = sadece LONG | BTC DOWN = sadece SHORT | NEUTRAL = dikkatli
-- %30+ yukselmus coinlere SHORT ACMA
-- Dusuk hacim (turnover < 1M) = RISKLI
-- SL %2 otomatik var
+- BTC UP = LONG firsati ara | BTC DOWN = SHORT firsati ara | NEUTRAL = guclu sinyal iste
+- PUMP STRATEJISI: Hacim artisi + fiyat yukselisi baslangicinda gir
+- Kar %2+ olunca trailing aktif - trend devam ederse bekle, zayiflayinca cik
+- Ayni coinden kar alinca 2 SAAT DAHA ACMA - firsat bitti, yenisini ara
+- Dusuk hacim (turnover < 500K) = atla
+- SL %2 otomatik
 - Min %1.2 kar olmadan kapatma
-- 15 dakika dolmadan kapanma
 
 POZISYON YONETIMI:
 - Kar %2+ ve trend zayifliyorsa = kapat
@@ -445,7 +446,7 @@ def open_pos(symbol, yon, neden, btc_trend):
                 return False
         with closed_lock:
             if sym_base in recently_closed:
-                if time.time() - recently_closed[sym_base] < 1800:
+                if time.time() - recently_closed[sym_base] < 7200:  # 2 saat
                     log.info(f"[SKIP] {sym_base} 30dk bekleme")
                     return False
         if len(positions) >= MAX_OPEN:
@@ -722,12 +723,16 @@ def oneri_loop():
                 
                 # Pump skoru hesapla
                 pump_score = 0
-                if abs(pct) > 5: pump_score += 40   # Guclu hareket
+                # Fiyat hareketi skoru
+                if abs(pct) > 10: pump_score += 50  # Guclu pump
+                elif abs(pct) > 5: pump_score += 35
                 elif abs(pct) > 2: pump_score += 20
                 elif abs(pct) > 1: pump_score += 10
-                if qv > 5_000_000: pump_score += 30  # Yuksek hacim
+                # Hacim skoru
+                if qv > 10_000_000: pump_score += 40
+                elif qv > 5_000_000: pump_score += 30
                 elif qv > 2_000_000: pump_score += 15
-                elif qv > 1_000_000: pump_score += 5
+                elif qv > 500_000: pump_score += 5
                 
                 candidates.append({
                     "symbol": symbol, "volume": qv, 
