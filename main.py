@@ -49,6 +49,7 @@ claude_calls    = 0
 recently_closed = {}
 closed_lock     = threading.Lock()
 bekleyen        = {}
+son_bakilan     = set()  # Son turda bakilan coinler
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -539,14 +540,27 @@ def manage_loop():
                     close_pos(symbol, "Stop Loss -%2.0", price)
                     continue
 
-                # Trailing
-                if max_pnl >= 2.0:
+                # KAR KORUMA - garantili minimum kar
+                pos_size = MARGIN * LEVERAGE
+                kar_usdt = pnl  # Mevcut kar dolar olarak
+
+                if max_pnl >= 2.0:  # En az %2 kar gorulduyse
                     with pos_lock:
                         if symbol in positions:
                             positions[symbol]["trailing_aktif"] = True
-                    if pnl_pct < max_pnl - 1.0:
-                        close_pos(symbol, f"Trailing Stop (zirve:%{max_pnl:.1f})", price)
+                    # Kar 0.50$ altina dustuyse kapat - minimum kari koru
+                    if kar_usdt < 0.50 and pnl > 0:
+                        close_pos(symbol, f"Kar koruma (min 0.50$)", price)
                         continue
+                    # Kar 1.50$+ gorulduyse ve 0.80$ altina dustuyse kapat
+                    if max_pnl >= 3.0 and kar_usdt < 0.80:
+                        close_pos(symbol, f"Kar koruma (min 0.80$)", price)
+                        continue
+
+                # Cok buyuk geri cekilme - son guvence
+                if max_pnl >= 5.0 and pnl_pct < max_pnl - 3.0:
+                    close_pos(symbol, f"Trailing Stop (zirve:%{max_pnl:.1f})", price)
+                    continue
 
                 # Ilk 15dk bekle
                 if sure < 15: continue
@@ -644,8 +658,21 @@ def scanner_loop():
 
                 candidates.append({"symbol": symbol, "pct": pct, "qv": qv, "score": pump_score})
 
-            candidates.sort(key=lambda x: x["score"], reverse=True)
-            candidates = candidates[:5]
+            # Onceki turda bakilan coinleri atla
+            global son_bakilan
+            yeni_adaylar = [c for c in candidates if c["symbol"].split("/")[0] not in son_bakilan]
+            
+            # Eger hepsi bakildiysa sifirla
+            if len(yeni_adaylar) < 2:
+                son_bakilan = set()
+                yeni_adaylar = candidates
+            
+            # Pump skoruna gore sirala
+            yeni_adaylar.sort(key=lambda x: x["score"], reverse=True)
+            candidates = yeni_adaylar[:5]
+            
+            # Bu turdaki coinleri kaydet
+            son_bakilan = {c["symbol"].split("/")[0] for c in candidates}
 
             if not candidates:
                 time.sleep(SCAN_INTERVAL); continue
