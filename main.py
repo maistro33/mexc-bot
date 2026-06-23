@@ -418,6 +418,18 @@ def open_pos(symbol, yon, neden, btc_trend):
     price = t["last"]
     sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
 
+    # BTC yonu ile uyum kontrolu - SABIT KURAL
+    btc_check, _, _ = get_btc()[:3] if hasattr(get_btc(), '__len__') else (get_btc()[0], 0, 0)
+    btc_now = get_market()[0]
+    if btc_now == "DOWN" and yon == "LONG":
+        log.info(f"[SKIP] BTC DOWN iken LONG acilmaz: {symbol.split('/')[0]}")
+        tg(f"BTC DOWN - {symbol.split('/')[0]} LONG acilmadi.")
+        return False
+    if btc_now == "UP" and yon == "SHORT":
+        log.info(f"[SKIP] BTC UP iken SHORT acilmaz: {symbol.split('/')[0]}")
+        tg(f"BTC UP - {symbol.split('/')[0]} SHORT acilmadi.")
+        return False
+
     with pos_lock:
         # Ayni coin varsa acma (hem pozisyon hem recently_closed)
         sym_base = symbol.split("/")[0].upper()
