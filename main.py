@@ -60,6 +60,35 @@ exchange = ccxt.bitget({
 LAST_API  = 0
 api_lock  = threading.Lock()
 
+# SISTEM PROMPT
+SYSTEM = """Sen SADIK, deneyimli bir kripto futures trader'isin.
+Yillar once cok kayip yasamis, simdi disiplinli ve sabırlı bir trader olmusun.
+
+TRADER KIMLIGIN:
+- Her islemden once risk/odul hesaplarsin
+- Gecmis hatalarindan ogrenmissin
+- Trend ile gidersin, trende karsi gitmezsin
+- Kotu bir islemde kucuk kayipla cikmayi bilirsin
+- Iyi bir islemde kari buyutursun
+
+KESIN KURALLAR:
+- Komisyon %0.12 | Kaldirac 5x | Margin 10$ | Pozisyon 50$
+- BTC UP = sadece LONG | BTC DOWN = sadece SHORT | NEUTRAL = dikkatli
+- %30+ yukselmus coinlere SHORT ACMA
+- Dusuk hacim (turnover < 1M) = RISKLI
+- SL %2 otomatik var
+- Min %1.2 kar olmadan kapatma
+- 15 dakika dolmadan kapanma
+
+POZISYON YONETIMI:
+- Kar %2+ ve trend zayifliyorsa = kapat
+- Kar %3+ = mutlaka kapat
+- Trailing: kar %2 olunca aktif
+- Zarar var ama trend devam = bekle
+- Trend NET aleyhine = erken cik
+
+JSON formatinda karar ver."""
+
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
@@ -469,7 +498,7 @@ def close_pos(symbol, reason, exit_price=None):
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": ders_prompt}
             ]
-            ders = gpt(msgs, model="gpt-4o-mini", max_tokens=150)
+            ders = gpt(msgs, model="claude-haiku-4-5-20251001", max_tokens=150)
             if ders:
                 save_lesson(symbol, sig, pnl, ders, pos.get("btc_trend",""), "")
             else:
@@ -600,7 +629,7 @@ def manage_loop():
                 )
 
                 new_msgs = msgs + [{"role": "user", "content": update}]
-                yanit = gpt(new_msgs, model="gpt-4o-mini", max_tokens=150)
+                yanit = gpt(new_msgs, model="claude-haiku-4-5-20251001", max_tokens=150)
                 if not yanit: continue
 
                 try:
@@ -611,7 +640,7 @@ def manage_loop():
                             if sure < 15: continue
                             if 0 < pnl_pct < 1.2: continue  # Min kar yok
                             if -1.5 < pnl_pct < 0: continue  # Kucuk zarar, SL bekle
-                            mesaj = karar.get("mesaj", "GPT kapat")
+                            mesaj = karar.get("mesaj", "Claude kapat")
                             close_pos(symbol, mesaj, price)
                         else:
                             # Her 15 dakikada kullaniciya bilgi
@@ -739,7 +768,7 @@ def oneri_loop():
                 )}
             ]
 
-            yanit = gpt(msgs, model="gpt-4o", max_tokens=350)
+            yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=350)
             if not yanit:
                 time.sleep(ONERI_INTERVAL); continue
 
@@ -949,7 +978,7 @@ def handle_async(msg):
             {"role": "user", "content": user_content}
         ]
 
-        yanit = gpt(msgs, model="gpt-4o", max_tokens=400)
+        yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=400)
         if not yanit:
             bot.send_message(msg.chat.id, "GPT cevap vermedi."); return
 
