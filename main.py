@@ -97,8 +97,10 @@ JSON formatinda karar ver.
 CEVAP KURALLARI:
 - Kullaniciya duz Turkce metin yaz, markdown yok
 - Maksimum 2-3 cumle, kisa ve net ol
-- Islem karari verirken sistem senden JSON isteyecek, o zaman JSON ver
-- Normal sohbette JSON kullanma"""
+- SEN ZATEN BITGET BORSASINA BAGLISSIN - kullaniciya "hangi borsadasın" veya "coin listesi ver" deme
+- Kendi verilerin var: RSI, EMA, MACD, hacim, fiyat - bunlara bak
+- Islem karari JSON formatinda ver
+- Soru sorma, karar ver"""
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
