@@ -9,7 +9,7 @@ SADIK TRADER BOT
 - Tamamen otonom
 """
 
-import os, time, threading, logging, json, re
+import os, time, threading, logging, json, re, base64
 import ccxt
 import pandas as pd
 import numpy as np
@@ -822,6 +822,35 @@ def health_server():
     HTTPServer(("0.0.0.0",8080),H).serve_forever()
 
 # MESAJ HANDLER
+@bot.message_handler(content_types=["photo"])
+def handle_photo(msg):
+    """Resimli mesajlari isle - grafik analizi"""
+    threading.Thread(target=handle_photo_async, args=(msg,), daemon=True).start()
+
+def handle_photo_async(msg):
+    try:
+        bot.send_message(msg.chat.id, "Grafigi analiz ediyorum...")
+        
+        # En buyuk resmi al
+        photo = msg.photo[-1]
+        file_info = bot.get_file(photo.file_id)
+        photo_bytes = bot.download_file(file_info.file_path)
+        
+        # Yazili mesaj varsa al
+        caption = msg.caption or "Bu grafigi analiz et, islem acilir mi?"
+        
+        btc_trend, btc_price, btc_chg, _ = get_market()
+        
+        yanit = claude_with_image(caption, photo_bytes, btc_trend, btc_price, btc_chg)
+        
+        if yanit:
+            bot.send_message(msg.chat.id, f"🤖 {yanit[:600]}")
+        else:
+            bot.send_message(msg.chat.id, "Grafik analiz edilemedi.")
+    except Exception as e:
+        log.error(f"[PHOTO] {e}")
+        bot.send_message(msg.chat.id, f"Hata: {type(e).__name__}")
+
 @bot.message_handler(func=lambda msg: True)
 def handle(msg):
     if not msg.text: return
