@@ -342,7 +342,7 @@ def get_coin(symbol):
         return None
 
 # CLAUDE API - TIMEOUT ILE
-def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200):
+def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200, image_data=None, image_type="image/jpeg"):
     global gpt_calls
     if not ANTHROPIC_KEY: return None
     gpt_calls += 1
@@ -353,11 +353,21 @@ def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200):
         try:
             system_msg = ""
             claude_msgs = []
-            for m in messages:
+            for i, m in enumerate(messages):
                 if m["role"] == "system":
                     system_msg = m["content"]
                 else:
-                    claude_msgs.append({"role": m["role"], "content": m["content"]})
+                    # Son kullanici mesajina resim ekle
+                    if image_data and m["role"] == "user" and i == len(messages) - 1:
+                        claude_msgs.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "source": {"type": "base64", "media_type": image_type, "data": image_data}},
+                                {"type": "text", "text": m["content"]}
+                            ]
+                        })
+                    else:
+                        claude_msgs.append({"role": m["role"], "content": m["content"]})
 
             payload = {
                 "model": model,
