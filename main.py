@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 SADIK TRADER BOT
-- GPT her islemden ders cikarir ve ogrenır
+- Claude her islemden ders cikarir ve ogrenir
 - Piyasa rejimi analizi
 - Risk/odul dengesi
 - Trailing stop + SL
 - Konusma hafizasi
-- Sen onaylarsın, GPT yönetir
+- Tamamen otonom
 """
 
 import os, time, threading, logging, json, re
@@ -124,7 +124,7 @@ def save_trade(data):
     except Exception as e: log.error(f"[SAVE] {e}")
 
 def save_lesson(symbol, signal, pnl, ders, btc_trend, piyasa):
-    """GPT dersini ayri tabloya kaydet"""
+    """Claude dersini ayri tabloya kaydet"""
     if not supa: return
     try:
         sonuc = "KAZANC" if pnl > 0 else "KAYIP"
@@ -341,8 +341,8 @@ def get_coin(symbol):
         log.warning(f"[COIN] {symbol}: {e}")
         return None
 
-# GPT - TIMEOUT ILE
-def gpt(messages, model="claude-sonnet-4-6", max_tokens=200):
+# CLAUDE API - TIMEOUT ILE
+def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200):
     global gpt_calls
     if not ANTHROPIC_KEY: return None
     gpt_calls += 1
@@ -486,7 +486,7 @@ def close_pos(symbol, reason, exit_price=None):
         for s in syms:
             close_pos(s, "Gunluk limit asimi", None)
 
-    # GPT ders cikariyor
+    # Claude ders cikariyor
     def ders_cikar():
         try:
             ders_prompt = (
@@ -504,11 +504,11 @@ def close_pos(symbol, reason, exit_price=None):
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": ders_prompt}
             ]
-            ders = gpt(msgs, model="claude-haiku-4-5-20251001", max_tokens=150)
+            ders = claude_api(msgs, model="claude-haiku-4-5-20251001", max_tokens=150)
             if ders:
                 save_lesson(symbol, sig, pnl, ders, pos.get("btc_trend",""), "")
             else:
-                # GPT cevap vermediyse kural bazli fallback ders
+                # Claude cevap vermediyse kural bazli fallback ders
                 if pnl > 0:
                     fallback = f"Kazanc: {pos.get('neden','')[:100]} - {reason} ile kapandi"
                 else:
@@ -604,7 +604,7 @@ def manage_loop():
                 if sure < 15:
                     continue
 
-                # GPT YÖNETİM
+                # CLAUDE YONETIM
                 with msg_lock:
                     msgs = list(pos_messages.get(symbol, []))
                 if not msgs:
@@ -635,7 +635,7 @@ def manage_loop():
                 )
 
                 new_msgs = msgs + [{"role": "user", "content": update}]
-                yanit = gpt(new_msgs, model="claude-haiku-4-5-20251001", max_tokens=150)
+                yanit = claude_api(new_msgs, model="claude-haiku-4-5-20251001", max_tokens=150)
                 if not yanit: continue
 
                 try:
@@ -739,7 +739,7 @@ def oneri_loop():
             # DERSLER
             lessons = load_lessons(8)
 
-            # GPT BATCH ANALİZ
+            # CLAUDE BATCH ANALIZ
             summary = ""
             for d in coins_data:
                 s = d["symbol"].split("/")[0]
@@ -774,7 +774,7 @@ def oneri_loop():
                 )}
             ]
 
-            yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=150)
+            yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=150)
             if not yanit:
                 time.sleep(ONERI_INTERVAL); continue
 
@@ -938,7 +938,7 @@ def handle_async(msg):
             bot.send_message(msg.chat.id, "Coin bulunamadi. Ornek: 'AVAX long ac'")
         return
 
-    # DOGAL DIL - GPT
+    # DOGAL DIL - CLAUDE
     bot.send_message(msg.chat.id, "\U0001f914 Bakiyorum...")
     try:
         btc_trend, btc_price, btc_chg, regime = get_market()
@@ -984,9 +984,9 @@ def handle_async(msg):
             {"role": "user", "content": user_content}
         ]
 
-        yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=200)
+        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=200)
         if not yanit:
-            bot.send_message(msg.chat.id, "GPT cevap vermedi."); return
+            bot.send_message(msg.chat.id, "Claude cevap vermedi."); return
 
         bot.send_message(msg.chat.id, f"\U0001f916 {yanit[:800]}")
 
@@ -1021,7 +1021,7 @@ if __name__ == "__main__":
         "Her islemden ders cikariyorum.\n\n"
         "\u2705 SL %2 otomatik\n"
         "\u2705 Trailing stop (kar %2+)\n"
-        "\u2705 Her islemden GPT ders cikariyor\n"
+        "\u2705 Her islemden Claude ders cikariyor\n"
         "\u2705 Gecmis hatalardan ogreniyor\n"
         "\u2705 Piyasa rejimi analizi\n\n"
         "Komutlar:\n"
