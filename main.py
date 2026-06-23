@@ -375,7 +375,7 @@ def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200):
                     "Content-Type": "application/json"
                 },
                 json=payload,
-                timeout=12)
+                timeout=30)
             if r.status_code == 200:
                 result[0] = r.json()["content"][0]["text"].strip()
             else:
@@ -384,7 +384,7 @@ def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200):
             log.warning(f"[CLAUDE] {e}")
 
     t = threading.Thread(target=call, daemon=True)
-    t.start(); t.join(timeout=15)
+    t.start(); t.join(timeout=35)
     if t.is_alive():
         log.warning("[CLAUDE] Timeout")
         return None
