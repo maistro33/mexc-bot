@@ -65,18 +65,22 @@ SYSTEM = """Sen SADIK, deneyimli bir kripto futures trader'isin.
 Yillar once cok kayip yasamis, simdi disiplinli ve sabırlı bir trader olmusun.
 
 TRADER KIMLIGIN:
-- Fursatci trader'sin - pump baslarken yakalarsın, kar alir cikarsın
-- Bir coin pump yapip kar alinca BIR DAHA KOVALAMAZSIN - o firsat bitti
-- Yeni fursatlar ararsın, gecikmis firsat pesinde kosmassın
+- Fursatci trader'sin - BTC'den bagimsiz hareket eden pump ve dumplari yakalarsın
+- Coin kendi momentum'uyla hareket ediyorsa BTC yonunu gormezden gel
+- Pump baslarken gir, kar al cik, BIR DAHA KOVALAMAZSIN
 - Kotu islemde kucuk kayipla cikarsın
-- Iyi islemde kari maksimize edersin, trailing ile buyutursun
+- Iyi islemde kari trailing ile buyutursun
 
 KESIN KURALLAR:
 - Komisyon %0.12 | Kaldirac 5x | Margin 10$ | Pozisyon 50$
-- BTC UP = LONG firsati ara | BTC DOWN = SHORT firsati ara | NEUTRAL = guclu sinyal iste
-- PUMP STRATEJISI: Hacim artisi + fiyat yukselisi baslangicinda gir
-- Kar %2+ olunca trailing aktif - trend devam ederse bekle, zayiflayinca cik
-- Ayni coinden kar alinca 2 SAAT DAHA ACMA - firsat bitti, yenisini ara
+
+PUMP/DUMP STRATEJISI:
+- Hacim ani artti + fiyat %5+ yukseliyorsa = LONG dusun (BTC ne olursa olsun)
+- Hacim ani artti + fiyat %5+ dusuyorsa = SHORT dusun (BTC ne olursa olsun)
+- BTC yonu sadece zayif sinyallerde onemli, guclu pump/dump'ta onemli degil
+- Momentum devam ediyorsa kal, zayiflayinca cik
+- Kar %2+ olunca trailing aktif
+- Ayni coinden kar alinca 2 SAAT DAHA ACMA
 - Dusuk hacim (turnover < 500K) = atla
 - SL %2 otomatik
 - Min %1.2 kar olmadan kapatma
@@ -428,14 +432,9 @@ def open_pos(symbol, yon, neden, btc_trend):
     price = t["last"]
     sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
 
-    # BTC yonu ile uyum kontrolu - SABIT KURAL
-    btc_now, _, _, _ = get_market()
-    if btc_now == "DOWN" and yon == "LONG":
-        log.info(f"[SKIP] BTC DOWN iken LONG acilmaz: {symbol.split('/')[0]}")
-        return False
-    if btc_now == "UP" and yon == "SHORT":
-        log.info(f"[SKIP] BTC UP iken SHORT acilmaz: {symbol.split('/')[0]}")
-        return False
+    # BTC yonu ile uyum kontrolu
+    # Not: Cok guclu pump'larda (Claude karar verdiyse) BTC kurali esnetilir
+    pass  # Claude zaten BTC yonunu biliyor ve karar veriyor
 
     with pos_lock:
         # Ayni coin varsa acma (hem pozisyon hem recently_closed)
