@@ -87,7 +87,13 @@ POZISYON YONETIMI:
 - Zarar var ama trend devam = bekle
 - Trend NET aleyhine = erken cik
 
-JSON formatinda karar ver."""
+JSON formatinda karar ver.
+
+ONEMLI KURALLAR:
+- Markdown kullanma (yildiz, kare, tire yok)
+- Maksimum 2-3 cumle yaz, daha fazla degil
+- Kisa ve net ol
+- JSON kararlarinda sadece JSON ver, aciklama az"""
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -336,7 +342,7 @@ def get_coin(symbol):
         return None
 
 # GPT - TIMEOUT ILE
-def gpt(messages, model="claude-sonnet-4-6", max_tokens=400):
+def gpt(messages, model="claude-sonnet-4-6", max_tokens=200):
     global gpt_calls
     if not ANTHROPIC_KEY: return None
     gpt_calls += 1
@@ -768,7 +774,7 @@ def oneri_loop():
                 )}
             ]
 
-            yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=350)
+            yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=150)
             if not yanit:
                 time.sleep(ONERI_INTERVAL); continue
 
@@ -978,7 +984,7 @@ def handle_async(msg):
             {"role": "user", "content": user_content}
         ]
 
-        yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=400)
+        yanit = gpt(msgs, model="claude-sonnet-4-6", max_tokens=200)
         if not yanit:
             bot.send_message(msg.chat.id, "GPT cevap vermedi."); return
 
