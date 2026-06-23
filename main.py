@@ -375,7 +375,7 @@ def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200,
             log.warning(f"[CLAUDE] {e}")
 
     t = threading.Thread(target=call, daemon=True)
-    t.start(); t.join(timeout=35)
+    t.start(); t.join(timeout=45)
     if t.is_alive():
         log.warning("[CLAUDE] Timeout")
         return None
@@ -819,7 +819,7 @@ def scanner_loop():
                 except Exception as e:
                     log.warning(f"[SCAN JSON] {symbol}: {e}")
 
-                time.sleep(2)
+                time.sleep(5)  # Claude rate limit icin bekle
 
             time.sleep(SCAN_INTERVAL)
 
