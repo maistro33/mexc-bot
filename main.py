@@ -445,8 +445,6 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
         # Grafik ciz
         sym = symbol.split("/")[0]
         chart_b64 = None  # Grafik devre disi - donma sorunu
-        if not chart_b64:
-            return None
 
         # Teknik veriler
         df = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
@@ -671,7 +669,6 @@ def manage_loop():
                     if not raw: continue
 
                     chart_b64 = None  # Grafik devre disi - donma sorunu
-                    if not chart_b64: continue
 
                     user_msg = (
                         f"{sym} {sig} pozisyonu - {sure}. dakika\n"
