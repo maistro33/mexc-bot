@@ -827,6 +827,29 @@ def handle_photo(msg):
     """Resimli mesajlari isle - grafik analizi"""
     threading.Thread(target=handle_photo_async, args=(msg,), daemon=True).start()
 
+
+def claude_with_image(text, photo_bytes, btc_trend, btc_price, btc_chg):
+    """Resimli grafik analizi"""
+    try:
+        img_b64 = base64.standard_b64encode(photo_bytes).decode("utf-8")
+        history = load_lessons(4)
+        user_content = (
+            f"BTC: {btc_trend} ${btc_price:,.0f} ({btc_chg:+.2f}%)\n"
+            f"Gecmis islemler:\n{history}\n\n"
+            f"Kullanici: {text}\n\n"
+            f"Bu grafigi analiz et. Long mu Short mu yoksa Pas mi? "
+            f"Kisa ve net cevap ver, maksimum 3 cumle."
+        )
+        msgs = [
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": user_content}
+        ]
+        return claude_api(msgs, model="claude-sonnet-4-6", max_tokens=200,
+                         image_data=img_b64, image_type="image/jpeg")
+    except Exception as e:
+        log.warning(f"[IMG] {e}")
+        return None
+
 def handle_photo_async(msg):
     try:
         bot.send_message(msg.chat.id, "Grafigi analiz ediyorum...")
