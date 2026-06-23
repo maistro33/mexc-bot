@@ -439,12 +439,17 @@ def open_pos(symbol, yon, neden, btc_trend, tp_pct=2.0, sl_pct=1.0):
         sym_base = symbol.split("/")[0].upper()
         for existing in positions.keys():
             if existing.split("/")[0].upper() == sym_base:
+                log.info(f"[SKIP] {sym_base} zaten acik")
                 return False
         with closed_lock:
             if sym_base in recently_closed:
                 if time.time() - recently_closed[sym_base] < 7200:
+                    log.info(f"[SKIP] {sym_base} 2 saat bekleme")
                     return False
-        if len(positions) >= MAX_OPEN: return False
+        if len(positions) >= MAX_OPEN:
+            log.info(f"[SKIP] Max pozisyon {MAX_OPEN}")
+            return False
+        log.info(f"[OPEN] {sym_base} {yon} aciliyor...")
 
         positions[symbol] = {
             "signal": yon, "entry": price,
