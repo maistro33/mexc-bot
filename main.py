@@ -28,7 +28,8 @@ BITGET_SEC  = os.getenv("BITGET_SEC","")
 BITGET_PASS = os.getenv("BITGET_PASS","")
 SUPA_URL    = os.getenv("SUPABASE_URL","")
 SUPA_KEY    = os.getenv("SUPABASE_KEY","")
-OPENAI_KEY  = os.getenv("OPENAI_API_KEY","")
+OPENAI_KEY    = os.getenv("OPENAI_API_KEY","")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY","")
 
 LEVERAGE       = 5
 MARGIN         = 10.0
@@ -306,65 +307,53 @@ def get_coin(symbol):
         return None
 
 # GPT - TIMEOUT ILE
-def gpt(messages, model="gpt-4o", max_tokens=500):
+def gpt(messages, model="claude-sonnet-4-6", max_tokens=400):
     global gpt_calls
-    if not OPENAI_KEY: return None
+    if not ANTHROPIC_KEY: return None
     gpt_calls += 1
     if gpt_calls > 600: return None
 
     result = [None]
     def call():
         try:
-            r = req.post("https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
-                json={"model": model, "max_tokens": max_tokens, "temperature": 0.2, "messages": messages},
+            system_msg = ""
+            claude_msgs = []
+            for m in messages:
+                if m["role"] == "system":
+                    system_msg = m["content"]
+                else:
+                    claude_msgs.append({"role": m["role"], "content": m["content"]})
+
+            payload = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": claude_msgs,
+            }
+            if system_msg:
+                payload["system"] = system_msg
+
+            r = req.post("https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
                 timeout=12)
             if r.status_code == 200:
-                result[0] = r.json()["choices"][0]["message"]["content"].strip()
+                result[0] = r.json()["content"][0]["text"].strip()
+            else:
+                log.warning(f"[CLAUDE] HTTP {r.status_code}: {r.text[:100]}")
         except Exception as e:
-            log.warning(f"[GPT] {e}")
+            log.warning(f"[CLAUDE] {e}")
 
     t = threading.Thread(target=call, daemon=True)
     t.start(); t.join(timeout=15)
     if t.is_alive():
-        log.warning("[GPT] Timeout")
+        log.warning("[CLAUDE] Timeout")
         return None
     return result[0]
 
-# SISTEM PROMPT - TRADER RUHU
-SYSTEM = """Sen SADIK, deneyimli bir kripto futures trader'isin.
-Yillar once cok kayip yasamis, simdi disiplinli ve sabırlı bir trader olmusun.
-
-TRADER KIMLIGIN:
-- Her islemden once risk/odul hesaplarsin
-- Gecmis hatalarindan ogrenmissin
-- Trend ile gidersin, trende karsi gitmezsin
-- Kotu bir islemde kucuk kayipla cikmayi bilirsin
-- Iyi bir islemde karı buyutursun
-
-KESIN KURALLAR:
-- Komisyon %0.12 | Kaldirac 5x | Margin 10$ | Pozisyon 50$
-- BTC UP → sadece LONG | BTC DOWN → sadece SHORT | NEUTRAL → bekliyorsun
-- %30+ yukselmus coinlere SHORT ACMA — momentum cok guclu
-- Dusuk hacim (turnover < 1M) → RİSKLİ, kac
-- SL %2 otomatik — bunun disinda zarar buyutme
-- Min %1.2 kar olmadan kapatma — komisyon yiyor
-- 15 dakika dolmadan kapanmiyorsun — pozisyonun oturmasini bekle
-
-POZISYON YONETIMI:
-- Kar %2+ ve trend zayifliyorsa → kapat, kar al
-- Kar %3+ → mutlaka kapat
-- Trailing: kar %2 olunca SL'i maliyete cek
-- Zarar var ama trend devam ediyorsa → bekle, SL korur
-- Trend NET aleyhine donduyse → erken cik, kucuk zarar
-
-OGRENMEK:
-- Her kapanan islemi analiz et
-- "Neden kazandim/kaybettim?" sorusunu sor
-- Ayni hatay tekrarlama
-- Basarili pattern'leri tekrarla"""
-
-# COİN BUL - TAM KELIME
 def find_coin(text):
     words = re.findall(r'[A-Z0-9]+', text.upper())
     try:
@@ -847,7 +836,7 @@ def handle_async(msg):
                 f"Net PnL: {net:+.2f}$\n"
                 f"Gunluk: {daily_pnl:+.2f}$\n"
                 f"Ort sure: {avg_sure:.0f}dk\n"
-                f"GPT cagri: {gpt_calls}"
+                f"Claude cagri: {gpt_calls}"
             )
         except Exception as e:
             bot.send_message(msg.chat.id, f"Hata: {e}")
