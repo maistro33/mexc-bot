@@ -90,10 +90,11 @@ POZISYON YONETIMI:
 JSON formatinda karar ver.
 
 ONEMLI KURALLAR:
-- Markdown kullanma (yildiz, kare, tire yok)
-- Maksimum 2-3 cumle yaz, daha fazla degil
+- Markdown ve JSON KULLANMA - sadece duz Turkce metin yaz
+- Maksimum 2-3 cumle, daha fazla degil
 - Kisa ve net ol
-- JSON kararlarinda sadece JSON ver, aciklama az"""
+- Islem acmak icin: "TNSR LONG aciyorum, EMA yukari ve hacim guclu" gibi yaz
+- Acmayacaksan: "TNSR icin kosullar uygun degil, bekliyorum" gibi yaz"""
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -395,7 +396,7 @@ def find_coin(text):
         tickers = safe_api(exchange.fetch_tickers)
         if not tickers: return None
         for word in words:
-            if len(word) < 2: continue
+            if len(word) < 3: continue  # Min 3 harf - A, AB gibi karismasi onle
             symbol = f"{word}/USDT:USDT"
             if symbol in tickers and word not in BLACKLIST:
                 return symbol
