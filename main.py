@@ -28,7 +28,6 @@ BITGET_SEC  = os.getenv("BITGET_SEC","")
 BITGET_PASS = os.getenv("BITGET_PASS","")
 SUPA_URL    = os.getenv("SUPABASE_URL","")
 SUPA_KEY    = os.getenv("SUPABASE_KEY","")
-OPENAI_KEY    = os.getenv("OPENAI_API_KEY","")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY","")
 
 LEVERAGE       = 5
@@ -49,6 +48,7 @@ daily_pnl       = 0.0
 gpt_calls       = 0
 recently_closed = {}   # Kapanan coinler - 30dk tekrar acma
 closed_lock     = threading.Lock()
+bekleyen        = {}   # Onay bekleyen oneriler
 # bekleyen kaldirild - tamamen otomatik mod
 
 # EXCHANGE
@@ -89,12 +89,11 @@ POZISYON YONETIMI:
 
 JSON formatinda karar ver.
 
-ONEMLI KURALLAR:
-- Markdown ve JSON KULLANMA - sadece duz Turkce metin yaz
-- Maksimum 2-3 cumle, daha fazla degil
-- Kisa ve net ol
-- Islem acmak icin: "TNSR LONG aciyorum, EMA yukari ve hacim guclu" gibi yaz
-- Acmayacaksan: "TNSR icin kosullar uygun degil, bekliyorum" gibi yaz"""
+CEVAP KURALLARI:
+- Kullaniciya duz Turkce metin yaz, markdown yok
+- Maksimum 2-3 cumle, kisa ve net ol
+- Islem karari verirken sistem senden JSON isteyecek, o zaman JSON ver
+- Normal sohbette JSON kullanma"""
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
@@ -146,7 +145,7 @@ def load_lessons(limit=8):
         # Dersler
         lessons_r = supa.table("gpt_lessons").select(
             "symbol,signal,pnl,sonuc,ders,btc_trend"
-        ).order("created_at", desc=True).limit(6).execute()
+        ).order("created_at", desc=True).limit(limit).execute()
         
         # Islemler
         trades_r = supa.table("gpt_trades").select(
@@ -419,15 +418,12 @@ def open_pos(symbol, yon, neden, btc_trend):
     sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
 
     # BTC yonu ile uyum kontrolu - SABIT KURAL
-    btc_check, _, _ = get_btc()[:3] if hasattr(get_btc(), '__len__') else (get_btc()[0], 0, 0)
-    btc_now = get_market()[0]
+    btc_now, _, _, _ = get_market()
     if btc_now == "DOWN" and yon == "LONG":
         log.info(f"[SKIP] BTC DOWN iken LONG acilmaz: {symbol.split('/')[0]}")
-        tg(f"BTC DOWN - {symbol.split('/')[0]} LONG acilmadi.")
         return False
     if btc_now == "UP" and yon == "SHORT":
         log.info(f"[SKIP] BTC UP iken SHORT acilmaz: {symbol.split('/')[0]}")
-        tg(f"BTC UP - {symbol.split('/')[0]} SHORT acilmadi.")
         return False
 
     with pos_lock:
@@ -494,10 +490,6 @@ def close_pos(symbol, reason, exit_price=None):
 
     if daily_pnl <= MAX_DAILY_LOSS:
         tg(f"\u26d4 GUNLUK LİMİT! {daily_pnl:+.2f}$ — Bot durduruldu.")
-        # Tum acik pozisyonlari kapat
-        with pos_lock: syms = list(positions.keys())
-        for s in syms:
-            close_pos(s, "Gunluk limit asimi", None)
 
     # Claude ders cikariyor
     def ders_cikar():
