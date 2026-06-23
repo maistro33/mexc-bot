@@ -524,9 +524,11 @@ def close_pos(symbol, reason, exit_price=None):
 # YÖNETİCİ
 def manage_loop():
     while True:
-        time.sleep(60)  # Her 60 saniyede kontrol - daha az GPT cagrisi
+        time.sleep(60)
         try:
             with pos_lock: syms = list(positions.keys())
+            if syms:
+                log.info(f"[MANAGE] {len(syms)} pozisyon kontrol ediliyor")
             for symbol in syms:
                 with pos_lock:
                     pos = positions.get(symbol)
@@ -650,6 +652,7 @@ def oneri_loop():
                     time.sleep(ONERI_INTERVAL); continue
 
             btc_trend, btc_price, btc_chg, regime = get_market()
+            log.info(f"[SCAN] BTC:{btc_trend} ${btc_price:,.0f} | Rejim:{regime}")
 
             # BTC NEUTRAL'da da tara ama daha dikkatli ol
             # Sadece cok guclu sinyallerde ac
