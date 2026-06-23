@@ -207,6 +207,62 @@ def get_market():
         return "NEUTRAL", 0, 0, "BELIRSIZ"
 
 # GRAFİK ÇİZ
+def chart_summary(ohlcv_data):
+    """Grafik yerine sayisal ozet - mum analizi"""
+    try:
+        df = pd.DataFrame(ohlcv_data[-20:], columns=["t","o","h","l","c","v"])
+        
+        # Mum renkleri
+        yesil = sum(1 for i in range(len(df)) if df["c"].iloc[i] >= df["o"].iloc[i])
+        kirmizi = len(df) - yesil
+        
+        # Son 5 mum
+        son5 = df.tail(5)
+        son5_yesil = sum(1 for i in range(len(son5)) if son5["c"].iloc[i] >= son5["o"].iloc[i])
+        
+        # EMA
+        ema9  = float(df["c"].ewm(span=9).mean().iloc[-1])
+        ema20 = float(df["c"].ewm(span=20).mean().iloc[-1])
+        price = float(df["c"].iloc[-1])
+        ema_durum = "EMA9>EMA20 YUKARI" if ema9 > ema20 else "EMA9<EMA20 ASAGI"
+        
+        # Bollinger
+        bb_ma  = df["c"].rolling(20).mean().iloc[-1]
+        bb_std = df["c"].rolling(20).std().iloc[-1]
+        bb_ust = bb_ma + 2*bb_std
+        bb_alt = bb_ma - 2*bb_std
+        if price > bb_ust: bb_pos = "UST BANDIN USTUNDE"
+        elif price < bb_alt: bb_pos = "ALT BANDIN ALTINDA"
+        else: bb_pos = f"ORTA (band ici %{((price-bb_alt)/(bb_ust-bb_alt)*100):.0f})"
+        
+        # Hacim trendi
+        vol_avg = float(df["v"].rolling(10).mean().iloc[-1])
+        vol_son = float(df["v"].iloc[-1])
+        vol_ratio = vol_son / max(vol_avg, 0.001)
+        vol_trend = "ARTIYOR" if vol_ratio > 1.2 else "AZALIYOR" if vol_ratio < 0.8 else "NORMAL"
+        
+        # Momentum
+        pct_5 = (float(df["c"].iloc[-1]) - float(df["c"].iloc[-5])) / float(df["c"].iloc[-5]) * 100
+        pct_10 = (float(df["c"].iloc[-1]) - float(df["c"].iloc[-10])) / float(df["c"].iloc[-10]) * 100
+        
+        # Destek/Direnc
+        high20 = float(df["h"].max())
+        low20  = float(df["l"].min())
+        direnc_uzaklik = (high20 - price) / price * 100
+        destek_uzaklik = (price - low20) / price * 100
+        
+        return (
+            f"SON 20 MUM ANALIZI:\n"
+            f"Yesil/Kirmizi: {yesil}/{kirmizi} | Son 5 mum: {son5_yesil} yesil {5-son5_yesil} kirmizi\n"
+            f"EMA: {ema_durum} (EMA9:{ema9:.4f} EMA20:{ema20:.4f})\n"
+            f"Bollinger: {bb_pos}\n"
+            f"Hacim: {vol_ratio:.1f}x ortalama ({vol_trend})\n"
+            f"Momentum: 5mum={pct_5:+.2f}% | 10mum={pct_10:+.2f}%\n"
+            f"Direnc uzaklik: %{direnc_uzaklik:.1f} | Destek uzaklik: %{destek_uzaklik:.1f}"
+        )
+    except Exception as e:
+        return f"Ozet hatasi: {e}"
+
 def draw_chart(symbol, ohlcv_data, title=""):
     """Grafik ciz - thread ile timeout"""
     result = [None]
@@ -345,9 +401,11 @@ GRAFİK ANALİZİ:
 - Bollinger bant kirilmasi = guclu hareket
 
 KARAR FORMATI (sadece JSON):
-{"karar": "LONG", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "kisa aciklama"}
-{"karar": "SHORT", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "kisa aciklama"}
-{"karar": "PAS", "neden": "neden acmiyorum"}
+{"karar": "LONG", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "max 5 kelime"}
+{"karar": "SHORT", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "max 5 kelime"}
+{"karar": "PAS", "neden": "max 5 kelime"}
+
+ONEMLI: neden alani maksimum 5 kelime! JSON mutlaka kapanmali.
 
 KURALLAR:
 - Komisyon %0.12 | Kaldirac 5x | Margin 10$
@@ -385,7 +443,7 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
 
         # Grafik ciz
         sym = symbol.split("/")[0]
-        chart_b64 = draw_chart(symbol, raw, title=timeframe)
+        chart_b64 = None  # Grafik devre disi - donma sorunu
         if not chart_b64:
             return None
 
@@ -400,15 +458,16 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
         btc_trend, btc_price, btc_chg, regime = get_market()
         history = load_lessons(4)
 
+        ozet = chart_summary(raw)
+
         user_msg = (
             f"Coin: {sym}/USDT | Fiyat: {price:.6f}\n"
-            f"Son 10 mum degisim: {pct_change:+.2f}%\n"
-            f"Hacim: {vol_ratio:.1f}x ortalamanin\n"
             f"BTC: {btc_trend} ${btc_price:,.0f} ({btc_chg:+.2f}%) | Rejim: {regime}\n"
-            f"{extra_info}\n"
+            f"{extra_info}\n\n"
+            f"{ozet}\n\n"
             f"Gecmis:\n{history}\n\n"
-            f"Bu grafiği analiz et. LONG mu SHORT mu PAS mi?\n"
-            f"Sadece JSON formatinda karar ver."
+            f"Bu verilere gore LONG mu SHORT mu PAS mi?\n"
+            f"Sadece JSON formatinda karar ver. neden alani max 5 kelime."
         )
 
         msgs = [
@@ -416,7 +475,7 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
             {"role": "user", "content": user_msg}
         ]
 
-        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=150,
+        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=250,
                           image_data=chart_b64, image_type="image/jpeg")
         return yanit
     except Exception as e:
@@ -610,7 +669,7 @@ def manage_loop():
                     raw = safe_api(exchange.fetch_ohlcv, symbol, "5m", limit=30)
                     if not raw: continue
 
-                    chart_b64 = draw_chart(symbol, raw, f"5m | PnL:{pnl:+.2f}$ ({pnl_pct:+.2f}%)")
+                    chart_b64 = None  # Grafik devre disi - donma sorunu
                     if not chart_b64: continue
 
                     user_msg = (
@@ -927,7 +986,7 @@ def handle_async(msg):
             sym = coin_symbol.split("/")[0]
             raw = safe_api(exchange.fetch_ohlcv, coin_symbol, "15m", limit=50)
             if raw:
-                chart_b64 = draw_chart(coin_symbol, raw, "15m")
+                chart_b64 = None  # Grafik devre disi - donma sorunu
                 ticker = safe_api(exchange.fetch_ticker, coin_symbol)
                 if ticker:
                     pct = ticker.get("percentage", 0)
@@ -962,7 +1021,7 @@ def handle_async(msg):
                             best = top[0]["symbol"]
                             raw = safe_api(exchange.fetch_ohlcv, best, "15m", limit=50)
                             if raw:
-                                chart_b64 = draw_chart(best, raw, f"15m - {top[0]['pct']:+.1f}%")
+                                chart_b64 = None  # Grafik devre disi - donma sorunu
                                 coin_symbol = best
                 except Exception as e:
                     log.warning(f"[TARA] {e}")
@@ -981,7 +1040,7 @@ def handle_async(msg):
             {"role": "user", "content": user_content}
         ]
 
-        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=150,
+        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=250,
                           image_data=chart_b64, image_type="image/jpeg")
 
         if not yanit:
