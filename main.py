@@ -79,6 +79,36 @@ def save_trade(data):
     try: supa.table("gpt_trades").insert(data).execute()
     except Exception as e: log.error(f"[SAVE] {e}")
 
+def save_recently_closed(sym_base):
+    """Kapanan coini Supabase'e kaydet - restart sonrasi da gecerli"""
+    if not supa: return
+    try:
+        supa.table("gpt_trades").insert({
+            "symbol": sym_base + "_CLOSED",
+            "signal": "CLOSED",
+            "pnl": 0,
+            "reason": "recently_closed",
+            "sure_dk": 0,
+        }).execute()
+    except: pass
+
+def load_recently_closed():
+    """Supabase'den son 2 saatte kapanan coinleri yukle"""
+    if not supa: return
+    try:
+        import datetime
+        two_hours_ago = (datetime.datetime.utcnow() - datetime.timedelta(hours=2)).isoformat()
+        r = supa.table("gpt_trades").select("symbol,created_at").eq(
+            "signal", "CLOSED"
+        ).gte("created_at", two_hours_ago).execute()
+        for d in (r.data or []):
+            sym = d["symbol"].replace("_CLOSED", "")
+            with closed_lock:
+                recently_closed[sym] = time.time() - 3600  # 1 saat once kapanmis say
+        log.info(f"[CLOSED] {len(r.data or [])} coin yuklendi")
+    except Exception as e:
+        log.warning(f"[CLOSED] {e}")
+
 def save_lesson(symbol, signal, pnl, ders, btc_trend, piyasa=""):
     if not supa: return
     try:
@@ -178,66 +208,68 @@ def get_market():
 
 # GRAFİK ÇİZ
 def draw_chart(symbol, ohlcv_data, title=""):
-    """OHLCV verisinden grafik ciz ve base64 olarak dondur"""
-    try:
-        df = pd.DataFrame(ohlcv_data[-50:], columns=["t","o","h","l","c","v"])
-        df["t"] = pd.to_datetime(df["t"], unit="ms")
+    """Grafik ciz - thread ile timeout"""
+    result = [None]
+    def _draw():
+        try:
+            df = pd.DataFrame(ohlcv_data[-50:], columns=["t","o","h","l","c","v"])
+            df["t"] = pd.to_datetime(df["t"], unit="ms")
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7),
-                                         gridspec_kw={"height_ratios": [3,1]},
-                                         facecolor="#1a1a2e")
-        ax1.set_facecolor("#1a1a2e")
-        ax2.set_facecolor("#1a1a2e")
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7),
+                                           gridspec_kw={"height_ratios": [3,1]},
+                                           facecolor="#1a1a2e")
+            ax1.set_facecolor("#1a1a2e")
+            ax2.set_facecolor("#1a1a2e")
 
-        # Mumlar
-        for i, row in df.iterrows():
-            color = "#00ff88" if row["c"] >= row["o"] else "#ff4444"
-            ax1.plot([i, i], [row["l"], row["h"]], color=color, linewidth=0.8)
-            ax1.bar(i, abs(row["c"]-row["o"]), bottom=min(row["c"],row["o"]),
-                   color=color, width=0.6)
+            for i, row in df.iterrows():
+                color = "#00ff88" if row["c"] >= row["o"] else "#ff4444"
+                ax1.plot([i, i], [row["l"], row["h"]], color=color, linewidth=0.8)
+                ax1.bar(i, abs(row["c"]-row["o"]), bottom=min(row["c"],row["o"]),
+                       color=color, width=0.6)
 
-        # EMA'lar
-        ema9  = df["c"].ewm(span=9).mean()
-        ema20 = df["c"].ewm(span=20).mean()
-        ax1.plot(range(len(df)), ema9,  color="#ffff00", linewidth=1, label="EMA9")
-        ax1.plot(range(len(df)), ema20, color="#ff8800", linewidth=1, label="EMA20")
+            ema9  = df["c"].ewm(span=9).mean()
+            ema20 = df["c"].ewm(span=20).mean()
+            ax1.plot(range(len(df)), ema9,  color="#ffff00", linewidth=1, label="EMA9")
+            ax1.plot(range(len(df)), ema20, color="#ff8800", linewidth=1, label="EMA20")
 
-        # Bollinger
-        bb_ma  = df["c"].rolling(20).mean()
-        bb_std = df["c"].rolling(20).std()
-        ax1.fill_between(range(len(df)), bb_ma-2*bb_std, bb_ma+2*bb_std,
-                        alpha=0.1, color="#4488ff")
+            bb_ma  = df["c"].rolling(20).mean()
+            bb_std = df["c"].rolling(20).std()
+            ax1.fill_between(range(len(df)), bb_ma-2*bb_std, bb_ma+2*bb_std,
+                            alpha=0.1, color="#4488ff")
 
-        # Fiyat
-        last_price = float(df["c"].iloc[-1])
-        ax1.axhline(y=last_price, color="#ffffff", linewidth=0.5, linestyle="--")
-        ax1.text(len(df)-1, last_price, f" {last_price:.4f}", color="#ffffff", fontsize=8)
+            last_price = float(df["c"].iloc[-1])
+            ax1.axhline(y=last_price, color="#ffffff", linewidth=0.5, linestyle="--")
+            ax1.text(len(df)-1, last_price, f" {last_price:.4f}", color="#ffffff", fontsize=8)
+            ax1.set_title(f"{symbol.split('/')[0]} - {title}", color="#ffffff", fontsize=11)
+            ax1.tick_params(colors="#888888")
+            ax1.legend(fontsize=7, facecolor="#1a1a2e", labelcolor="white")
+            ax1.set_xlim(-1, len(df))
+            for spine in ax1.spines.values(): spine.set_color("#333333")
 
-        ax1.set_title(f"{symbol.split('/')[0]} - {title}", color="#ffffff", fontsize=12)
-        ax1.tick_params(colors="#888888")
-        ax1.legend(fontsize=7, facecolor="#1a1a2e", labelcolor="white")
-        ax1.set_xlim(-1, len(df))
-        for spine in ax1.spines.values(): spine.set_color("#333333")
+            vol_colors = ["#00ff88" if df["c"].iloc[i] >= df["o"].iloc[i] else "#ff4444"
+                         for i in range(len(df))]
+            ax2.bar(range(len(df)), df["v"], color=vol_colors, width=0.6)
+            ax2.set_facecolor("#1a1a2e")
+            ax2.tick_params(colors="#888888")
+            for spine in ax2.spines.values(): spine.set_color("#333333")
 
-        # Hacim
-        vol_colors = ["#00ff88" if df["c"].iloc[i] >= df["o"].iloc[i] else "#ff4444"
-                     for i in range(len(df))]
-        ax2.bar(range(len(df)), df["v"], color=vol_colors, width=0.6)
-        ax2.set_facecolor("#1a1a2e")
-        ax2.tick_params(colors="#888888")
-        for spine in ax2.spines.values(): spine.set_color("#333333")
+            plt.tight_layout()
+            buf = io.BytesIO()
+            plt.savefig(buf, format="jpeg", dpi=80, bbox_inches="tight", facecolor="#1a1a2e")
+            plt.close()
+            buf.seek(0)
+            result[0] = base64.standard_b64encode(buf.read()).decode("utf-8")
+        except Exception as e:
+            log.warning(f"[CHART] {e}")
+            plt.close("all")
 
-        plt.tight_layout()
-
-        buf = io.BytesIO()
-        plt.savefig(buf, format="jpeg", dpi=100, bbox_inches="tight",
-                   facecolor="#1a1a2e")
-        plt.close()
-        buf.seek(0)
-        return base64.standard_b64encode(buf.read()).decode("utf-8")
-    except Exception as e:
-        log.warning(f"[CHART] {e}")
+    t = threading.Thread(target=_draw, daemon=True)
+    t.start(); t.join(timeout=10)
+    if t.is_alive():
+        log.warning("[CHART] Timeout - grafik atlandi")
+        plt.close("all")
         return None
+    return result[0]
 
 # CLAUDE API
 def claude_api(messages, model="claude-sonnet-4-6", max_tokens=200,
@@ -456,6 +488,8 @@ def close_pos(symbol, reason, exit_price=None):
     sym_base = symbol.split("/")[0].upper()
     with closed_lock:
         recently_closed[sym_base] = time.time()
+    # Supabase'e de kaydet - restart sonrasi kaybolmasin
+    threading.Thread(target=save_recently_closed, args=(sym_base,), daemon=True).start()
 
     # Trade kaydet
     try:
@@ -986,6 +1020,7 @@ sig_mod.signal(sig_mod.SIGINT, shutdown)
 
 if __name__ == "__main__":
     print("SADIK TRADER v2 BASLIYOR...")
+    load_recently_closed()  # Restart sonrasi kapanan coinleri yukle
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=scanner_loop,  daemon=True).start()
