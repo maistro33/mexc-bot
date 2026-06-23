@@ -12,10 +12,7 @@ import pandas as pd
 import numpy as np
 import requests as req
 import telebot
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+# matplotlib devre disi
 from supabase import create_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -264,14 +261,14 @@ def chart_summary(ohlcv_data):
         return f"Ozet hatasi: {e}"
 
 def draw_chart(symbol, ohlcv_data, title=""):
-    """Grafik ciz - thread ile timeout"""
+    """Grafik ciz - hafif versiyon, thread ile timeout"""
     result = [None]
     def _draw():
         try:
-            df = pd.DataFrame(ohlcv_data[-50:], columns=["t","o","h","l","c","v"])
+            df = pd.DataFrame(ohlcv_data[-20:], columns=["t","o","h","l","c","v"])
             df["t"] = pd.to_datetime(df["t"], unit="ms")
 
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7),
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 4),
                                            gridspec_kw={"height_ratios": [3,1]},
                                            facecolor="#1a1a2e")
             ax1.set_facecolor("#1a1a2e")
@@ -311,7 +308,7 @@ def draw_chart(symbol, ohlcv_data, title=""):
 
             plt.tight_layout()
             buf = io.BytesIO()
-            plt.savefig(buf, format="jpeg", dpi=80, bbox_inches="tight", facecolor="#1a1a2e")
+            plt.savefig(buf, format="jpeg", dpi=60, bbox_inches="tight", facecolor="#1a1a2e")
             plt.close()
             buf.seek(0)
             result[0] = base64.standard_b64encode(buf.read()).decode("utf-8")
@@ -402,11 +399,11 @@ GRAFİK ANALİZİ:
 - Bollinger bant kirilmasi = guclu hareket
 
 KARAR FORMATI (sadece JSON):
-{"karar": "LONG", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "max 5 kelime"}
-{"karar": "SHORT", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "max 5 kelime"}
-{"karar": "PAS", "neden": "max 5 kelime"}
+{"karar": "LONG", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "EMA kesisti, hacim artıyor"}
+{"karar": "SHORT", "tp_pct": 2.0, "sl_pct": 1.0, "neden": "Bollinger kirdi, dump basladi"}
+{"karar": "PAS", "neden": "Gec kalindi veya sinyal zayif"}
 
-ONEMLI: neden alani maksimum 5 kelime! JSON mutlaka kapanmali.
+ONEMLI: JSON mutlaka kapanmali. neden alani maksimum 1 cumle, net ve aciklayici.
 
 KURALLAR:
 - Komisyon %0.12 | Kaldirac 5x | Margin 10$
@@ -444,7 +441,7 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
 
         # Grafik ciz
         sym = symbol.split("/")[0]
-        chart_b64 = None  # Grafik devre disi - donma sorunu
+        chart_b64 = None
 
         # Teknik veriler
         df = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
@@ -474,7 +471,7 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
             {"role": "user", "content": user_msg}
         ]
 
-        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=250,
+        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=300,
                           image_data=chart_b64, image_type="image/jpeg")
         return yanit
     except Exception as e:
@@ -668,7 +665,7 @@ def manage_loop():
                     raw = safe_api(exchange.fetch_ohlcv, symbol, "5m", limit=30)
                     if not raw: continue
 
-                    chart_b64 = None  # Grafik devre disi - donma sorunu
+                    chart_b64 = None
 
                     user_msg = (
                         f"{sym} {sig} pozisyonu - {sure}. dakika\n"
@@ -984,7 +981,7 @@ def handle_async(msg):
             sym = coin_symbol.split("/")[0]
             raw = safe_api(exchange.fetch_ohlcv, coin_symbol, "15m", limit=50)
             if raw:
-                chart_b64 = None  # Grafik devre disi - donma sorunu
+                chart_b64 = None
                 ticker = safe_api(exchange.fetch_ticker, coin_symbol)
                 if ticker:
                     pct = ticker.get("percentage", 0)
@@ -1019,7 +1016,7 @@ def handle_async(msg):
                             best = top[0]["symbol"]
                             raw = safe_api(exchange.fetch_ohlcv, best, "15m", limit=50)
                             if raw:
-                                chart_b64 = None  # Grafik devre disi - donma sorunu
+                                chart_b64 = None
                                 coin_symbol = best
                 except Exception as e:
                     log.warning(f"[TARA] {e}")
@@ -1038,7 +1035,7 @@ def handle_async(msg):
             {"role": "user", "content": user_content}
         ]
 
-        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=250,
+        yanit = claude_api(msgs, model="claude-sonnet-4-6", max_tokens=300,
                           image_data=chart_b64, image_type="image/jpeg")
 
         if not yanit:
