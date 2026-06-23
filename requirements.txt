@@ -6,4 +6,5 @@ pyTelegramBotAPI
 supabase
 xgboost
 scikit-learn
+matplotlib
 
