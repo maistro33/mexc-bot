@@ -247,33 +247,42 @@ def karar_ver(data, btc_trend):
     if abs(pct) > 20:
         return None, f"Gec kalindi ({pct:.1f}%)"
 
-    # LONG
+    # GEC KALMA KONTROLU - en onemli filtre
+    # Hareket zaten cok olmussa girme
+    if pct > 5:   # 5%+ yukseldi, LONG icin gec
+        return None, f"LONG gec kalindi ({pct:.1f}% hareket)"
+    if pct < -5:  # 5%+ dustu, SHORT icin gec
+        return None, f"SHORT gec kalindi ({pct:.1f}% hareket)"
+
+    # LONG - sadece hareket YENI BASLAMISSA
     if btc_trend in ["UP", "NEUTRAL"]:
         vol_long = v1m >= 1.5 or v5m >= 1.5
         if not vol_long: pass
-        elif data["k1m_yukari"] and uy >= 2:
-            return "LONG", f"1m EMA kesti, {uy}/4 yukari, hacim {v1m:.1f}x"
-        elif data["k5m_yukari"] and uy >= 3:
-            return "LONG", f"5m EMA kesti, {uy}/4 yukari, hacim {v5m:.1f}x"
-        elif uy == 4 and vol_long and 1 < pct < 15:
-            return "LONG", f"4/4 uyum, hacim {v5m:.1f}x, +{pct:.1f}%"
-        elif uy >= 2 and v1m >= 2.5 and pct < 8 and rsi_val < 68:
-            return "LONG", f"Hacim patlamasi {v1m:.1f}x, {uy}/4 yukari"
+        # En erken: 1m EMA yeni kesti, hareket az
+        elif data["k1m_yukari"] and uy >= 2 and 0 < pct < 3:
+            return "LONG", f"1m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
+        # 5m EMA kesti, hareket az
+        elif data["k5m_yukari"] and uy >= 3 and 0 < pct < 4:
+            return "LONG", f"5m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
+        # Hacim patlamasi - fiyat henuz hareket etmemis
+        elif v1m >= 2.5 and uy >= 2 and 0 < pct < 2 and rsi_val < 65:
+            return "LONG", f"Hacim patlamasi {v1m:.1f}x, henuz +{pct:.1f}%"
 
-    # SHORT
+    # SHORT - sadece hareket YENI BASLAMISSA
     if btc_trend in ["DOWN", "NEUTRAL"]:
         vol_short = v1m >= 1.5 or v5m >= 1.5
         if not vol_short: pass
-        elif data["k1m_asagi"] and ua >= 2:
-            return "SHORT", f"1m EMA kesti, {ua}/4 asagi, hacim {v1m:.1f}x"
-        elif data["k5m_asagi"] and ua >= 3:
-            return "SHORT", f"5m EMA kesti, {ua}/4 asagi, hacim {v5m:.1f}x"
-        elif ua == 4 and vol_short and -15 < pct < -1:
-            return "SHORT", f"4/4 uyum, hacim {v5m:.1f}x, {pct:.1f}%"
-        elif ua >= 2 and v1m >= 2.5 and pct > -8 and rsi_val > 32:
-            return "SHORT", f"Hacim patlamasi {v1m:.1f}x, {ua}/4 asagi"
+        # En erken: 1m EMA yeni kesti, hareket az
+        elif data["k1m_asagi"] and ua >= 2 and -3 < pct < 0:
+            return "SHORT", f"1m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
+        # 5m EMA kesti, hareket az
+        elif data["k5m_asagi"] and ua >= 3 and -4 < pct < 0:
+            return "SHORT", f"5m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
+        # Hacim patlamasi - fiyat henuz hareket etmemis
+        elif v1m >= 2.5 and ua >= 2 and -2 < pct < 0 and rsi_val > 35:
+            return "SHORT", f"Hacim patlamasi {v1m:.1f}x, henuz {pct:.1f}%"
 
-    return None, f"Uyum yetersiz (Y:{uy} A:{ua})"
+    return None, f"Kosul saglanamadi (pct:{pct:.1f}% Y:{uy} A:{ua})"
 
 # PNL HESAP
 def hesap_pnl(pos, price):
