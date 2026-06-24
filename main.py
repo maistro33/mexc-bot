@@ -483,9 +483,11 @@ def scanner_loop():
 
                 qv    = ticker.get("quoteVolume") or 0
                 pct   = ticker.get("percentage")  or 0
-                price = ticker.get("last") or 0
+                price = float(ticker.get("last") or 0)
                 if qv < MIN_VOL_USDT: continue
-                if qv > MAX_VOL_USDT: continue  # Hantal buyuk coinler disari
+                if qv > MAX_VOL_USDT: continue
+                if price <= 0: continue
+                if price > 5.0: continue  # $5 ustu hantal - kesin filtre
                 
 
                 # Yöne gore on filtre
