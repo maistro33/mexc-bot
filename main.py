@@ -333,15 +333,27 @@ def open_pos(symbol, yon, neden, btc_trend):
 
     # GERCEK EMIR AT
     try:
+        # Isolated mod ayarla
         try:
-            exchange.set_leverage(LEVERAGE, symbol, {"marginMode": "isolated"})
+            exchange.set_margin_mode("isolated", symbol)
+            log.info(f"[MARGIN] {sym} isolated ayarlandi")
+        except Exception as me:
+            log.warning(f"[MARGIN] {me}")
+
+        # Kaldirac ayarla
+        try:
+            exchange.set_leverage(LEVERAGE, symbol)
+            log.info(f"[KALDIRAC] {sym} {LEVERAGE}x ayarlandi")
         except Exception as le:
             log.warning(f"[KALDIRAC] {le}")
 
         amount = round(POS_SIZE / price, 4)
         side = "buy" if yon == "LONG" else "sell"
         log.info(f"[EMIR] {sym} {yon} atiliyor... amount={amount}")
-        order = exchange.create_order(symbol, "market", side, amount, params={"reduceOnly": False})
+        order = exchange.create_order(
+            symbol, "market", side, amount,
+            params={"marginMode": "isolated"}
+        )
         log.info(f"[EMIR] BASARILI id={order.get('id','?')}")
     except Exception as e:
         log.error(f"[EMIR HATA] {sym}: {e}")
