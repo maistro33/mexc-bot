@@ -204,6 +204,57 @@ def get_market():
         return "NEUTRAL", 0, 0, "BELIRSIZ"
 
 # GRAFİK ÇİZ
+
+def ascii_chart(ohlcv_data):
+    """ASCII mum grafigi - hafif, donmaz"""
+    try:
+        df = pd.DataFrame(ohlcv_data[-20:], columns=["t","o","h","l","c","v"])
+        
+        high = float(df["h"].max())
+        low  = float(df["l"].min())
+        price_range = high - low
+        if price_range == 0: return ""
+        
+        rows = 8
+        lines = []
+        
+        for row in range(rows, 0, -1):
+            level = low + (price_range * row / rows)
+            line = f"{level:.4f} |"
+            for i in range(len(df)):
+                o = float(df["o"].iloc[i])
+                c = float(df["c"].iloc[i])
+                h = float(df["h"].iloc[i])
+                l = float(df["l"].iloc[i])
+                is_bull = c >= o
+                body_high = max(o, c)
+                body_low  = min(o, c)
+                
+                if body_low <= level <= body_high:
+                    line += "█" if is_bull else "░"
+                elif l <= level <= h:
+                    line += "│"
+                else:
+                    line += " "
+            lines.append(line)
+        
+        # Hacim satiri
+        vol_avg = float(df["v"].mean())
+        vol_line = "Hacim  |"
+        for i in range(len(df)):
+            v = float(df["v"].iloc[i])
+            c = float(df["c"].iloc[i])
+            o = float(df["o"].iloc[i])
+            ratio = v / max(vol_avg, 1)
+            if ratio > 2: vol_line += "▓" if c >= o else "▒"
+            elif ratio > 1: vol_line += "█" if c >= o else "░"
+            else: vol_line += "▁"
+        lines.append(vol_line)
+        
+        return "GRAFIK (█=yukari ░=asagi │=fitil):\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Grafik hatasi: {e}"
+
 def chart_summary(ohlcv_data):
     """Grafik yerine sayisal ozet - mum analizi"""
     try:
@@ -455,11 +506,13 @@ def analyze_with_chart(symbol, timeframe="15m", extra_info=""):
         history = load_lessons(4)
 
         ozet = chart_summary(raw)
+        grafik = ascii_chart(raw)
 
         user_msg = (
             f"Coin: {sym}/USDT | Fiyat: {price:.6f}\n"
             f"BTC: {btc_trend} ${btc_price:,.0f} ({btc_chg:+.2f}%) | Rejim: {regime}\n"
             f"{extra_info}\n\n"
+            f"{grafik}\n\n"
             f"{ozet}\n\n"
             f"Gecmis:\n{history}\n\n"
             f"Bu verilere gore LONG mu SHORT mu PAS mi?\n"
