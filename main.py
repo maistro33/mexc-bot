@@ -31,7 +31,8 @@ MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
 MAX_OPEN       = 3
-MIN_VOL_USDT   = 1_000_000
+MIN_VOL_USDT   = 1_000_000   # Min 1M
+MAX_VOL_USDT   = 5_000_000   # Max 5M - buyuk hantaller disari
 MAX_DAILY_LOSS = -10.0
 SCAN_INTERVAL  = 60
 
@@ -56,8 +57,7 @@ BLACKLIST = {
 }
 
 # Fiyat filtresi - hantal buyuk coinleri atla
-MAX_PRICE = 5.0   # Sadece $0.001-$5 arasi coinler
-MIN_PRICE = 0.001
+# Fiyat filtresi yok - hacim filtresi yeterli
 
 # STATE
 positions       = {}
@@ -485,13 +485,13 @@ def scanner_loop():
                 pct   = ticker.get("percentage")  or 0
                 price = ticker.get("last") or 0
                 if qv < MIN_VOL_USDT: continue
-                if price > MAX_PRICE: continue  # Cok pahali
-                if price < MIN_PRICE: continue  # Cok ucuz
+                if qv > MAX_VOL_USDT: continue  # Hantal buyuk coinler disari
+                
 
                 # Yöne gore on filtre
-                if btc_trend == "UP"      and pct < 0.5: continue
-                if btc_trend == "DOWN"    and pct > -0.5: continue
-                if btc_trend == "NEUTRAL" and abs(pct) < 2: continue
+                if btc_trend == "UP"      and pct < 2: continue
+                if btc_trend == "DOWN"    and pct > -2: continue
+                if btc_trend == "NEUTRAL" and abs(pct) < 3: continue
                 if abs(pct) > 50: continue  # Gec kalma filtresi
 
                 sym_base = sym.upper()
