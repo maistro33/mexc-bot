@@ -330,6 +330,25 @@ def open_pos(symbol, yon, neden, btc_trend):
         }
 
     sym  = symbol.split("/")[0]
+
+    # GERCEK EMIR AT
+    try:
+        try:
+            exchange.set_leverage(LEVERAGE, symbol, {"marginMode": "isolated"})
+        except Exception as le:
+            log.warning(f"[KALDIRAC] {le}")
+
+        amount = round(POS_SIZE / price, 4)
+        side = "buy" if yon == "LONG" else "sell"
+        log.info(f"[EMIR] {sym} {yon} atiliyor... amount={amount}")
+        order = exchange.create_order(symbol, "market", side, amount, params={"reduceOnly": False})
+        log.info(f"[EMIR] BASARILI id={order.get('id','?')}")
+    except Exception as e:
+        log.error(f"[EMIR HATA] {sym}: {e}")
+        with pos_lock:
+            positions.pop(symbol, None)
+        return False
+
     icon = "\U0001f4c8" if yon == "LONG" else "\U0001f4c9"
     tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%2.0)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
     log.info(f"[OPEN] {sym} {yon}")
