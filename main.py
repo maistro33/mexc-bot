@@ -30,7 +30,7 @@ LEVERAGE       = 5
 MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
-MAX_OPEN       = 3
+MAX_OPEN       = 2
 MIN_VOL_USDT   = 1_000_000   # Min 1M
 MAX_VOL_USDT   = 5_000_000   # Max 5M - buyuk hantaller disari
 MAX_DAILY_LOSS = -10.0
@@ -341,6 +341,17 @@ def close_pos(symbol, reason, exit_price=None):
     with pos_lock:
         pos = positions.pop(symbol, None)
     if not pos: return
+
+    # GERCEK POZISYONU KAPAT
+    try:
+        side = "sell" if pos["signal"] == "LONG" else "buy"
+        amount = round(POS_SIZE / pos["entry"], 4)
+        safe_api(exchange.create_order, symbol, "market", side, amount, None, {
+            "reduceOnly": True,
+        })
+        log.info(f"[KAPAT] {symbol.split('/')[0]} gercek pozisyon kapatildi")
+    except Exception as e:
+        log.error(f"[KAPAT] {symbol.split('/')[0]}: {e}")
 
     if exit_price is None:
         t = safe_api(exchange.fetch_ticker, symbol)
