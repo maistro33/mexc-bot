@@ -261,13 +261,13 @@ def karar_ver(data, btc_trend):
         vol_long = v1m >= 1.5 or v5m >= 1.5
         if not vol_long: pass
         # En erken: 1m EMA yeni kesti, hareket az
-        elif data["k1m_yukari"] and uy >= 2 and 0 < pct < 3:
+        elif data["k1m_yukari"] and uy >= 3 and 0 < pct < 3:
             return "LONG", f"1m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
         # 5m EMA kesti, hareket az
         elif data["k5m_yukari"] and uy >= 3 and 0 < pct < 4:
             return "LONG", f"5m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
-        # Hacim patlamasi - fiyat henuz hareket etmemis
-        elif v1m >= 2.5 and uy >= 2 and 0 < pct < 2 and rsi_val < 65:
+        # Hacim patlamasi - fiyat henuz hareket etmemis - en az 3/4 gerek
+        elif v1m >= 2.5 and uy >= 3 and 0 < pct < 2 and rsi_val < 65:
             return "LONG", f"Hacim patlamasi {v1m:.1f}x, henuz +{pct:.1f}%"
 
     # SHORT - sadece hareket YENI BASLAMISSA
@@ -275,13 +275,13 @@ def karar_ver(data, btc_trend):
         vol_short = v1m >= 1.5 or v5m >= 1.5
         if not vol_short: pass
         # En erken: 1m EMA yeni kesti, hareket az
-        elif data["k1m_asagi"] and ua >= 2 and -3 < pct < 0:
+        elif data["k1m_asagi"] and ua >= 3 and -3 < pct < 0:
             return "SHORT", f"1m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
         # 5m EMA kesti, hareket az
         elif data["k5m_asagi"] and ua >= 3 and -4 < pct < 0:
             return "SHORT", f"5m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
-        # Hacim patlamasi - fiyat henuz hareket etmemis
-        elif v1m >= 2.5 and ua >= 2 and -2 < pct < 0 and rsi_val > 35:
+        # Hacim patlamasi - fiyat henuz hareket etmemis - en az 3/4 gerek
+        elif v1m >= 2.5 and ua >= 3 and -2 < pct < 0 and rsi_val > 35:
             return "SHORT", f"Hacim patlamasi {v1m:.1f}x, henuz {pct:.1f}%"
 
     return None, f"Kosul saglanamadi (pct:{pct:.1f}% Y:{uy} A:{ua})"
