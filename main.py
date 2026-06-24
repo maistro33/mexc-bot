@@ -214,58 +214,52 @@ def analyze_coin(symbol):
 
 def karar_ver(data, btc_trend, pct_change):
     """
-    Kural tabanlı karar:
-    BTC UP  → LONG ara
-    BTC NEUTRAL → SHORT ara (NEUTRAL+SHORT %62 win rate!)
-    BTC DOWN → HIÇ ACMA (%28 win rate)
+    BTC UP   = LONG ara
+    BTC DOWN = SHORT ara
+    NEUTRAL  = BTC disinda hareket eden coinleri ara (her iki yon)
     """
     if not data: return None, ""
 
-    vol   = data["vol_ratio"]
-    rsi   = data["rsi"]
-    price = data["price"]
+    vol = data["vol_ratio"]
+    rsi = data["rsi"]
 
-    # BTC DOWN = kesinlikle acma
-    if btc_trend == "DOWN":
-        return None, "BTC DOWN - islem yok"
-
-    # Hacim kontrolu - en onemli filtre
+    # Hacim kontrolu - zorunlu
     if vol < 1.5:
         return None, f"Hacim yetersiz ({vol:.1f}x)"
 
     if btc_trend == "UP":
-        # LONG kosullari
-        if (data["ema_yukari"] and          # EMA yukari kesti
-            vol >= 1.5 and                   # Hacim artiyor
-            rsi < 70 and                     # Asiri alimda degil
-            data["trend_1h"] == "YUKARI" and # 1h trend yukari
-            pct_change > 2):                 # Fiyat yukseliyor
-            return "LONG", f"EMA yukari kesti, hacim {vol:.1f}x, RSI {rsi:.0f}"
+        # LONG - pump baslangici
+        if (vol >= 1.5 and
+            pct_change > 2 and
+            rsi < 72 and
+            data["ema9"] > data["ema20"]):
+            return "LONG", f"BTC UP pump, hacim {vol:.1f}x, +{pct_change:.1f}%"
 
-        # Pump baslangici - EMA olmadan da gir
-        if (vol >= 2.5 and                   # Cok guclu hacim
-            pct_change > 5 and               # Guclu yukselis
-            rsi < 65 and                     # Asiri alimda degil
-            data["ema9"] > data["ema20"]):   # EMA yukari
-            return "LONG", f"Pump baslangici, hacim {vol:.1f}x, +{pct_change:.1f}%"
+    elif btc_trend == "DOWN":
+        # SHORT - dump baslangici
+        if (vol >= 1.5 and
+            pct_change < -2 and
+            rsi > 28 and
+            data["ema9"] < data["ema20"]):
+            return "SHORT", f"BTC DOWN dump, hacim {vol:.1f}x, {pct_change:.1f}%"
 
-    if btc_trend == "NEUTRAL":
-        # NEUTRAL'da sadece SHORT - %62 win rate!
-        if (data["ema_asagi"] and            # EMA asagi kesti
-            vol >= 1.5 and                   # Hacim artiyor
-            rsi > 40 and                     # Cok asiri satimda degil
-            data["trend_1h"] == "ASAGI" and  # 1h trend asagi
-            pct_change < -2):                # Fiyat dusüyor
-            return "SHORT", f"EMA asagi kesti, hacim {vol:.1f}x, RSI {rsi:.0f}"
+    elif btc_trend == "NEUTRAL":
+        # BTC disinda hareket - her iki yon
+        if (vol >= 2.0 and
+            pct_change > 4 and
+            rsi < 68 and
+            data["ema9"] > data["ema20"] and
+            data["trend_1h"] == "YUKARI"):
+            return "LONG", f"BTC bagimsiz pump, hacim {vol:.1f}x, +{pct_change:.1f}%"
 
-        # Dump baslangici
-        if (vol >= 2.5 and                   # Cok guclu hacim
-            pct_change < -5 and              # Guclu dusus
-            rsi > 35 and                     # Asiri satimda degil
-            data["ema9"] < data["ema20"]):   # EMA asagi
-            return "SHORT", f"Dump baslangici, hacim {vol:.1f}x, {pct_change:.1f}%"
+        if (vol >= 2.0 and
+            pct_change < -4 and
+            rsi > 32 and
+            data["ema9"] < data["ema20"] and
+            data["trend_1h"] == "ASAGI"):
+            return "SHORT", f"BTC bagimsiz dump, hacim {vol:.1f}x, {pct_change:.1f}%"
 
-    return None, "Kosullar saglanmadi"
+    return None, "Kosul saglanamadi"
 
 # ISLEM AC
 def open_pos(symbol, yon, neden, btc_trend):
@@ -364,7 +358,7 @@ def manage_loop():
             with pos_lock: syms = list(positions.keys())
             if not syms: continue
 
-            log.info(f"[MANAGE] {len(syms)} pozisyon")
+            pass  # Log azaltildi
 
             for symbol in syms:
                 with pos_lock:
@@ -462,10 +456,8 @@ def scanner_loop():
             btc_trend, btc_price, btc_chg = get_btc_trend()
             log.info(f"[SCAN] BTC:{btc_trend} ${btc_price:,.0f} ({btc_chg:+.1f}%)")
 
-            # BTC DOWN = hic tarama
-            if btc_trend == "DOWN":
-                log.info("[SCAN] BTC DOWN - tarama yok")
-                time.sleep(SCAN_INTERVAL); continue
+            # BTC DOWN = sadece dusen coinler
+            pass
 
             with pos_lock:
                 if len(positions) >= MAX_OPEN:
@@ -489,9 +481,10 @@ def scanner_loop():
 
                 pct = ticker.get("percentage") or 0
 
-                # BTC UP → yukselenler, NEUTRAL → dusenler
+                # Yöne gore filtre
                 if btc_trend == "UP" and pct < 2: continue
-                if btc_trend == "NEUTRAL" and pct > -2: continue
+                if btc_trend == "DOWN" and pct > -2: continue
+                if btc_trend == "NEUTRAL" and abs(pct) < 4: continue
 
                 sym_base = sym.upper()
                 with closed_lock:
@@ -536,7 +529,7 @@ def scanner_loop():
 
                 yon, neden = karar_ver(data, btc_trend, pct)
 
-                log.info(f"[SCAN] {sym}: {yon or 'PAS'} - {neden}")
+                if yon: log.info(f"[OPEN] {sym}: {yon} - {neden}")
 
                 if yon:
                     acildi = open_pos(symbol, yon, neden, btc_trend)
