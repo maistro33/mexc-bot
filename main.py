@@ -49,13 +49,15 @@ KAR_KADEMELERI = [
 GERI_CEKILME = 0.30   # $0.30 geri donerse kapat
 
 BLACKLIST = {
-    "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU","NVDA","TSLA",
+    "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
     "BOME","SLERF","PNUT","ACT","GOAT","RGTI","SATL","WET","POET",
-    "QCOM","AAPL","AMZN","GOOGL","META","MSFT","COIN","UBER",
-    "ABNB","SHOP","SQ","PLTR","RKLB","SMCI","ARQQ","CLOSED",
-    "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME","KPRICEUSDT",
+    "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME","CLOSED",
 }
+
+# Fiyat filtresi - hantal buyuk coinleri atla
+MAX_PRICE = 5.0   # Sadece $0.001-$5 arasi coinler
+MIN_PRICE = 0.001
 
 # STATE
 positions       = {}
@@ -479,9 +481,12 @@ def scanner_loop():
                 if symbol in open_syms: continue
                 if sym in son_bakilan: continue
 
-                qv  = ticker.get("quoteVolume") or 0
-                pct = ticker.get("percentage")  or 0
+                qv    = ticker.get("quoteVolume") or 0
+                pct   = ticker.get("percentage")  or 0
+                price = ticker.get("last") or 0
                 if qv < MIN_VOL_USDT: continue
+                if price > MAX_PRICE: continue  # Cok pahali
+                if price < MIN_PRICE: continue  # Cok ucuz
 
                 # Yöne gore on filtre
                 if btc_trend == "UP"      and pct < 0.5: continue
