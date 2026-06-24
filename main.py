@@ -502,14 +502,22 @@ def scanner_loop():
 
                 candidates.append({"symbol": symbol, "pct": pct, "qv": qv})
 
-            # Hacime gore sirala, rotasyon uygula
-            candidates.sort(key=lambda x: x["qv"], reverse=True)
+            # Rotasyon - son 30 coini atla
             yeni = [c for c in candidates if c["symbol"].split("/")[0] not in son_bakilan]
-            if len(yeni) < 2:
-                son_bakilan = set()
+            if len(yeni) < 3:
+                son_bakilan = set()  # Sifirla
                 yeni = candidates
+
+            # Karisik sirala - her turda farkli coinler
+            import random
+            random.shuffle(yeni)
             candidates = yeni[:6]
-            son_bakilan = {c["symbol"].split("/")[0] for c in candidates}
+
+            # Bakilan coinleri kaydet (max 30 tane)
+            for c in candidates:
+                son_bakilan.add(c["symbol"].split("/")[0])
+            if len(son_bakilan) > 30:
+                son_bakilan = set(list(son_bakilan)[-15:])
 
             if not candidates:
                 time.sleep(SCAN_INTERVAL); continue
