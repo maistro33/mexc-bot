@@ -138,75 +138,105 @@ def get_btc_trend():
         return "NEUTRAL", 0, 0
 
 # TEKNİK ANALİZ - Kural tabanlı
+def ema_trend(df):
+    """EMA9 EMA20 trend yonu"""
+    e9  = df["c"].ewm(span=9).mean()
+    e20 = df["c"].ewm(span=20).mean()
+    return "YUKARI" if float(e9.iloc[-1]) > float(e20.iloc[-1]) else "ASAGI"
+
+def ema_kesiyor(df):
+    """EMA son 3 mumda kesti mi?"""
+    e9  = df["c"].ewm(span=9).mean()
+    e20 = df["c"].ewm(span=20).mean()
+    yukari = float(e9.iloc[-3]) < float(e20.iloc[-3]) and float(e9.iloc[-1]) > float(e20.iloc[-1])
+    asagi  = float(e9.iloc[-3]) > float(e20.iloc[-3]) and float(e9.iloc[-1]) < float(e20.iloc[-1])
+    return yukari, asagi
+
+def rsi_hesap(df):
+    delta = df["c"].diff()
+    gain  = delta.clip(lower=0).rolling(14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    rs    = gain / loss.replace(0, 0.001)
+    return float((100 - 100/(1+rs)).iloc[-1])
+
+def hacim_ratio(df, pencere=3):
+    avg = float(df["v"].rolling(20).mean().iloc[-1])
+    son = float(df["v"].tail(pencere).mean())
+    return son / max(avg, 0.001)
+
 def analyze_coin(symbol):
     """
-    Gecmis 1073 islemden cikarilan kurallar:
-    - BTC DOWN = acma
-    - BTC NEUTRAL = sadece SHORT
-    - BTC UP = sadece LONG
-    - Hacim 2x+ ve EMA kesisimi gerekli
+    Multi-timeframe analiz: 1m + 5m + 15m + 1h
+    Hepsi ayni yonde = guclu sinyal, erken giris
     """
     try:
-        # 15m veri
-        raw15 = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=50)
-        if not raw15 or len(raw15) < 20: return None
+        # Veri cek
+        raw1m  = safe_api(exchange.fetch_ohlcv, symbol, "1m",  limit=30)
+        raw5m  = safe_api(exchange.fetch_ohlcv, symbol, "5m",  limit=30)
+        raw15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=30)
+        raw1h  = safe_api(exchange.fetch_ohlcv, symbol, "1h",  limit=24)
 
-        df = pd.DataFrame(raw15, columns=["t","o","h","l","c","v"])
-        price  = float(df["c"].iloc[-1])
-        
-        # EMA hesapla
-        ema9  = df["c"].ewm(span=9).mean()
-        ema20 = df["c"].ewm(span=20).mean()
-        ema9_son  = float(ema9.iloc[-1])
-        ema9_once = float(ema9.iloc[-3])
-        ema20_son  = float(ema20.iloc[-1])
-        ema20_once = float(ema20.iloc[-3])
+        if not raw15m or len(raw15m) < 20: return None
 
-        # EMA kesisimi - yeni mi oldu?
-        ema_yukari = ema9_once < ema20_once and ema9_son > ema20_son  # Yukari kesisim
-        ema_asagi  = ema9_once > ema20_once and ema9_son < ema20_son  # Asagi kesisim
+        df1m  = pd.DataFrame(raw1m,  columns=["t","o","h","l","c","v"]) if raw1m  else None
+        df5m  = pd.DataFrame(raw5m,  columns=["t","o","h","l","c","v"]) if raw5m  else None
+        df15m = pd.DataFrame(raw15m, columns=["t","o","h","l","c","v"])
+        df1h  = pd.DataFrame(raw1h,  columns=["t","o","h","l","c","v"]) if raw1h  else None
 
-        # Hacim analizi
-        vol_avg = float(df["v"].rolling(20).mean().iloc[-1])
-        vol_son = float(df["v"].iloc[-1])
-        vol_3   = float(df["v"].tail(3).mean())
-        vol_ratio = vol_3 / max(vol_avg, 0.001)
+        price = float(df15m["c"].iloc[-1])
 
-        # RSI
-        delta = df["c"].diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rs    = gain / loss.replace(0, 0.001)
-        rsi   = float((100 - 100 / (1 + rs)).iloc[-1])
+        # Her timeframe'de trend
+        trend_1m  = ema_trend(df1m)  if df1m  is not None else "BELIRSIZ"
+        trend_5m  = ema_trend(df5m)  if df5m  is not None else "BELIRSIZ"
+        trend_15m = ema_trend(df15m)
+        trend_1h  = ema_trend(df1h)  if df1h  is not None else "BELIRSIZ"
 
-        # Bollinger
-        bb_ma  = float(df["c"].rolling(20).mean().iloc[-1])
-        bb_std = float(df["c"].rolling(20).std().iloc[-1])
-        bb_ust = bb_ma + 2 * bb_std
-        bb_alt = bb_ma - 2 * bb_std
+        # 1m'de EMA yeni kesti mi? (erken giris sinyali)
+        ema1m_yukari, ema1m_asagi = (False, False)
+        if df1m is not None:
+            ema1m_yukari, ema1m_asagi = ema_kesiyor(df1m)
 
-        # Fiyat hareketi
-        pct_5  = (price - float(df["c"].iloc[-5]))  / float(df["c"].iloc[-5])  * 100
-        pct_10 = (price - float(df["c"].iloc[-10])) / float(df["c"].iloc[-10]) * 100
+        # 5m'de EMA yeni kesti mi?
+        ema5m_yukari, ema5m_asagi = (False, False)
+        if df5m is not None:
+            ema5m_yukari, ema5m_asagi = ema_kesiyor(df5m)
 
-        # 1h veri - trend teyit
-        raw1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=24)
-        trend_1h = "YUKARI"
-        if raw1h and len(raw1h) >= 10:
-            df1h = pd.DataFrame(raw1h, columns=["t","o","h","l","c","v"])
-            ema9_1h  = float(df1h["c"].ewm(span=9).mean().iloc[-1])
-            ema20_1h = float(df1h["c"].ewm(span=20).mean().iloc[-1])
-            trend_1h = "YUKARI" if ema9_1h > ema20_1h else "ASAGI"
+        # Hacim - 1m'de ani artis var mi?
+        vol_1m  = hacim_ratio(df1m,  3) if df1m  is not None else 1.0
+        vol_5m  = hacim_ratio(df5m,  3) if df5m  is not None else 1.0
+        vol_15m = hacim_ratio(df15m, 3)
+
+        # RSI 15m
+        rsi = rsi_hesap(df15m)
+
+        # Fiyat degisimi
+        pct_5m  = (price - float(df5m["c"].iloc[-5]))   / float(df5m["c"].iloc[-5])   * 100 if df5m  is not None else 0
+        pct_15m = (price - float(df15m["c"].iloc[-10])) / float(df15m["c"].iloc[-10]) * 100
+
+        # Timeframe uyumu say
+        uyum_yukari = sum([
+            trend_1m  == "YUKARI",
+            trend_5m  == "YUKARI",
+            trend_15m == "YUKARI",
+            trend_1h  == "YUKARI",
+        ])
+        uyum_asagi = sum([
+            trend_1m  == "ASAGI",
+            trend_5m  == "ASAGI",
+            trend_15m == "ASAGI",
+            trend_1h  == "ASAGI",
+        ])
 
         return {
             "price": price,
-            "ema9": ema9_son, "ema20": ema20_son,
-            "ema_yukari": ema_yukari, "ema_asagi": ema_asagi,
-            "vol_ratio": vol_ratio,
+            "trend_1m": trend_1m, "trend_5m": trend_5m,
+            "trend_15m": trend_15m, "trend_1h": trend_1h,
+            "uyum_yukari": uyum_yukari, "uyum_asagi": uyum_asagi,
+            "ema1m_yukari": ema1m_yukari, "ema1m_asagi": ema1m_asagi,
+            "ema5m_yukari": ema5m_yukari, "ema5m_asagi": ema5m_asagi,
+            "vol_1m": vol_1m, "vol_5m": vol_5m, "vol_15m": vol_15m,
             "rsi": rsi,
-            "bb_ust": bb_ust, "bb_alt": bb_alt,
-            "pct_5": pct_5, "pct_10": pct_10,
-            "trend_1h": trend_1h,
+            "pct_5m": pct_5m, "pct_15m": pct_15m,
         }
     except Exception as e:
         log.warning(f"[ANALYZE] {symbol}: {e}")
@@ -214,52 +244,46 @@ def analyze_coin(symbol):
 
 def karar_ver(data, btc_trend, pct_change):
     """
-    BTC UP   = LONG ara
-    BTC DOWN = SHORT ara
-    NEUTRAL  = BTC disinda hareket eden coinleri ara (her iki yon)
+    Multi-timeframe uyum kontrolu:
+    4/4 veya 3/4 timeframe ayni yonde = guclu sinyal = GIR
+    2/4 veya az = belirsiz = PAS
     """
     if not data: return None, ""
 
-    vol = data["vol_ratio"]
     rsi = data["rsi"]
+    uyum_yukari = data["uyum_yukari"]
+    uyum_asagi  = data["uyum_asagi"]
+    vol_1m      = data["vol_1m"]
+    vol_5m      = data["vol_5m"]
 
-    # Hacim kontrolu - zorunlu
-    if vol < 1.5:
-        return None, f"Hacim yetersiz ({vol:.1f}x)"
+    # Hacim en az 1 timeframe'de guclu olmali
+    vol_guclu = vol_1m >= 1.5 or vol_5m >= 1.5
 
-    if btc_trend == "UP":
-        # LONG - pump baslangici
-        if (vol >= 1.5 and
-            pct_change > 2 and
-            rsi < 72 and
-            data["ema9"] > data["ema20"]):
-            return "LONG", f"BTC UP pump, hacim {vol:.1f}x, +{pct_change:.1f}%"
+    if not vol_guclu:
+        return None, "Hacim yetersiz"
 
-    elif btc_trend == "DOWN":
-        # SHORT - dump baslangici
-        if (vol >= 1.5 and
-            pct_change < -2 and
-            rsi > 28 and
-            data["ema9"] < data["ema20"]):
-            return "SHORT", f"BTC DOWN dump, hacim {vol:.1f}x, {pct_change:.1f}%"
+    # LONG kosullari
+    if btc_trend in ["UP", "NEUTRAL"]:
+        # 3+ timeframe yukari + erken kesisim
+        if uyum_yukari >= 3 and rsi < 72:
+            if data["ema1m_yukari"]:
+                return "LONG", f"1m EMA kesti, {uyum_yukari}/4 yukari, vol {vol_1m:.1f}x"
+            if data["ema5m_yukari"] and uyum_yukari >= 3:
+                return "LONG", f"5m EMA kesti, {uyum_yukari}/4 yukari, vol {vol_5m:.1f}x"
+            if uyum_yukari == 4 and vol_guclu and pct_change < 5:
+                return "LONG", f"4/4 uyum, gec degil ({pct_change:.1f}%), vol {vol_5m:.1f}x"
 
-    elif btc_trend == "NEUTRAL":
-        # BTC disinda hareket - her iki yon
-        if (vol >= 2.0 and
-            pct_change > 4 and
-            rsi < 68 and
-            data["ema9"] > data["ema20"] and
-            data["trend_1h"] == "YUKARI"):
-            return "LONG", f"BTC bagimsiz pump, hacim {vol:.1f}x, +{pct_change:.1f}%"
+    # SHORT kosullari
+    if btc_trend in ["DOWN", "NEUTRAL"]:
+        if uyum_asagi >= 3 and rsi > 28:
+            if data["ema1m_asagi"]:
+                return "SHORT", f"1m EMA kesti, {uyum_asagi}/4 asagi, vol {vol_1m:.1f}x"
+            if data["ema5m_asagi"] and uyum_asagi >= 3:
+                return "SHORT", f"5m EMA kesti, {uyum_asagi}/4 asagi, vol {vol_5m:.1f}x"
+            if uyum_asagi == 4 and vol_guclu and pct_change > -5:
+                return "SHORT", f"4/4 uyum, gec degil ({pct_change:.1f}%), vol {vol_5m:.1f}x"
 
-        if (vol >= 2.0 and
-            pct_change < -4 and
-            rsi > 32 and
-            data["ema9"] < data["ema20"] and
-            data["trend_1h"] == "ASAGI"):
-            return "SHORT", f"BTC bagimsiz dump, hacim {vol:.1f}x, {pct_change:.1f}%"
-
-    return None, "Kosul saglanamadi"
+    return None, f"Uyum yetersiz (yukari:{uyum_yukari} asagi:{uyum_asagi})"
 
 # ISLEM AC
 def open_pos(symbol, yon, neden, btc_trend):
