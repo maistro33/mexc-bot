@@ -30,7 +30,7 @@ ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY","")
 
 LEVERAGE       = 5
 MARGIN         = 10.0
-MAX_OPEN       = 4
+MAX_OPEN       = 2
 MIN_VOL        = 500_000
 COMMISSION     = 0.0006
 MAX_DAILY_LOSS = -15.0
@@ -437,11 +437,17 @@ Sana coin teknik verileri gonderilecek. Her coini analiz edip karar vereceksin.
 Grafik olmasa da sayisal verilerden (EMA, Bollinger, hacim, momentum) karar verebilirsin.
 
 STRATEJI:
-- BTC'den bagimsiz hareket eden pump ve dumplari yakala
-- Pump baslangicinda LONG gir, kar al cik
-- Dump baslangicinda SHORT gir, kar al cik
-- Bir coinden kar alinca 2 SAAT bir daha acma
-- Gec kalmis pump/dump'a girme
+- PUMP BASLANGICINI yakala: fiyat hareket etmeye YENI basliyorsa gir
+- DUMP BASLANGICINI yakala: dusus YENI basliyorsa SHORT ac
+- GEC KALMA: zaten %10+ hareket etmisse KESINLIKLE ACMA
+- Bir coinden kar alinca 2 SAAT daha acma
+- Emin degilsen PAS gec - kayip acmamak kazanmaktan daha onemli
+
+KARAR KRITERLERI:
+- Son 3 mumda hacim ARTIYOR mu? (evet = iyi sinyal)
+- EMA9 EMA20'yi YENI kesti mi? (evet = guclu sinyal)  
+- Fiyat zaten cok hareket etti mi? (evet = PAS gec)
+- BTC UP ise LONG, BTC DOWN ise SHORT, NEUTRAL ise cok guclu sinyal iste
 
 GRAFİK ANALİZİ:
 - Mum renkleri: yesil=yukari, kirmizi=asagi
@@ -542,6 +548,15 @@ def open_pos(symbol, yon, neden, btc_trend, tp_pct=2.0, sl_pct=1.0):
     if not t: return False
     price = t["last"]
     sl_price = price*(1-0.02) if yon=="LONG" else price*(1+0.02)
+
+    # BTC yonu kontrolu - kesin kural
+    btc_now, _, _, _ = get_market()
+    if btc_now == "DOWN" and yon == "LONG":
+        log.info(f"[SKIP] BTC DOWN iken LONG acilmaz")
+        return False
+    if btc_now == "UP" and yon == "SHORT":
+        log.info(f"[SKIP] BTC UP iken SHORT acilmaz")
+        return False
 
     with pos_lock:
         sym_base = symbol.split("/")[0].upper()
