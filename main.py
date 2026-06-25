@@ -443,6 +443,55 @@ def hesap_pnl(pos, price):
 # ─────────────────────────────────────────────
 # ISLEM AC
 # ─────────────────────────────────────────────
+
+def giris_momentum_ok(symbol, yon, analiz_fiyati):
+    """
+    Giris aninda 3 kontrol:
+    1. Fiyat 3sn icinde dogru yonde mi gidiyor?
+    2. Son 3 mum dogru yonde mi?
+    3. Slippage kabul edilebilir mi?
+    """
+    try:
+        t1 = safe_api(exchange.fetch_ticker, symbol)
+        if not t1: return False, "Ticker alinamadi"
+        fiyat1 = float(t1["last"])
+
+        time.sleep(3)
+
+        t2 = safe_api(exchange.fetch_ticker, symbol)
+        if not t2: return False, "Ticker2 alinamadi"
+        fiyat2 = float(t2["last"])
+
+        tick_degisim = (fiyat2 - fiyat1) / fiyat1 * 100
+
+        # Fiyat ters yonde gidiyorsa girme
+        if yon == "SHORT" and tick_degisim > 0.15:
+            return False, f"Geri donuyor! +{tick_degisim:.2f}% yukari gitti"
+        if yon == "LONG" and tick_degisim < -0.15:
+            return False, f"Geri donuyor! {tick_degisim:.2f}% asagi gitti"
+
+        # Son 3 mum kontrolu
+        r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=5)
+        if r1m and len(r1m) >= 3:
+            son3    = r1m[-3:]
+            kirmizi = sum(1 for m in son3 if m[4] < m[1])
+            yesil   = sum(1 for m in son3 if m[4] > m[1])
+            if yon == "SHORT" and yesil >= 2:
+                return False, f"Son 3 mumun {yesil}u yesil - SHORT icin erken"
+            if yon == "LONG" and kirmizi >= 2:
+                return False, f"Son 3 mumun {kirmizi}u kirmizi - LONG icin erken"
+
+        # Slippage kontrolu
+        slippage = abs(fiyat2 - analiz_fiyati) / analiz_fiyati * 100
+        if slippage > 0.5:
+            return False, f"Slippage cok yuksek: %{slippage:.2f}"
+
+        return True, f"OK | tick:{tick_degisim:+.2f}% | slippage:{slippage:.2f}%"
+
+    except Exception as e:
+        log.warning(f"[MOMENTUM] {e}")
+        return False, f"Hata: {e}"
+
 def open_pos(symbol, yon, neden, btc_trend):
     global daily_pnl
     if daily_pnl <= MAX_DAILY_LOSS: return False
@@ -454,17 +503,24 @@ def open_pos(symbol, yon, neden, btc_trend):
     if btc_trend == "UP" and yon == "SHORT":
         log.info(f"[ENGEL] BTC UP, SHORT engellendi: {symbol}")
         return False
-    if btc_trend == "NEUTRAL_SHORT" and yon == "LONG":
-        # NEUTRAL_SHORT'ta LONG sadece 4/4 uyumda karar_ver'den gelir
-        # Ama ekstra guvenlik icin reddedebiliriz - simdilik izin ver (karar_ver zaten filtredi)
-        pass
-    if btc_trend == "NEUTRAL_LONG" and yon == "SHORT":
-        # Ayni sekilde
-        pass
 
+    # Analiz fiyatini al
+    t0 = safe_api(exchange.fetch_ticker, symbol)
+    if not t0: return False
+    analiz_fiyati = float(t0["last"])
+
+    # GIRIS MOMENTUM KONTROLU
+    sym = symbol.split("/")[0]
+    momentum_ok, momentum_neden = giris_momentum_ok(symbol, yon, analiz_fiyati)
+    if not momentum_ok:
+        log.info(f"[MOMENTUM] {sym} reddedildi: {momentum_neden}")
+        return False
+    log.info(f"[MOMENTUM] {sym} gecti: {momentum_neden}")
+
+    # Guncel fiyati yeniden al (3sn gecti)
     t = safe_api(exchange.fetch_ticker, symbol)
     if not t: return False
-    price    = t["last"]
+    price    = float(t["last"])
     sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
 
     with pos_lock:
@@ -918,9 +974,70 @@ def shutdown(signum, frame):
 sig_mod.signal(sig_mod.SIGTERM, shutdown)
 sig_mod.signal(sig_mod.SIGINT,  shutdown)
 
+
+def load_open_positions():
+    """Bot baslarken borsadaki acik pozisyonlari yukle."""
+    try:
+        log.info("[YUKLE] Borsadaki acik pozisyonlar kontrol ediliyor...")
+        raw = safe_api(exchange.fetch_positions)
+        if not raw:
+            log.info("[YUKLE] Acik pozisyon bulunamadi")
+            return
+
+        btc_trend, _, _ = get_btc_trend()
+        yuklenen = 0
+
+        for pos in raw:
+            try:
+                contracts = float(pos.get("contracts") or 0)
+                if contracts == 0:
+                    continue
+                symbol = pos.get("symbol", "")
+                side   = pos.get("side", "")
+                entry  = float(pos.get("entryPrice") or 0)
+                if not symbol or not side or entry == 0:
+                    continue
+                yon      = "LONG" if side == "long" else "SHORT"
+                sl_price = entry * (1 - 0.02) if yon == "LONG" else entry * (1 + 0.02)
+                with pos_lock:
+                    if symbol not in positions:
+                        positions[symbol] = {
+                            "signal":       yon,
+                            "entry":        entry,
+                            "sl_price":     sl_price,
+                            "sl_garantili": 0.0,
+                            "max_pnl":      0.0,
+                            "max_kar":      0.0,
+                            "neden":        "Onceki oturumdan yuklendi",
+                            "btc_trend":    btc_trend,
+                            "open_time":    time.time(),
+                        }
+                        yuklenen += 1
+                        log.info(f"[YUKLE] {symbol.split('/')[0]} {yon} @ {entry}")
+            except Exception as e:
+                log.warning(f"[YUKLE] {e}")
+
+        if yuklenen > 0:
+            with pos_lock:
+                lines = [f"\u267b\ufe0f {yuklenen} pozisyon yuklendi:\n"]
+                for sym, p in positions.items():
+                    t     = safe_api(exchange.fetch_ticker, sym)
+                    fiyat = t["last"] if t else p["entry"]
+                    pnl, pct = hesap_pnl(p, fiyat)
+                    ic    = "\U0001f4c8" if p["signal"] == "LONG" else "\U0001f4c9"
+                    dk    = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
+                    lines.append(f"{dk} {ic} {sym.split('/')[0]} {p['signal']} | PnL: {pnl:+.2f}$")
+            tg("\n".join(lines))
+        else:
+            log.info("[YUKLE] Yuklenen pozisyon yok")
+
+    except Exception as e:
+        log.error(f"[YUKLE] {e}")
+
 if __name__ == "__main__":
     print("SADIK TRADER v3 BASLIYOR...")
     load_recently_closed()
+    load_open_positions()
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=scanner_loop,  daemon=True).start()
