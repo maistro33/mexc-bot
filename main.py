@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
 SADIK TRADER v3 - Multi-Timeframe + Kademeli Kar Koruma
-- BTC UP = LONG | BTC DOWN = SHORT | NEUTRAL = her iki yon
-- 1m + 5m + 15m + 1h uyumu = erken giris
-- Her $1 karda SL yukar cek - sermaye icerde kalsin
-- Hacim once artar, fiyat sonra hareket eder mantigi
+DUZELTMELER:
+- BTC trend tespiti daha hassas (EMA + RSI + momentum birlikte)
+- NEUTRAL'da LONG/SHORT yonu hacim + RSI ile belirleniyor
+- BTC DOWN'da kesinlikle LONG yok
+- BTC UP'da kesinlikle SHORT yok
+- NEUTRAL'da her iki yon acilabilir AMA ek filtreler var
+- Gec kalma filtresi korundu
 """
 
 import os, time, threading, logging, re
@@ -31,23 +34,20 @@ MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
 MAX_OPEN       = 2
-MIN_VOL_USDT   = 1_000_000   # Min 1M
-MAX_VOL_USDT   = 5_000_000   # Max 5M - buyuk hantaller disari
+MIN_VOL_USDT   = 1_000_000
+MAX_VOL_USDT   = 5_000_000
 MAX_DAILY_LOSS = -10.0
 SCAN_INTERVAL  = 60
 
-# Kademeli kar koruma seviyeleri
-# Her $1 karda SL'i bir kademe yukari cek
+# Kademeli kar koruma
 KAR_KADEMELERI = [
-    (1.0, 0.30),   # $1 kar gorulunce SL'i $0.30 kara cek
-    (2.0, 0.80),   # $2 kar gorulunce SL'i $0.80 kara cek
-    (3.0, 1.50),   # $3 kar gorulunce SL'i $1.50 kara cek
-    (4.0, 2.50),   # $4 kar gorulunce SL'i $2.50 kara cek
-    (5.0, 3.50),   # $5 kar gorulunce SL'i $3.50 kara cek
+    (1.0, 0.30),
+    (2.0, 0.80),
+    (3.0, 1.50),
+    (4.0, 2.50),
+    (5.0, 3.50),
 ]
-
-# Geri cekilme limiti - bu kadar geri donerse kapat
-GERI_CEKILME = 0.30   # $0.30 geri donerse kapat
+GERI_CEKILME = 0.30
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
@@ -55,9 +55,6 @@ BLACKLIST = {
     "BOME","SLERF","PNUT","ACT","GOAT","RGTI","SATL","WET","POET",
     "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME","CLOSED",
 }
-
-# Fiyat filtresi - hantal buyuk coinleri atla
-# Fiyat filtresi yok - hacim filtresi yeterli
 
 # STATE
 positions       = {}
@@ -127,30 +124,73 @@ def safe_api(func, *args, **kwargs):
             time.sleep(2)
     return None
 
-# BTC TREND
+# ─────────────────────────────────────────────
+# BTC TREND — Daha hassas versiyon
+# EMA9/20/50 + RSI + momentum birlikte karar
+# ─────────────────────────────────────────────
 def get_btc_trend():
+    """
+    UP   : Net yukari trend - LONG acilabilir
+    DOWN : Net asagi trend  - SHORT acilabilir
+    NEUTRAL_LONG  : Kararli ama hafif yukari - LONG oncelikli
+    NEUTRAL_SHORT : Kararli ama hafif asagi  - SHORT oncelikli
+    NEUTRAL       : Gercekten belirsiz       - Cok secici ol
+    """
     try:
-        raw = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h", limit=50)
+        raw = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h", limit=100)
         if not raw: return "NEUTRAL", 0, 0
+
         df = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
-        price = float(df["c"].iloc[-1])
-        e20   = float(df["c"].ewm(span=20).mean().iloc[-1])
-        e50   = float(df["c"].ewm(span=50).mean().iloc[-1])
-        chg   = (price - float(df["c"].iloc[-24])) / float(df["c"].iloc[-24]) * 100
-        if price > e20 * 1.005 and price > e50 and chg > 1:
-            return "UP", price, chg
-        elif price < e20 * 0.995 and price < e50 and chg < -1:
-            return "DOWN", price, chg
-        return "NEUTRAL", price, chg
-    except:
+        price  = float(df["c"].iloc[-1])
+        e9     = float(df["c"].ewm(span=9).mean().iloc[-1])
+        e20    = float(df["c"].ewm(span=20).mean().iloc[-1])
+        e50    = float(df["c"].ewm(span=50).mean().iloc[-1])
+
+        # Son 4 saatlik degisim (kisa vade)
+        chg4h  = (price - float(df["c"].iloc[-4]))  / float(df["c"].iloc[-4])  * 100
+        # Son 24 saatlik degisim (orta vade)
+        chg24h = (price - float(df["c"].iloc[-24])) / float(df["c"].iloc[-24]) * 100
+
+        # RSI hesapla
+        delta = df["c"].diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rs    = gain / loss.replace(0, 0.001)
+        rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+
+        # EMA dizilimi
+        ema_yukari = price > e9 > e20 > e50   # Guclu yukari
+        ema_asagi  = price < e9 < e20 < e50   # Guclu asagi
+        ema_hafif_yukari = price > e20 and e9 > e20  # Hafif yukari
+        ema_hafif_asagi  = price < e20 and e9 < e20  # Hafif asagi
+
+        # GUCLU TREND
+        if ema_yukari and chg4h > 0.5 and chg24h > 1.5 and rsi_val > 52:
+            return "UP", price, chg24h
+
+        if ema_asagi and chg4h < -0.5 and chg24h < -1.5 and rsi_val < 48:
+            return "DOWN", price, chg24h
+
+        # ZAYIF AMA YONLU TREND
+        if ema_hafif_yukari and chg4h > 0.3 and rsi_val > 50:
+            return "NEUTRAL_LONG", price, chg24h
+
+        if ema_hafif_asagi and chg4h < -0.3 and rsi_val < 50:
+            return "NEUTRAL_SHORT", price, chg24h
+
+        return "NEUTRAL", price, chg24h
+
+    except Exception as e:
+        log.warning(f"[BTC_TREND] {e}")
         return "NEUTRAL", 0, 0
 
+# ─────────────────────────────────────────────
 # TEKNIK ANALIZ
+# ─────────────────────────────────────────────
 def ema_yonu(df):
     e9  = df["c"].ewm(span=9).mean()
     e20 = df["c"].ewm(span=20).mean()
     son_yukari = float(e9.iloc[-1]) > float(e20.iloc[-1])
-    # Son 5 mumda kesti mi?
     kesiyor_yukari = float(e9.iloc[-5]) < float(e20.iloc[-5]) and son_yukari
     kesiyor_asagi  = float(e9.iloc[-5]) > float(e20.iloc[-5]) and not son_yukari
     return son_yukari, kesiyor_yukari, kesiyor_asagi
@@ -184,7 +224,6 @@ def analyze_coin(symbol):
 
         price = float(df15m["c"].iloc[-1])
 
-        # Her timeframe EMA yonu
         def trend(df):
             if df is None: return None
             yukari, _, _ = ema_yonu(df)
@@ -195,29 +234,27 @@ def analyze_coin(symbol):
         t15m = trend(df15m)
         t1h  = trend(df1h)
 
-        # Timeframe uyumu
-        trendler = [t for t in [t1m, t5m, t15m, t1h] if t]
+        trendler    = [t for t in [t1m, t5m, t15m, t1h] if t]
         uyum_yukari = trendler.count("YUKARI")
         uyum_asagi  = trendler.count("ASAGI")
 
-        # EMA kesiyor mu? (erken giris sinyali)
         _, k1m_yukari,  k1m_asagi  = ema_yonu(df1m)  if df1m  is not None else (None, False, False)
         _, k5m_yukari,  k5m_asagi  = ema_yonu(df5m)  if df5m  is not None else (None, False, False)
         _, k15m_yukari, k15m_asagi = ema_yonu(df15m)
 
-        # Hacim
         v1m  = hacim(df1m,  3) if df1m  is not None else 1.0
         v5m  = hacim(df5m,  3) if df5m  is not None else 1.0
         v15m = hacim(df15m, 3)
 
-        # RSI 15m
         rsi_val = rsi(df15m)
 
-        # Fiyat degisimi - 15m'de son 10 mum
+        # 1h RSI - ek filtre icin
+        rsi_1h = rsi(df1h) if df1h is not None else rsi_val
+
         pct = (price - float(df15m["c"].iloc[-10])) / float(df15m["c"].iloc[-10]) * 100
 
         return {
-            "price": price, "rsi": rsi_val,
+            "price": price, "rsi": rsi_val, "rsi_1h": rsi_1h,
             "uyum_yukari": uyum_yukari, "uyum_asagi": uyum_asagi,
             "k1m_yukari": k1m_yukari, "k1m_asagi": k1m_asagi,
             "k5m_yukari": k5m_yukari, "k5m_asagi": k5m_asagi,
@@ -229,64 +266,110 @@ def analyze_coin(symbol):
         log.warning(f"[ANALYZE] {symbol}: {e}")
         return None
 
+# ─────────────────────────────────────────────
+# KARAR VER — BTC trend'e gore akilli secim
+# ─────────────────────────────────────────────
 def karar_ver(data, btc_trend):
-    """
-    Multi-timeframe uyum + hacim + erken giris
-    """
     if not data: return None, ""
 
     rsi_val = data["rsi"]
+    rsi_1h  = data["rsi_1h"]
     uy      = data["uyum_yukari"]
     ua      = data["uyum_asagi"]
     v1m     = data["v1m"]
     v5m     = data["v5m"]
     pct     = data["pct"]
 
-    # Hacim en az bir timeframe'de guclu olmali
-    vol_ok = v1m >= 1.5 or v5m >= 1.5
-
-    # Cok gec kalindiysa girme
+    # Gec kalma filtresi
     if abs(pct) > 20:
         return None, f"Gec kalindi ({pct:.1f}%)"
+    if pct > 5:
+        return None, f"LONG gec kalindi ({pct:.1f}%)"
+    if pct < -5:
+        return None, f"SHORT gec kalindi ({pct:.1f}%)"
 
-    # GEC KALMA KONTROLU - en onemli filtre
-    # Hareket zaten cok olmussa girme
-    if pct > 5:   # 5%+ yukseldi, LONG icin gec
-        return None, f"LONG gec kalindi ({pct:.1f}% hareket)"
-    if pct < -5:  # 5%+ dustu, SHORT icin gec
-        return None, f"SHORT gec kalindi ({pct:.1f}% hareket)"
+    vol_ok = v1m >= 1.5 or v5m >= 1.5
 
-    # LONG - sadece hareket YENI BASLAMISSA
-    if btc_trend in ["UP", "NEUTRAL"]:
-        vol_long = v1m >= 1.5 or v5m >= 1.5
-        if not vol_long: pass
-        # En erken: 1m EMA yeni kesti, hareket az
-        elif data["k1m_yukari"] and uy >= 3 and 0 < pct < 3:
-            return "LONG", f"1m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
-        # 5m EMA kesti, hareket az
-        elif data["k5m_yukari"] and uy >= 3 and 0 < pct < 4:
-            return "LONG", f"5m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
-        # Hacim patlamasi - fiyat henuz hareket etmemis - en az 3/4 gerek
-        elif v1m >= 2.5 and uy >= 3 and 0 < pct < 2 and rsi_val < 65:
-            return "LONG", f"Hacim patlamasi {v1m:.1f}x, henuz +{pct:.1f}%"
+    # ── BTC GUCLU YUKARI → Sadece LONG ──
+    if btc_trend == "UP":
+        if not vol_ok:
+            return None, f"Hacim yetersiz (v1m:{v1m:.1f}x)"
+        if data["k1m_yukari"] and uy >= 3 and 0 < pct < 3 and rsi_val < 68:
+            return "LONG", f"BTC UP | 1m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
+        if data["k5m_yukari"] and uy >= 3 and 0 < pct < 4 and rsi_val < 68:
+            return "LONG", f"BTC UP | 5m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
+        if v1m >= 2.5 and uy >= 3 and 0 < pct < 2 and rsi_val < 65:
+            return "LONG", f"BTC UP | Hacim {v1m:.1f}x, {uy}/4 yukari, +{pct:.1f}%"
+        return None, f"BTC UP ama LONG kosulu saglanamadi (Y:{uy} RSI:{rsi_val:.0f})"
 
-    # SHORT - sadece hareket YENI BASLAMISSA
-    if btc_trend in ["DOWN", "NEUTRAL"]:
-        vol_short = v1m >= 1.5 or v5m >= 1.5
-        if not vol_short: pass
-        # En erken: 1m EMA yeni kesti, hareket az
-        elif data["k1m_asagi"] and ua >= 3 and -3 < pct < 0:
-            return "SHORT", f"1m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
-        # 5m EMA kesti, hareket az
-        elif data["k5m_asagi"] and ua >= 3 and -4 < pct < 0:
-            return "SHORT", f"5m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
-        # Hacim patlamasi - fiyat henuz hareket etmemis - en az 3/4 gerek
-        elif v1m >= 2.5 and ua >= 3 and -2 < pct < 0 and rsi_val > 35:
-            return "SHORT", f"Hacim patlamasi {v1m:.1f}x, henuz {pct:.1f}%"
+    # ── BTC GUCLU ASAGI → Sadece SHORT ──
+    if btc_trend == "DOWN":
+        if not vol_ok:
+            return None, f"Hacim yetersiz (v1m:{v1m:.1f}x)"
+        if data["k1m_asagi"] and ua >= 3 and -3 < pct < 0 and rsi_val > 32:
+            return "SHORT", f"BTC DOWN | 1m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
+        if data["k5m_asagi"] and ua >= 3 and -4 < pct < 0 and rsi_val > 32:
+            return "SHORT", f"BTC DOWN | 5m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
+        if v1m >= 2.5 and ua >= 3 and -2 < pct < 0 and rsi_val > 35:
+            return "SHORT", f"BTC DOWN | Hacim {v1m:.1f}x, {ua}/4 asagi, {pct:.1f}%"
+        return None, f"BTC DOWN ama SHORT kosulu saglanamadi (A:{ua} RSI:{rsi_val:.0f})"
 
-    return None, f"Kosul saglanamadi (pct:{pct:.1f}% Y:{uy} A:{ua})"
+    # ── BTC ZAYIF YUKARI → LONG oncelikli, SHORT cok secici ──
+    if btc_trend == "NEUTRAL_LONG":
+        if not vol_ok:
+            return None, f"Hacim yetersiz"
+        # LONG - normal sartlar
+        if data["k1m_yukari"] and uy >= 3 and 0 < pct < 3 and rsi_val < 65:
+            return "LONG", f"BTC N-LONG | 1m EMA, {uy}/4, +{pct:.1f}%"
+        if data["k5m_yukari"] and uy >= 3 and 0 < pct < 4 and rsi_val < 65:
+            return "LONG", f"BTC N-LONG | 5m EMA, {uy}/4, +{pct:.1f}%"
+        if v1m >= 2.5 and uy >= 3 and 0 < pct < 2 and rsi_val < 62:
+            return "LONG", f"BTC N-LONG | Hacim {v1m:.1f}x"
+        # SHORT - sadece cok guclu sinyal
+        if data["k1m_asagi"] and ua == 4 and -2 < pct < 0 and rsi_val > 40 and v1m >= 2.0:
+            return "SHORT", f"BTC N-LONG ama 4/4 asagi, {pct:.1f}%"
+        return None, f"NEUTRAL_LONG kosul yok (Y:{uy} A:{ua})"
 
+    # ── BTC ZAYIF ASAGI → SHORT oncelikli, LONG cok secici ──
+    if btc_trend == "NEUTRAL_SHORT":
+        if not vol_ok:
+            return None, f"Hacim yetersiz"
+        # SHORT - normal sartlar
+        if data["k1m_asagi"] and ua >= 3 and -3 < pct < 0 and rsi_val > 35:
+            return "SHORT", f"BTC N-SHORT | 1m EMA, {ua}/4, {pct:.1f}%"
+        if data["k5m_asagi"] and ua >= 3 and -4 < pct < 0 and rsi_val > 35:
+            return "SHORT", f"BTC N-SHORT | 5m EMA, {ua}/4, {pct:.1f}%"
+        if v1m >= 2.5 and ua >= 3 and -2 < pct < 0 and rsi_val > 38:
+            return "SHORT", f"BTC N-SHORT | Hacim {v1m:.1f}x"
+        # LONG - sadece cok guclu sinyal
+        if data["k1m_yukari"] and uy == 4 and 0 < pct < 2 and rsi_val < 60 and v1m >= 2.0:
+            return "LONG", f"BTC N-SHORT ama 4/4 yukari, +{pct:.1f}%"
+        return None, f"NEUTRAL_SHORT kosul yok (Y:{uy} A:{ua})"
+
+    # ── GERCEKTEN NEUTRAL → Her iki yon, ama en yuksek filtreler ──
+    if btc_trend == "NEUTRAL":
+        if not vol_ok:
+            return None, f"NEUTRAL: Hacim yetersiz"
+
+        # LONG - coin guclu, tum timeframeler yukari, RSI makul
+        if data["k1m_yukari"] and uy == 4 and 0 < pct < 2 and rsi_val < 60 and v1m >= 2.0:
+            return "LONG", f"NEUTRAL | 4/4 yukari, 1m EMA, hacim {v1m:.1f}x"
+        if data["k5m_yukari"] and uy == 4 and 0 < pct < 3 and rsi_val < 58 and v1m >= 2.0:
+            return "LONG", f"NEUTRAL | 4/4 yukari, 5m EMA, hacim {v1m:.1f}x"
+
+        # SHORT - coin guclu, tum timeframeler asagi, RSI makul
+        if data["k1m_asagi"] and ua == 4 and -2 < pct < 0 and rsi_val > 40 and v1m >= 2.0:
+            return "SHORT", f"NEUTRAL | 4/4 asagi, 1m EMA, hacim {v1m:.1f}x"
+        if data["k5m_asagi"] and ua == 4 and -3 < pct < 0 and rsi_val > 42 and v1m >= 2.0:
+            return "SHORT", f"NEUTRAL | 4/4 asagi, 5m EMA, hacim {v1m:.1f}x"
+
+        return None, f"NEUTRAL: Kosul yok (Y:{uy} A:{ua} v1m:{v1m:.1f}x)"
+
+    return None, f"Bilinmeyen trend: {btc_trend}"
+
+# ─────────────────────────────────────────────
 # PNL HESAP
+# ─────────────────────────────────────────────
 def hesap_pnl(pos, price):
     entry = pos["entry"]
     sig   = pos["signal"]
@@ -298,12 +381,27 @@ def hesap_pnl(pos, price):
         pnl     = (entry - price) / entry * POS_SIZE - POS_SIZE * COMMISSION
     return pnl, pnl_pct
 
+# ─────────────────────────────────────────────
 # ISLEM AC
+# ─────────────────────────────────────────────
 def open_pos(symbol, yon, neden, btc_trend):
     global daily_pnl
     if daily_pnl <= MAX_DAILY_LOSS: return False
-    if btc_trend == "DOWN" and yon == "LONG": return False
-    if btc_trend == "UP"   and yon == "SHORT": return False
+
+    # BTC trend ile celisen islem KESINLIKLE ACMA
+    if btc_trend == "DOWN" and yon == "LONG":
+        log.info(f"[ENGEL] BTC DOWN, LONG engellendi: {symbol}")
+        return False
+    if btc_trend == "UP" and yon == "SHORT":
+        log.info(f"[ENGEL] BTC UP, SHORT engellendi: {symbol}")
+        return False
+    if btc_trend == "NEUTRAL_SHORT" and yon == "LONG":
+        # NEUTRAL_SHORT'ta LONG sadece 4/4 uyumda karar_ver'den gelir
+        # Ama ekstra guvenlik icin reddedebiliriz - simdilik izin ver (karar_ver zaten filtredi)
+        pass
+    if btc_trend == "NEUTRAL_LONG" and yon == "SHORT":
+        # Ayni sekilde
+        pass
 
     t = safe_api(exchange.fetch_ticker, symbol)
     if not t: return False
@@ -322,35 +420,29 @@ def open_pos(symbol, yon, neden, btc_trend):
         positions[symbol] = {
             "signal": yon, "entry": price,
             "sl_price": sl_price,
-            "sl_garantili": 0.0,   # Garantilenen min kar ($)
+            "sl_garantili": 0.0,
             "max_pnl": 0.0,
-            "max_kar": 0.0,        # En yuksek gordugu kar ($)
+            "max_kar": 0.0,
             "neden": neden, "btc_trend": btc_trend,
             "open_time": time.time(),
         }
 
-    sym  = symbol.split("/")[0]
+    sym = symbol.split("/")[0]
 
-    # GERCEK EMIR AT
     try:
-        # Isolated mod ayarla
         try:
             exchange.set_margin_mode("isolated", symbol)
-            log.info(f"[MARGIN] {sym} isolated ayarlandi")
         except Exception as me:
             log.warning(f"[MARGIN] {me}")
 
-        # Kaldirac ayarla
         try:
             exchange.set_leverage(LEVERAGE, symbol)
-            log.info(f"[KALDIRAC] {sym} {LEVERAGE}x ayarlandi")
         except Exception as le:
             log.warning(f"[KALDIRAC] {le}")
 
         amount = round(POS_SIZE / price, 4)
-        side = "buy" if yon == "LONG" else "sell"
-        log.info(f"[EMIR] {sym} {yon} atiliyor... amount={amount}")
-        order = exchange.create_order(
+        side   = "buy" if yon == "LONG" else "sell"
+        order  = exchange.create_order(
             symbol, "market", side, amount,
             params={"marginMode": "isolated"}
         )
@@ -362,25 +454,25 @@ def open_pos(symbol, yon, neden, btc_trend):
         return False
 
     icon = "\U0001f4c8" if yon == "LONG" else "\U0001f4c9"
-    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%2.0)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
-    log.info(f"[OPEN] {sym} {yon}")
+    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%2)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
+    log.info(f"[OPEN] {sym} {yon} | BTC:{btc_trend}")
     return True
 
+# ─────────────────────────────────────────────
 # ISLEM KAPAT
+# ─────────────────────────────────────────────
 def close_pos(symbol, reason, exit_price=None):
     global daily_pnl
     with pos_lock:
         pos = positions.pop(symbol, None)
     if not pos: return
 
-    # GERCEK POZISYONU KAPAT
     try:
-        side = "sell" if pos["signal"] == "LONG" else "buy"
+        side   = "sell" if pos["signal"] == "LONG" else "buy"
         amount = round(POS_SIZE / pos["entry"], 4)
         safe_api(exchange.create_order, symbol, "market", side, amount, None, {
             "reduceOnly": True,
         })
-        log.info(f"[KAPAT] {symbol.split('/')[0]} gercek pozisyon kapatildi")
     except Exception as e:
         log.error(f"[KAPAT] {symbol.split('/')[0]}: {e}")
 
@@ -416,7 +508,9 @@ def close_pos(symbol, reason, exit_price=None):
     icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
     tg(f"{icon} {symbol.split('/')[0]} KAPANDI\n{reason}\nPnL: {pnl:+.2f}$ | {sure}dk\nGunluk: {daily_pnl:+.2f}$")
 
+# ─────────────────────────────────────────────
 # YÖNETİM — Kademeli kar koruma
+# ─────────────────────────────────────────────
 def manage_loop():
     while True:
         time.sleep(30)
@@ -431,11 +525,10 @@ def manage_loop():
 
                 t = safe_api(exchange.fetch_ticker, symbol)
                 if not t: continue
-                price   = t["last"]
+                price        = t["last"]
                 pnl, pnl_pct = hesap_pnl(pos, price)
-                sure    = int((time.time() - pos["open_time"]) / 60)
+                sure         = int((time.time() - pos["open_time"]) / 60)
 
-                # Max kar guncelle
                 with pos_lock:
                     if symbol in positions:
                         if pnl > positions[symbol]["max_kar"]:
@@ -445,29 +538,29 @@ def manage_loop():
 
                 max_kar = pos["max_kar"]
 
-                # SL kontrolu
+                # Stop Loss
                 if pnl_pct <= -2.0:
                     close_pos(symbol, "Stop Loss -%2.0", price)
                     continue
 
-                # Garantili kar SL'e gore kapat
+                # Garantili kar
                 sl_garantili = pos.get("sl_garantili", 0.0)
                 if sl_garantili > 0 and pnl < sl_garantili:
                     close_pos(symbol, f"Kar garantisi ({sl_garantili:.2f}$)", price)
                     continue
 
-                # Geri cekilme kontrolu - kar varsa
+                # Geri cekilme
                 if max_kar > 0 and (max_kar - pnl) >= GERI_CEKILME:
-                    if pnl > 0:  # Hala karda ise
+                    if pnl > 0:
                         close_pos(symbol, f"Geri cekilme ${max_kar-pnl:.2f}", price)
                         continue
 
-                # Zaman asimi 2 saat
+                # Zaman asimi
                 if sure >= 120:
                     close_pos(symbol, "Zaman asimi 2 saat", price)
                     continue
 
-                # Kademeli kar koruma - SL yukari cek
+                # Kademeli SL
                 yeni_garantili = pos.get("sl_garantili", 0.0)
                 for kar_seviyesi, garantili in KAR_KADEMELERI:
                     if max_kar >= kar_seviyesi and garantili > yeni_garantili:
@@ -476,24 +569,25 @@ def manage_loop():
                 if yeni_garantili > pos.get("sl_garantili", 0.0):
                     with pos_lock:
                         if symbol in positions:
-                            eski = positions[symbol].get("sl_garantili", 0.0)
                             positions[symbol]["sl_garantili"] = yeni_garantili
                             sym = symbol.split("/")[0]
-                            tg(f"\U0001f512 {sym} SL guncellendi: ${yeni_garantili:.2f} kar garantilendi (max kar: ${max_kar:.2f})")
+                            tg(f"\U0001f512 {sym} SL guncellendi: ${yeni_garantili:.2f} garantilendi")
 
-                # BTC trend degisti, kar varsa cik
+                # BTC trend degisti
                 btc_now, _, _ = get_btc_trend()
-                if pos["signal"] == "LONG" and btc_now == "DOWN" and pnl > 0:
+                if pos["signal"] == "LONG" and btc_now in ["DOWN"] and pnl > 0:
                     close_pos(symbol, "BTC DOWN - kar al", price)
                     continue
-                if pos["signal"] == "SHORT" and btc_now == "UP" and pnl > 0:
+                if pos["signal"] == "SHORT" and btc_now in ["UP"] and pnl > 0:
                     close_pos(symbol, "BTC UP - kar al", price)
                     continue
 
         except Exception as e:
             log.error(f"[MANAGE] {e}")
 
+# ─────────────────────────────────────────────
 # TARAYICI
+# ─────────────────────────────────────────────
 def scanner_loop():
     global son_bakilan
     time.sleep(60)
@@ -514,7 +608,6 @@ def scanner_loop():
             if not tickers:
                 time.sleep(SCAN_INTERVAL); continue
 
-            # Aday coinleri topla
             candidates = []
             for symbol, ticker in tickers.items():
                 if not symbol.endswith("/USDT:USDT"): continue
@@ -529,14 +622,15 @@ def scanner_loop():
                 if qv < MIN_VOL_USDT: continue
                 if qv > MAX_VOL_USDT: continue
                 if price <= 0: continue
-                if price > 5.0: continue  # $5 ustu hantal - kesin filtre
-                
+                if price > 5.0: continue
 
-                # Yöne gore on filtre
-                if btc_trend == "UP"      and pct < 2: continue
-                if btc_trend == "DOWN"    and pct > -2: continue
-                if btc_trend == "NEUTRAL" and abs(pct) < 3: continue
-                if abs(pct) > 50: continue  # Gec kalma filtresi
+                # On filtre - BTC trend'e gore
+                if btc_trend == "UP" and pct < 2: continue
+                if btc_trend == "DOWN" and pct > -2: continue
+                if btc_trend == "NEUTRAL_LONG" and pct < 1.5: continue
+                if btc_trend == "NEUTRAL_SHORT" and pct > -1.5: continue
+                if btc_trend == "NEUTRAL" and abs(pct) < 4: continue  # NEUTRAL'da daha secici
+                if abs(pct) > 50: continue
 
                 sym_base = sym.upper()
                 with closed_lock:
@@ -546,18 +640,16 @@ def scanner_loop():
 
                 candidates.append({"symbol": symbol, "pct": pct, "qv": qv})
 
-            # Rotasyon - son 30 coini atla
+            # Rotasyon
             yeni = [c for c in candidates if c["symbol"].split("/")[0] not in son_bakilan]
             if len(yeni) < 3:
-                son_bakilan = set()  # Sifirla
+                son_bakilan = set()
                 yeni = candidates
 
-            # Karisik sirala - her turda farkli coinler
             import random
             random.shuffle(yeni)
             candidates = yeni[:6]
 
-            # Bakilan coinleri kaydet (max 30 tane)
             for c in candidates:
                 son_bakilan.add(c["symbol"].split("/")[0])
             if len(son_bakilan) > 30:
@@ -566,7 +658,7 @@ def scanner_loop():
             if not candidates:
                 time.sleep(SCAN_INTERVAL); continue
 
-            log.info(f"[SCAN] {len(candidates)} aday")
+            log.info(f"[SCAN] {len(candidates)} aday | BTC:{btc_trend}")
 
             for c in candidates:
                 symbol = c["symbol"]
@@ -594,17 +686,28 @@ def scanner_loop():
             log.error(f"[SCANNER] {e}")
             time.sleep(10)
 
+# ─────────────────────────────────────────────
 # HEALTH
+# ─────────────────────────────────────────────
 def health_server():
     from http.server import HTTPServer, BaseHTTPRequestHandler
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200); self.end_headers()
-            self.wfile.write(f"OK|pos:{len(positions)}|pnl:{daily_pnl:+.2f}".encode())
+            with pos_lock:
+                pstr = ", ".join(
+                    f"{s.split('/')[0]}:{p['signal']}"
+                    for s, p in positions.items()
+                )
+            self.wfile.write(
+                f"OK|btc:{get_btc_trend()[0]}|pos:{len(positions)}({pstr})|pnl:{daily_pnl:+.2f}".encode()
+            )
         def log_message(self, *a): pass
     HTTPServer(("0.0.0.0", 8080), H).serve_forever()
 
+# ─────────────────────────────────────────────
 # COIN BUL
+# ─────────────────────────────────────────────
 def find_coin(text):
     words = re.findall(r'[A-Z0-9]+', text.upper())
     try:
@@ -618,7 +721,9 @@ def find_coin(text):
     except: pass
     return None
 
+# ─────────────────────────────────────────────
 # TELEGRAM HANDLER
+# ─────────────────────────────────────────────
 @bot.message_handler(func=lambda msg: True)
 def handle(msg):
     if not msg.text: return
@@ -628,7 +733,6 @@ def handle_async(msg):
     text  = msg.text.strip()
     lower = text.lower()
 
-    # /durum
     if "/durum" in lower:
         with pos_lock:
             if not positions:
@@ -646,14 +750,14 @@ def handle_async(msg):
                 sicon = "\U0001f4c8" if pos["signal"] == "LONG" else "\U0001f4c9"
                 lines.append(
                     f"{icon} {sicon} {sym.split('/')[0]} {pos['signal']}\n"
-                    f"   {pos['entry']:.6f} \u2192 {price:.6f}\n"
+                    f"   {pos['entry']:.6f} → {price:.6f}\n"
                     f"   PnL: {pnl:+.2f}$ ({pnl_pct:+.2f}%) | {sure}dk\n"
                     f"   Max kar: ${max_kar:.2f} | Garantili: ${garantili:.2f}\n"
+                    f"   BTC trend: {pos.get('btc_trend','?')}\n"
                 )
             bot.send_message(msg.chat.id, "\n".join(lines))
         return
 
-    # /istatistik
     if "/istatistik" in lower:
         if not supa:
             bot.send_message(msg.chat.id, "Supabase yok."); return
@@ -672,13 +776,19 @@ def handle_async(msg):
             bot.send_message(msg.chat.id, f"Hata: {e}")
         return
 
-    # /btc
     if "/btc" in lower:
         trend, price, chg = get_btc_trend()
-        bot.send_message(msg.chat.id, f"BTC: {trend}\n${price:,.0f} ({chg:+.1f}%)")
+        aciklama = {
+            "UP":           "Guclu yukari trend → Sadece LONG",
+            "DOWN":         "Guclu asagi trend  → Sadece SHORT",
+            "NEUTRAL_LONG": "Hafif yukari → LONG oncelikli",
+            "NEUTRAL_SHORT":"Hafif asagi  → SHORT oncelikli",
+            "NEUTRAL":      "Belirsiz     → Cok secici",
+        }.get(trend, "")
+        bot.send_message(msg.chat.id,
+            f"BTC: {trend}\n${price:,.0f} ({chg:+.1f}%)\n{aciklama}")
         return
 
-    # KAPAT
     if "kapat" in lower:
         with pos_lock: syms = list(positions.keys())
         if not syms:
@@ -693,7 +803,6 @@ def handle_async(msg):
             bot.send_message(msg.chat.id, f"Hangisini? {', '.join(s.split('/')[0] for s in syms)}")
         return
 
-    # DIREKT AC
     if any(k in lower for k in ["long ac", "short ac", "long aç", "short aç"]):
         coin = find_coin(text)
         if coin:
@@ -705,7 +814,6 @@ def handle_async(msg):
             bot.send_message(msg.chat.id, "Coin bulunamadi.")
         return
 
-    # ANALİZ
     coin = find_coin(text)
     if coin:
         sym = coin.split("/")[0]
@@ -719,7 +827,7 @@ def handle_async(msg):
                 f"BTC: {trend}\n"
                 f"Uyum: {data['uyum_yukari']}/4 yukari | {data['uyum_asagi']}/4 asagi\n"
                 f"Hacim 1m: {data['v1m']:.1f}x | 5m: {data['v5m']:.1f}x\n"
-                f"RSI: {data['rsi']:.0f} | Hareket: {data['pct']:+.1f}%\n\n"
+                f"RSI: {data['rsi']:.0f} (1h:{data['rsi_1h']:.0f}) | Hareket: {data['pct']:+.1f}%\n\n"
                 f"Karar: {yon or 'PAS'}\n{neden}")
         else:
             bot.send_message(msg.chat.id, f"{sym} veri alinamadi.")
@@ -727,14 +835,16 @@ def handle_async(msg):
 
     bot.send_message(msg.chat.id,
         "Komutlar:\n"
-        "/durum - Acik pozisyonlar\n"
+        "/durum     - Acik pozisyonlar\n"
         "/istatistik - Istatistik\n"
-        "/btc - BTC trend\n"
-        "COIN - Analiz\n"
+        "/btc       - BTC trend (detayli)\n"
+        "COIN       - Analiz\n"
         "COIN long/short ac - Manuel ac\n"
         "hepsini kapat")
 
+# ─────────────────────────────────────────────
 # MAIN
+# ─────────────────────────────────────────────
 import signal as sig_mod, sys
 
 def shutdown(signum, frame):
@@ -756,14 +866,16 @@ if __name__ == "__main__":
     threading.Thread(target=manage_loop,   daemon=True).start()
     threading.Thread(target=scanner_loop,  daemon=True).start()
     tg(
-        "\U0001f916 SADIK TRADER v3\n\n"
-        "Multi-Timeframe + Kademeli Kar\n\n"
-        "\u2705 1m+5m+15m+1h uyumu = erken giris\n"
-        "\u2705 BTC UP=LONG | DOWN=SHORT | NEUTRAL=her yon\n"
-        "\u2705 Her $1 karda SL yukari cekiliyor\n"
-        "\u2705 $0.30 geri cekilirse kapat\n"
-        "\u2705 Gec kalma filtresi (%30+)\n"
-        "\u2705 2 saat sonra kapat\n\n"
+        "\U0001f916 SADIK TRADER v3 — GUNCELLENDI\n\n"
+        "BTC Trend Sistemi:\n"
+        "⬆️ UP          → Sadece LONG\n"
+        "⬇️ DOWN        → Sadece SHORT\n"
+        "↗️ NEUTRAL_LONG  → LONG oncelikli\n"
+        "↘️ NEUTRAL_SHORT → SHORT oncelikli\n"
+        "↔️ NEUTRAL     → 4/4 uyum + yuksek hacim\n\n"
+        "✅ EMA9/20/50 + RSI + momentum\n"
+        "✅ Gec kalma filtresi korundu\n"
+        "✅ Kademeli kar koruma aktif\n\n"
         "/durum /istatistik /btc"
     )
     while True:
