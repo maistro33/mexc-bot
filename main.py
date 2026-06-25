@@ -125,58 +125,117 @@ def safe_api(func, *args, **kwargs):
     return None
 
 # ─────────────────────────────────────────────
-# BTC TREND — Daha hassas versiyon
-# EMA9/20/50 + RSI + momentum birlikte karar
+# BTC TREND — 1h + 15m birlikte, pump→dump yakala
 # ─────────────────────────────────────────────
 def get_btc_trend():
     """
-    UP   : Net yukari trend - LONG acilabilir
-    DOWN : Net asagi trend  - SHORT acilabilir
-    NEUTRAL_LONG  : Kararli ama hafif yukari - LONG oncelikli
-    NEUTRAL_SHORT : Kararli ama hafif asagi  - SHORT oncelikli
-    NEUTRAL       : Gercekten belirsiz       - Cok secici ol
+    UP            : Net yukari trend  → Sadece LONG
+    DOWN          : Net asagi trend   → Sadece SHORT
+    NEUTRAL_LONG  : Hafif yukari      → LONG oncelikli
+    NEUTRAL_SHORT : Hafif asagi       → SHORT oncelikli
+    NEUTRAL       : Gercekten belirsiz→ Cok secici
     """
     try:
-        raw = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h", limit=100)
-        if not raw: return "NEUTRAL", 0, 0
+        # 1h mum - orta vade
+        raw1h = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h",  limit=100)
+        # 15m mum - kisa vade (pump→dump tespiti)
+        raw15m = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "15m", limit=50)
 
-        df = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
-        price  = float(df["c"].iloc[-1])
-        e9     = float(df["c"].ewm(span=9).mean().iloc[-1])
-        e20    = float(df["c"].ewm(span=20).mean().iloc[-1])
-        e50    = float(df["c"].ewm(span=50).mean().iloc[-1])
+        if not raw1h: return "NEUTRAL", 0, 0
 
-        # Son 4 saatlik degisim (kisa vade)
-        chg4h  = (price - float(df["c"].iloc[-4]))  / float(df["c"].iloc[-4])  * 100
-        # Son 24 saatlik degisim (orta vade)
-        chg24h = (price - float(df["c"].iloc[-24])) / float(df["c"].iloc[-24]) * 100
+        df1h = pd.DataFrame(raw1h,  columns=["t","o","h","l","c","v"])
+        price = float(df1h["c"].iloc[-1])
 
-        # RSI hesapla
-        delta = df["c"].diff()
+        # 1h EMA
+        e9_1h  = float(df1h["c"].ewm(span=9).mean().iloc[-1])
+        e20_1h = float(df1h["c"].ewm(span=20).mean().iloc[-1])
+        e50_1h = float(df1h["c"].ewm(span=50).mean().iloc[-1])
+
+        # Degisimler
+        chg1h  = (price - float(df1h["c"].iloc[-2]))  / float(df1h["c"].iloc[-2])  * 100
+        chg4h  = (price - float(df1h["c"].iloc[-4]))  / float(df1h["c"].iloc[-4])  * 100
+        chg24h = (price - float(df1h["c"].iloc[-24])) / float(df1h["c"].iloc[-24]) * 100
+
+        # 1h RSI
+        delta = df1h["c"].diff()
         gain  = delta.clip(lower=0).rolling(14).mean()
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
         rs    = gain / loss.replace(0, 0.001)
-        rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+        rsi_1h = float((100 - 100 / (1 + rs)).iloc[-1])
 
-        # EMA dizilimi
-        ema_yukari = price > e9 > e20 > e50   # Guclu yukari
-        ema_asagi  = price < e9 < e20 < e50   # Guclu asagi
-        ema_hafif_yukari = price > e20 and e9 > e20  # Hafif yukari
-        ema_hafif_asagi  = price < e20 and e9 < e20  # Hafif asagi
+        # 15m analiz - kisa vade
+        pump_then_dump = False
+        trend_15m = "FLAT"
+        rsi_15m   = 50.0
+        chg_15m   = 0.0
 
-        # GUCLU TREND
-        if ema_yukari and chg4h > 0.5 and chg24h > 1.5 and rsi_val > 52:
-            return "UP", price, chg24h
+        if raw15m:
+            df15m = pd.DataFrame(raw15m, columns=["t","o","h","l","c","v"])
+            e9_15m  = df15m["c"].ewm(span=9).mean()
+            e20_15m = df15m["c"].ewm(span=20).mean()
 
-        if ema_asagi and chg4h < -0.5 and chg24h < -1.5 and rsi_val < 48:
+            # Son 15m EMA yonu
+            if float(e9_15m.iloc[-1]) > float(e20_15m.iloc[-1]):
+                trend_15m = "YUKARI"
+            else:
+                trend_15m = "ASAGI"
+
+            # 15m RSI
+            d15 = df15m["c"].diff()
+            g15 = d15.clip(lower=0).rolling(14).mean()
+            l15 = (-d15.clip(upper=0)).rolling(14).mean()
+            rs15 = g15 / l15.replace(0, 0.001)
+            rsi_15m = float((100 - 100 / (1 + rs15)).iloc[-1])
+
+            # Son 2 saatlik 15m degisim
+            chg_15m = (price - float(df15m["c"].iloc[-8])) / float(df15m["c"].iloc[-8]) * 100
+
+            # Pump → Dump tespiti:
+            # Son 8 mumda once yukselip sonra dustuyse
+            son8 = df15m["c"].tail(8).values
+            tepe = max(son8)
+            tepe_idx = list(son8).index(tepe)
+            if tepe_idx <= 5 and tepe_idx >= 1:  # Tepe ortada veya basinda
+                durus = (price - tepe) / tepe * 100
+                yukselis = (tepe - son8[0]) / son8[0] * 100
+                if yukselis > 0.5 and durus < -0.4:
+                    pump_then_dump = True
+                    log.info(f"[BTC] Pump→Dump tespit: +{yukselis:.1f}% sonra {durus:.1f}%")
+
+        # ── KARAR MATRISI ──
+
+        # 1h EMA pozisyonu
+        fiyat_e20_ustu  = price > e20_1h
+        fiyat_e50_ustu  = price > e50_1h
+        ema_dizi_yukari = e9_1h > e20_1h > e50_1h
+        ema_dizi_asagi  = e9_1h < e20_1h
+
+        # GUCLU DOWN sartlari (gevsetildi)
+        down_sart = (
+            (chg4h < -0.8 and chg24h < -1.0) or   # 4h ve 24h dusus
+            (chg4h < -0.3 and chg24h < -1.5) or   # 24h buyuk dusus
+            (pump_then_dump and chg_15m < -0.5)    # Pump→dump + 15m dusus
+        )
+        down_rsi = rsi_1h < 52 or rsi_15m < 48
+
+        if down_sart and down_rsi and (not fiyat_e20_ustu or trend_15m == "ASAGI"):
             return "DOWN", price, chg24h
 
-        # ZAYIF AMA YONLU TREND
-        if ema_hafif_yukari and chg4h > 0.3 and rsi_val > 50:
-            return "NEUTRAL_LONG", price, chg24h
+        # GUCLU UP sartlari
+        up_sart = (
+            chg4h > 0.8 and chg24h > 1.0 and
+            fiyat_e20_ustu and ema_dizi_yukari
+        )
+        if up_sart and rsi_1h > 50 and trend_15m == "YUKARI":
+            return "UP", price, chg24h
 
-        if ema_hafif_asagi and chg4h < -0.3 and rsi_val < 50:
+        # NEUTRAL_SHORT - hafif asagi
+        if (chg4h < -0.3 or chg_15m < -0.5 or pump_then_dump) and rsi_1h < 52:
             return "NEUTRAL_SHORT", price, chg24h
+
+        # NEUTRAL_LONG - hafif yukari
+        if chg4h > 0.3 and fiyat_e20_ustu and rsi_1h > 50 and trend_15m == "YUKARI":
+            return "NEUTRAL_LONG", price, chg24h
 
         return "NEUTRAL", price, chg24h
 
