@@ -50,10 +50,13 @@ KAR_KADEMELERI = [
 GERI_CEKILME = 0.30
 
 BLACKLIST = {
+    # Volatil/manipule coinler
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
     "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
     "BOME","SLERF","PNUT","ACT","GOAT","RGTI","SATL","WET","POET",
     "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME","CLOSED",
+    # Veri analizine gore surekli zarar ettiren coinler
+    "BICO","ARX","BEAT","ID","ALICE","XLM","BTW",
 }
 
 # STATE
@@ -548,7 +551,7 @@ def open_pos(symbol, yon, neden, btc_trend):
     t = safe_api(exchange.fetch_ticker, symbol)
     if not t: return False
     price    = float(t["last"])
-    sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
+    sl_price = price * (1 - 0.015) if yon == "LONG" else price * (1 + 0.015)
 
     with pos_lock:
         sym_base = symbol.split("/")[0].upper()
@@ -596,7 +599,7 @@ def open_pos(symbol, yon, neden, btc_trend):
         return False
 
     icon = "\U0001f4c8" if yon == "LONG" else "\U0001f4c9"
-    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%2)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
+    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%1.5)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
     log.info(f"[OPEN] {sym} {yon} | BTC:{btc_trend}")
     return True
 
@@ -650,7 +653,7 @@ def close_pos(symbol, reason, exit_price=None):
         save_trade({
             "symbol": symbol, "signal": pos["signal"],
             "pnl": round(pnl, 4), "tp_pct": pos.get("max_pnl", 0),
-            "sl_pct": 2.0, "btc_trend": pos.get("btc_trend", ""),
+            "sl_pct": 1.5, "btc_trend": pos.get("btc_trend", ""),
             "sure_dk": sure, "reason": reason, "neden": pos.get("neden", ""),
         })
         save_trade({
@@ -697,8 +700,8 @@ def manage_loop():
                 max_kar = pos["max_kar"]
 
                 # Stop Loss
-                if pnl_pct <= -2.0:
-                    close_pos(symbol, "Stop Loss -%2.0", price)
+                if pnl_pct <= -1.5:
+                    close_pos(symbol, "Stop Loss -%1.5", price)
                     continue
 
                 # Garantili kar
@@ -1063,7 +1066,7 @@ def load_open_positions():
                 if not symbol or not side or entry == 0:
                     continue
                 yon      = "LONG" if side == "long" else "SHORT"
-                sl_price = entry * (1 - 0.02) if yon == "LONG" else entry * (1 + 0.02)
+                sl_price = entry * (1 - 0.015) if yon == "LONG" else entry * (1 + 0.015)
                 with pos_lock:
                     if symbol not in positions:
                         positions[symbol] = {
