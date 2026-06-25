@@ -463,10 +463,10 @@ def hesap_pnl(pos, price):
     entry = pos["entry"]
     sig   = pos["signal"]
     if sig == "LONG":
-        pnl_pct = (price - entry) / entry * 100
+        pnl_pct = (price - entry) / entry * 100 * LEVERAGE  # Gercek kaldıracli %
         pnl     = (price - entry) / entry * POS_SIZE - POS_SIZE * COMMISSION
     else:
-        pnl_pct = (entry - price) / entry * 100
+        pnl_pct = (entry - price) / entry * 100 * LEVERAGE  # Gercek kaldıracli %
         pnl     = (entry - price) / entry * POS_SIZE - POS_SIZE * COMMISSION
     return pnl, pnl_pct
 
