@@ -64,6 +64,11 @@ recently_closed = {}
 closed_lock     = threading.Lock()
 son_bakilan     = set()
 
+# BTC TREND CACHE - her 5 dakikada bir guncellenir
+btc_cache       = {"trend": "NEUTRAL", "price": 0, "chg": 0, "ts": 0}
+btc_cache_lock  = threading.Lock()
+BTC_CACHE_SURE  = 300  # 5 dakika
+
 # TELEGRAM
 bot = telebot.TeleBot(TELE_TOKEN)
 def tg(msg):
@@ -127,7 +132,8 @@ def safe_api(func, *args, **kwargs):
 # ─────────────────────────────────────────────
 # BTC TREND — 1h + 15m birlikte, pump→dump yakala
 # ─────────────────────────────────────────────
-def get_btc_trend():
+def _fetch_btc_trend():
+    """Ham BTC trend hesaplamasi - direkt API cagrisi"""
     """
     UP            : Net yukari trend  → Sadece LONG
     DOWN          : Net asagi trend   → Sadece SHORT
@@ -242,6 +248,27 @@ def get_btc_trend():
     except Exception as e:
         log.warning(f"[BTC_TREND] {e}")
         return "NEUTRAL", 0, 0
+
+def get_btc_trend():
+    """Cache'li BTC trend - 5dk'da bir API cagrir, arada cache doner"""
+    global btc_cache
+    with btc_cache_lock:
+        if time.time() - btc_cache["ts"] < BTC_CACHE_SURE:
+            return btc_cache["trend"], btc_cache["price"], btc_cache["chg"]
+    # Cache suresi doldu, guncelle
+    trend, price, chg = _fetch_btc_trend()
+    with btc_cache_lock:
+        btc_cache = {"trend": trend, "price": price, "chg": chg, "ts": time.time()}
+    log.info(f"[BTC_CACHE] Guncellendi: {trend} ${price:,.0f} ({chg:+.1f}%)")
+    return trend, price, chg
+
+def get_btc_trend_force():
+    """Cache'i bypass et, aninda guncelle - onemli kararlar icin"""
+    global btc_cache
+    trend, price, chg = _fetch_btc_trend()
+    with btc_cache_lock:
+        btc_cache = {"trend": trend, "price": price, "chg": chg, "ts": time.time()}
+    return trend, price, chg
 
 # ─────────────────────────────────────────────
 # TEKNIK ANALIZ
@@ -583,9 +610,25 @@ def close_pos(symbol, reason, exit_price=None):
     if not pos: return
 
     try:
-        side   = "sell" if pos["signal"] == "LONG" else "buy"
-        amount = round(POS_SIZE / pos["entry"], 4)
-        safe_api(exchange.create_order, symbol, "market", side, amount, None, {
+        side = "sell" if pos["signal"] == "LONG" else "buy"
+        # Borsadan gercek pozisyon miktarini al
+        gercek_amount = None
+        try:
+            tum_pos = safe_api(exchange.fetch_positions, [symbol])
+            if tum_pos:
+                for p in tum_pos:
+                    if p.get("symbol") == symbol and float(p.get("contracts") or 0) > 0:
+                        gercek_amount = float(p["contracts"])
+                        break
+        except Exception as pe:
+            log.warning(f"[KAPAT] Gercek miktar alinamadi: {pe}")
+        # Gercek miktar yoksa hesapla
+        if not gercek_amount or gercek_amount <= 0:
+            gercek_amount = round(POS_SIZE / pos["entry"], 4)
+            log.warning(f"[KAPAT] Hesaplanan miktar kullaniliyor: {gercek_amount}")
+        else:
+            log.info(f"[KAPAT] Borsadan alinan miktar: {gercek_amount}")
+        safe_api(exchange.create_order, symbol, "market", side, gercek_amount, None, {
             "reduceOnly": True,
         })
     except Exception as e:
@@ -688,8 +731,8 @@ def manage_loop():
                             sym = symbol.split("/")[0]
                             tg(f"\U0001f512 {sym} SL guncellendi: ${yeni_garantili:.2f} garantilendi")
 
-                # BTC trend degisti
-                btc_now, _, _ = get_btc_trend()
+                # BTC trend degisti (cache bypass - kritik karar)
+                btc_now, _, _ = get_btc_trend_force()
                 if pos["signal"] == "LONG" and btc_now in ["DOWN"] and pnl > 0:
                     close_pos(symbol, "BTC DOWN - kar al", price)
                     continue
@@ -703,6 +746,26 @@ def manage_loop():
 # ─────────────────────────────────────────────
 # TARAYICI
 # ─────────────────────────────────────────────
+def gunluk_reset_loop():
+    """Her gece 00:00'da gunluk PnL'i sifirla"""
+    global daily_pnl
+    import datetime
+    while True:
+        try:
+            simdi   = datetime.datetime.now()
+            yarin   = (simdi + datetime.timedelta(days=1)).replace(
+                        hour=0, minute=0, second=5, microsecond=0)
+            bekle   = (yarin - simdi).total_seconds()
+            log.info(f"[RESET] Gunluk sifirlama {bekle/3600:.1f} saat sonra")
+            time.sleep(bekle)
+            eski    = daily_pnl
+            daily_pnl = 0.0
+            tg(f"🔄 Yeni gun! Gunluk PnL sifirlandi.\nDun: {eski:+.2f}$\nBot calismaya devam ediyor.")
+            log.info(f"[RESET] Gunluk PnL sifirlandi. Dun: {eski:+.2f}$")
+        except Exception as e:
+            log.error(f"[RESET] {e}")
+            time.sleep(3600)
+
 def scanner_loop():
     global son_bakilan
     time.sleep(60)
@@ -963,12 +1026,14 @@ def handle_async(msg):
 import signal as sig_mod, sys
 
 def shutdown(signum, frame):
-    with pos_lock: syms = list(positions.keys())
-    for symbol in syms:
-        try:
-            t = safe_api(exchange.fetch_ticker, symbol)
-            close_pos(symbol, "Restart", t["last"] if t else None)
-        except: pass
+    with pos_lock:
+        syms = list(positions.keys())
+    if syms:
+        isimler = ", ".join(s.split("/")[0] for s in syms)
+        tg(f"\u23f8 Bot yeniden basliyor...\n{len(syms)} pozisyon borsada acik kaliyor: {isimler}\n\u267b\ufe0f Bot basladiginda otomatik yuklenecek.")
+        log.info(f"[SHUTDOWN] {len(syms)} pozisyon acik birakiliyor: {isimler}")
+    else:
+        tg("\u23f8 Bot yeniden basliyor... Acik pozisyon yok.")
     sys.exit(0)
 
 sig_mod.signal(sig_mod.SIGTERM, shutdown)
@@ -1038,9 +1103,10 @@ if __name__ == "__main__":
     print("SADIK TRADER v3 BASLIYOR...")
     load_recently_closed()
     load_open_positions()
-    threading.Thread(target=health_server, daemon=True).start()
-    threading.Thread(target=manage_loop,   daemon=True).start()
-    threading.Thread(target=scanner_loop,  daemon=True).start()
+    threading.Thread(target=health_server,     daemon=True).start()
+    threading.Thread(target=manage_loop,       daemon=True).start()
+    threading.Thread(target=scanner_loop,      daemon=True).start()
+    threading.Thread(target=gunluk_reset_loop, daemon=True).start()
     tg(
         "\U0001f916 SADIK TRADER v3 — GUNCELLENDI\n\n"
         "BTC Trend Sistemi:\n"
