@@ -454,10 +454,10 @@ def hesap_pnl(pos, price):
     entry = pos["entry"]
     sig   = pos["signal"]
     if sig == "LONG":
-        pnl_pct = (price - entry) / entry * 100 * LEVERAGE  # Gercek kaldıracli %
+        pnl_pct = (price - entry) / entry * 100
         pnl     = (price - entry) / entry * POS_SIZE - POS_SIZE * COMMISSION
     else:
-        pnl_pct = (entry - price) / entry * 100 * LEVERAGE  # Gercek kaldıracli %
+        pnl_pct = (entry - price) / entry * 100
         pnl     = (entry - price) / entry * POS_SIZE - POS_SIZE * COMMISSION
     return pnl, pnl_pct
 
@@ -542,7 +542,7 @@ def open_pos(symbol, yon, neden, btc_trend):
     t = safe_api(exchange.fetch_ticker, symbol)
     if not t: return False
     price    = float(t["last"])
-    sl_price = price * (1 - 0.015) if yon == "LONG" else price * (1 + 0.015)
+    sl_price = price * (1 - 0.02) if yon == "LONG" else price * (1 + 0.02)
 
     with pos_lock:
         sym_base = symbol.split("/")[0].upper()
@@ -590,7 +590,7 @@ def open_pos(symbol, yon, neden, btc_trend):
         return False
 
     icon = "\U0001f4c8" if yon == "LONG" else "\U0001f4c9"
-    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%1.5)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
+    tg(f"\U0001f4cb {icon} {sym} {yon}\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%2.0)\nBTC: {btc_trend}\n\U0001f4ac {neden}")
     log.info(f"[OPEN] {sym} {yon} | BTC:{btc_trend}")
     return True
 
@@ -648,7 +648,7 @@ def close_pos(symbol, reason, exit_price=None):
         save_trade({
             "symbol": symbol, "signal": pos["signal"],
             "pnl": round(pnl, 4), "tp_pct": pos.get("max_pnl", 0),
-            "sl_pct": 1.5, "btc_trend": pos.get("btc_trend", ""),
+            "sl_pct": 2.0, "btc_trend": pos.get("btc_trend", ""),
             "sure_dk": sure, "reason": reason, "neden": pos.get("neden", ""),
         })
         save_trade({
@@ -694,10 +694,9 @@ def manage_loop():
 
                 max_kar = pos["max_kar"]
 
-                # Stop Loss - pnl_pct kaldıracli oldugu icin %7.5 = fiyatta -%1.5
-                SL_PCT = 1.5 * LEVERAGE  # Fiyat %1.5 = kaldıracli %7.5
-                if pnl_pct <= -SL_PCT:
-                    close_pos(symbol, f"Stop Loss -%{SL_PCT:.1f} (fiyat -%1.5)", price)
+                # Stop Loss -%2.0
+                if pnl_pct <= -2.0:
+                    close_pos(symbol, "Stop Loss -%2.0", price)
                     continue
 
                 # Garantili kar
@@ -1069,7 +1068,7 @@ def load_open_positions():
                 if not symbol or not side or entry == 0:
                     continue
                 yon      = "LONG" if side == "long" else "SHORT"
-                sl_price = entry * (1 - 0.015) if yon == "LONG" else entry * (1 + 0.015)
+                sl_price = entry * (1 - 0.02) if yon == "LONG" else entry * (1 + 0.02)
                 with pos_lock:
                     if symbol not in positions:
                         positions[symbol] = {
