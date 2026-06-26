@@ -49,7 +49,7 @@ KAR_KADEMELERI = [
 ]
 GERI_CEKILME = 0.30        # Eski - artik kullanilmiyor
 GERI_CEKILME_PCT = 0.20    # Max karin %20si geri gelirse kapat
-GERI_CEKILME_MIN = 0.15    # En az $0.15 karda olmali
+GERI_CEKILME_MIN = 0.30    # En az $0.30 karda olmali ki geri cekilme devreye girsin
 
 BLACKLIST = {
     # Volatil/manipule coinler
