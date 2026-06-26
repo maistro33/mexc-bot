@@ -47,7 +47,9 @@ KAR_KADEMELERI = [
     (4.0, 2.50),
     (5.0, 3.50),
 ]
-GERI_CEKILME = 0.30
+GERI_CEKILME = 0.30        # Eski - artik kullanilmiyor
+GERI_CEKILME_PCT = 0.20    # Max karin %20si geri gelirse kapat
+GERI_CEKILME_MIN = 0.15    # En az $0.15 karda olmali
 
 BLACKLIST = {
     # Volatil/manipule coinler
@@ -467,17 +469,19 @@ def hesap_pnl(pos, price):
 
 def giris_momentum_ok(symbol, yon, analiz_fiyati):
     """
-    Giris aninda 3 kontrol:
-    1. Fiyat 3sn icinde dogru yonde mi gidiyor?
-    2. Son 3 mum dogru yonde mi?
-    3. Slippage kabul edilebilir mi?
+    Giris kalite kontrolu - 4 filtre:
+    1. Fiyat 5sn icinde dogru yonde mi?
+    2. Son 5 mumun en az 4u dogru yonde mi?
+    3. RSI dogru seviyede mi?
+    4. Slippage max %0.3
     """
     try:
+        # Kontrol 1: Fiyat yonu - 5 saniye bekle
         t1 = safe_api(exchange.fetch_ticker, symbol)
         if not t1: return False, "Ticker alinamadi"
         fiyat1 = float(t1["last"])
 
-        time.sleep(3)
+        time.sleep(5)
 
         t2 = safe_api(exchange.fetch_ticker, symbol)
         if not t2: return False, "Ticker2 alinamadi"
@@ -485,27 +489,44 @@ def giris_momentum_ok(symbol, yon, analiz_fiyati):
 
         tick_degisim = (fiyat2 - fiyat1) / fiyat1 * 100
 
-        # Fiyat ters yonde gidiyorsa girme
-        if yon == "SHORT" and tick_degisim > 0.15:
-            return False, f"Geri donuyor! +{tick_degisim:.2f}% yukari gitti"
-        if yon == "LONG" and tick_degisim < -0.15:
-            return False, f"Geri donuyor! {tick_degisim:.2f}% asagi gitti"
+        if yon == "SHORT" and tick_degisim > 0.10:
+            return False, f"Yukari gidiyor! +{tick_degisim:.2f}%"
+        if yon == "LONG" and tick_degisim < -0.10:
+            return False, f"Asagi gidiyor! {tick_degisim:.2f}%"
 
-        # Son 3 mum kontrolu
-        r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=5)
-        if r1m and len(r1m) >= 3:
-            son3    = r1m[-3:]
-            kirmizi = sum(1 for m in son3 if m[4] < m[1])
-            yesil   = sum(1 for m in son3 if m[4] > m[1])
-            if yon == "SHORT" and yesil >= 2:
-                return False, f"Son 3 mumun {yesil}u yesil - SHORT icin erken"
-            if yon == "LONG" and kirmizi >= 2:
-                return False, f"Son 3 mumun {kirmizi}u kirmizi - LONG icin erken"
+        # Kontrol 2: Son 5 mum - en az 4u dogru yonde olmali
+        r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=7)
+        if r1m and len(r1m) >= 5:
+            son5    = r1m[-5:]
+            kirmizi = sum(1 for m in son5 if m[4] < m[1])
+            yesil   = sum(1 for m in son5 if m[4] > m[1])
+            if yon == "SHORT" and kirmizi < 3:
+                return False, f"Son 5 mumda yeterli dusus yok ({kirmizi} kirmizi)"
+            if yon == "LONG" and yesil < 3:
+                return False, f"Son 5 mumda yeterli yukselis yok ({yesil} yesil)"
 
-        # Slippage kontrolu
+        # Kontrol 3: RSI seviyesi
+        r15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=20)
+        if r15m and len(r15m) >= 14:
+            df = pd.DataFrame(r15m, columns=["t","o","h","l","c","v"])
+            delta = df["c"].diff()
+            gain  = delta.clip(lower=0).rolling(14).mean()
+            loss  = (-delta.clip(upper=0)).rolling(14).mean()
+            rs    = gain / loss.replace(0, 0.001)
+            rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+            if yon == "SHORT" and rsi_val > 65:
+                return False, f"RSI cok yukseliyor ({rsi_val:.0f}) - SHORT icin gec"
+            if yon == "SHORT" and rsi_val < 35:
+                return False, f"RSI asiri satim ({rsi_val:.0f}) - SHORT icin riskli"
+            if yon == "LONG" and rsi_val < 35:
+                return False, f"RSI cok dusuyor ({rsi_val:.0f}) - LONG icin gec"
+            if yon == "LONG" and rsi_val > 65:
+                return False, f"RSI asiri alim ({rsi_val:.0f}) - LONG icin riskli"
+
+        # Kontrol 4: Slippage max %0.3
         slippage = abs(fiyat2 - analiz_fiyati) / analiz_fiyati * 100
-        if slippage > 0.5:
-            return False, f"Slippage cok yuksek: %{slippage:.2f}"
+        if slippage > 0.3:
+            return False, f"Slippage yuksek: %{slippage:.2f} (max %0.3)"
 
         return True, f"OK | tick:{tick_degisim:+.2f}% | slippage:{slippage:.2f}%"
 
@@ -694,10 +715,22 @@ def manage_loop():
 
                 max_kar = pos["max_kar"]
 
-                # Stop Loss -%2.0
-                if pnl_pct <= -2.0:
-                    close_pos(symbol, "Stop Loss -%2.0", price)
+                # Stop Loss - iki kontrol:
+                # a) pnl_pct bazli (fiyat -%1.5)
+                if pnl_pct <= -1.5:
+                    close_pos(symbol, "Stop Loss -%1.5", price)
                     continue
+                # b) sl_price bazli (kesin guvence)
+                entry = pos["entry"]
+                sig   = pos["signal"]
+                sl_p  = pos.get("sl_price", 0)
+                if sl_p > 0:
+                    if sig == "LONG" and price <= sl_p:
+                        close_pos(symbol, f"SL fiyat {sl_p:.6f}", price)
+                        continue
+                    if sig == "SHORT" and price >= sl_p:
+                        close_pos(symbol, f"SL fiyat {sl_p:.6f}", price)
+                        continue
 
                 # Garantili kar
                 sl_garantili = pos.get("sl_garantili", 0.0)
@@ -712,6 +745,11 @@ def manage_loop():
                     (max_kar - pnl) >= geri_cekilme_limit and
                     pnl > 0):
                     close_pos(symbol, f"Geri cekilme %{GERI_CEKILME_PCT*100:.0f} (${max_kar-pnl:.2f})", price)
+                    continue
+
+                # Erken zarar - ilk 10 dakikada -%0.8 gorurse kapat
+                if sure <= 10 and pnl_pct <= -0.8:
+                    close_pos(symbol, f"Erken zarar ({pnl_pct:.1f}%)", price)
                     continue
 
                 # Zaman asimi
