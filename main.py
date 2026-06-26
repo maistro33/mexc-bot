@@ -219,31 +219,37 @@ def _fetch_btc_trend():
         ema_dizi_yukari = e9_1h > e20_1h > e50_1h
         ema_dizi_asagi  = e9_1h < e20_1h
 
-        # GUCLU DOWN sartlari (gevsetildi)
-        down_sart = (
-            (chg4h < -0.8 and chg24h < -1.0) or   # 4h ve 24h dusus
-            (chg4h < -0.3 and chg24h < -1.5) or   # 24h buyuk dusus
-            (pump_then_dump and chg_15m < -0.5)    # Pump→dump + 15m dusus
-        )
-        down_rsi = rsi_1h < 52 or rsi_15m < 48
-
-        if down_sart and down_rsi and (not fiyat_e20_ustu or trend_15m == "ASAGI"):
+        # ── DOWN tespiti - cok daha hassas ──
+        # Kural 1: 24h -2%+ dusus = kesinlikle DOWN
+        if chg24h < -2.0:
             return "DOWN", price, chg24h
 
-        # GUCLU UP sartlari
-        up_sart = (
-            chg4h > 0.8 and chg24h > 1.0 and
-            fiyat_e20_ustu and ema_dizi_yukari
-        )
-        if up_sart and rsi_1h > 50 and trend_15m == "YUKARI":
+        # Kural 2: 4h -1%+ dusus ve 15m asagi trend
+        if chg4h < -1.0 and trend_15m == "ASAGI":
+            return "DOWN", price, chg24h
+
+        # Kural 3: EMA asagi dizilimi + herhangi dusus
+        if ema_dizi_asagi and chg4h < -0.5:
+            return "DOWN", price, chg24h
+
+        # Kural 4: Pump→dump
+        if pump_then_dump and chg_15m < -0.3:
+            return "DOWN", price, chg24h
+
+        # ── UP tespiti ──
+        if chg24h > 2.0:
+            return "UP", price, chg24h
+        if chg4h > 1.0 and trend_15m == "YUKARI" and fiyat_e20_ustu:
+            return "UP", price, chg24h
+        if ema_dizi_yukari and chg4h > 0.5:
             return "UP", price, chg24h
 
-        # NEUTRAL_SHORT - hafif asagi
-        if (chg4h < -0.3 or chg_15m < -0.5 or pump_then_dump) and rsi_1h < 52:
+        # ── NEUTRAL_SHORT - hafif asagi ──
+        if chg24h < -1.0 or (chg4h < -0.3 and trend_15m == "ASAGI"):
             return "NEUTRAL_SHORT", price, chg24h
 
-        # NEUTRAL_LONG - hafif yukari
-        if chg4h > 0.3 and fiyat_e20_ustu and rsi_1h > 50 and trend_15m == "YUKARI":
+        # ── NEUTRAL_LONG - hafif yukari ──
+        if chg24h > 1.0 or (chg4h > 0.3 and trend_15m == "YUKARI" and fiyat_e20_ustu):
             return "NEUTRAL_LONG", price, chg24h
 
         return "NEUTRAL", price, chg24h
@@ -710,11 +716,14 @@ def manage_loop():
                     close_pos(symbol, f"Kar garantisi ({sl_garantili:.2f}$)", price)
                     continue
 
-                # Geri cekilme
-                if max_kar > 0 and (max_kar - pnl) >= GERI_CEKILME:
-                    if pnl > 0:
-                        close_pos(symbol, f"Geri cekilme ${max_kar-pnl:.2f}", price)
-                        continue
+                # Geri cekilme - oransal
+                # Max karin %20si geri gelirse VE hala karda ise kapat
+                geri_cekilme_limit = max_kar * GERI_CEKILME_PCT
+                if (max_kar >= GERI_CEKILME_MIN and
+                    (max_kar - pnl) >= geri_cekilme_limit and
+                    pnl > 0):
+                    close_pos(symbol, f"Geri cekilme %{GERI_CEKILME_PCT*100:.0f} (${max_kar-pnl:.2f})", price)
+                    continue
 
                 # Zaman asimi
                 if sure >= 120:
