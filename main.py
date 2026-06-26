@@ -441,24 +441,9 @@ def karar_ver(data, btc_trend):
             return "LONG", f"BTC N-SHORT ama 4/4 yukari, +{pct:.1f}%"
         return None, f"NEUTRAL_SHORT kosul yok (Y:{uy} A:{ua})"
 
-    # ── GERCEKTEN NEUTRAL → Her iki yon, ama en yuksek filtreler ──
+    # ── GERCEKTEN NEUTRAL → HIC ISLEM ACMA ──
     if btc_trend == "NEUTRAL":
-        if not vol_ok:
-            return None, f"NEUTRAL: Hacim yetersiz"
-
-        # LONG - coin guclu, tum timeframeler yukari, RSI makul
-        if data["k1m_yukari"] and uy == 4 and 0 < pct < 2 and rsi_val < 60 and v1m >= 2.0:
-            return "LONG", f"NEUTRAL | 4/4 yukari, 1m EMA, hacim {v1m:.1f}x"
-        if data["k5m_yukari"] and uy == 4 and 0 < pct < 3 and rsi_val < 58 and v1m >= 2.0:
-            return "LONG", f"NEUTRAL | 4/4 yukari, 5m EMA, hacim {v1m:.1f}x"
-
-        # SHORT - coin guclu, tum timeframeler asagi, RSI makul
-        if data["k1m_asagi"] and ua == 4 and -2 < pct < 0 and rsi_val > 40 and v1m >= 2.0:
-            return "SHORT", f"NEUTRAL | 4/4 asagi, 1m EMA, hacim {v1m:.1f}x"
-        if data["k5m_asagi"] and ua == 4 and -3 < pct < 0 and rsi_val > 42 and v1m >= 2.0:
-            return "SHORT", f"NEUTRAL | 4/4 asagi, 5m EMA, hacim {v1m:.1f}x"
-
-        return None, f"NEUTRAL: Kosul yok (Y:{uy} A:{ua} v1m:{v1m:.1f}x)"
+        return None, f"NEUTRAL: BTC belirsiz, bekleniyor (Y:{uy} A:{ua})"
 
     return None, f"Bilinmeyen trend: {btc_trend}"
 
@@ -819,7 +804,7 @@ def scanner_loop():
                 if btc_trend == "DOWN" and pct > -2: continue
                 if btc_trend == "NEUTRAL_LONG" and pct < 1.5: continue
                 if btc_trend == "NEUTRAL_SHORT" and pct > -1.5: continue
-                if btc_trend == "NEUTRAL" and abs(pct) < 4: continue  # NEUTRAL'da daha secici
+                if btc_trend == "NEUTRAL": continue  # NEUTRAL'da hic islem acma
                 if abs(pct) > 50: continue
 
                 sym_base = sym.upper()
@@ -848,6 +833,10 @@ def scanner_loop():
             if not candidates:
                 time.sleep(SCAN_INTERVAL); continue
 
+            if btc_trend == "NEUTRAL":
+                log.info(f"[SCAN] BTC NEUTRAL - bekleniyor, islem acilmayacak")
+                time.sleep(SCAN_INTERVAL)
+                continue
             log.info(f"[SCAN] {len(candidates)} aday | BTC:{btc_trend}")
 
             for c in candidates:
