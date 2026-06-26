@@ -626,7 +626,11 @@ def close_pos(symbol, reason, exit_price=None):
             "reduceOnly": True,
         })
     except Exception as e:
-        log.error(f"[KAPAT] {symbol.split('/')[0]}: {e}")
+        err_str = str(e)
+        if "22002" in err_str or "No position" in err_str:
+            log.info(f"[KAPAT] {symbol.split('/')[0]}: Borsada pozisyon yok, bellek temizlendi")
+        else:
+            log.error(f"[KAPAT] {symbol.split('/')[0]}: {e}")
 
     if exit_price is None:
         t = safe_api(exchange.fetch_ticker, symbol)
