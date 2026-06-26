@@ -694,9 +694,10 @@ def manage_loop():
 
                 max_kar = pos["max_kar"]
 
-                # Stop Loss
-                if pnl_pct <= -1.5:
-                    close_pos(symbol, "Stop Loss -%1.5", price)
+                # Stop Loss - pnl_pct kaldıracli oldugu icin %7.5 = fiyatta -%1.5
+                SL_PCT = 1.5 * LEVERAGE  # Fiyat %1.5 = kaldıracli %7.5
+                if pnl_pct <= -SL_PCT:
+                    close_pos(symbol, f"Stop Loss -%{SL_PCT:.1f} (fiyat -%1.5)", price)
                     continue
 
                 # Garantili kar
