@@ -929,8 +929,8 @@ def manage_loop():
                     continue
 
                 # Zaman asimi
-                if sure >= 120:
-                    close_pos(symbol, "Zaman asimi 2 saat", price)
+                if sure >= 240:
+                    close_pos(symbol, "Zaman asimi 4 saat", price)
                     continue
 
                 # Kademeli SL
