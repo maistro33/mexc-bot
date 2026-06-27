@@ -51,6 +51,17 @@ GERI_CEKILME = 0.30        # Eski - artik kullanilmiyor
 GERI_CEKILME_PCT = 0.20    # Max karin %20si geri gelirse kapat
 GERI_CEKILME_MIN = 0.30    # En az $0.30 karda olmali ki geri cekilme devreye girsin
 
+# Trailing TP sistemi - sinirsiz TP, her birinde SL girise cekiliyor
+# Fiyat hareketi bazli (kaldiracsiz %)
+TP_SEVIYELERI = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0]  # % hedefler
+TP_GERI_DONUS = 0.25  # Her TP'den sonra bu kadar % geri donerse kapat
+
+# Dip yakalama sistemi
+DIP_DUSUS_MIN  = 5.0   # Son 4h'ta en az %5 dusmeli
+DIP_DUSUS_MAX  = 25.0  # En fazla %25 dusmeli (cok dusmus = tehlikeli)
+DIP_TOPARLANMA = 0.5   # Son 1h'ta en az %0.5 toparlanmali
+DIP_RSI_MAX    = 45.0  # RSI en fazla 45 olmali (asiri satim bolgesi)
+
 BLACKLIST = {
     # Volatil/manipule coinler
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
@@ -376,6 +387,91 @@ def analyze_coin(symbol):
 # ─────────────────────────────────────────────
 # KARAR VER — BTC trend'e gore akilli secim
 # ─────────────────────────────────────────────
+def dip_yakalama(symbol):
+    """
+    Dip yakalama analizi:
+    - Son 4h'ta %5-25 dusmis
+    - Son 1h toparlanmaya basladi
+    - RSI asiri satim bolgesinden donuyor
+    - Hacim artıyor
+    - 4/4 timeframe yeni yukari dondu
+    """
+    try:
+        r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=10)
+        r15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=30)
+        r1m  = safe_api(exchange.fetch_ohlcv, symbol, "1m",  limit=10)
+
+        if not r1h or len(r1h) < 5: return None, ""
+        if not r15m or len(r15m) < 20: return None, ""
+
+        df1h  = pd.DataFrame(r1h,  columns=["t","o","h","l","c","v"])
+        df15m = pd.DataFrame(r15m, columns=["t","o","h","l","c","v"])
+
+        price = float(df1h["c"].iloc[-1])
+
+        # Son 4h dusus hesapla
+        fiyat_4h_once = float(df1h["c"].iloc[-5])
+        dusus_4h = (fiyat_4h_once - price) / fiyat_4h_once * 100
+
+        # Son 1h toparlanma
+        fiyat_1h_once = float(df1h["c"].iloc[-2])
+        toparlanma_1h = (price - fiyat_1h_once) / fiyat_1h_once * 100
+
+        # Dip sartlari kontrol
+        if dusus_4h < DIP_DUSUS_MIN:
+            return None, f"Yeterli dusus yok ({dusus_4h:.1f}% < %{DIP_DUSUS_MIN})"
+        if dusus_4h > DIP_DUSUS_MAX:
+            return None, f"Cok fazla dusmis ({dusus_4h:.1f}% > %{DIP_DUSUS_MAX})"
+        if toparlanma_1h < DIP_TOPARLANMA:
+            return None, f"Toparlanma yok ({toparlanma_1h:.1f}%)"
+
+        # RSI kontrolu
+        delta = df15m["c"].diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rs    = gain / loss.replace(0, 0.001)
+        rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+
+        if rsi_val > DIP_RSI_MAX:
+            return None, f"RSI dip icin yuksek ({rsi_val:.0f} > {DIP_RSI_MAX})"
+
+        # Hacim artisi kontrol
+        v_son  = float(df15m["v"].tail(3).mean())
+        v_ort  = float(df15m["v"].rolling(20).mean().iloc[-1])
+        hacim_x = v_son / max(v_ort, 0.001)
+
+        if hacim_x < 1.5:
+            return None, f"Hacim artisi yok ({hacim_x:.1f}x)"
+
+        # 4/4 timeframe yeni yukari dondu mu?
+        r5m = safe_api(exchange.fetch_ohlcv, symbol, "5m", limit=30)
+        if not r5m: return None, "5m veri yok"
+        df5m = pd.DataFrame(r5m, columns=["t","o","h","l","c","v"])
+
+        def tf_yukari(df):
+            e9  = df["c"].ewm(span=9).mean()
+            e20 = df["c"].ewm(span=20).mean()
+            return float(e9.iloc[-1]) > float(e20.iloc[-1])
+
+        t1m_y  = tf_yukari(pd.DataFrame(r1m, columns=["t","o","h","l","c","v"])) if r1m else False
+        t5m_y  = tf_yukari(df5m)
+        t15m_y = tf_yukari(df15m)
+        t1h_y  = tf_yukari(df1h)
+
+        uyum = sum([t1m_y, t5m_y, t15m_y, t1h_y])
+
+        if uyum < 3:
+            return None, f"Timeframe uyumu yok ({uyum}/4 yukari)"
+
+        neden = (f"DIP YAKALA | {dusus_4h:.1f}% dustu, "
+                 f"+{toparlanma_1h:.1f}% toparlanıyor | "
+                 f"RSI:{rsi_val:.0f} | Hacim:{hacim_x:.1f}x | {uyum}/4 TF")
+        return "LONG", neden
+
+    except Exception as e:
+        log.warning(f"[DIP] {symbol}: {e}")
+        return None, str(e)
+
 def karar_ver(data, btc_trend):
     if not data: return None, ""
 
@@ -600,6 +696,9 @@ def open_pos(symbol, yon, neden, btc_trend):
             "max_kar": 0.0,
             "neden": neden, "btc_trend": btc_trend,
             "open_time": time.time(),
+            "tp_seviye":  0,        # Kac TP yapildi
+            "tp_sl_price": 0.0,     # TP sonrasi SL fiyati
+            "son_tepe":   price,    # En yuksek gorduğu fiyat
         }
 
     sym = symbol.split("/")[0]
@@ -733,20 +832,62 @@ def manage_loop():
 
                 max_kar = pos["max_kar"]
 
-                # Stop Loss - iki kontrol:
-                # a) pnl_pct bazli (fiyat -%1.5)
-                if pnl_pct <= -1.5:
-                    close_pos(symbol, "Stop Loss -%1.5", price)
-                    continue
-                # b) sl_price bazli (kesin guvence)
-                entry = pos["entry"]
-                sig   = pos["signal"]
-                sl_p  = pos.get("sl_price", 0)
-                if sl_p > 0:
-                    if sig == "LONG" and price <= sl_p:
-                        close_pos(symbol, f"SL fiyat {sl_p:.6f}", price)
+                entry  = pos["entry"]
+                sig    = pos["signal"]
+
+                # ── TRAILING TP SİSTEMİ ──
+                if sig == "LONG":
+                    pct_from_entry = (price - entry) / entry * 100
+                    tp_seviye      = pos.get("tp_seviye", 0)
+                    tp_sl_price    = pos.get("tp_sl_price", 0.0)
+                    son_tepe       = pos.get("son_tepe", entry)
+
+                    # Son tepeyi guncelle
+                    if price > son_tepe:
+                        with pos_lock:
+                            if symbol in positions:
+                                positions[symbol]["son_tepe"] = price
+
+                    # Yeni TP seviyesi gecildi mi?
+                    if tp_seviye < len(TP_SEVIYELERI):
+                        hedef_pct = TP_SEVIYELERI[tp_seviye]
+                        if pct_from_entry >= hedef_pct:
+                            # TP vuruldu!
+                            yeni_tp_sl = entry if tp_seviye == 0 else entry * (1 + TP_SEVIYELERI[tp_seviye-1]/100)
+                            with pos_lock:
+                                if symbol in positions:
+                                    positions[symbol]["tp_seviye"]   = tp_seviye + 1
+                                    positions[symbol]["tp_sl_price"] = yeni_tp_sl
+                                    positions[symbol]["son_tepe"]    = price
+                            sym = symbol.split("/")[0]
+                            tg(f"🎯 {sym} TP{tp_seviye+1} HIT! +{pct_from_entry:.1f}%\n"
+                               f"SL girise cizildi: {yeni_tp_sl:.6f}\n"
+                               f"Sonraki hedef: %{TP_SEVIYELERI[tp_seviye+1] if tp_seviye+1 < len(TP_SEVIYELERI) else '∞'}\n"
+                               f"Sermaye icerde, devam ediyor... 🚀")
+                            log.info(f"[TP] {sym} TP{tp_seviye+1} +{pct_from_entry:.1f}% | SL={yeni_tp_sl:.6f}")
+
+                    # TP sonrasi trailing stop - tepeden %25 geri donerse kapat
+                    if tp_seviye > 0:
+                        tepe = pos.get("son_tepe", price)
+                        geri_donus = (tepe - price) / tepe * 100
+                        if geri_donus >= TP_GERI_DONUS:
+                            close_pos(symbol, f"Trailing stop TP{tp_seviye} tepeden -%{geri_donus:.1f}", price)
+                            continue
+
+                    # TP sonrasi SL kontrolu
+                    if tp_sl_price > 0 and price <= tp_sl_price:
+                        close_pos(symbol, f"TP SL ({tp_sl_price:.6f})", price)
                         continue
-                    if sig == "SHORT" and price >= sl_p:
+
+                # Normal SL - TP yoksa
+                tp_seviye = pos.get("tp_seviye", 0)
+                if tp_seviye == 0:
+                    # Hic TP yapilmadiysa normal SL
+                    if pnl_pct <= -1.5:
+                        close_pos(symbol, "Stop Loss -%1.5", price)
+                        continue
+                    sl_p = pos.get("sl_price", 0)
+                    if sl_p > 0 and price <= sl_p:
                         close_pos(symbol, f"SL fiyat {sl_p:.6f}", price)
                         continue
 
@@ -917,6 +1058,45 @@ def scanner_loop():
                     log.info(f"[PAS] {sym}: {neden}")
 
                 time.sleep(1)
+
+            # ── DIP YAKALAMA TARAMASI ──
+            # BTC trend ne olursa olsun dip arıyoruz
+            with pos_lock:
+                if len(positions) < MAX_OPEN:
+                    open_syms = set(positions.keys())
+                    try:
+                        tum_tickers = safe_api(exchange.fetch_tickers)
+                        dip_adaylar = []
+                        if tum_tickers:
+                            for symbol, ticker in tum_tickers.items():
+                                if not symbol.endswith("/USDT:USDT"): continue
+                                sym = symbol.split("/")[0]
+                                if sym in BLACKLIST: continue
+                                if symbol in open_syms: continue
+                                qv    = ticker.get("quoteVolume") or 0
+                                price = float(ticker.get("last") or 0)
+                                pct   = ticker.get("percentage") or 0
+                                # Dip adayi: son 24h'ta dusmis ama simdi toparlanıyor
+                                if qv < MIN_VOL_USDT: continue
+                                if qv > MAX_VOL_USDT: continue
+                                if price <= 0 or price > 5.0: continue
+                                if -20 < pct < -3:  # Dusmis ama cok degil
+                                    dip_adaylar.append({"symbol": symbol, "pct": pct})
+
+                        # En cok dusmis 3 adayi kontrol et
+                        dip_adaylar.sort(key=lambda x: x["pct"])
+                        for d in dip_adaylar[:3]:
+                            with pos_lock:
+                                if len(positions) >= MAX_OPEN: break
+                            yon, neden = dip_yakalama(d["symbol"])
+                            if yon:
+                                sym = d["symbol"].split("/")[0]
+                                log.info(f"[DIP] {sym} bulundu: {neden}")
+                                open_pos(d["symbol"], "LONG", neden, btc_trend)
+                                with pos_lock: open_syms = set(positions.keys())
+                            time.sleep(1)
+                    except Exception as e:
+                        log.warning(f"[DIP SCAN] {e}")
 
             time.sleep(SCAN_INTERVAL)
 
@@ -1136,6 +1316,9 @@ def load_open_positions():
                             "neden":        "Onceki oturumdan yuklendi",
                             "btc_trend":    btc_trend,
                             "open_time":    time.time(),
+                            "tp_seviye":    0,       # Kac TP yapildi
+                            "tp_sl_price":  0.0,     # TP sonrasi SL fiyati
+                            "son_tepe":     entry,   # En yuksek gorduğu fiyat
                         }
                         yuklenen += 1
                         log.info(f"[YUKLE] {symbol.split('/')[0]} {yon} @ {entry}")
