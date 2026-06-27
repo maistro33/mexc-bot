@@ -85,6 +85,11 @@ btc_cache       = {"trend": "NEUTRAL", "price": 0, "chg": 0, "ts": 0}
 btc_cache_lock  = threading.Lock()
 BTC_CACHE_SURE  = 300  # 5 dakika
 
+# TICKER CACHE - scanner her 1 dakikada ceker, dip taramasi bunu kullanir
+ticker_cache      = {}
+ticker_cache_lock = threading.Lock()
+ticker_cache_ts   = 0
+
 # TELEGRAM
 bot = telebot.TeleBot(TELE_TOKEN)
 def tg(msg):
@@ -944,6 +949,63 @@ def manage_loop():
 # ─────────────────────────────────────────────
 # TARAYICI
 # ─────────────────────────────────────────────
+def dip_scan_loop():
+    """Dip yakalama - ayri thread, scanner'in ticker cache'ini kullanir"""
+    time.sleep(90)  # Botu beklet once
+    while True:
+        try:
+            with pos_lock:
+                if len(positions) >= MAX_OPEN:
+                    time.sleep(60)
+                    continue
+                open_syms = set(positions.keys())
+
+            # Scanner'in cektigi cache'i kullan - ekstra API cagrisı yok
+            with ticker_cache_lock:
+                tum_tickers = dict(ticker_cache)
+                cache_yasi  = time.time() - ticker_cache_ts
+
+            if not tum_tickers or cache_yasi > 120:
+                log.info("[DIP] Ticker cache hazir degil, bekleniyor...")
+                time.sleep(30)
+                continue
+
+            dip_adaylar = []
+            for symbol, ticker in tum_tickers.items():
+                if not symbol.endswith("/USDT:USDT"): continue
+                sym = symbol.split("/")[0]
+                if sym in BLACKLIST: continue
+                if symbol in open_syms: continue
+                qv    = ticker.get("quoteVolume") or 0
+                price = float(ticker.get("last") or 0)
+                pct   = ticker.get("percentage") or 0
+                if qv < MIN_VOL_USDT: continue
+                if qv > MAX_VOL_USDT: continue
+                if price <= 0 or price > 50.0: continue
+                if -20 < pct < -3:
+                    dip_adaylar.append({"symbol": symbol, "pct": pct})
+
+            dip_adaylar.sort(key=lambda x: x["pct"])
+            log.info(f"[DIP SCAN] {len(dip_adaylar)} dip adayi bulundu")
+
+            btc_trend, _, _ = get_btc_trend()
+            for d in dip_adaylar[:3]:
+                with pos_lock:
+                    if len(positions) >= MAX_OPEN: break
+                    if d["symbol"] in positions: continue
+                yon, neden = dip_yakalama(d["symbol"])
+                if yon:
+                    sym = d["symbol"].split("/")[0]
+                    log.info(f"[DIP] {sym} bulundu: {neden}")
+                    open_pos(d["symbol"], "LONG", neden, btc_trend)
+                time.sleep(2)
+
+            time.sleep(70)   # Scanner ile ayni hizda tara
+
+        except Exception as e:
+            log.error(f"[DIP SCAN] {e}")
+            time.sleep(60)
+
 def gunluk_reset_loop():
     """Her gece 00:00'da gunluk PnL'i sifirla"""
     global daily_pnl
@@ -983,6 +1045,12 @@ def scanner_loop():
             tickers = safe_api(exchange.fetch_tickers)
             if not tickers:
                 time.sleep(SCAN_INTERVAL); continue
+
+            # Ticker cache'i guncelle - dip taramasi kullanir
+            global ticker_cache, ticker_cache_ts
+            with ticker_cache_lock:
+                ticker_cache    = tickers
+                ticker_cache_ts = time.time()
 
             candidates = []
             for symbol, ticker in tickers.items():
@@ -1058,45 +1126,6 @@ def scanner_loop():
                     log.info(f"[PAS] {sym}: {neden}")
 
                 time.sleep(1)
-
-            # ── DIP YAKALAMA TARAMASI ──
-            # BTC trend ne olursa olsun dip arıyoruz
-            with pos_lock:
-                if len(positions) < MAX_OPEN:
-                    open_syms = set(positions.keys())
-                    try:
-                        tum_tickers = safe_api(exchange.fetch_tickers)
-                        dip_adaylar = []
-                        if tum_tickers:
-                            for symbol, ticker in tum_tickers.items():
-                                if not symbol.endswith("/USDT:USDT"): continue
-                                sym = symbol.split("/")[0]
-                                if sym in BLACKLIST: continue
-                                if symbol in open_syms: continue
-                                qv    = ticker.get("quoteVolume") or 0
-                                price = float(ticker.get("last") or 0)
-                                pct   = ticker.get("percentage") or 0
-                                # Dip adayi: son 24h'ta dusmis ama simdi toparlanıyor
-                                if qv < MIN_VOL_USDT: continue
-                                if qv > MAX_VOL_USDT: continue
-                                if price <= 0 or price > 50.0: continue
-                                if -20 < pct < -3:  # Dusmis ama cok degil
-                                    dip_adaylar.append({"symbol": symbol, "pct": pct})
-
-                        # En cok dusmis 3 adayi kontrol et
-                        dip_adaylar.sort(key=lambda x: x["pct"])
-                        for d in dip_adaylar[:3]:
-                            with pos_lock:
-                                if len(positions) >= MAX_OPEN: break
-                            yon, neden = dip_yakalama(d["symbol"])
-                            if yon:
-                                sym = d["symbol"].split("/")[0]
-                                log.info(f"[DIP] {sym} bulundu: {neden}")
-                                open_pos(d["symbol"], "LONG", neden, btc_trend)
-                                with pos_lock: open_syms = set(positions.keys())
-                            time.sleep(1)
-                    except Exception as e:
-                        log.warning(f"[DIP SCAN] {e}")
 
             time.sleep(SCAN_INTERVAL)
 
@@ -1350,6 +1379,7 @@ if __name__ == "__main__":
     threading.Thread(target=manage_loop,       daemon=True).start()
     threading.Thread(target=scanner_loop,      daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
+    threading.Thread(target=dip_scan_loop,     daemon=True).start()
     tg(
         "\U0001f916 SADIK TRADER v3 — SADECE LONG\n\n"
         "BTC Trend Sistemi:\n"
