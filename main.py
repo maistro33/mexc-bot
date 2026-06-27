@@ -350,6 +350,16 @@ def analyze_coin(symbol):
 
         pct = (price - float(df15m["c"].iloc[-10])) / float(df15m["c"].iloc[-10]) * 100
 
+        # Coin kendi 1h trendi - son 1 saatte ne yaptı?
+        pct_1h = 0.0
+        if df1h is not None and len(df1h) >= 2:
+            pct_1h = (price - float(df1h["c"].iloc[-2])) / float(df1h["c"].iloc[-2]) * 100
+
+        # Coin kendi 4h trendi - genel yonu
+        pct_4h = 0.0
+        if df1h is not None and len(df1h) >= 5:
+            pct_4h = (price - float(df1h["c"].iloc[-5])) / float(df1h["c"].iloc[-5]) * 100
+
         return {
             "price": price, "rsi": rsi_val, "rsi_1h": rsi_1h,
             "uyum_yukari": uyum_yukari, "uyum_asagi": uyum_asagi,
@@ -357,7 +367,7 @@ def analyze_coin(symbol):
             "k5m_yukari": k5m_yukari, "k5m_asagi": k5m_asagi,
             "k15m_yukari": k15m_yukari, "k15m_asagi": k15m_asagi,
             "v1m": v1m, "v5m": v5m, "v15m": v15m,
-            "pct": pct,
+            "pct": pct, "pct_1h": pct_1h, "pct_4h": pct_4h,
         }
     except Exception as e:
         log.warning(f"[ANALYZE] {symbol}: {e}")
@@ -376,6 +386,8 @@ def karar_ver(data, btc_trend):
     v1m     = data["v1m"]
     v5m     = data["v5m"]
     pct     = data["pct"]
+    pct_1h  = data.get("pct_1h", 0)
+    pct_4h  = data.get("pct_4h", 0)
 
     # Gec kalma filtresi
     if abs(pct) > 20:
@@ -384,6 +396,21 @@ def karar_ver(data, btc_trend):
         return None, f"LONG gec kalindi ({pct:.1f}%)"
     if pct < -5:
         return None, f"SHORT gec kalindi ({pct:.1f}%)"
+
+    # ── COIN TREND FİLTRESİ ──
+    # LONG icin: coin son 1h dusuyorsa ve 4h da dusuyorsa girme
+    if btc_trend in ["UP", "NEUTRAL_LONG"]:
+        if pct_1h < -1.5 and pct_4h < -2.0:
+            return None, f"Coin dususte: 1h={pct_1h:.1f}% 4h={pct_4h:.1f}% - LONG riskli"
+        if pct_1h < -3.0:
+            return None, f"Coin 1h cok dustu: {pct_1h:.1f}% - LONG icin gec"
+
+    # SHORT icin: coin son 1h yukseliyorsa ve 4h da yukseliyorsa girme
+    if btc_trend in ["DOWN", "NEUTRAL_SHORT"]:
+        if pct_1h > 1.5 and pct_4h > 2.0:
+            return None, f"Coin yukseliste: 1h={pct_1h:.1f}% 4h={pct_4h:.1f}% - SHORT riskli"
+        if pct_1h > 3.0:
+            return None, f"Coin 1h cok yukseldi: {pct_1h:.1f}% - SHORT icin gec"
 
     vol_ok = v1m >= 1.5 or v5m >= 1.5
 
