@@ -70,6 +70,9 @@ BLACKLIST = {
     "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME","CLOSED",
     # Veri analizine gore surekli zarar ettiren coinler
     "BICO","ARX","BEAT","ID","ALICE","XLM","BTW",
+    # Meme coinler - manipule edilebilir, bot icin uygun degil
+    "SHIB","DOGE","PEPE","FLOKI","BONK","WIF","MEME",
+    "1000SHIB","1000DOGE","1000PEPE","1000FLOKI","1000BONK","1000WIF",
 }
 
 # STATE
@@ -969,8 +972,8 @@ def manage_loop():
                 if tp_seviye == 0:
                     # Hacim patlama modunda SL -%3, normal modda -%1.5
                     neden_pos = pos.get("neden", "")
-                    sl_limit  = -3.0 if "HACIM PATLAMA" in neden_pos else -1.5
-                    sl_label  = "-%3.0" if "HACIM PATLAMA" in neden_pos else "-%1.5"
+                    sl_limit  = -4.0 if "HACIM PATLAMA" in neden_pos else -1.5
+                    sl_label  = "-%4.0" if "HACIM PATLAMA" in neden_pos else "-%1.5"
                     if pnl_pct <= sl_limit:
                         close_pos(symbol, f"Stop Loss {sl_label}", price)
                         continue
@@ -1069,7 +1072,8 @@ def dip_scan_loop():
                     dip_adaylar.append({"symbol": symbol, "pct": pct})
 
             dip_adaylar.sort(key=lambda x: x["pct"])
-            log.info(f"[DIP SCAN] {len(dip_adaylar)} dip adayi bulundu")
+            isimler = ", ".join(d["symbol"].split("/")[0] for d in dip_adaylar[:6])
+            log.info(f"[DIP SCAN] {len(dip_adaylar)} aday: {isimler}")
 
             btc_trend, _, _ = get_btc_trend()
 
