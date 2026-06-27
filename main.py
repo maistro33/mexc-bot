@@ -414,61 +414,51 @@ def karar_ver(data, btc_trend):
 
     vol_ok = v1m >= 1.5 or v5m >= 1.5
 
-    # ── BTC GUCLU YUKARI → Sadece LONG ──
+    # ── BTC GUCLU YUKARI → Sadece LONG, 4/4 timeframe şart ──
     if btc_trend == "UP":
         if not vol_ok:
             return None, f"Hacim yetersiz (v1m:{v1m:.1f}x)"
-        if data["k1m_yukari"] and uy >= 3 and 0 < pct < 3 and rsi_val < 68:
-            return "LONG", f"BTC UP | 1m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
-        if data["k5m_yukari"] and uy >= 3 and 0 < pct < 4 and rsi_val < 68:
-            return "LONG", f"BTC UP | 5m EMA kesti, {uy}/4 yukari, +{pct:.1f}%"
-        if v1m >= 2.5 and uy >= 3 and 0 < pct < 2 and rsi_val < 65:
-            return "LONG", f"BTC UP | Hacim {v1m:.1f}x, {uy}/4 yukari, +{pct:.1f}%"
-        return None, f"BTC UP ama LONG kosulu saglanamadi (Y:{uy} RSI:{rsi_val:.0f})"
+        # 4/4 timeframe yukari olmali - en guclu sinyal
+        if uy < 4:
+            return None, f"BTC UP ama {uy}/4 timeframe yukari - 4/4 gerekli"
+        if rsi_val > 70:
+            return None, f"RSI asiri alim ({rsi_val:.0f}) - giris riskli"
+        if pct_1h < -1.0:
+            return None, f"Coin 1h dususte ({pct_1h:.1f}%) - LONG riskli"
+        if data["k1m_yukari"] and 0 < pct < 3 and rsi_val < 68:
+            return "LONG", f"BTC UP | 4/4 TF, 1m EMA kesti, +{pct:.1f}%"
+        if data["k5m_yukari"] and 0 < pct < 4 and rsi_val < 68:
+            return "LONG", f"BTC UP | 4/4 TF, 5m EMA kesti, +{pct:.1f}%"
+        if v1m >= 2.5 and 0 < pct < 2 and rsi_val < 65:
+            return "LONG", f"BTC UP | 4/4 TF, Hacim {v1m:.1f}x, +{pct:.1f}%"
+        return None, f"BTC UP 4/4 TF ama giris kosulu yok (RSI:{rsi_val:.0f} pct:{pct:.1f}%)"
 
-    # ── BTC GUCLU ASAGI → Sadece SHORT ──
+    # ── BTC GUCLU ASAGI → Sadece LONG bot, bekle ──
     if btc_trend == "DOWN":
-        if not vol_ok:
-            return None, f"Hacim yetersiz (v1m:{v1m:.1f}x)"
-        if data["k1m_asagi"] and ua >= 3 and -3 < pct < 0 and rsi_val > 32:
-            return "SHORT", f"BTC DOWN | 1m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
-        if data["k5m_asagi"] and ua >= 3 and -4 < pct < 0 and rsi_val > 32:
-            return "SHORT", f"BTC DOWN | 5m EMA kesti, {ua}/4 asagi, {pct:.1f}%"
-        if v1m >= 2.5 and ua >= 3 and -2 < pct < 0 and rsi_val > 35:
-            return "SHORT", f"BTC DOWN | Hacim {v1m:.1f}x, {ua}/4 asagi, {pct:.1f}%"
-        return None, f"BTC DOWN ama SHORT kosulu saglanamadi (A:{ua} RSI:{rsi_val:.0f})"
+        return None, f"BTC DOWN - Sadece LONG bot, bekleniyor"
 
-    # ── BTC ZAYIF YUKARI → LONG oncelikli, SHORT cok secici ──
+    # ── BTC ZAYIF YUKARI → LONG, 4/4 timeframe şart ──
     if btc_trend == "NEUTRAL_LONG":
         if not vol_ok:
             return None, f"Hacim yetersiz"
-        # LONG - normal sartlar
-        if data["k1m_yukari"] and uy >= 3 and 0 < pct < 3 and rsi_val < 65:
-            return "LONG", f"BTC N-LONG | 1m EMA, {uy}/4, +{pct:.1f}%"
-        if data["k5m_yukari"] and uy >= 3 and 0 < pct < 4 and rsi_val < 65:
-            return "LONG", f"BTC N-LONG | 5m EMA, {uy}/4, +{pct:.1f}%"
-        if v1m >= 2.5 and uy >= 3 and 0 < pct < 2 and rsi_val < 62:
-            return "LONG", f"BTC N-LONG | Hacim {v1m:.1f}x"
-        # SHORT - sadece cok guclu sinyal
-        if data["k1m_asagi"] and ua == 4 and -2 < pct < 0 and rsi_val > 40 and v1m >= 2.0:
-            return "SHORT", f"BTC N-LONG ama 4/4 asagi, {pct:.1f}%"
-        return None, f"NEUTRAL_LONG kosul yok (Y:{uy} A:{ua})"
+        # 4/4 timeframe yukari olmali
+        if uy < 4:
+            return None, f"NEUTRAL_LONG ama {uy}/4 TF yukari - 4/4 gerekli"
+        if rsi_val > 68:
+            return None, f"RSI yuksek ({rsi_val:.0f}) - giris riskli"
+        if pct_1h < -1.0:
+            return None, f"Coin 1h dususte ({pct_1h:.1f}%) - LONG riskli"
+        if data["k1m_yukari"] and 0 < pct < 3 and rsi_val < 65:
+            return "LONG", f"BTC N-LONG | 4/4 TF, 1m EMA, +{pct:.1f}%"
+        if data["k5m_yukari"] and 0 < pct < 4 and rsi_val < 65:
+            return "LONG", f"BTC N-LONG | 4/4 TF, 5m EMA, +{pct:.1f}%"
+        if v1m >= 2.5 and 0 < pct < 2 and rsi_val < 62:
+            return "LONG", f"BTC N-LONG | 4/4 TF, Hacim {v1m:.1f}x"
+        return None, f"NEUTRAL_LONG kosul yok ({uy}/4 TF, RSI:{rsi_val:.0f})"
 
-    # ── BTC ZAYIF ASAGI → SHORT oncelikli, LONG cok secici ──
+    # ── BTC ZAYIF ASAGI → Sadece LONG bot, bekle ──
     if btc_trend == "NEUTRAL_SHORT":
-        if not vol_ok:
-            return None, f"Hacim yetersiz"
-        # SHORT - normal sartlar
-        if data["k1m_asagi"] and ua >= 3 and -3 < pct < 0 and rsi_val > 35:
-            return "SHORT", f"BTC N-SHORT | 1m EMA, {ua}/4, {pct:.1f}%"
-        if data["k5m_asagi"] and ua >= 3 and -4 < pct < 0 and rsi_val > 35:
-            return "SHORT", f"BTC N-SHORT | 5m EMA, {ua}/4, {pct:.1f}%"
-        if v1m >= 2.5 and ua >= 3 and -2 < pct < 0 and rsi_val > 38:
-            return "SHORT", f"BTC N-SHORT | Hacim {v1m:.1f}x"
-        # LONG - sadece cok guclu sinyal
-        if data["k1m_yukari"] and uy == 4 and 0 < pct < 2 and rsi_val < 60 and v1m >= 2.0:
-            return "LONG", f"BTC N-SHORT ama 4/4 yukari, +{pct:.1f}%"
-        return None, f"NEUTRAL_SHORT kosul yok (Y:{uy} A:{ua})"
+        return None, f"BTC NEUTRAL_SHORT - Sadece LONG bot, bekleniyor"
 
     # ── GERCEKTEN NEUTRAL → HIC ISLEM ACMA ──
     if btc_trend == "NEUTRAL":
@@ -565,12 +555,13 @@ def open_pos(symbol, yon, neden, btc_trend):
     global daily_pnl
     if daily_pnl <= MAX_DAILY_LOSS: return False
 
-    # BTC trend ile celisen islem KESINLIKLE ACMA
-    if btc_trend == "DOWN" and yon == "LONG":
-        log.info(f"[ENGEL] BTC DOWN, LONG engellendi: {symbol}")
+    # SADECE LONG BOT - SHORT kesinlikle acma
+    if yon == "SHORT":
+        log.info(f"[ENGEL] Sadece LONG bot, SHORT engellendi: {symbol}")
         return False
-    if btc_trend == "UP" and yon == "SHORT":
-        log.info(f"[ENGEL] BTC UP, SHORT engellendi: {symbol}")
+    # BTC DOWN veya NEUTRAL_SHORT'ta LONG da acma
+    if btc_trend in ["DOWN", "NEUTRAL_SHORT", "NEUTRAL"]:
+        log.info(f"[ENGEL] BTC {btc_trend} - LONG engellendi: {symbol}")
         return False
 
     # Analiz fiyatini al
@@ -869,11 +860,10 @@ def scanner_loop():
                 if price > 5.0: continue
 
                 # On filtre - BTC trend'e gore
+                # Sadece LONG bot - sadece yukari hareketleri tara
                 if btc_trend == "UP" and pct < 2: continue
-                if btc_trend == "DOWN" and pct > -2: continue
                 if btc_trend == "NEUTRAL_LONG" and pct < 1.5: continue
-                if btc_trend == "NEUTRAL_SHORT" and pct > -1.5: continue
-                if btc_trend == "NEUTRAL": continue  # NEUTRAL'da hic islem acma
+                if btc_trend in ["DOWN", "NEUTRAL_SHORT", "NEUTRAL"]: continue
                 if abs(pct) > 50: continue
 
                 sym_base = sym.upper()
@@ -902,8 +892,8 @@ def scanner_loop():
             if not candidates:
                 time.sleep(SCAN_INTERVAL); continue
 
-            if btc_trend == "NEUTRAL":
-                log.info(f"[SCAN] BTC NEUTRAL - bekleniyor, islem acilmayacak")
+            if btc_trend in ["NEUTRAL", "DOWN", "NEUTRAL_SHORT"]:
+                log.info(f"[SCAN] BTC {btc_trend} - Sadece LONG bot, bekleniyor")
                 time.sleep(SCAN_INTERVAL)
                 continue
             log.info(f"[SCAN] {len(candidates)} aday | BTC:{btc_trend}")
@@ -1178,16 +1168,17 @@ if __name__ == "__main__":
     threading.Thread(target=scanner_loop,      daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
     tg(
-        "\U0001f916 SADIK TRADER v3 — GUNCELLENDI\n\n"
+        "\U0001f916 SADIK TRADER v3 — SADECE LONG\n\n"
         "BTC Trend Sistemi:\n"
-        "⬆️ UP          → Sadece LONG\n"
-        "⬇️ DOWN        → Sadece SHORT\n"
-        "↗️ NEUTRAL_LONG  → LONG oncelikli\n"
-        "↘️ NEUTRAL_SHORT → SHORT oncelikli\n"
-        "↔️ NEUTRAL     → 4/4 uyum + yuksek hacim\n\n"
-        "✅ EMA9/20/50 + RSI + momentum\n"
-        "✅ Gec kalma filtresi korundu\n"
-        "✅ Kademeli kar koruma aktif\n\n"
+        "⬆️ UP           → LONG acar\n"
+        "↗️ NEUTRAL_LONG → LONG acar\n"
+        "⬇️ DOWN         → BEKLER\n"
+        "↘️ NEUTRAL_SHORT → BEKLER\n"
+        "↔️ NEUTRAL      → BEKLER\n\n"
+        "✅ Coin 1h+4h trend filtresi\n"
+        "✅ 5 mum + RSI giris kalitesi\n"
+        "✅ Cift SL kontrolu\n"
+        "✅ Erken zarar cikisi\n\n"
         "/durum /istatistik /btc"
     )
     while True:
