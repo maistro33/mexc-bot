@@ -1082,13 +1082,15 @@ def dip_scan_loop():
                 with pos_lock:
                     if len(positions) >= MAX_OPEN: break
                     if d["symbol"] in positions: continue
+                sym = d["symbol"].split("/")[0]
                 yon, neden = hacim_patlama(d["symbol"])
                 if yon:
-                    sym = d["symbol"].split("/")[0]
                     log.info(f"[HACIM PATLAMA] {sym}: {neden}")
                     open_pos(d["symbol"], "LONG", neden, btc_trend)
                     with pos_lock:
                         if len(positions) >= MAX_OPEN: break
+                else:
+                    log.info(f"[HACIM PAS] {sym}: {neden}")
                 time.sleep(1)
 
             # Sonra normal dip yakalama tara
@@ -1096,11 +1098,13 @@ def dip_scan_loop():
                 with pos_lock:
                     if len(positions) >= MAX_OPEN: break
                     if d["symbol"] in positions: continue
+                sym = d["symbol"].split("/")[0]
                 yon, neden = dip_yakalama(d["symbol"])
                 if yon:
-                    sym = d["symbol"].split("/")[0]
                     log.info(f"[DIP] {sym} bulundu: {neden}")
                     open_pos(d["symbol"], "LONG", neden, btc_trend)
+                else:
+                    log.info(f"[DIP PAS] {sym}: {neden}")
                 time.sleep(1)
 
             time.sleep(70)   # Scanner ile ayni hizda tara
