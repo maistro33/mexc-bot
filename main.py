@@ -34,8 +34,8 @@ MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
 MAX_OPEN       = 2
-MIN_VOL_USDT   = 1_000_000
-MAX_VOL_USDT   = 5_000_000
+MIN_VOL_USDT   = 2_000_000  # Min 2M - slippage kontrolu
+MAX_VOL_USDT   = 15_000_000  # Max 15M - hizli hareket, iyi likidite
 MAX_DAILY_LOSS = -10.0
 SCAN_INTERVAL  = 60
 
@@ -54,7 +54,7 @@ GERI_CEKILME_MIN = 0.30    # En az $0.30 karda olmali ki geri cekilme devreye gi
 # Trailing TP sistemi - sinirsiz TP, her birinde SL girise cekiliyor
 # Fiyat hareketi bazli (kaldiracsiz %)
 TP_SEVIYELERI = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0]  # % hedefler
-TP_GERI_DONUS = 0.25  # Her TP'den sonra bu kadar % geri donerse kapat
+TP_GERI_DONUS = 0.40  # Her TP'den sonra bu kadar % geri donerse kapat (normal dalgalanma toleransi)
 
 # Dip yakalama sistemi
 DIP_DUSUS_MIN  = 5.0   # Son 4h'ta en az %5 dusmeli
@@ -998,7 +998,7 @@ def scanner_loop():
                 if qv < MIN_VOL_USDT: continue
                 if qv > MAX_VOL_USDT: continue
                 if price <= 0: continue
-                if price > 5.0: continue
+                if price > 50.0: continue
 
                 # On filtre - BTC trend'e gore
                 # Sadece LONG bot - sadece yukari hareketleri tara
@@ -1079,7 +1079,7 @@ def scanner_loop():
                                 # Dip adayi: son 24h'ta dusmis ama simdi toparlanıyor
                                 if qv < MIN_VOL_USDT: continue
                                 if qv > MAX_VOL_USDT: continue
-                                if price <= 0 or price > 5.0: continue
+                                if price <= 0 or price > 50.0: continue
                                 if -20 < pct < -3:  # Dusmis ama cok degil
                                     dip_adaylar.append({"symbol": symbol, "pct": pct})
 
