@@ -399,6 +399,70 @@ def analyze_coin(symbol):
 # ─────────────────────────────────────────────
 # KARAR VER — BTC trend'e gore akilli secim
 # ─────────────────────────────────────────────
+def hacim_patlama(symbol):
+    """
+    Hacim Patlaması Modu - Ani dip yakalama:
+    - Son 3 mumda hacim 5x+ patlamis
+    - RSI 35 altinda (asiri satim)
+    - Fiyat 4h'ta %5+ dusmis (dip bolgesi)
+    - TF bekleme yok, momentum bekleme yok - hizli giris!
+    """
+    try:
+        r1m  = safe_api(exchange.fetch_ohlcv, symbol, "1m",  limit=10)
+        r15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=30)
+        r1h  = safe_api(exchange.fetch_ohlcv, symbol, "1h",  limit=6)
+
+        if not r1m or len(r1m) < 5:   return None, ""
+        if not r15m or len(r15m) < 20: return None, ""
+        if not r1h or len(r1h) < 5:   return None, ""
+
+        df1m  = pd.DataFrame(r1m,  columns=["t","o","h","l","c","v"])
+        df15m = pd.DataFrame(r15m, columns=["t","o","h","l","c","v"])
+        df1h  = pd.DataFrame(r1h,  columns=["t","o","h","l","c","v"])
+
+        price = float(df1m["c"].iloc[-1])
+
+        # 1. Hacim patlamasi - son 3 mumda 5x+
+        v_son3 = float(df1m["v"].tail(3).mean())
+        v_ort  = float(df1m["v"].rolling(7).mean().iloc[-4])  # onceki ortalama
+        hacim_x = v_son3 / max(v_ort, 0.001)
+
+        if hacim_x < 5.0:
+            return None, f"Hacim patlamasi yok ({hacim_x:.1f}x < 5x)"
+
+        # 2. RSI asiri satim - 35 altinda
+        delta   = df15m["c"].diff()
+        gain    = delta.clip(lower=0).rolling(14).mean()
+        loss    = (-delta.clip(upper=0)).rolling(14).mean()
+        rs      = gain / loss.replace(0, 0.001)
+        rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
+
+        if rsi_val > 40:
+            return None, f"RSI dip icin yuksek ({rsi_val:.0f} > 40)"
+
+        # 3. Fiyat dip bolgesinde - 4h'ta %5+ dusmis
+        fiyat_4h_once = float(df1h["c"].iloc[-5])
+        dusus_4h = (fiyat_4h_once - price) / fiyat_4h_once * 100
+
+        if dusus_4h < 3.0:
+            return None, f"Yeterli dusus yok ({dusus_4h:.1f}% < 3%)"
+        if dusus_4h > 30.0:
+            return None, f"Cok fazla dusmis ({dusus_4h:.1f}% > 30%)"
+
+        # 4. Son 1m mumda yukari donus var mi?
+        son_mum_yukari = float(df1m["c"].iloc[-1]) > float(df1m["o"].iloc[-1])
+        if not son_mum_yukari:
+            return None, "Son mum kirmizi - henuz donus yok"
+
+        neden = (f"HACIM PATLAMA | {hacim_x:.1f}x hacim | "
+                 f"{dusus_4h:.1f}% dip | RSI:{rsi_val:.0f}")
+        return "LONG", neden
+
+    except Exception as e:
+        log.warning(f"[HACIM] {symbol}: {e}")
+        return None, str(e)
+
+
 def dip_yakalama(symbol):
     """
     Dip yakalama analizi:
@@ -683,12 +747,16 @@ def open_pos(symbol, yon, neden, btc_trend):
     analiz_fiyati = float(t0["last"])
 
     # GIRIS MOMENTUM KONTROLU
+    # Hacim patlamasi durumunda momentum kontrolunu atla - hizli giris
     sym = symbol.split("/")[0]
-    momentum_ok, momentum_neden = giris_momentum_ok(symbol, yon, analiz_fiyati)
-    if not momentum_ok:
-        log.info(f"[MOMENTUM] {sym} reddedildi: {momentum_neden}")
-        return False
-    log.info(f"[MOMENTUM] {sym} gecti: {momentum_neden}")
+    if "HACIM PATLAMA" not in neden:
+        momentum_ok, momentum_neden = giris_momentum_ok(symbol, yon, analiz_fiyati)
+        if not momentum_ok:
+            log.info(f"[MOMENTUM] {sym} reddedildi: {momentum_neden}")
+            return False
+        log.info(f"[MOMENTUM] {sym} gecti: {momentum_neden}")
+    else:
+        log.info(f"[MOMENTUM] {sym} hacim patlama - momentum atlandi")
 
     # Guncel fiyati yeniden al (3sn gecti)
     t = safe_api(exchange.fetch_ticker, symbol)
@@ -899,9 +967,12 @@ def manage_loop():
                 # Normal SL - TP yoksa
                 tp_seviye = pos.get("tp_seviye", 0)
                 if tp_seviye == 0:
-                    # Hic TP yapilmadiysa normal SL
-                    if pnl_pct <= -1.5:
-                        close_pos(symbol, "Stop Loss -%1.5", price)
+                    # Hacim patlama modunda SL -%3, normal modda -%1.5
+                    neden_pos = pos.get("neden", "")
+                    sl_limit  = -3.0 if "HACIM PATLAMA" in neden_pos else -1.5
+                    sl_label  = "-%3.0" if "HACIM PATLAMA" in neden_pos else "-%1.5"
+                    if pnl_pct <= sl_limit:
+                        close_pos(symbol, f"Stop Loss {sl_label}", price)
                         continue
                     sl_p = pos.get("sl_price", 0)
                     if sl_p > 0 and price <= sl_p:
@@ -1001,6 +1072,22 @@ def dip_scan_loop():
             log.info(f"[DIP SCAN] {len(dip_adaylar)} dip adayi bulundu")
 
             btc_trend, _, _ = get_btc_trend()
+
+            # Once hacim patlamasi tara - en hizli
+            for d in dip_adaylar[:5]:
+                with pos_lock:
+                    if len(positions) >= MAX_OPEN: break
+                    if d["symbol"] in positions: continue
+                yon, neden = hacim_patlama(d["symbol"])
+                if yon:
+                    sym = d["symbol"].split("/")[0]
+                    log.info(f"[HACIM PATLAMA] {sym}: {neden}")
+                    open_pos(d["symbol"], "LONG", neden, btc_trend)
+                    with pos_lock:
+                        if len(positions) >= MAX_OPEN: break
+                time.sleep(1)
+
+            # Sonra normal dip yakalama tara
             for d in dip_adaylar[:3]:
                 with pos_lock:
                     if len(positions) >= MAX_OPEN: break
@@ -1010,7 +1097,7 @@ def dip_scan_loop():
                     sym = d["symbol"].split("/")[0]
                     log.info(f"[DIP] {sym} bulundu: {neden}")
                     open_pos(d["symbol"], "LONG", neden, btc_trend)
-                time.sleep(2)
+                time.sleep(1)
 
             time.sleep(70)   # Scanner ile ayni hizda tara
 
