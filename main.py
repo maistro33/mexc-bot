@@ -376,6 +376,13 @@ def analyze_coin(symbol):
         if df1h is not None and len(df1h) >= 5:
             pct_4h = (price - float(df1h["c"].iloc[-5])) / float(df1h["c"].iloc[-5]) * 100
 
+        # Son 4 saatin tepesinden ne kadar uzakta?
+        # Tepeden cok asagidaysa dusus trendi var demektir
+        tepe_4h = 0.0
+        if df1h is not None and len(df1h) >= 5:
+            en_yuksek = float(df1h["h"].tail(4).max())  # Son 4 mumun en yuksegi
+            tepe_4h = (price - en_yuksek) / en_yuksek * 100  # Negatif = tepeden asagida
+
         return {
             "price": price, "rsi": rsi_val, "rsi_1h": rsi_1h,
             "uyum_yukari": uyum_yukari, "uyum_asagi": uyum_asagi,
@@ -383,7 +390,7 @@ def analyze_coin(symbol):
             "k5m_yukari": k5m_yukari, "k5m_asagi": k5m_asagi,
             "k15m_yukari": k15m_yukari, "k15m_asagi": k15m_asagi,
             "v1m": v1m, "v5m": v5m, "v15m": v15m,
-            "pct": pct, "pct_1h": pct_1h, "pct_4h": pct_4h,
+            "pct": pct, "pct_1h": pct_1h, "pct_4h": pct_4h, "tepe_4h": tepe_4h,
         }
     except Exception as e:
         log.warning(f"[ANALYZE] {symbol}: {e}")
@@ -499,12 +506,17 @@ def karar_ver(data, btc_trend):
         return None, f"SHORT gec kalindi ({pct:.1f}%)"
 
     # ── COIN TREND FİLTRESİ ──
+    tepe_4h = data.get("tepe_4h", 0)
+
     # LONG icin: coin son 1h dusuyorsa ve 4h da dusuyorsa girme
     if btc_trend in ["UP", "NEUTRAL_LONG"]:
         if pct_1h < -1.5 and pct_4h < -2.0:
             return None, f"Coin dususte: 1h={pct_1h:.1f}% 4h={pct_4h:.1f}% - LONG riskli"
         if pct_1h < -3.0:
             return None, f"Coin 1h cok dustu: {pct_1h:.1f}% - LONG icin gec"
+        # Tepeden cok asagidaysa girme - dusus trendi
+        if tepe_4h < -4.0:
+            return None, f"Tepeden cok uzak ({tepe_4h:.1f}%) - dusus trendi, LONG riskli"
 
     # SHORT icin: coin son 1h yukseliyorsa ve 4h da yukseliyorsa girme
     if btc_trend in ["DOWN", "NEUTRAL_SHORT"]:
