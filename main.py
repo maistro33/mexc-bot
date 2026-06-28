@@ -49,7 +49,7 @@ MAX_PRICE      = 5.0
 FG_MIN         = 10         # Sadece çok aşırı Fear'da dur (eski: 20)
 RSI_OVERSOLD   = 48         # RSI bu altındaysa oversold sayar
 VOL_SPIKE_MIN  = 1.8        # 1.8x hacim artışı yeterli (eski: 3x)
-SIGNAL_SCORE   = 3          # En az 3 sinyal gerekli
+SIGNAL_SCORE   = 4          # En az 4 sinyal gerekli (8 üzerinden)
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
@@ -205,15 +205,71 @@ def calc_bb_position(series):
     l = float(lower.iloc[-1])
     return (price - l) / (u - l) if (u - l) > 0 else 0.5
 
+# ─── DİP TESPİTİ ───
+def dip_bounce_analiz(df1h, df15m):
+    """
+    Dipten giriş analizi:
+    1. Son 8 saatin dibine yakın mı?
+    2. RSI dip bounce (30-45 arası yukarı dönüş)?
+    3. İlk güçlü yeşil mum konfirmasyonu?
+    4. Destek seviyesinde mi?
+    """
+    detay = {}
+
+    price   = float(df1h["c"].iloc[-1])
+    son8_low  = float(df1h["l"].tail(8).min())
+    son8_high = float(df1h["h"].tail(8).max())
+    aralik    = son8_high - son8_low
+
+    # Fiyat dip bölgesinde mi? (Son 8h aralığının alt %35'i)
+    dip_esik  = son8_low + aralik * 0.35
+    dip_bolge = price <= dip_esik
+    detay["dip"] = f"✅ Dip bölge" if dip_bolge else f"❌ Dip değil ({((price-son8_low)/aralik*100):.0f}%)"
+
+    # RSI dip bounce: önceki mum düşük RSI, şimdiki mum yukarı dönüş
+    rsi_seri = []
+    for i in range(-5, 0):
+        try:
+            kisa = df1h["c"].iloc[:i] if i != 0 else df1h["c"]
+            rsi_seri.append(calc_rsi(kisa))
+        except:
+            pass
+    rsi_onceki = min(rsi_seri) if rsi_seri else 50
+    rsi_simdi  = calc_rsi(df1h["c"])
+    rsi_bounce = rsi_onceki < 42 and rsi_simdi > rsi_onceki + 3
+    detay["rsi_bounce"] = f"✅ RSI bounce {rsi_onceki:.0f}→{rsi_simdi:.0f}" if rsi_bounce else f"❌ RSI {rsi_simdi:.0f}"
+
+    # İlk yeşil mum konfirmasyonu (15m):
+    # Son 6 mumdan en az 3'ü kırmızı SONRA son mum güçlü yeşil
+    son_mumlar = df15m.tail(7)
+    kirmizi_sayisi = sum(1 for _, r in son_mumlar.iloc[:-1].iterrows() if float(r["c"]) < float(r["o"]))
+    son_mum = son_mumlar.iloc[-1]
+    son_yesil = float(son_mum["c"]) > float(son_mum["o"])
+    mum_boy   = abs(float(son_mum["c"]) - float(son_mum["o"])) / float(son_mum["o"]) * 100
+    ilk_yesil = kirmizi_sayisi >= 2 and son_yesil and mum_boy >= 0.2
+    detay["yesil_mum"] = f"✅ Yeşil konfirm ({mum_boy:.1f}%)" if ilk_yesil else f"❌ Yeşil yok"
+
+    # Destek seviyesi: Son 20 mumun dip bölgesi (birden fazla kez dokunulmuş)
+    son20_low   = df1h["l"].tail(20)
+    destek      = float(son20_low.quantile(0.15))  # %15 persentil = güçlü destek
+    destek_yakin = price <= destek * 1.015  # Destekten %1.5 uzakta
+    detay["destek"] = f"✅ Destek yakın ({destek:.6f})" if destek_yakin else f"❌ Destek uzak"
+
+    puan = sum([dip_bolge, rsi_bounce, ilk_yesil, destek_yakin])
+    detay["dip_puan"] = puan
+    return puan, detay
+
 # ─── SİNYAL SKORU ───
 def sinyal_skoru(symbol):
     """
-    Basit sinyal skoru: 0-6 arası
-    3+ → LONG gir
+    Gelişmiş sinyal skoru: 0-8 arası
+    - 4 teknik indikatör (0-4)
+    - 4 dip bounce kriteri (0-4)
+    Toplam 4+ → LONG gir (en az 1 dip kriteri zorunlu)
     """
     try:
         r1h  = safe_api(exchange.fetch_ohlcv, symbol, "1h",  limit=50)
-        r15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=30)
+        r15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=40)
         if not r1h or len(r1h) < 30: return 0, {}, 0
         if not r15m or len(r15m) < 20: return 0, {}, 0
 
@@ -232,10 +288,20 @@ def sinyal_skoru(symbol):
         pct_1h   = (price - float(df1h["c"].iloc[-2])) / float(df1h["c"].iloc[-2]) * 100
         pct_4h   = (price - float(df1h["c"].iloc[-5])) / float(df1h["c"].iloc[-5]) * 100
 
+        # ── Hard filtreler (geçemezse direkt 0) ──
+        if rsi_1h > 72:
+            return 0, {"red": f"RSI aşırı alım {rsi_1h:.0f}"}, price
+        if pct_4h > 10.0:
+            return 0, {"red": f"Geç kalındı 4h+{pct_4h:.1f}%"}, price
+        if pct_1h > 6.0:
+            return 0, {"red": f"Geç kalındı 1h+{pct_1h:.1f}%"}, price
+
         skor = 0
         detay = {}
 
-        # 1. RSI oversold (1h veya 15m)
+        # ── Teknik indikatörler (0-4 puan) ──
+
+        # 1. RSI oversold
         if rsi_1h < RSI_OVERSOLD:
             skor += 1
             detay["rsi"] = f"✅ {rsi_1h:.0f}"
@@ -245,7 +311,7 @@ def sinyal_skoru(symbol):
         else:
             detay["rsi"] = f"❌ {rsi_1h:.0f}"
 
-        # 2. MACD pozitif (1h veya 15m)
+        # 2. MACD pozitif
         if macd_1h > 0:
             skor += 1
             detay["macd"] = "✅ 1h+"
@@ -255,43 +321,31 @@ def sinyal_skoru(symbol):
         else:
             detay["macd"] = "❌"
 
-        # 3. Hacim artışı
-        if vol_1h >= VOL_SPIKE_MIN or vol_15m >= VOL_SPIKE_MIN:
-            skor += 1
-            detay["vol"] = f"✅ {max(vol_1h, vol_15m):.1f}x"
-        else:
-            detay["vol"] = f"❌ {vol_1h:.1f}x"
-
-        # 4. EMA yukarı
+        # 3. EMA yukarı
         if ema_up:
             skor += 1
             detay["ema"] = "✅ ↑"
         else:
             detay["ema"] = "❌ ↓"
 
-        # 5. Bollinger alt bölge (henüz aşırı alım değil)
-        if bb_pos < 0.6:
+        # 4. Bollinger alt bölge
+        if bb_pos < 0.55:
             skor += 1
             detay["bb"] = f"✅ {bb_pos:.2f}"
         else:
             detay["bb"] = f"❌ {bb_pos:.2f}"
 
-        # 6. Son 1s momentum pozitif ama aşırı değil
-        if 0.3 <= pct_1h <= 5.0:
-            skor += 1
-            detay["mom"] = f"✅ {pct_1h:+.1f}%"
-        elif pct_1h > 5.0:
-            detay["mom"] = f"❌ Gec ({pct_1h:+.1f}%)"
-        else:
-            detay["mom"] = f"❌ {pct_1h:+.1f}%"
+        # ── Dip bounce analizi (0-4 puan) ──
+        dip_puan, dip_detay = dip_bounce_analiz(df1h, df15m)
+        skor += dip_puan
+        detay.update(dip_detay)
 
-        # Geç kalma filtresi (4h çok pompaladıysa geç)
-        if pct_4h > 8.0:
-            return 0, detay, price
+        # ── Hacim bilgi amaçlı ──
+        detay["vol"] = f"{'✅' if vol_1h >= VOL_SPIKE_MIN else '⚠️'} {vol_1h:.1f}x"
 
-        # RSI aşırı alım → iptal
-        if rsi_1h > 72:
-            return 0, detay, price
+        # En az 1 dip kriteri zorunlu (dip bounce olmadan girme)
+        if dip_puan == 0:
+            skor = max(0, skor - 2)  # Dip yoksa skoru düşür
 
         detay["price"] = price
         detay["skor"]  = skor
