@@ -471,7 +471,7 @@ def open_pos(symbol, skor, detay, btc_trend):
                 return False
         with closed_lock:
             if sym_base in recently_closed:
-                if time.time() - recently_closed[sym_base] < 3600:
+                if time.time() - recently_closed[sym_base] < 14400:  # 4 saat
                     return False
         if len(positions) >= MAX_OPEN:
             return False
@@ -764,14 +764,18 @@ def scanner_loop():
                 sym_base = sym.upper()
                 with closed_lock:
                     if sym_base in recently_closed:
-                        if time.time() - recently_closed[sym_base] < 3600:
+                        if time.time() - recently_closed[sym_base] < 14400:  # 4 saat
                             continue
 
                 candidates.append({"symbol": symbol, "pct": pct, "qv": qv})
 
-            # Momentum'a göre sırala, en iyi 8'i al
+            # Momentum'a göre sırala, sonra karıştır (hep aynı coin gelmesin)
             candidates.sort(key=lambda x: x["pct"], reverse=True)
-            candidates = candidates[:8]
+            top4  = candidates[:4]   # En iyi 4'ü koru
+            rest  = candidates[4:]   # Gerisini karıştır
+            import random
+            random.shuffle(rest)
+            candidates = (top4 + rest)[:8]
 
             log.info(
                 f"[SCAN] {len(candidates)} aday | "
