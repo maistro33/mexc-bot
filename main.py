@@ -57,10 +57,10 @@ TP_SEVIYELERI = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0, 15.0]  # % hedefl
 TP_GERI_DONUS = 0.40  # Her TP'den sonra bu kadar % geri donerse kapat (normal dalgalanma toleransi)
 
 # Dip yakalama sistemi
-DIP_DUSUS_MIN  = 5.0   # Son 4h'ta en az %5 dusmeli
+DIP_DUSUS_MIN  = 3.0   # Son 4h'ta en az %3 dusmeli
 DIP_DUSUS_MAX  = 35.0  # En fazla %35 dusmeli
-DIP_TOPARLANMA = 0.5   # Son 1h'ta en az %0.5 toparlanmali
-DIP_RSI_MAX    = 45.0  # RSI en fazla 45 olmali (asiri satim bolgesi)
+DIP_TOPARLANMA = 0.3   # Son 1h'ta en az %0.3 toparlanmali
+DIP_RSI_MAX    = 55.0  # RSI en fazla 55 olmali
 
 BLACKLIST = {
     # Volatil/manipule coinler
@@ -430,8 +430,8 @@ def hacim_patlama(symbol):
         v_ort  = float(df1m["v"].rolling(7).mean().iloc[-4])  # onceki ortalama
         hacim_x = v_son3 / max(v_ort, 0.001)
 
-        if hacim_x < 5.0:
-            return None, f"Hacim patlamasi yok ({hacim_x:.1f}x < 5x)"
+        if hacim_x < 3.0:
+            return None, f"Hacim patlamasi yok ({hacim_x:.1f}x < 3x)"
 
         # 2. RSI asiri satim - 35 altinda
         delta   = df15m["c"].diff()
@@ -440,8 +440,8 @@ def hacim_patlama(symbol):
         rs      = gain / loss.replace(0, 0.001)
         rsi_val = float((100 - 100 / (1 + rs)).iloc[-1])
 
-        if rsi_val > 40:
-            return None, f"RSI dip icin yuksek ({rsi_val:.0f} > 40)"
+        if rsi_val > 50:
+            return None, f"RSI dip icin yuksek ({rsi_val:.0f} > 50)"
 
         # 3. Fiyat dip bolgesinde - 4h'ta %5+ dusmis
         fiyat_4h_once = float(df1h["c"].iloc[-5])
@@ -1079,7 +1079,7 @@ def dip_scan_loop():
             btc_trend, _, _ = get_btc_trend()
 
             # Once hacim patlamasi tara - en hizli
-            for d in dip_adaylar[:5]:
+            for d in dip_adaylar[:8]:
                 with pos_lock:
                     if len(positions) >= MAX_OPEN: break
                     if d["symbol"] in positions: continue
@@ -1095,7 +1095,7 @@ def dip_scan_loop():
                 time.sleep(1)
 
             # Sonra normal dip yakalama tara
-            for d in dip_adaylar[:3]:
+            for d in dip_adaylar[:6]:
                 with pos_lock:
                     if len(positions) >= MAX_OPEN: break
                     if d["symbol"] in positions: continue
