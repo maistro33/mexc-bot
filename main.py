@@ -39,7 +39,7 @@ SCAN_INTERVAL  = 45
 # TP seviyeleri (sabit %0.5 adımlar, o bot gibi)
 TP_PCTS = [0.5, 1.0, 1.5, 2.0, 2.5, 4.0]  # TP1-TP6
 SL_PCT  = 5.0   # Stop %5 altında
-TP_GERI_DONUS = 0.35  # TP sonrası %0.35 geri dönerse kapat
+TP_GERI_DONUS = 0.60  # TP sonrası %0.60 geri dönerse kapat
 
 # Filtreler
 MIN_VOL_USDT   = 500_000    # 500K minimum
@@ -732,9 +732,62 @@ def shutdown(signum, frame):
 sig_mod.signal(sig_mod.SIGTERM, shutdown)
 sig_mod.signal(sig_mod.SIGINT,  shutdown)
 
+# ─── AÇIK POZİSYON YÜKLE ───
+def load_open_positions():
+    try:
+        log.info("[YUKLE] Borsadaki açık pozisyonlar kontrol ediliyor...")
+        raw = safe_api(exchange.fetch_positions)
+        if not raw:
+            log.info("[YUKLE] Açık pozisyon yok")
+            return
+        btc_trend, _, _ = get_btc_trend()
+        yuklenen = 0
+        lines = ["♻️ Önceki pozisyonlar yüklendi:\n"]
+        for pos in raw:
+            try:
+                contracts = float(pos.get("contracts") or 0)
+                if contracts == 0: continue
+                symbol = pos.get("symbol", "")
+                side   = pos.get("side", "")
+                entry  = float(pos.get("entryPrice") or 0)
+                if not symbol or not side or entry == 0: continue
+                if side != "long": continue  # Sadece long
+
+                tps, sl = hesapla_tp_sl(entry)
+                with pos_lock:
+                    if symbol not in positions:
+                        positions[symbol] = {
+                            "entry":     entry,
+                            "sl":        sl,
+                            "tps":       tps,
+                            "tp_idx":    0,
+                            "max_price": entry,
+                            "open_time": time.time(),
+                            "amount":    contracts,
+                            "btc_trend": btc_trend,
+                            "skor":      0,
+                        }
+                        yuklenen += 1
+                        t = safe_api(exchange.fetch_ticker, symbol)
+                        price_now = float(t["last"]) if t else entry
+                        pnl = (price_now - entry) / entry * POS_SIZE
+                        icon = "🟢" if pnl >= 0 else "🔴"
+                        lines.append(f"{icon} {symbol.split('/')[0]} @ {entry:.8f} | {pnl:+.2f}$")
+                        log.info(f"[YUKLE] {symbol.split('/')[0]} LONG @ {entry}")
+            except Exception as e:
+                log.warning(f"[YUKLE] {e}")
+
+        if yuklenen > 0:
+            tg("\n".join(lines))
+        else:
+            log.info("[YUKLE] Yüklenecek pozisyon bulunamadı")
+    except Exception as e:
+        log.error(f"[YUKLE] {e}")
+
 # ─── MAIN ───
 if __name__ == "__main__":
     print("SADIK TRADER v6 BAŞLIYOR...")
+    load_open_positions()
     threading.Thread(target=health_server,     daemon=True).start()
     threading.Thread(target=manage_loop,       daemon=True).start()
     threading.Thread(target=scanner_loop,      daemon=True).start()
