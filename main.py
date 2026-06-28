@@ -506,7 +506,7 @@ def karar_ver(data, btc_trend):
 
     # Fear & Greed filtresi
     fg_value, fg_label = get_fear_greed()
-    if fg_value <= 20:  # Extreme Fear
+    if fg_value <= 15:  # Extreme Fear (cok sert)
         return None, f"Extreme Fear ({fg_value}) - riskli"
 
     # Geç kalma filtresi
@@ -582,6 +582,60 @@ def giris_momentum_ok(symbol, analiz_fiyati):
         return False, str(e)
 
 # ─── İŞLEM AÇ ───
+def calc_amount(symbol, entry_price, sl_price):
+    """Risk bazlı pozisyon büyüklüğü hesapla"""
+    try:
+        market = exchange.market(symbol)
+        contract_size = market.get("contractSize") or 1
+        risk_dist = abs(entry_price - sl_price)
+        if risk_dist <= 0: return round(POS_SIZE / entry_price, 4)
+        # Risk bazlı miktar
+        amt_risk   = (MARGIN * 0.5) / (risk_dist * contract_size)
+        # Marjin bazlı miktar
+        amt_margin = POS_SIZE / entry_price
+        amount = min(amt_risk, amt_margin)
+        amount = float(exchange.amount_to_precision(symbol, amount))
+        return max(amount, 0)
+    except:
+        return round(POS_SIZE / entry_price, 4)
+
+def place_sl_order(symbol, amount, sl_price):
+    """Borsaya gerçek stop loss emri gönder"""
+    try:
+        params = {
+            "stopPrice": exchange.price_to_precision(symbol, sl_price),
+            "reduceOnly": True,
+            "triggerType": "mark_price",
+        }
+        order = safe_api(exchange.create_order, symbol, "market", "sell", amount, None, params)
+        return order.get("id") if order else None
+    except Exception as e:
+        log.warning(f"[SL_EMIR] {symbol}: {e}")
+        return None
+
+def place_tp_order(symbol, amount, tp_price):
+    """Borsaya gerçek take profit emri gönder"""
+    try:
+        params = {
+            "stopPrice": exchange.price_to_precision(symbol, tp_price),
+            "reduceOnly": True,
+            "triggerType": "mark_price",
+        }
+        order = safe_api(exchange.create_order, symbol, "market", "sell", amount, None, params)
+        return order.get("id") if order else None
+    except Exception as e:
+        log.warning(f"[TP_EMIR] {symbol}: {e}")
+        return None
+
+def cancel_order_safe(order_id, symbol):
+    """Bekleyen emri iptal et"""
+    if not order_id: return
+    try:
+        safe_api(exchange.cancel_order, order_id, symbol)
+        log.info(f"[IPTAL] {symbol.split('/')[0]} emir {order_id} iptal edildi")
+    except Exception as e:
+        log.warning(f"[IPTAL] {symbol}: {e}")
+
 def open_pos(symbol, yon, neden, btc_trend, atr=None):
     global daily_pnl
     if daily_pnl <= MAX_DAILY_LOSS: return False
@@ -634,6 +688,11 @@ def open_pos(symbol, yon, neden, btc_trend, atr=None):
             "tp_seviye":   0,
             "tp_sl_price": 0.0,
             "son_tepe":    price,
+            "amount":      0,
+            "notional":    0,
+            "tp_price":    0,
+            "sl_order_id": None,
+            "tp_order_id": None,
         }
 
     try:
@@ -642,17 +701,44 @@ def open_pos(symbol, yon, neden, btc_trend, atr=None):
         try: exchange.set_leverage(LEVERAGE, symbol)
         except: pass
 
-        amount = round(POS_SIZE / price, 4)
-        order  = exchange.create_order(symbol, "market", "buy", amount,
-                                       params={"marginMode": "isolated"})
-        log.info(f"[EMIR] {sym} LONG id={order.get('id','?')}")
+        # Miktar hesapla
+        amount = calc_amount(symbol, price, sl_price)
+        if amount <= 0:
+            with pos_lock: positions.pop(symbol, None)
+            return False
+
+        # Giriş emri
+        order = exchange.create_order(symbol, "market", "buy", amount,
+                                      params={"marginMode": "isolated"})
+        if not order:
+            with pos_lock: positions.pop(symbol, None)
+            return False
+        log.info(f"[EMIR] {sym} LONG id={order.get('id','?')} amount={amount}")
+
+        # Gerçek TP fiyatı (ATR x 1.8)
+        tp_price = price + (atr * 1.8) if atr else price * 1.015
+
+        # Borsaya SL/TP emirleri gönder
+        sl_order_id = place_sl_order(symbol, amount, sl_price)
+        tp_order_id = place_tp_order(symbol, amount, tp_price)
+
+        # Pozisyona SL/TP emir ID'lerini ekle
+        with pos_lock:
+            if symbol in positions:
+                positions[symbol]["amount"]      = amount
+                positions[symbol]["notional"]    = amount * price
+                positions[symbol]["tp_price"]    = tp_price
+                positions[symbol]["sl_order_id"] = sl_order_id
+                positions[symbol]["tp_order_id"] = tp_order_id
+
     except Exception as e:
         log.error(f"[EMIR HATA] {sym}: {e}")
         with pos_lock: positions.pop(symbol, None)
         return False
 
     sl_pct = (price - sl_price) / price * 100
-    tg(f"📋 📈 {sym} LONG\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%{sl_pct:.1f} ATR)\nBTC: {btc_trend}\n💬 {neden}")
+    tp_pct = (tp_price - price) / price * 100
+    tg(f"📋 📈 {sym} LONG\nGiris: {price:.6f}\nSL: {sl_price:.6f} (-%{sl_pct:.1f})\nTP: {tp_price:.6f} (+%{tp_pct:.1f})\nBTC: {btc_trend}\n💬 {neden}")
     return True
 
 # ─── İŞLEM KAPAT ───
@@ -662,15 +748,20 @@ def close_pos(symbol, reason, exit_price=None):
         pos = positions.pop(symbol, None)
     if not pos: return
 
+    # Bekleyen SL/TP emirlerini iptal et
+    cancel_order_safe(pos.get("sl_order_id"), symbol)
+    cancel_order_safe(pos.get("tp_order_id"), symbol)
+
     try:
-        amount = None
-        try:
-            tum_pos = safe_api(exchange.fetch_positions, [symbol])
-            if tum_pos:
-                for p in tum_pos:
-                    if p.get("symbol") == symbol and float(p.get("contracts") or 0) > 0:
-                        amount = float(p["contracts"]); break
-        except: pass
+        amount = pos.get("amount", None)
+        if not amount:
+            try:
+                tum_pos = safe_api(exchange.fetch_positions, [symbol])
+                if tum_pos:
+                    for p in tum_pos:
+                        if p.get("symbol") == symbol and float(p.get("contracts") or 0) > 0:
+                            amount = float(p["contracts"]); break
+            except: pass
         if not amount: amount = round(POS_SIZE / pos["entry"], 4)
         safe_api(exchange.create_order, symbol, "market", "sell", amount, None,
                  {"reduceOnly": True})
