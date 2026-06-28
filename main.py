@@ -435,9 +435,11 @@ def open_pos(symbol, skor, detay, btc_trend):
         f"🏁 LONG - Giriş: {price:.8f}\n"
         f"🚫 Stop: {sl:.8f}\n\n"
         f"💡 Pozisyon Detayları\n{tp_str}\n\n"
-        f"📊 Skor: {skor}/6 | BTC: {btc_trend}\n"
-        f"RSI:{detay.get('rsi','?')} MACD:{detay.get('macd','?')} "
-        f"Vol:{detay.get('vol','?')} EMA:{detay.get('ema','?')}"
+        f"📊 Skor: {skor}/8 | BTC: {btc_trend}\n"
+        f"RSI:{detay.get('rsi_bounce', detay.get('rsi','?'))} MACD:{detay.get('macd','?')} "
+        f"EMA:{detay.get('ema','?')} BB:{detay.get('bb','?')}\n"
+        f"Dip:{detay.get('dip','?')} Destek:{detay.get('destek','?')}\n"
+        f"Yeşil Mum:{detay.get('yesil_mum','?')} Vol:{detay.get('vol','?')}"
     )
     log.info(f"[ACIK] {sym} LONG @ {price:.8f} skor:{skor}")
     return True
@@ -562,10 +564,11 @@ def scanner_loop():
 
             btc_trend, btc_price, btc_chg = get_btc_trend()
 
-            # Sadece DOWN ve NEUTRAL_SHORT'ta dur
+            # DOWN'da dur, NEUTRAL_SHORT'ta daha yüksek skor iste
             if btc_trend == "DOWN":
                 log.info(f"[SCAN] BTC DOWN - bekleniyor")
                 time.sleep(SCAN_INTERVAL); continue
+            gercek_esik = SIGNAL_SCORE + 2 if btc_trend == "NEUTRAL_SHORT" else SIGNAL_SCORE
 
             fg_val, fg_lbl = get_fear_greed()
             if fg_val <= FG_MIN:
@@ -618,13 +621,13 @@ def scanner_loop():
                     if symbol in open_syms: continue
 
                 skor, detay, price = sinyal_skoru(symbol)
-                if skor >= SIGNAL_SCORE:
-                    log.info(f"[SİNYAL] {sym} skor:{skor}/6 → GİRİYOR")
+                if skor >= gercek_esik:
+                    log.info(f"[SİNYAL] {sym} skor:{skor}/8 → GİRİYOR (esik:{gercek_esik})")
                     ok = open_pos(symbol, skor, detay, btc_trend)
                     if ok:
                         with pos_lock: open_syms = set(positions.keys())
                 else:
-                    log.info(f"[PAS] {sym} skor:{skor}/6")
+                    log.info(f"[PAS] {sym} skor:{skor}/8 (esik:{gercek_esik})")
                 time.sleep(1.5)
 
             time.sleep(SCAN_INTERVAL)
