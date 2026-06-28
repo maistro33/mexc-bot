@@ -368,16 +368,95 @@ def hesap_pnl(pos, price):
     pnl     = (price - entry) / entry * POS_SIZE - POS_SIZE * COMMISSION
     return pnl, pnl_pct
 
+# ─── ATR HESAPLA ───
+def calc_atr(symbol):
+    try:
+        r = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=20)
+        if not r: return None
+        df = pd.DataFrame(r, columns=["t","o","h","l","c","v"])
+        high  = df["h"]
+        low   = df["l"]
+        close = df["c"]
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low  - close.shift()).abs()
+        ], axis=1).max(axis=1)
+        return float(tr.rolling(14).mean().iloc[-1])
+    except:
+        return None
+
+# ─── ATR GİRİŞ BEKLEMESİ ───
+def atr_giris_bekle(symbol, atr):
+    """
+    Sinyal geldikten sonra ATR × 0.3 kadar geri çekilmeyi bekle.
+    90 saniye içinde gelmezse mevcut fiyattan gir.
+    """
+    try:
+        t0 = safe_api(exchange.fetch_ticker, symbol)
+        if not t0: return float(0)
+        baslangic_fiyat = float(t0["last"])
+        hedef_fiyat = baslangic_fiyat - (atr * 0.3)
+        sym = symbol.split("/")[0]
+        log.info(f"[ATR] {sym} hedef giriş: {hedef_fiyat:.8f} (şu an: {baslangic_fiyat:.8f})")
+
+        for _ in range(9):  # 9 × 10sn = 90 saniye
+            time.sleep(10)
+            t = safe_api(exchange.fetch_ticker, symbol)
+            if not t: break
+            price = float(t["last"])
+
+            # Fiyat çok yükseldi, kaçırdık
+            if price > baslangic_fiyat * 1.02:
+                log.info(f"[ATR] {sym} fiyat uçtu, pas geç")
+                return -1
+
+            # Hedef fiyata ulaştı
+            if price <= hedef_fiyat:
+                log.info(f"[ATR] {sym} hedef yakalandı @ {price:.8f}")
+                return price
+
+        # 90sn geçti, mevcut fiyattan gir
+        t = safe_api(exchange.fetch_ticker, symbol)
+        return float(t["last"]) if t else baslangic_fiyat
+    except Exception as e:
+        log.warning(f"[ATR_BEKLE] {e}")
+        return 0
+
 # ─── İŞLEM AÇ ───
 def open_pos(symbol, skor, detay, btc_trend):
     global daily_pnl
     if daily_pnl <= MAX_DAILY_LOSS: return False
 
-    t = safe_api(exchange.fetch_ticker, symbol)
-    if not t: return False
-    price = float(t["last"])
+    # ATR hesapla ve giriş fiyatı bekle
+    atr = calc_atr(symbol)
+    sym = symbol.split("/")[0]
 
-    tps, sl = hesapla_tp_sl(price)
+    if atr:
+        giriş_fiyati = atr_giris_bekle(symbol, atr)
+        if giriş_fiyati == -1:
+            log.info(f"[ATR] {sym} fiyat kaçtı, pas geçildi")
+            return False
+        if giriş_fiyati <= 0:
+            t0 = safe_api(exchange.fetch_ticker, symbol)
+            giriş_fiyati = float(t0["last"]) if t0 else 0
+    else:
+        t0 = safe_api(exchange.fetch_ticker, symbol)
+        giriş_fiyati = float(t0["last"]) if t0 else 0
+
+    if giriş_fiyati <= 0: return False
+
+    # Tekrar kontrol et — pozisyon sayısı değişmiş olabilir
+    with pos_lock:
+        if len(positions) >= MAX_OPEN: return False
+
+    tps, sl = hesapla_tp_sl(giriş_fiyati)
+
+    # SL ATR bazlı olsun (daha akıllı)
+    if atr:
+        sl_atr = round(giriş_fiyati - atr * 1.5, 8)
+        sl_pct = round(giriş_fiyati * (1 - SL_PCT/100), 8)
+        sl = max(sl_atr, sl_pct)  # İkisinden büyük olanı (daha yakın SL)
 
     with pos_lock:
         sym_base = symbol.split("/")[0].upper()
@@ -390,15 +469,16 @@ def open_pos(symbol, skor, detay, btc_trend):
         if len(positions) >= MAX_OPEN: return False
 
         positions[symbol] = {
-            "entry":     price,
+            "entry":     giriş_fiyati,
             "sl":        sl,
             "tps":       tps,
             "tp_idx":    0,
-            "max_price": price,
+            "max_price": giriş_fiyati,
             "open_time": time.time(),
             "amount":    0,
             "btc_trend": btc_trend,
             "skor":      skor,
+            "atr":       atr or 0,
         }
 
     try:
@@ -407,7 +487,7 @@ def open_pos(symbol, skor, detay, btc_trend):
         try: exchange.set_leverage(LEVERAGE, symbol)
         except: pass
 
-        amount = round(POS_SIZE / price, 4)
+        amount = round(POS_SIZE / giriş_fiyati, 4)
         amount = float(exchange.amount_to_precision(symbol, amount))
         if amount <= 0:
             with pos_lock: positions.pop(symbol, None)
@@ -424,24 +504,25 @@ def open_pos(symbol, skor, detay, btc_trend):
                 positions[symbol]["amount"] = amount
 
     except Exception as e:
-        log.error(f"[EMIR] {symbol.split('/')[0]}: {e}")
+        log.error(f"[EMIR] {sym}: {e}")
         with pos_lock: positions.pop(symbol, None)
         return False
 
     sym = symbol.split("/")[0]
     tp_str = "\n".join([f"TP{i+1}: {tp:.8f} ──" for i, tp in enumerate(tps)])
+    atr_str = f"ATR: {atr:.8f} | " if atr else ""
     tg(
         f"📊 #{sym}USDT.P\n"
-        f"🏁 LONG - Giriş: {price:.8f}\n"
+        f"🏁 LONG - Giriş: {giriş_fiyati:.8f}\n"
         f"🚫 Stop: {sl:.8f}\n\n"
         f"💡 Pozisyon Detayları\n{tp_str}\n\n"
         f"📊 Skor: {skor}/8 | BTC: {btc_trend}\n"
-        f"RSI:{detay.get('rsi_bounce', detay.get('rsi','?'))} MACD:{detay.get('macd','?')} "
+        f"{atr_str}RSI:{detay.get('rsi_bounce', detay.get('rsi','?'))} MACD:{detay.get('macd','?')} "
         f"EMA:{detay.get('ema','?')} BB:{detay.get('bb','?')}\n"
         f"Dip:{detay.get('dip','?')} Destek:{detay.get('destek','?')}\n"
         f"Yeşil Mum:{detay.get('yesil_mum','?')} Vol:{detay.get('vol','?')}"
     )
-    log.info(f"[ACIK] {sym} LONG @ {price:.8f} skor:{skor}")
+    log.info(f"[ACIK] {sym} LONG @ {giriş_fiyati:.8f} skor:{skor} atr:{atr}")
     return True
 
 # ─── İŞLEM KAPAT ───
