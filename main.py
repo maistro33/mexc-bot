@@ -58,7 +58,7 @@ TP_GERI_DONUS = 0.40  # Her TP'den sonra bu kadar % geri donerse kapat (normal d
 
 # Dip yakalama sistemi
 DIP_DUSUS_MIN  = 5.0   # Son 4h'ta en az %5 dusmeli
-DIP_DUSUS_MAX  = 25.0  # En fazla %25 dusmeli (cok dusmus = tehlikeli)
+DIP_DUSUS_MAX  = 35.0  # En fazla %35 dusmeli
 DIP_TOPARLANMA = 0.5   # Son 1h'ta en az %0.5 toparlanmali
 DIP_RSI_MAX    = 45.0  # RSI en fazla 45 olmali (asiri satim bolgesi)
 
@@ -449,8 +449,8 @@ def hacim_patlama(symbol):
 
         if dusus_4h < 3.0:
             return None, f"Yeterli dusus yok ({dusus_4h:.1f}% < 3%)"
-        if dusus_4h > 30.0:
-            return None, f"Cok fazla dusmis ({dusus_4h:.1f}% > 30%)"
+        if dusus_4h > 35.0:
+            return None, f"Cok fazla dusmis ({dusus_4h:.1f}% > 35%)"
 
         # 4. Son 1m mumda yukari donus var mi?
         son_mum_yukari = float(df1m["c"].iloc[-1]) > float(df1m["o"].iloc[-1])
@@ -1066,12 +1066,13 @@ def dip_scan_loop():
                 price = float(ticker.get("last") or 0)
                 pct   = ticker.get("percentage") or 0
                 if qv < MIN_VOL_USDT: continue
-                if qv > MAX_VOL_USDT: continue
+                if qv > 30_000_000: continue  # Dip taramada 30M - daha fazla coin
                 if price <= 0 or price > 50.0: continue
-                if -20 < pct < -3:
+                if -35 < pct < -3:
                     dip_adaylar.append({"symbol": symbol, "pct": pct})
 
-            dip_adaylar.sort(key=lambda x: x["pct"])
+            import random
+            random.shuffle(dip_adaylar)
             isimler = ", ".join(d["symbol"].split("/")[0] for d in dip_adaylar[:6])
             log.info(f"[DIP SCAN] {len(dip_adaylar)} aday: {isimler}")
 
