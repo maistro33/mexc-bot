@@ -332,22 +332,78 @@ def filtre_1h_trend(df1h):
 # ════════════════════════════════════════
 # ADIM 2: 15M MOMENTUM FİLTRESİ
 # ════════════════════════════════════════
+def bullish_divergence_var_mi(df1h):
+    """
+    Bullish RSI Diverjansı:
+    Fiyat yeni dip yapar (lower low) ama RSI daha yüksek kalır (higher low).
+    Bu gerçek dip onayıdır — trend dönüşü yakın demek.
+    """
+    try:
+        closes = df1h["c"]
+        lows   = df1h["l"]
+
+        # Son 20 mumda en düşük 2 dibi bul
+        son20_lows = lows.tail(20).values
+        son20_idx  = list(range(len(son20_lows)))
+
+        # En düşük iki noktayı bul
+        sorted_idx = sorted(son20_idx, key=lambda i: son20_lows[i])
+        if len(sorted_idx) < 2:
+            return False, "❌ Yeterli veri yok"
+
+        # İki dip: eski ve yeni
+        idx1 = min(sorted_idx[0], sorted_idx[1])  # eski dip
+        idx2 = max(sorted_idx[0], sorted_idx[1])  # yeni dip
+
+        # Aralarında en az 3 mum olsun
+        if idx2 - idx1 < 3:
+            return False, "❌ Dipler çok yakın"
+
+        fiyat_dip1 = son20_lows[idx1]
+        fiyat_dip2 = son20_lows[idx2]
+
+        # Fiyat lower low yaptı mı?
+        fiyat_lower_low = fiyat_dip2 < fiyat_dip1
+
+        if not fiyat_lower_low:
+            return False, "❌ Fiyat lower low değil"
+
+        # RSI'ları hesapla — tam indeks için
+        offset1 = 20 - idx1
+        offset2 = 20 - idx2
+
+        rsi1 = calc_rsi(closes.iloc[:-offset1] if offset1 > 0 else closes)
+        rsi2 = calc_rsi(closes.iloc[:-offset2] if offset2 > 0 else closes)
+
+        # RSI higher low yaptı mı?
+        rsi_higher_low = rsi2 > rsi1
+
+        if rsi_higher_low:
+            return True, f"✅ Div: F↓{fiyat_dip1:.6f}→{fiyat_dip2:.6f} RSI↑{rsi1:.0f}→{rsi2:.0f}"
+        else:
+            return False, f"❌ Div yok: RSI {rsi1:.0f}→{rsi2:.0f}"
+
+    except Exception as e:
+        log.warning(f"[DIV] {e}")
+        return False, "❌ Div hata"
+
 def filtre_15m_momentum(df1h, df15m):
     """
-    Dip bounce: Son 8h'in alt %40'ında mı?
-    RSI bounce: RSI 38 altından yukarı dönüş
-    İlk güçlü yeşil mum: %0.30+ gövde
-    Destek yakın: Son 20h'in %15 persentili
+    1. Dip bölge: Son 8h'in alt %40'ında mı?
+    2. RSI bounce: RSI 38 altından yukarı dönüş
+    3. Bullish diverjans: Fiyat lower low, RSI higher low
+    4. İlk güçlü yeşil mum: %0.30+ gövde
+    5. Destek yakın: Son 20h'in %15 persentili
     """
     price    = float(df1h["c"].iloc[-1])
     son8_low = float(df1h["l"].tail(8).min())
     son8_high= float(df1h["h"].tail(8).max())
     aralik   = max(son8_high - son8_low, 0.0001)
 
-    # Dip bölge
+    # 1. Dip bölge
     dip_ok = price <= son8_low + aralik * 0.40
 
-    # RSI bounce
+    # 2. RSI bounce
     rsi_simdi = calc_rsi(df1h["c"])
     rsi_min   = rsi_simdi
     for i in range(2, 7):
@@ -359,7 +415,10 @@ def filtre_15m_momentum(df1h, df15m):
             pass
     rsi_bounce_ok = rsi_min < 38 and rsi_simdi > rsi_min + 2
 
-    # İlk güçlü yeşil mum (15m)
+    # 3. Bullish RSI diverjansı
+    div_ok, div_detay = bullish_divergence_var_mi(df1h)
+
+    # 4. İlk güçlü yeşil mum (15m)
     son7     = df15m.tail(7)
     kirmizi  = sum(1 for _, r in son7.iloc[:-1].iterrows()
                    if float(r["c"]) < float(r["o"]))
@@ -371,16 +430,17 @@ def filtre_15m_momentum(df1h, df15m):
         and mum_boy >= 0.30
     )
 
-    # Destek yakın
+    # 5. Destek yakın
     destek    = float(df1h["l"].tail(20).quantile(0.15))
     destek_ok = price <= destek * 1.02
 
-    puan = sum([dip_ok, rsi_bounce_ok, yesil_ok, destek_ok])
+    puan = sum([dip_ok, rsi_bounce_ok, div_ok, yesil_ok, destek_ok])
     detay = {
-        "dip":    "✅" if dip_ok     else "❌",
+        "dip":    "✅" if dip_ok      else "❌",
         "bounce": f"✅{rsi_min:.0f}→{rsi_simdi:.0f}" if rsi_bounce_ok else f"❌RSI{rsi_simdi:.0f}",
+        "div":    div_detay,
         "yesil":  f"✅{mum_boy:.1f}%" if yesil_ok else "❌",
-        "destek": "✅" if destek_ok  else "❌",
+        "destek": "✅" if destek_ok   else "❌",
         "dip_puan": puan,
     }
     return puan, detay
@@ -755,6 +815,7 @@ def open_pos(symbol, skor, detay, btc_trend, atr_val, current_price):
         f"RSI:{detay.get('rsi','?')} MACD:{detay.get('macd','?')} "
         f"EMA:{detay.get('ema','?')} BB:{detay.get('bb','?')}\n"
         f"Dip:{detay.get('dip','?')} Bounce:{detay.get('bounce','?')} "
+        f"Div:{detay.get('div','?')}\n"
         f"Yeşil:{detay.get('yesil','?')} Destek:{detay.get('destek','?')}\n"
         f"Vol:{detay.get('vol','?')} {detay.get('atr','')}"
     )
