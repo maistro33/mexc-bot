@@ -413,27 +413,13 @@ def open_pos(symbol, detay, btc_trend):
             if not gercek_fiyat:
                 try: safe_api(exchange.cancel_order, order_id, symbol)
                 except: pass
+                log.info(f"[İPTAL] {sym} limit dolmadı, pas geçildi")
+                with pos_lock: positions.pop(symbol, None)
+                return False
 
-        # Market emir (limit dolmadıysa)
         if not gercek_fiyat:
-            t = safe_api(exchange.fetch_ticker, symbol)
-            if not t:
-                with pos_lock: positions.pop(symbol, None)
-                return False
-            mp = float(t["last"])
-            if mp > price * 1.01:  # %1'den fazla kaçtıysa iptal
-                log.info(f"[İPTAL] {sym} fiyat kaçtı")
-                with pos_lock: positions.pop(symbol, None)
-                return False
-            m = safe_api(
-                exchange.create_order,
-                symbol, "market", "buy", amount, None,
-                {"marginMode": "isolated", "marginCoin": "USDT"}
-            )
-            if not m:
-                with pos_lock: positions.pop(symbol, None)
-                return False
-            gercek_fiyat = mp
+            with pos_lock: positions.pop(symbol, None)
+            return False
 
         # Gerçek fiyata göre sabit yüzde TP/SL
         sl_g  = round(gercek_fiyat * (1 - SL_PCT  / 100), 8)
