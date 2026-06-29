@@ -72,6 +72,7 @@ BLACKLIST = {
     "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME",
     "SHIB","DOGE","PEPE","FLOKI","BONK","WIF","MEME",
     "1000SHIB","1000DOGE","1000PEPE","1000FLOKI","1000BONK","1000WIF",
+    "COOKIE",  # Çok volatil, sürekli düşüş
 }
 
 # ════════════════════════════════════════
@@ -324,13 +325,36 @@ def sinyal_skoru(symbol):
         bbp    = bb_pct(df1h["c"])
         vol1h  = vol_ratio(df1h)
         pct1h  = (price - float(df1h["c"].iloc[-2])) / float(df1h["c"].iloc[-2]) * 100
+        pct2h  = (price - float(df1h["c"].iloc[-3])) / float(df1h["c"].iloc[-3]) * 100
         pct4h  = (price - float(df1h["c"].iloc[-5])) / float(df1h["c"].iloc[-5]) * 100
 
         # ── Hard filtreler ──
-        if rsi1h  > RSI_MAX:      return 0, {"red": f"RSI yüksek {rsi1h:.0f}"}, price
-        if pct4h  > PCT_4H_MAX:   return 0, {"red": f"4h geç {pct4h:.1f}%"},   price
-        if pct1h  > PCT_1H_MAX:   return 0, {"red": f"1h geç {pct1h:.1f}%"},   price
-        if pct1h  < -4.0:         return 0, {"red": f"1h düşüyor {pct1h:.1f}%"}, price
+        if rsi1h > RSI_MAX:     return 0, {"red": f"RSI yüksek {rsi1h:.0f}"}, price
+        if pct4h > PCT_4H_MAX:  return 0, {"red": f"4h geç {pct4h:.1f}%"},   price
+        if pct1h > PCT_1H_MAX:  return 0, {"red": f"1h geç {pct1h:.1f}%"},   price
+
+        # ── Düşüş trendi tespiti ──
+        # 1. Son 2 saatte -%2'den fazla düşüş
+        if pct2h < -2.0:
+            return 0, {"red": f"2h düşüş {pct2h:.1f}%"}, price
+
+        # 2. Son 6 mumun 4'ü kırmızıysa düşüş trendi
+        son6_mumlar = df1h.tail(6)
+        kirmizi_1h = sum(1 for _, r in son6_mumlar.iterrows() if float(r["c"]) < float(r["o"]))
+        if kirmizi_1h >= 4:
+            return 0, {"red": f"Düşüş trendi ({kirmizi_1h}/6 kırmızı)"}, price
+
+        # 3. EMA9 EMA21 altında VE 4h negatifse → düşüş
+        ema9_val  = float(df1h["c"].ewm(span=9).mean().iloc[-1])
+        ema21_val = float(df1h["c"].ewm(span=21).mean().iloc[-1])
+        if ema9_val < ema21_val and pct4h < -1.5:
+            return 0, {"red": f"EMA düşüş + 4h {pct4h:.1f}%"}, price
+
+        # 4. 15m'de son 8 mumun 5'i kırmızıysa
+        son8_15m = df15m.tail(8)
+        kirmizi_15m = sum(1 for _, r in son8_15m.iterrows() if float(r["c"]) < float(r["o"]))
+        if kirmizi_15m >= 5:
+            return 0, {"red": f"15m düşüş ({kirmizi_15m}/8 kırmızı)"}, price
 
         skor  = 0
         detay = {}
