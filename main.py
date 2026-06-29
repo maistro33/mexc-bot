@@ -62,7 +62,7 @@ MAX_VOL_USDT = 20_000_000
 MIN_PRICE    = 0.0001
 MAX_PRICE    = 5.0
 FG_MIN       = 10
-RSI_MAX      = 70
+RSI_MAX      = 68
 PCT_4H_MAX   = 10.0
 PCT_1H_MAX   = 6.0
 
@@ -485,9 +485,9 @@ def teknik_skor(df1h, df15m):
     ema_up    = ema9_now > ema21_now
 
     # 1. RSI
-    if rsi1h < 48:
+    if rsi1h < 45:
         skor += 1; detay["rsi"] = f"✅{rsi1h:.0f}"
-    elif rsi15m < 48:
+    elif rsi15m < 45:
         skor += 1; detay["rsi"] = f"✅15m{rsi15m:.0f}"
     else:
         detay["rsi"] = f"❌{rsi1h:.0f}"
@@ -506,8 +506,8 @@ def teknik_skor(df1h, df15m):
     else:
         detay["ema"] = "❌↓"
 
-    # 4. Bollinger
-    if bbp < 0.55:
+    # 4. Bollinger — üst banda yakınsa giriş yapma
+    if bbp < 0.70:
         skor += 1; detay["bb"] = f"✅{bbp:.2f}"
     else:
         detay["bb"] = f"❌{bbp:.2f}"
@@ -536,7 +536,7 @@ def analiz_et(symbol):
         pct4h = (price - float(df1h["c"].iloc[-5])) / float(df1h["c"].iloc[-5]) * 100
 
         # ── Temel hard filtreler ──
-        if calc_rsi(df1h["c"]) > RSI_MAX:
+        if calc_rsi(df1h["c"]) >= RSI_MAX:  # >= ile tam eşit de engellenir
             log.info(f"[PAS] {symbol.split('/')[0]}: RSI yüksek")
             return None
         if pct4h > PCT_4H_MAX:
@@ -572,8 +572,11 @@ def analiz_et(symbol):
 
         # Toplam skor
         skor = t_skor + dip_puan
+
+        # Dip yoksa direkt engelle — tepede giriş riski çok yüksek
         if dip_puan == 0:
-            skor = max(0, skor - 2)  # Dip yoksa ceza
+            log.info(f"[PAS] {symbol.split('/')[0]}: Dip kriteri yok")
+            return None
 
         vol1h = calc_vol_ratio(df1h)
 
@@ -1035,10 +1038,14 @@ def scanner_loop():
 
                 if skor >= esik:
                     log.info(f"[SİNYAL] {sym} skor:{skor}/8 → GİRİYOR")
-                    ok = open_pos(symbol, skor, detay, btc_trend, atr_val, price)
-                    if ok:
-                        with pos_lock:
-                            open_syms = set(positions.keys())
+                    # Ayrı thread'de aç — tarayıcıyı bloklamaz
+                    threading.Thread(
+                        target=open_pos,
+                        args=(symbol, skor, detay, btc_trend, atr_val, price),
+                        daemon=True
+                    ).start()
+                    with pos_lock:
+                        open_syms = set(positions.keys())
                 else:
                     log.info(f"[PAS] {sym} skor:{skor}/8 (esik:{esik})")
 
