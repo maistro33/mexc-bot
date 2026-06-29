@@ -41,7 +41,8 @@ LEVERAGE       = 5
 MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
-MAX_OPEN       = 2
+MAX_OPEN       = 2   # Bot kendi açarsa max 2
+MAX_OPEN_SINYAL = 3  # Kullanıcı sinyal gönderirse max 3
 MAX_DAILY_LOSS = -10.0
 SCAN_INTERVAL  = 20   # 20sn'de bir tara
 
@@ -346,10 +347,11 @@ def open_pos(symbol, detay, btc_trend):
     atr_val = detay["atr"]
     son5_low = detay.get("son5_low", price)
 
-    # En iyi limit fiyat: son 5 mumun dibi ile ATR×0.3 aşağısının büyüğü
-    # Yani destek seviyesine koy ama çok uzak olmasın
+    # En iyi limit fiyat: fiyatın altında olmalı
     limit_atr = round(price - atr_val * 0.3, 8)
-    limit_p   = round(max(son5_low * 1.001, limit_atr), 8)  # Destek biraz üstü
+    son5_low_safe = min(son5_low, price * 0.998)  # Son5 low her zaman fiyatın altında
+    limit_p   = round(max(son5_low_safe * 1.001, limit_atr), 8)
+    limit_p   = min(limit_p, price * 0.999)  # Kesinlikle fiyatın altında
 
     sl  = round(limit_p * (1 - SL_PCT / 100), 8)
     tp1 = round(limit_p * (1 + TP1_PCT / 100), 8)
@@ -849,8 +851,8 @@ def handle_async(msg):
                 return
 
             with pos_lock:
-                if len(positions) >= MAX_OPEN:
-                    bot.send_message(msg.chat.id, f"❌ Max pozisyon ({MAX_OPEN}) dolu.")
+                if len(positions) >= MAX_OPEN_SINYAL:
+                    bot.send_message(msg.chat.id, f"❌ Max pozisyon ({MAX_OPEN_SINYAL}) dolu.")
                     return
 
             # Sinyaldeki fiyatları çek
@@ -962,8 +964,11 @@ def handle_async(msg):
 
                     with pos_lock:
                         if symbol in positions:
+                            # SL gerçek giriş fiyatından hesapla
+                            sl_gercek = round(gercek_fiyat * (1 - SL_PCT / 100), 8)
                             positions[symbol].update({
                                 "entry":   gercek_fiyat,
+                                "sl":      sl_gercek,
                                 "amount":  amount,
                                 "pending": False,
                             })
