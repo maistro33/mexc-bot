@@ -308,11 +308,38 @@ def hacim_patlamasi_var_mi(symbol):
         if pct_5m > 3.0:
             return False, {"red": f"Geç kalındı +{pct_5m:.1f}%"}, price
 
+        # ── FİBONACCİ %61.8 GERİ ÇEKİLME KONTROLÜ ──
+        # Son 20 mumda en yüksek ve en düşük noktayı bul
+        son20_high = float(df1h["h"].tail(20).max())
+        son20_low  = float(df1h["l"].tail(20).min())
+        fib_aralik = son20_high - son20_low
+
+        # Fibonacci seviyeleri
+        fib_618 = son20_high - fib_aralik * 0.618  # %61.8 geri çekilme
+        fib_50  = son20_high - fib_aralik * 0.500  # %50 geri çekilme
+        fib_382 = son20_high - fib_aralik * 0.382  # %38.2 geri çekilme
+
+        # Fiyat Fibonacci destek bölgesinde mi? (%38.2 - %61.8 arası)
+        fib_destek = fib_618 <= price <= fib_382
+        fib_detay  = f"F618:{fib_618:.6f} F50:{fib_50:.6f} F382:{fib_382:.6f}"
+
+        # Fiyat tepeden değil dipten geliyor mu?
+        # Son 4 mumda düşüş yaşanmış ve şimdi toparlanıyor mu?
+        son4_high = float(df1h["h"].tail(4).max())
+        tepeden_uzaklik = (son4_high - price) / son4_high * 100
+        dipten_toparlanma = tepeden_uzaklik >= 1.0  # Tepeden en az %1 uzakta
+
+        if not fib_destek:
+            return False, {"red": f"Fib destek değil (fiyat:{price:.6f} F382:{fib_382:.6f} F618:{fib_618:.6f})"}, price
+
+        if not dipten_toparlanma:
+            return False, {"red": f"Tepede giriş riski (tepeden -%{tepeden_uzaklik:.1f})"}, price
+
         gecti = (
-            vol_oran  >= VOL_SPIKE_MIN and
-            alim_orani >= ALIM_MIN     and
-            fiyat_yukselis             and
-            rsi_val   < RSI_MAX
+            vol_oran   >= VOL_SPIKE_MIN and
+            alim_orani >= ALIM_MIN      and
+            fiyat_yukselis              and
+            rsi_val    < RSI_MAX
         )
 
         detay = {
@@ -320,6 +347,8 @@ def hacim_patlamasi_var_mi(symbol):
             "alim_orani": round(alim_orani, 1),
             "rsi":        round(rsi_val, 1),
             "pct_5m":     round(pct_5m, 2),
+            "fib":        fib_detay,
+            "tepeden":    round(tepeden_uzaklik, 1),
             "atr":        atr_val,
             "price":      price,
         }
@@ -487,6 +516,7 @@ def open_pos(symbol, detay, btc_trend):
         f"📊 BTC: {btc_trend}\n"
         f"Hacim: {detay['vol_oran']:.1f}x | Alım: %{detay['alim_orani']:.0f}\n"
         f"RSI: {detay['rsi']:.0f} | 5m: {detay['pct_5m']:+.1f}%\n"
+        f"Fib: {detay.get('fib','?')} | Tepeden: -%{detay.get('tepeden',0):.1f}\n"
         f"R:R = 1:{rr:.1f} | ATR: {atr_val:.6f}"
     )
     log.info(f"[AÇIK] {sym} @ {gercek_fiyat:.8f} sl:{sl_gercek:.8f} atr:{atr_val:.8f}")
