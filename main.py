@@ -45,14 +45,15 @@ MAX_OPEN       = 2
 MAX_DAILY_LOSS = -10.0
 SCAN_INTERVAL  = 20   # 20sn'de bir tara
 
-# TP/SL — Sabit yüzde (scalp için ideal)
-TP1_PCT       = 0.8   # TP1 = +%0.8
-TP2_PCT       = 1.5   # TP2 = +%1.5
-SL_PCT        = 0.5   # SL  = -%0.5 (dar stop)
-ATR_LIMIT     = 0.2   # Limit emir ATR×0.2 aşağı
+# TP/SL — Net ~1$ kar hedefi
+TP1_PCT       = 2.1   # TP1 = +%2.1 (net ~1$)
+TP2_PCT       = 4.0   # TP2 = +%4.0 (devam ederse)
+SL_PCT        = 1.0   # SL  = -%1.0
+ATR_LIMIT     = 0.1   # Limit emir ATR×0.1 aşağı (daha yakın)
 LIMIT_BEKLE   = 20    # 20sn limit bekle
-MAX_SURE      = 20    # 20 dakika max
-TP_TRAILING   = 0.30  # TP1 sonrası %0.30 geri dönerse kapat
+MAX_SURE      = 25    # 25 dakika max
+TP_TRAILING   = 0.40  # TP2 sonrası trailing
+TP1_DIREKT    = True  # TP1'e ulaşınca direkt kapat
 
 # Scalp filtreleri
 VOL_SPIKE_MIN = 2.0   # 2x hacim
@@ -588,18 +589,24 @@ def manage_loop():
 
                 # TP seviyeleri
                 if tp_idx < len(tps) and price >= tps[tp_idx]:
-                    yeni_sl = entry if tp_idx == 0 else tps[0]
-                    with pos_lock:
-                        if symbol in positions:
-                            positions[symbol]["tp_idx"] = tp_idx + 1
-                            positions[symbol]["sl"]     = yeni_sl
                     sym = symbol.split("/")[0]
-                    sonraki = f"{tps[tp_idx+1]:.8f}" if tp_idx + 1 < len(tps) else "∞"
-                    tg(f"🎯 {sym} TP{tp_idx+1}! +{pnl_pct:.1f}%\nSL→{yeni_sl:.8f}\nSonraki:{sonraki}")
-                    tp_idx += 1
 
-                # TP1 sonrası trailing
-                if tp_idx > 0:
+                    if tp_idx == 0:
+                        # TP1 → Direkt kapat, net ~1$ kar al
+                        close_pos(symbol, f"🎯 TP1 +{pnl_pct:.1f}% (net ~1$)", price)
+                        continue
+                    else:
+                        # TP2 → SL'yi TP1'e çek, trailing devreye girer
+                        yeni_sl = tps[0]
+                        with pos_lock:
+                            if symbol in positions:
+                                positions[symbol]["tp_idx"] = tp_idx + 1
+                                positions[symbol]["sl"]     = yeni_sl
+                        tg(f"🎯 {sym} TP2! +{pnl_pct:.1f}%\nSL→{yeni_sl:.8f}")
+                        tp_idx += 1
+
+                # TP2 sonrası trailing
+                if tp_idx > 1:
                     geri = (max_price - price) / max_price * 100
                     if geri >= TP_TRAILING:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
@@ -923,9 +930,9 @@ if __name__ == "__main__":
         "  ✅ RSI 30-55 arası\n"
         "  ✅ BTC DOWN değil\n"
         "  ✅ Limit→Market emir\n\n"
-        f"⚡ TP1: +%{TP1_PCT} | TP2: +%{TP2_PCT}\n"
-        f"🚫 SL: -%{SL_PCT} | Max: {MAX_SURE}dk\n"
-        f"📉 Trailing: -%{TP_TRAILING} (TP1 sonrası)\n\n"
+        f"⚡ TP1: +%{TP1_PCT} → Direkt kapat (~1$ net)\n"
+        f"⚡ TP2: +%{TP2_PCT} → Trailing %{TP_TRAILING}\n"
+        f"🚫 SL: -%{SL_PCT} | Max: {MAX_SURE}dk\n\n"
         f"BTC: {trend} ${price:,.0f}\n"
         f"Fear&Greed: {fg} ({fl})\n\n"
         "/durum /istatistik /btc"
