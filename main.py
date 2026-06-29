@@ -316,14 +316,14 @@ def filtre_1h_trend(df1h):
     ema50   = calc_ema(closes, 50)
     ema200  = calc_ema(closes, 200)
 
-    price_above_200 = price > float(ema200.iloc[-1])
+    price_above_200 = price > float(ema50.iloc[-1])  # 50EMA (200 yerine, daha esnek)
     ema20_above_50  = float(ema20.iloc[-1]) > float(ema50.iloc[-1])
     ema20_rising    = float(ema20.iloc[-1]) > float(ema20.iloc[-3])  # Son 3 mumda yukarı
 
     gecti = price_above_200 and ema20_above_50 and ema20_rising
 
     detay = (
-        f"200EMA:{'✅' if price_above_200 else '❌'} "
+        f"50EMA:{'✅' if price_above_200 else '❌'} "
         f"20>50:{'✅' if ema20_above_50 else '❌'} "
         f"EMAyük:{'✅' if ema20_rising else '❌'}"
     )
