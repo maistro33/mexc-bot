@@ -810,6 +810,70 @@ def handle_async(msg):
     text  = msg.text.strip()
     lower = text.lower()
 
+    # ── SINYAL FORWARD TESPİTİ ──
+    # O bottan forward edilen sinyali tanı ve işle
+    # Format: 📊 #XPLUSDT.P veya LONG - Giriş Fiyatı: 0.10369
+    if ("🏁 long" in lower or "long - giriş" in lower or "#" in text) and "usdt" in text.upper():
+        # Coin adını çek — #XPLUSDT.P formatından
+        import re as re2
+        match = re2.search(r'#([A-Z0-9]+)USDT', text.upper())
+        if not match:
+            match = re2.search(r'\b([A-Z0-9]{2,10})USDT', text.upper())
+        
+        if match:
+            coin_adi = match.group(1)
+            symbol   = f"{coin_adi}/USDT:USDT"
+            
+            try:
+                tickers = get_tickers_cached()
+                if symbol not in tickers:
+                    bot.send_message(msg.chat.id, f"❌ {coin_adi} bulunamadı.")
+                    return
+            except:
+                pass
+
+            if coin_adi in BLACKLIST:
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} blacklist'te.")
+                return
+
+            bot.send_message(msg.chat.id, f"📡 Sinyal alındı: {coin_adi}\n🔍 Analiz ediliyor...")
+            
+            # Analiz et
+            gecti, detay = scalp_sinyal(symbol)
+            trend, _, _  = get_btc_trend()
+
+            if trend == "DOWN":
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} — BTC DOWN, giriş yapılmıyor.")
+                return
+
+            if günlük_limit_asıldı():
+                bot.send_message(msg.chat.id, "❌ Günlük limit aşıldı.")
+                return
+
+            with pos_lock:
+                if len(positions) >= MAX_OPEN:
+                    bot.send_message(msg.chat.id, f"❌ Max pozisyon ({MAX_OPEN}) dolu.")
+                    return
+
+            if gecti:
+                bot.send_message(msg.chat.id, 
+                    f"✅ {coin_adi} filtreler geçti!\n"
+                    f"Hacim:{detay.get('vol',0):.1f}x Alım:%{detay.get('alim',0):.0f} RSI:{detay.get('rsi',0):.0f}\n"
+                    f"Limit emir açılıyor...")
+                threading.Thread(
+                    target=open_pos,
+                    args=(symbol, detay, trend),
+                    daemon=True
+                ).start()
+            else:
+                bot.send_message(msg.chat.id,
+                    f"❌ {coin_adi} filtreler geçemedi\n"
+                    f"Hacim:{detay.get('vol',0):.1f}x {'✅' if detay.get('vol',0)>=VOL_SPIKE_MIN else '❌'}\n"
+                    f"Alım:%{detay.get('alim',0):.0f} {'✅' if detay.get('alim',0)>=ALIM_MIN else '❌'}\n"
+                    f"RSI:{detay.get('rsi',0):.0f} {'✅' if RSI_MIN<=detay.get('rsi',0)<=RSI_MAX else '❌'}"
+                )
+            return
+
     if "/durum" in lower:
         with pos_lock:
             if not positions:
