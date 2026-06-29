@@ -406,8 +406,8 @@ def open_pos(symbol, detay, btc_trend):
             order_id = order.get("id")
             log.info(f"[LİMİT] {sym} @ {limit_p_str:.8f}")
 
-            # 2 dakika bekle
-            for _ in range(24):
+            # 5 dakika bekle
+            for _ in range(60):
                 time.sleep(5)
                 durum = safe_api(exchange.fetch_order, order_id, symbol)
                 if durum and durum.get("status") == "closed":
