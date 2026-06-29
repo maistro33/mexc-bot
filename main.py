@@ -42,7 +42,7 @@ LEVERAGE       = 5
 MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
-MAX_OPEN       = 2
+MAX_OPEN       = 3
 MAX_DAILY_LOSS = -15.0
 SCAN_INTERVAL  = 30   # Daha sık tara
 
