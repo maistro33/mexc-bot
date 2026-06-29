@@ -406,8 +406,8 @@ def open_pos(symbol, detay, btc_trend):
             order_id = order.get("id")
             log.info(f"[LİMİT] {sym} @ {limit_p_str:.8f}")
 
-            # 20sn bekle
-            for _ in range(4):
+            # 2 dakika bekle
+            for _ in range(24):
                 time.sleep(5)
                 durum = safe_api(exchange.fetch_order, order_id, symbol)
                 if durum and durum.get("status") == "closed":
@@ -811,19 +811,23 @@ def handle_async(msg):
     lower = text.lower()
 
     # ── SINYAL FORWARD TESPİTİ ──
-    # O bottan forward edilen sinyali tanı ve işle
-    # Format: 📊 #XPLUSDT.P veya LONG - Giriş Fiyatı: 0.10369
-    if ("🏁 long" in lower or "long - giriş" in lower or "#" in text) and "usdt" in text.upper():
-        # Coin adını çek — #XPLUSDT.P formatından
-        import re as re2
-        match = re2.search(r'#([A-Z0-9]+)USDT', text.upper())
-        if not match:
-            match = re2.search(r'\b([A-Z0-9]{2,10})USDT', text.upper())
+    # Format 1: FuturesKripto — 📊 #XPLUSDT.P + Giriş Fiyatı
+    # Format 2: TradingView alarm — $OPG | #OPGUSDT | TradingView
+    if ("🏁 long" in lower or "long - giriş" in lower or "tradingview" in lower or ("#" in text and "usdt" in text.upper())):
         
-        if match:
+        # Coin adını çek
+        match = re.search(r'#([A-Z0-9]+)USDT', text.upper())
+        if not match:
+            match = re.search(r'\$([A-Z0-9]+)\s*\|', text.upper())
+        if not match:
+            match = re.search(r'\b([A-Z0-9]{2,10})USDT', text.upper())
+
+        if not match:
+            pass  # Coin bulunamadı, devam et
+        else:
             coin_adi = match.group(1)
             symbol   = f"{coin_adi}/USDT:USDT"
-            
+
             try:
                 tickers = get_tickers_cached()
                 if symbol not in tickers:
@@ -852,23 +856,21 @@ def handle_async(msg):
             # Sinyaldeki fiyatları çek
             giris_match = re.search(r'Giri[şs]\s*Fiyat[ıi]\s*[:\s]+([0-9.]+)', text, re.IGNORECASE)
             if not giris_match:
-                giris_match = re.search(r'LONG[^\n]*[\n\s]+([0-9.]+)', text)
+                giris_match = re.search(r'Price[:\s]+([0-9.]+)', text, re.IGNORECASE)
             stop_match  = re.search(r'Stop[:\s]+([0-9.]+)', text, re.IGNORECASE)
             tp_matches  = re.findall(r'TP\d+[:\s]+([0-9.]+)', text)
 
-            if not giris_match:
-                bot.send_message(msg.chat.id, f"❌ Giriş fiyatı bulunamadı.")
+            # Mevcut fiyat al
+            t0 = safe_api(exchange.fetch_ticker, symbol)
+            if not t0:
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
                 return
+            price_now = float(t0["last"])
 
-            giris_fiyat = float(giris_match.group(1))
-            stop_fiyat  = float(stop_match.group(1)) if stop_match else giris_fiyat * 0.95
-            tp_fiyatlar = [float(tp) for tp in tp_matches] if tp_matches else []
+            # Giriş fiyatı — sinyalde varsa kullan, yoksa mevcut fiyat
+            giris_fiyat = float(giris_match.group(1)) if giris_match else price_now
 
-            if not tp_fiyatlar:
-                bot.send_message(msg.chat.id, "❌ TP seviyeleri bulunamadı.")
-                return
-
-            # ATR hesapla (sadece miktar için)
+            # ATR hesapla
             r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
             if not r1h:
                 bot.send_message(msg.chat.id, f"❌ {coin_adi} veri alınamadı.")
@@ -876,12 +878,17 @@ def handle_async(msg):
             df1h    = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
             atr_val = calc_atr(df1h)
 
-            # Mevcut fiyat
-            t0 = safe_api(exchange.fetch_ticker, symbol)
-            if not t0:
-                bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
-                return
-            price_now = float(t0["last"])
+            # SL — sinyalde varsa kullan, yoksa ATR×2
+            stop_fiyat = float(stop_match.group(1)) if stop_match else round(giris_fiyat * (1 - SL_PCT/100), 8)
+
+            # TP — sinyalde varsa kullan, yoksa sabit yüzde
+            if tp_matches:
+                tp_fiyatlar = [float(tp) for tp in tp_matches]
+            else:
+                tp_fiyatlar = [
+                    round(giris_fiyat * (1 + TP1_PCT/100), 8),
+                    round(giris_fiyat * (1 + TP2_PCT/100), 8),
+                ]
 
             # Pozisyon slotu ayır
             sym_base = coin_adi.upper()
@@ -938,8 +945,8 @@ def handle_async(msg):
                     order_id     = order.get("id")
                     gercek_fiyat = None
 
-                    # 60sn bekle (sinyal fiyatına gelmesi için)
-                    for _ in range(12):
+                    # 5 dakika bekle (fiyat giriş seviyesine gelmesi için)
+                    for _ in range(60):
                         time.sleep(5)
                         durum = safe_api(exchange.fetch_order, order_id, symbol)
                         if durum and durum.get("status") == "closed":
