@@ -72,8 +72,8 @@ ATR_PCT_MAX  = 8.0   # ATR/fiyat max %8.0 (çok volatil coin)
 
 # BTC skor eşikleri
 SKOR_UP            = 3
-SKOR_NEUTRAL_LONG  = 4
-SKOR_NEUTRAL_SHORT = 6
+SKOR_NEUTRAL_LONG  = 3
+SKOR_NEUTRAL_SHORT = 5
 
 # Ticker cache
 TICKER_CACHE_TTL = 60  # 60 saniye
