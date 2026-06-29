@@ -276,16 +276,16 @@ def dip_bounce(df1h, df15m):
                 rsi_min = r
         except:
             pass
-    rsi_bounce_ok = rsi_min < 45 and rsi_simdi > rsi_min + 2
+    rsi_bounce_ok = rsi_min < 38 and rsi_simdi > rsi_min + 2
 
-    # 3. İlk yeşil mum (15m)
+    # 3. İlk yeşil mum (15m) - güçlü gövde
     son7 = df15m.tail(7)
     kirmizi = sum(1 for _, r in son7.iloc[:-1].iterrows() if float(r["c"]) < float(r["o"]))
     son = son7.iloc[-1]
     yesil_ok = (
         kirmizi >= 2
         and float(son["c"]) > float(son["o"])
-        and abs(float(son["c"]) - float(son["o"])) / float(son["o"]) * 100 >= 0.15
+        and abs(float(son["c"]) - float(son["o"])) / float(son["o"]) * 100 >= 0.30
     )
 
     # 4. Destek yakın
