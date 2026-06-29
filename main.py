@@ -836,15 +836,9 @@ def handle_async(msg):
                 bot.send_message(msg.chat.id, f"❌ {coin_adi} blacklist'te.")
                 return
 
-            bot.send_message(msg.chat.id, f"📡 Sinyal alındı: {coin_adi}\n🔍 Analiz ediliyor...")
-            
-            # Analiz et
-            gecti, detay = scalp_sinyal(symbol)
-            trend, _, _  = get_btc_trend()
+            bot.send_message(msg.chat.id, f"📡 Sinyal alındı: {coin_adi}\n⚡ Emir açılıyor...")
 
-            if trend == "DOWN":
-                bot.send_message(msg.chat.id, f"❌ {coin_adi} — BTC DOWN, giriş yapılmıyor.")
-                return
+            trend, _, _ = get_btc_trend()
 
             if günlük_limit_asıldı():
                 bot.send_message(msg.chat.id, "❌ Günlük limit aşıldı.")
@@ -855,23 +849,131 @@ def handle_async(msg):
                     bot.send_message(msg.chat.id, f"❌ Max pozisyon ({MAX_OPEN}) dolu.")
                     return
 
-            if gecti:
-                bot.send_message(msg.chat.id, 
-                    f"✅ {coin_adi} filtreler geçti!\n"
-                    f"Hacim:{detay.get('vol',0):.1f}x Alım:%{detay.get('alim',0):.0f} RSI:{detay.get('rsi',0):.0f}\n"
-                    f"Limit emir açılıyor...")
-                threading.Thread(
-                    target=open_pos,
-                    args=(symbol, detay, trend),
-                    daemon=True
-                ).start()
-            else:
-                bot.send_message(msg.chat.id,
-                    f"❌ {coin_adi} filtreler geçemedi\n"
-                    f"Hacim:{detay.get('vol',0):.1f}x {'✅' if detay.get('vol',0)>=VOL_SPIKE_MIN else '❌'}\n"
-                    f"Alım:%{detay.get('alim',0):.0f} {'✅' if detay.get('alim',0)>=ALIM_MIN else '❌'}\n"
-                    f"RSI:{detay.get('rsi',0):.0f} {'✅' if RSI_MIN<=detay.get('rsi',0)<=RSI_MAX else '❌'}"
-                )
+            # Sinyaldeki fiyatları çek
+            giris_match = re.search(r'Giriş Fiyatı[:\s]+([0-9.]+)', text)
+            stop_match  = re.search(r'Stop[:\s]+([0-9.]+)', text)
+            tp_matches  = re.findall(r'TP\d+[:\s]+([0-9.]+)', text)
+
+            if not giris_match:
+                bot.send_message(msg.chat.id, f"❌ Giriş fiyatı bulunamadı.")
+                return
+
+            giris_fiyat = float(giris_match.group(1))
+            stop_fiyat  = float(stop_match.group(1)) if stop_match else giris_fiyat * 0.95
+            tp_fiyatlar = [float(tp) for tp in tp_matches] if tp_matches else []
+
+            if not tp_fiyatlar:
+                bot.send_message(msg.chat.id, "❌ TP seviyeleri bulunamadı.")
+                return
+
+            # ATR hesapla (sadece miktar için)
+            r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
+            if not r1h:
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} veri alınamadı.")
+                return
+            df1h    = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
+            atr_val = calc_atr(df1h)
+
+            # Mevcut fiyat
+            t0 = safe_api(exchange.fetch_ticker, symbol)
+            if not t0:
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
+                return
+            price_now = float(t0["last"])
+
+            # Pozisyon slotu ayır
+            sym_base = coin_adi.upper()
+            with pos_lock:
+                if symbol in positions:
+                    bot.send_message(msg.chat.id, f"❌ {coin_adi} zaten açık.")
+                    return
+                with closed_lock:
+                    if sym_base in recently_closed:
+                        if time.time() - recently_closed[sym_base] < 1800:
+                            bot.send_message(msg.chat.id, f"❌ {coin_adi} 30dk beklemede.")
+                            return
+
+                positions[symbol] = {
+                    "entry":     giris_fiyat,
+                    "sl":        stop_fiyat,
+                    "tps":       tp_fiyatlar,
+                    "tp_idx":    0,
+                    "max_price": giris_fiyat,
+                    "open_time": time.time(),
+                    "amount":    0,
+                    "btc_trend": trend,
+                    "atr":       atr_val,
+                    "pending":   True,
+                }
+
+            # Limit emir aç
+            def sinyal_emri_ac():
+                sym = coin_adi
+                try:
+                    try: exchange.set_margin_mode("isolated", symbol, params={"marginCoin": "USDT"})
+                    except: pass
+                    try: exchange.set_leverage(LEVERAGE, symbol, params={"marginCoin": "USDT"})
+                    except: pass
+
+                    amount = round(POS_SIZE / giris_fiyat, 4)
+                    amount = float(exchange.amount_to_precision(symbol, amount))
+                    if amount <= 0:
+                        with pos_lock: positions.pop(symbol, None)
+                        return
+
+                    limit_p = float(exchange.price_to_precision(symbol, giris_fiyat))
+                    order = safe_api(
+                        exchange.create_order,
+                        symbol, "limit", "buy", amount, limit_p,
+                        {"marginMode": "isolated", "marginCoin": "USDT", "timeInForce": "GTC"}
+                    )
+
+                    if not order:
+                        with pos_lock: positions.pop(symbol, None)
+                        tg(f"❌ {sym} emir açılamadı.")
+                        return
+
+                    order_id     = order.get("id")
+                    gercek_fiyat = None
+
+                    # 60sn bekle (sinyal fiyatına gelmesi için)
+                    for _ in range(12):
+                        time.sleep(5)
+                        durum = safe_api(exchange.fetch_order, order_id, symbol)
+                        if durum and durum.get("status") == "closed":
+                            gercek_fiyat = float(durum.get("average") or limit_p)
+                            break
+
+                    if not gercek_fiyat:
+                        try: safe_api(exchange.cancel_order, order_id, symbol)
+                        except: pass
+                        with pos_lock: positions.pop(symbol, None)
+                        tg(f"⏰ {sym} limit dolmadı, iptal edildi.")
+                        return
+
+                    with pos_lock:
+                        if symbol in positions:
+                            positions[symbol].update({
+                                "entry":   gercek_fiyat,
+                                "amount":  amount,
+                                "pending": False,
+                            })
+
+                    tp_str = "\n".join([f"TP{i+1}: {tp} ──" for i, tp in enumerate(tp_fiyatlar[:6])])
+                    sl_pct = (gercek_fiyat - stop_fiyat) / gercek_fiyat * 100
+                    tg(
+                        f"⚡ #{sym}USDT.P LONG\n"
+                        f"🏁 Giriş: {gercek_fiyat}\n"
+                        f"🚫 SL: {stop_fiyat} (-%{sl_pct:.1f})\n\n"
+                        f"{tp_str}\n\n"
+                        f"BTC: {trend}"
+                    )
+
+                except Exception as e:
+                    log.error(f"[SİNYAL_EMİR] {sym}: {e}")
+                    with pos_lock: positions.pop(symbol, None)
+
+            threading.Thread(target=sinyal_emri_ac, daemon=True).start()
             return
 
     if "/durum" in lower:
