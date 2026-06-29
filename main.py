@@ -48,13 +48,13 @@ MAX_OPEN       = 2
 MAX_DAILY_LOSS = -15.0
 SCAN_INTERVAL  = 45
 
-# TP/SL
-TP_PCTS        = [0.8, 1.5, 2.5, 3.5, 5.0, 7.0]
-SL_PCT         = 3.0
-ATR_SL_MULT    = 1.0
-ATR_GIRIS_MULT = 0.3
-ATR_GIRIS_SURE = 90
+# TP/SL — ATR bazlı (kanıtlanmış R:R oranı)
+ATR_TP_LEVELS  = [1.5, 3.0, 5.0]   # TP1=ATR×1.5, TP2=ATR×3.0, TP3=ATR×5.0
+ATR_SL_MULT    = 2.0                # SL = giriş - ATR × 2.0
+ATR_GIRIS_MULT = 0.3                # Limit giriş = fiyat - ATR × 0.3
+ATR_GIRIS_SURE = 120                # 120sn limit emir bekle
 TP_TRAILING    = 0.60
+LIMIT_EMIR_TTL = 120                # Limit emir kaç saniye geçerli
 
 # Tarama filtreleri
 MIN_VOL_USDT = 500_000
@@ -728,8 +728,16 @@ def open_pos(symbol, skor, detay, btc_trend, atr_val, current_price):
     sl_pct = round(giris * (1 - SL_PCT / 100), 8)
     sl     = max(sl_atr, sl_pct)  # Daha yakın SL
 
-    # TP seviyeleri
-    tps = [round(giris * (1 + p / 100), 8) for p in TP_PCTS]
+    # TP seviyeleri — ATR bazlı kanıtlanmış R:R
+    # TP1=ATR×1.5, TP2=ATR×3.0, TP3=ATR×5.0
+    limit_fiyat = round(current_price - atr_val * ATR_GIRIS_MULT, 8)
+    limit_fiyat = float(exchange.price_to_precision(symbol, limit_fiyat))
+
+    # SL: ATR × 2.0 (kanıtlanmış oran)
+    sl = round(limit_fiyat - atr_val * ATR_SL_MULT, 8)
+
+    # TP'ler ATR çarpanıyla
+    tps = [round(limit_fiyat + atr_val * mult, 8) for mult in ATR_TP_LEVELS]
 
     with pos_lock:
         sym_base = sym.upper()
@@ -748,21 +756,21 @@ def open_pos(symbol, skor, detay, btc_trend, atr_val, current_price):
             return False
 
         positions[symbol] = {
-            "entry":     giris,
-            "sl":        sl,
-            "tps":       tps,
-            "tp_idx":    0,
-            "max_price": giris,
-            "open_time": time.time(),
-            "amount":    0,
-            "btc_trend": btc_trend,
-            "skor":      skor,
-            "atr":       atr_val,
+            "entry":      limit_fiyat,
+            "sl":         sl,
+            "tps":        tps,
+            "tp_idx":     0,
+            "max_price":  limit_fiyat,
+            "open_time":  time.time(),
+            "amount":     0,
+            "btc_trend":  btc_trend,
+            "skor":       skor,
+            "atr":        atr_val,
+            "limit_only": True,   # Limit emir dolmadan yönetme
         }
 
     # Borsa işlemleri
     try:
-        # Margin modu ve kaldıraç ayarla
         try:
             exchange.set_margin_mode("isolated", symbol, params={"marginCoin": "USDT"})
         except Exception as e:
@@ -773,23 +781,60 @@ def open_pos(symbol, skor, detay, btc_trend, atr_val, current_price):
             log.warning(f"[LEVERAGE] {sym}: {e}")
 
         # Miktar hesapla
-        amount = round(POS_SIZE / giris, 4)
+        amount = round(POS_SIZE / limit_fiyat, 4)
         amount = float(exchange.amount_to_precision(symbol, amount))
         if amount <= 0:
             with pos_lock: positions.pop(symbol, None)
             return False
 
-        # Giriş emri — Bitget swap için doğru format
+        # LİMİT EMIR — maker komisyon, daha iyi fiyat
         order = safe_api(
             exchange.create_order,
-            symbol, "market", "buy", amount,
-            None,
+            symbol, "limit", "buy", amount,
+            limit_fiyat,
             {
                 "marginMode": "isolated",
                 "marginCoin": "USDT",
+                "timeInForce": "GTC",  # Good Till Cancelled
             }
         )
         if not order:
+            with pos_lock: positions.pop(symbol, None)
+            return False
+
+        order_id = order.get("id")
+        log.info(f"[LİMİT] {sym} emir id:{order_id} @ {limit_fiyat:.8f}")
+
+        # Emrin dolmasını bekle (max 120sn)
+        dolu = False
+        for _ in range(int(LIMIT_EMIR_TTL / 5)):
+            time.sleep(5)
+            durum = safe_api(exchange.fetch_order, order_id, symbol)
+            if not durum:
+                break
+            if durum.get("status") == "closed":
+                gercek_fiyat = float(durum.get("average") or limit_fiyat)
+                dolu = True
+                log.info(f"[LİMİT] {sym} doldu @ {gercek_fiyat:.8f}")
+                # Gerçek giriş fiyatıyla güncelle
+                with pos_lock:
+                    if symbol in positions:
+                        positions[symbol]["entry"]     = gercek_fiyat
+                        positions[symbol]["amount"]    = amount
+                        positions[symbol]["limit_only"] = False
+                break
+            elif durum.get("status") == "canceled":
+                log.info(f"[LİMİT] {sym} emir iptal edildi")
+                with pos_lock: positions.pop(symbol, None)
+                return False
+
+        if not dolu:
+            # Süre doldu, emri iptal et
+            log.info(f"[LİMİT] {sym} süre doldu, iptal ediliyor")
+            try:
+                safe_api(exchange.cancel_order, order_id, symbol)
+            except:
+                pass
             with pos_lock: positions.pop(symbol, None)
             return False
 
@@ -803,11 +848,12 @@ def open_pos(symbol, skor, detay, btc_trend, atr_val, current_price):
         return False
 
     # Telegram bildirimi
-    sl_pct_g = (giris - sl) / giris * 100
-    tp_str   = "\n".join([f"TP{i+1}: {tp:.8f} ──" for i, tp in enumerate(tps)])
+    sl_pct_g = (limit_fiyat - sl) / limit_fiyat * 100
+    tp1_pct  = (tps[0] - limit_fiyat) / limit_fiyat * 100
+    tp_str   = "\n".join([f"TP{i+1}: {tp:.8f} (+{(tp-limit_fiyat)/limit_fiyat*100:.1f}%) ──" for i, tp in enumerate(tps)])
     tg(
         f"📊 #{sym}USDT.P\n"
-        f"🏁 LONG - Giriş: {giris:.8f}\n"
+        f"🏁 LONG - Limit: {limit_fiyat:.8f}\n"
         f"🚫 Stop: {sl:.8f} (-%{sl_pct_g:.1f})\n\n"
         f"💡 Pozisyon Detayları\n{tp_str}\n\n"
         f"📊 Skor: {skor}/8 | BTC: {btc_trend}\n"
@@ -817,9 +863,10 @@ def open_pos(symbol, skor, detay, btc_trend, atr_val, current_price):
         f"Dip:{detay.get('dip','?')} Bounce:{detay.get('bounce','?')} "
         f"Div:{detay.get('div','?')}\n"
         f"Yeşil:{detay.get('yesil','?')} Destek:{detay.get('destek','?')}\n"
-        f"Vol:{detay.get('vol','?')} {detay.get('atr','')}"
+        f"Vol:{detay.get('vol','?')} {detay.get('atr','')}\n"
+        f"R:R = 1:{tp1_pct/sl_pct_g:.1f} | Maker komisyon ✅"
     )
-    log.info(f"[AÇIK] {sym} @ {giris:.8f} skor:{skor} atr:{atr_val:.8f}")
+    log.info(f"[AÇIK] {sym} limit:{limit_fiyat:.8f} sl:{sl:.8f} atr:{atr_val:.8f}")
     return True
 
 # ════════════════════════════════════════
@@ -924,6 +971,10 @@ def manage_loop():
                 with pos_lock:
                     pos = positions.get(symbol)
                 if not pos:
+                    continue
+
+                # Limit emir henüz dolmadıysa yönetme
+                if pos.get("limit_only"):
                     continue
 
                 t = safe_api(exchange.fetch_ticker, symbol)
