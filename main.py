@@ -310,12 +310,13 @@ def scalp_sinyal(symbol):
         )
 
         detay = {
-            "vol":   round(vol_oran, 1),
-            "alim":  round(alim_orani, 1),
-            "rsi":   round(rsi_val, 1),
-            "pct":   round(pct_1m, 2),
-            "atr":   atr_val,
-            "price": price,
+            "vol":     round(vol_oran, 1),
+            "alim":    round(alim_orani, 1),
+            "rsi":     round(rsi_val, 1),
+            "pct":     round(pct_1m, 2),
+            "atr":     atr_val,
+            "price":   price,
+            "son5_low": float(df1m["l"].tail(5).min()),  # Son 5 mumun dibi
         }
         return gecti, detay
 
@@ -343,13 +344,17 @@ def open_pos(symbol, detay, btc_trend):
     sym     = symbol.split("/")[0]
     price   = detay["price"]
     atr_val = detay["atr"]
+    son5_low = detay.get("son5_low", price)
 
-    # Sabit yüzde TP/SL
-    limit_p = round(price - atr_val * ATR_LIMIT, 8)
-    sl      = round(limit_p * (1 - SL_PCT / 100), 8)
-    tp1     = round(limit_p * (1 + TP1_PCT / 100), 8)
-    tp2     = round(limit_p * (1 + TP2_PCT / 100), 8)
-    tps     = [tp1, tp2]
+    # En iyi limit fiyat: son 5 mumun dibi ile ATR×0.3 aşağısının büyüğü
+    # Yani destek seviyesine koy ama çok uzak olmasın
+    limit_atr = round(price - atr_val * 0.3, 8)
+    limit_p   = round(max(son5_low * 1.001, limit_atr), 8)  # Destek biraz üstü
+
+    sl  = round(limit_p * (1 - SL_PCT / 100), 8)
+    tp1 = round(limit_p * (1 + TP1_PCT / 100), 8)
+    tp2 = round(limit_p * (1 + TP2_PCT / 100), 8)
+    tps = [tp1, tp2]
 
     with pos_lock:
         sym_base = sym.upper()
