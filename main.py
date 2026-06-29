@@ -42,9 +42,9 @@ MAX_DAILY_LOSS = -15.0
 SCAN_INTERVAL  = 45
 
 # TP/SL
-TP_PCTS        = [0.5, 1.0, 1.5, 2.0, 2.5, 4.0]  # TP1-TP6
-SL_PCT         = 5.0    # Max stop %5
-ATR_SL_MULT    = 1.5    # SL = giriş - ATR × 1.5
+TP_PCTS        = [0.8, 1.5, 2.5, 3.5, 5.0, 7.0]  # Daha geniş TP'ler
+SL_PCT         = 3.0    # Max stop %3
+ATR_SL_MULT    = 1.0    # SL = giriş - ATR × 1.0
 ATR_GIRIS_MULT = 0.3    # Giriş = fiyat - ATR × 0.3
 ATR_GIRIS_SURE = 90     # Kaç saniye bekle
 TP_TRAILING    = 0.60   # TP sonrası %0.60 geri dönerse kapat
