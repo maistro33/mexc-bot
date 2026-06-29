@@ -850,8 +850,10 @@ def handle_async(msg):
                     return
 
             # Sinyaldeki fiyatları çek
-            giris_match = re.search(r'Giriş Fiyatı[:\s]+([0-9.]+)', text)
-            stop_match  = re.search(r'Stop[:\s]+([0-9.]+)', text)
+            giris_match = re.search(r'Giri[şs]\s*Fiyat[ıi]\s*[:\s]+([0-9.]+)', text, re.IGNORECASE)
+            if not giris_match:
+                giris_match = re.search(r'LONG[^\n]*[\n\s]+([0-9.]+)', text)
+            stop_match  = re.search(r'Stop[:\s]+([0-9.]+)', text, re.IGNORECASE)
             tp_matches  = re.findall(r'TP\d+[:\s]+([0-9.]+)', text)
 
             if not giris_match:
