@@ -766,8 +766,8 @@ def load_open_positions():
                     if symbol not in positions:
                         positions[symbol] = {
                             "entry":     entry,
-                            "sl":        round(entry - atr_val * ATR_SL, 8),
-                            "tps":       [round(entry + atr_val * ATR_TP1, 8), round(entry + atr_val * ATR_TP2, 8)],
+                            "sl":        round(entry * (1 - SL_PCT / 100), 8),
+                            "tps":       [round(entry * (1 + TP1_PCT / 100), 8), round(entry * (1 + TP2_PCT / 100), 8)],
                             "tp_idx":    0,
                             "max_price": entry,
                             "open_time": time.time(),
