@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-SADIK TRADER v9 - Hacim Patlaması Stratejisi
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Strateji (Basit & Etkili):
-  1. Hacim Patlaması  → Son 1-5dk hacim 2x+ artış
-  2. Alım Baskısı     → %65+ alım yoğunluğu
-  3. BTC Filtresi     → DOWN değilse gir
-  4. RSI Filtresi     → 68 altında
-  5. Limit → Market   → Önce limit, 30sn dolmazsa market
+SADIK SCALP v1 - Saf Scalp Botu
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Strateji (Basit & Hızlı):
+  1. Hacim Patlaması  → Son 1m hacim 2x+ ortalama
+  2. Alım Baskısı     → %65+ alım yoğunluğu  
+  3. RSI              → 30-55 arası (ne tepede ne dipte)
+  4. BTC              → DOWN değil
+  5. Limit Emir       → ATR×0.2 aşağı, 20sn bekle, sonra market
 
-TP/SL (ATR Bazlı - Kanıtlanmış R:R):
-  - Giriş: Limit ATR×0.2 aşağı (30sn), sonra market
-  - TP1: ATR × 1.5
-  - TP2: ATR × 3.0  
-  - TP3: ATR × 5.0
-  - SL:  ATR × 2.0
+TP/SL (Hızlı Scalp):
+  - TP1: ATR × 1.0  (hızlı kar al)
+  - TP2: ATR × 2.0  (devam ederse)
+  - SL:  ATR × 1.0  (dar stop, hızlı çık)
+  - Max süre: 20 dakika
 """
 
 import os, time, threading, logging, re, random, requests
@@ -24,7 +23,7 @@ import telebot
 from supabase import create_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-log = logging.getLogger("SADIK_V9")
+log = logging.getLogger("SCALP_V1")
 
 # ════════════════════════════════════════
 # CONFIG
@@ -42,31 +41,32 @@ LEVERAGE       = 5
 MARGIN         = 10.0
 POS_SIZE       = MARGIN * LEVERAGE   # 50$
 COMMISSION     = 0.0006
-MAX_OPEN       = 3
-MAX_DAILY_LOSS = -15.0
-SCAN_INTERVAL  = 30   # Daha sık tara
+MAX_OPEN       = 2
+MAX_DAILY_LOSS = -10.0
+SCAN_INTERVAL  = 20   # 20sn'de bir tara
 
-# TP/SL — ATR bazlı
-ATR_TP1        = 1.5
-ATR_TP2        = 3.0
-ATR_TP3        = 5.0
-ATR_SL         = 2.0
-ATR_LIMIT      = 0.2   # Limit emir ATR×0.2 aşağı
-LIMIT_BEKLE    = 30    # 30sn limit bekle, sonra market
-TP_TRAILING    = 0.60  # TP1 sonrası %0.60 geri dönerse kapat
+# TP/SL — ATR bazlı scalp
+ATR_TP1       = 1.0   # TP1 = ATR × 1.0
+ATR_TP2       = 2.0   # TP2 = ATR × 2.0
+ATR_SL        = 1.0   # SL  = ATR × 1.0 (dar stop)
+ATR_LIMIT     = 0.2   # Limit emir ATR×0.2 aşağı
+LIMIT_BEKLE   = 20    # 20sn limit bekle
+MAX_SURE      = 20    # 20 dakika max pozisyon süresi
+TP_TRAILING   = 0.40  # TP1 sonrası %0.40 geri dönerse kapat
 
-# Hacim filtresi
-VOL_SPIKE_MIN  = 2.0   # 2x ortalama hacim
-ALIM_MIN       = 65.0  # %65+ alım baskısı
-RSI_MAX        = 68    # RSI üst sınır
-MIN_VOL_USDT   = 500_000
-MAX_VOL_USDT   = 20_000_000
-MIN_PRICE      = 0.0001
-MAX_PRICE      = 5.0
-FG_MIN         = 10
+# Scalp filtreleri
+VOL_SPIKE_MIN = 2.0   # 2x hacim
+ALIM_MIN      = 65.0  # %65 alım
+RSI_MIN       = 30    # RSI alt sınır
+RSI_MAX       = 55    # RSI üst sınır (tepede giriş yok!)
+PCT_1M_MAX    = 2.0   # 1m'de %2'den fazla pompa = geç kaldın
+MIN_VOL_USDT  = 500_000
+MAX_VOL_USDT  = 20_000_000
+MIN_PRICE     = 0.0001
+MAX_PRICE     = 5.0
+FG_MIN        = 10
 
-# Ticker cache
-TICKER_TTL     = 30   # 30sn cache
+TICKER_TTL    = 20    # 20sn ticker cache
 
 BLACKLIST = {
     "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
@@ -90,7 +90,7 @@ closed_lock     = threading.Lock()
 
 btc_cache = {"trend": "NEUTRAL_LONG", "price": 0, "chg": 0, "ts": 0}
 btc_lock  = threading.Lock()
-BTC_TTL   = 180
+BTC_TTL   = 120
 
 fg_cache = {"value": 50, "label": "Neutral", "ts": 0}
 fg_lock  = threading.Lock()
@@ -154,13 +154,12 @@ def safe_api(func, *args, **kwargs):
                 _last_api = time.time()
             return func(*args, **kwargs)
         except ccxt.RateLimitExceeded:
-            log.warning("[API] Rate limit, 10sn bekleniyor")
             time.sleep(10)
         except ccxt.NetworkError as e:
-            log.warning(f"[API] Network hatası: {e}")
+            log.warning(f"[API] Network: {e}")
             time.sleep(3)
         except Exception as e:
-            log.warning(f"[API] Hata deneme {attempt+1}: {e}")
+            log.warning(f"[API] {attempt+1}: {e}")
             time.sleep(2)
     return None
 
@@ -214,30 +213,25 @@ def get_btc_trend():
         if time.time() - btc_cache["ts"] < BTC_TTL:
             return btc_cache["trend"], btc_cache["price"], btc_cache["chg"]
     try:
-        raw = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "1h", limit=50)
+        raw = safe_api(exchange.fetch_ohlcv, "BTC/USDT:USDT", "15m", limit=30)
         if not raw:
             return "NEUTRAL_LONG", 0, 0
         df     = pd.DataFrame(raw, columns=["t","o","h","l","c","v"])
         price  = float(df["c"].iloc[-1])
-        chg4h  = (price - float(df["c"].iloc[-5]))  / float(df["c"].iloc[-5])  * 100
-        chg24h = (price - float(df["c"].iloc[-25])) / float(df["c"].iloc[-25]) * 100
-        ema9   = float(df["c"].ewm(span=9).mean().iloc[-1])
-        ema21  = float(df["c"].ewm(span=21).mean().iloc[-1])
-        ema50  = float(df["c"].ewm(span=50).mean().iloc[-1])
+        chg1h  = (price - float(df["c"].iloc[-5]))  / float(df["c"].iloc[-5])  * 100
+        chg4h  = (price - float(df["c"].iloc[-17])) / float(df["c"].iloc[-17]) * 100
 
-        if chg24h < -3.0 or chg4h < -1.5:
+        if chg1h < -1.0 or chg4h < -2.0:
             trend = "DOWN"
-        elif chg24h > 2.0 or (chg4h > 1.0 and ema9 > ema21 > ema50):
+        elif chg1h > 1.0 or chg4h > 2.0:
             trend = "UP"
-        elif chg4h < -0.8 or chg24h < -1.0:
-            trend = "NEUTRAL_SHORT"
         else:
             trend = "NEUTRAL_LONG"
 
         with btc_lock:
-            btc_cache.update({"trend": trend, "price": price, "chg": chg24h, "ts": time.time()})
-        log.info(f"[BTC] {trend} ${price:,.0f} ({chg24h:+.1f}%)")
-        return trend, price, chg24h
+            btc_cache.update({"trend": trend, "price": price, "chg": chg4h, "ts": time.time()})
+        log.info(f"[BTC] {trend} ${price:,.0f} 1h:{chg1h:+.1f}%")
+        return trend, price, chg4h
     except Exception as e:
         log.warning(f"[BTC] {e}")
         return "NEUTRAL_LONG", 0, 0
@@ -262,104 +256,74 @@ def calc_atr(df, period=14):
     return float(tr.rolling(period).mean().iloc[-1])
 
 # ════════════════════════════════════════
-# HACİM PATLAMASI TESPİTİ
+# SCALP SİNYAL TESPİTİ
 # ════════════════════════════════════════
-def hacim_patlamasi_var_mi(symbol):
+def scalp_sinyal(symbol):
     """
-    Son 1-5 dakikada anlık hacim patlaması var mı?
-    - Son 1m hacmi ortalamadan 2x+ fazla
-    - Alım baskısı %65+
-    - Fiyat yükseliyor
+    Saf scalp sinyali:
+    1. 1m hacim patlaması 2x+
+    2. Alım baskısı %65+
+    3. RSI 30-55 arası
+    4. 1m'de geç kalmadı (%2'den az hareket)
     """
     try:
-        r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=25)
-        if not r1m or len(r1m) < 10:
-            return False, {}, 0
+        # 1m verisi
+        r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=30)
+        if not r1m or len(r1m) < 15:
+            return False, {}
 
-        df1m = pd.DataFrame(r1m, columns=["t","o","h","l","c","v"])
+        df1m  = pd.DataFrame(r1m, columns=["t","o","h","l","c","v"])
         price = float(df1m["c"].iloc[-1])
 
-        # Son mum hacmi vs ortalama
+        # Hacim patlaması
         son_hacim = float(df1m["v"].iloc[-1])
-        ort_hacim = float(df1m["v"].iloc[:-1].mean())
+        ort_hacim = float(df1m["v"].iloc[:-1].tail(20).mean())
         vol_oran  = son_hacim / max(ort_hacim, 0.0001)
 
-        # Son 3 mumun alım oranı
+        # Alım oranı (son 3 tamamlanmış mum)
         son3 = df1m.tail(4).iloc[:-1]
-        alim_hacim   = sum(float(r["v"]) for _, r in son3.iterrows() if float(r["c"]) > float(r["o"]))
-        toplam_hacim = float(son3["v"].sum())
-        alim_orani   = alim_hacim / max(toplam_hacim, 0.0001) * 100
+        alim = sum(float(r["v"]) for _, r in son3.iterrows() if float(r["c"]) > float(r["o"]))
+        toplam = float(son3["v"].sum())
+        alim_orani = alim / max(toplam, 0.0001) * 100
 
-        # Fiyat yükseliyor mu?
-        fiyat_yukselis = float(df1m["c"].iloc[-1]) > float(df1m["c"].iloc[-4])
+        # RSI (1m)
+        rsi_val = calc_rsi(df1m["c"], period=9)  # 9 periyot scalp için daha hızlı
 
-        # RSI kontrolü
-        rsi_val = calc_rsi(df1m["c"])
+        # Geç kalma kontrolü
+        pct_1m = (price - float(df1m["c"].iloc[-3])) / float(df1m["c"].iloc[-3]) * 100
+        if pct_1m > PCT_1M_MAX:
+            return False, {"red": f"Geç +{pct_1m:.1f}%"}
 
-        # ATR hesapla
-        r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=20)
-        if not r1h or len(r1h) < 15:
-            return False, {}, price
+        # ATR (1h verisiyle)
+        r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
+        if not r1h or len(r1h) < 14:
+            return False, {"red": "ATR veri yok"}
         df1h    = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
         atr_val = calc_atr(df1h)
 
-        # Geç kalma kontrolü — son 5m'de çok pompaladıysa giriş yapma
-        pct_5m = (price - float(df1m["c"].iloc[-6])) / float(df1m["c"].iloc[-6]) * 100
-        if pct_5m > 3.0:
-            return False, {"red": f"Geç kalındı +{pct_5m:.1f}%"}, price
-
-        # ── FİBONACCİ %61.8 GERİ ÇEKİLME KONTROLÜ ──
-        # Son 20 mumda en yüksek ve en düşük noktayı bul
-        son20_high = float(df1h["h"].tail(20).max())
-        son20_low  = float(df1h["l"].tail(20).min())
-        fib_aralik = son20_high - son20_low
-
-        # Fibonacci seviyeleri
-        fib_618 = son20_high - fib_aralik * 0.618  # %61.8 geri çekilme
-        fib_50  = son20_high - fib_aralik * 0.500  # %50 geri çekilme
-        fib_382 = son20_high - fib_aralik * 0.382  # %38.2 geri çekilme
-
-        # Fiyat Fibonacci destek bölgesinde mi? (%38.2 - %61.8 arası)
-        fib_destek = fib_618 <= price <= fib_382
-        fib_detay  = f"F618:{fib_618:.6f} F50:{fib_50:.6f} F382:{fib_382:.6f}"
-
-        # Fiyat tepeden değil dipten geliyor mu?
-        # Son 4 mumda düşüş yaşanmış ve şimdi toparlanıyor mu?
-        son4_high = float(df1h["h"].tail(4).max())
-        tepeden_uzaklik = (son4_high - price) / son4_high * 100
-        dipten_toparlanma = tepeden_uzaklik >= 1.0  # Tepeden en az %1 uzakta
-
-        if not fib_destek:
-            return False, {"red": f"Fib destek değil (fiyat:{price:.6f} F382:{fib_382:.6f} F618:{fib_618:.6f})"}, price
-
-        if not dipten_toparlanma:
-            return False, {"red": f"Tepede giriş riski (tepeden -%{tepeden_uzaklik:.1f})"}, price
-
+        # Tüm koşullar
         gecti = (
-            vol_oran   >= VOL_SPIKE_MIN and
-            alim_orani >= ALIM_MIN      and
-            fiyat_yukselis              and
-            rsi_val    < RSI_MAX
+            vol_oran   >= VOL_SPIKE_MIN  and
+            alim_orani >= ALIM_MIN       and
+            RSI_MIN    <= rsi_val <= RSI_MAX
         )
 
         detay = {
-            "vol_oran":   round(vol_oran, 1),
-            "alim_orani": round(alim_orani, 1),
-            "rsi":        round(rsi_val, 1),
-            "pct_5m":     round(pct_5m, 2),
-            "fib":        fib_detay,
-            "tepeden":    round(tepeden_uzaklik, 1),
-            "atr":        atr_val,
-            "price":      price,
+            "vol":   round(vol_oran, 1),
+            "alim":  round(alim_orani, 1),
+            "rsi":   round(rsi_val, 1),
+            "pct":   round(pct_1m, 2),
+            "atr":   atr_val,
+            "price": price,
         }
-        return gecti, detay, price
+        return gecti, detay
 
     except Exception as e:
-        log.warning(f"[HACİM] {symbol}: {e}")
-        return False, {}, 0
+        log.warning(f"[SİNYAL] {symbol}: {e}")
+        return False, {}
 
 # ════════════════════════════════════════
-# PNL HESABI
+# PNL
 # ════════════════════════════════════════
 def hesap_pnl(pos, price):
     entry   = pos["entry"]
@@ -375,17 +339,16 @@ def open_pos(symbol, detay, btc_trend):
     if günlük_limit_asıldı():
         return False
 
-    sym      = symbol.split("/")[0]
-    price    = detay["price"]
-    atr_val  = detay["atr"]
+    sym     = symbol.split("/")[0]
+    price   = detay["price"]
+    atr_val = detay["atr"]
 
-    # TP/SL hesapla
-    limit_fiyat = round(price - atr_val * ATR_LIMIT, 8)
-    sl          = round(limit_fiyat - atr_val * ATR_SL, 8)
-    tp1         = round(limit_fiyat + atr_val * ATR_TP1, 8)
-    tp2         = round(limit_fiyat + atr_val * ATR_TP2, 8)
-    tp3         = round(limit_fiyat + atr_val * ATR_TP3, 8)
-    tps         = [tp1, tp2, tp3]
+    # Limit fiyat
+    limit_p = round(price - atr_val * ATR_LIMIT, 8)
+    sl      = round(limit_p - atr_val * ATR_SL, 8)
+    tp1     = round(limit_p + atr_val * ATR_TP1, 8)
+    tp2     = round(limit_p + atr_val * ATR_TP2, 8)
+    tps     = [tp1, tp2]
 
     with pos_lock:
         sym_base = sym.upper()
@@ -394,21 +357,21 @@ def open_pos(symbol, detay, btc_trend):
             if ex.split("/")[0].upper() == sym_base: return False
         with closed_lock:
             if sym_base in recently_closed:
-                if time.time() - recently_closed[sym_base] < 14400: return False
+                if time.time() - recently_closed[sym_base] < 1800: return False  # 30dk bekle
         if len(positions) >= MAX_OPEN: return False
         if günlük_limit_asıldı(): return False
 
         positions[symbol] = {
-            "entry":     limit_fiyat,
+            "entry":     limit_p,
             "sl":        sl,
             "tps":       tps,
             "tp_idx":    0,
-            "max_price": limit_fiyat,
+            "max_price": limit_p,
             "open_time": time.time(),
             "amount":    0,
             "btc_trend": btc_trend,
             "atr":       atr_val,
-            "pending":   True,  # Emir dolmadan yönetme
+            "pending":   True,
         }
 
     try:
@@ -417,78 +380,71 @@ def open_pos(symbol, detay, btc_trend):
         try: exchange.set_leverage(LEVERAGE, symbol, params={"marginCoin": "USDT"})
         except: pass
 
-        amount = round(POS_SIZE / limit_fiyat, 4)
+        amount = round(POS_SIZE / limit_p, 4)
         amount = float(exchange.amount_to_precision(symbol, amount))
         if amount <= 0:
             with pos_lock: positions.pop(symbol, None)
             return False
 
-        limit_fiyat_p = float(exchange.price_to_precision(symbol, limit_fiyat))
-        gercek_fiyat  = None
+        limit_p_str = float(exchange.price_to_precision(symbol, limit_p))
+        gercek_fiyat = None
 
-        # Önce limit emir dene
+        # Limit emir
         order = safe_api(
             exchange.create_order,
-            symbol, "limit", "buy", amount, limit_fiyat_p,
+            symbol, "limit", "buy", amount, limit_p_str,
             {"marginMode": "isolated", "marginCoin": "USDT", "timeInForce": "GTC"}
         )
 
         if order:
             order_id = order.get("id")
-            log.info(f"[LİMİT] {sym} emir:{order_id} @ {limit_fiyat_p:.8f}")
+            log.info(f"[LİMİT] {sym} @ {limit_p_str:.8f}")
 
-            # 30sn bekle
-            for _ in range(6):
+            # 20sn bekle
+            for _ in range(4):
                 time.sleep(5)
                 durum = safe_api(exchange.fetch_order, order_id, symbol)
                 if durum and durum.get("status") == "closed":
-                    gercek_fiyat = float(durum.get("average") or limit_fiyat_p)
+                    gercek_fiyat = float(durum.get("average") or limit_p_str)
                     log.info(f"[LİMİT] {sym} doldu @ {gercek_fiyat:.8f}")
                     break
 
-            # Dolmadıysa iptal et
             if not gercek_fiyat:
                 try: safe_api(exchange.cancel_order, order_id, symbol)
                 except: pass
-                log.info(f"[LİMİT] {sym} dolmadı, market emirle giriyor")
 
-        # Market emirle gir (limit dolmadıysa)
+        # Market emir (limit dolmadıysa)
         if not gercek_fiyat:
             t = safe_api(exchange.fetch_ticker, symbol)
             if not t:
                 with pos_lock: positions.pop(symbol, None)
                 return False
-            market_fiyat = float(t["last"])
-
-            # Fiyat çok kaçtıysa iptal et
-            if market_fiyat > price * 1.015:
-                log.info(f"[İPTAL] {sym} fiyat kaçtı: {market_fiyat:.8f}")
+            mp = float(t["last"])
+            if mp > price * 1.01:  # %1'den fazla kaçtıysa iptal
+                log.info(f"[İPTAL] {sym} fiyat kaçtı")
                 with pos_lock: positions.pop(symbol, None)
                 return False
-
-            m_order = safe_api(
+            m = safe_api(
                 exchange.create_order,
                 symbol, "market", "buy", amount, None,
                 {"marginMode": "isolated", "marginCoin": "USDT"}
             )
-            if not m_order:
+            if not m:
                 with pos_lock: positions.pop(symbol, None)
                 return False
-            gercek_fiyat = market_fiyat
-            log.info(f"[MARKET] {sym} giriş @ {gercek_fiyat:.8f}")
+            gercek_fiyat = mp
 
-        # TP/SL'yi gerçek fiyata göre güncelle
-        sl_gercek  = round(gercek_fiyat - atr_val * ATR_SL, 8)
-        tp1_gercek = round(gercek_fiyat + atr_val * ATR_TP1, 8)
-        tp2_gercek = round(gercek_fiyat + atr_val * ATR_TP2, 8)
-        tp3_gercek = round(gercek_fiyat + atr_val * ATR_TP3, 8)
+        # Gerçek fiyata göre güncelle
+        sl_g  = round(gercek_fiyat - atr_val * ATR_SL, 8)
+        tp1_g = round(gercek_fiyat + atr_val * ATR_TP1, 8)
+        tp2_g = round(gercek_fiyat + atr_val * ATR_TP2, 8)
 
         with pos_lock:
             if symbol in positions:
                 positions[symbol].update({
                     "entry":   gercek_fiyat,
-                    "sl":      sl_gercek,
-                    "tps":     [tp1_gercek, tp2_gercek, tp3_gercek],
+                    "sl":      sl_g,
+                    "tps":     [tp1_g, tp2_g],
                     "amount":  amount,
                     "pending": False,
                 })
@@ -498,36 +454,27 @@ def open_pos(symbol, detay, btc_trend):
         with pos_lock: positions.pop(symbol, None)
         return False
 
-    # Telegram bildirimi
-    sl_pct  = (gercek_fiyat - sl_gercek)  / gercek_fiyat * 100
-    tp1_pct = (tp1_gercek - gercek_fiyat) / gercek_fiyat * 100
-    tp2_pct = (tp2_gercek - gercek_fiyat) / gercek_fiyat * 100
-    tp3_pct = (tp3_gercek - gercek_fiyat) / gercek_fiyat * 100
-    rr      = tp1_pct / sl_pct if sl_pct > 0 else 0
+    sl_pct  = (gercek_fiyat - sl_g)  / gercek_fiyat * 100
+    tp1_pct = (tp1_g - gercek_fiyat) / gercek_fiyat * 100
+    tp2_pct = (tp2_g - gercek_fiyat) / gercek_fiyat * 100
 
     tg(
-        f"📊 #{sym}USDT.P\n"
-        f"🏁 LONG - Giriş: {gercek_fiyat:.8f}\n"
-        f"🚫 Stop: {sl_gercek:.8f} (-%{sl_pct:.1f})\n\n"
-        f"💡 Pozisyon Detayları\n"
-        f"TP1: {tp1_gercek:.8f} (+%{tp1_pct:.1f}) ──\n"
-        f"TP2: {tp2_gercek:.8f} (+%{tp2_pct:.1f}) ──\n"
-        f"TP3: {tp3_gercek:.8f} (+%{tp3_pct:.1f}) ──\n\n"
-        f"📊 BTC: {btc_trend}\n"
-        f"Hacim: {detay['vol_oran']:.1f}x | Alım: %{detay['alim_orani']:.0f}\n"
-        f"RSI: {detay['rsi']:.0f} | 5m: {detay['pct_5m']:+.1f}%\n"
-        f"Fib: {detay.get('fib','?')} | Tepeden: -%{detay.get('tepeden',0):.1f}\n"
-        f"R:R = 1:{rr:.1f} | ATR: {atr_val:.6f}"
+        f"⚡ #{sym}USDT.P SCALP\n"
+        f"🏁 Giriş: {gercek_fiyat:.8f}\n"
+        f"🚫 SL: {sl_g:.8f} (-%{sl_pct:.1f})\n"
+        f"🎯 TP1: {tp1_g:.8f} (+%{tp1_pct:.1f})\n"
+        f"🎯 TP2: {tp2_g:.8f} (+%{tp2_pct:.1f})\n\n"
+        f"Hacim: {detay['vol']:.1f}x | Alım: %{detay['alim']:.0f}\n"
+        f"RSI: {detay['rsi']:.0f} | 1m: {detay['pct']:+.1f}%\n"
+        f"BTC: {btc_trend} | ATR: {atr_val:.6f}"
     )
-    log.info(f"[AÇIK] {sym} @ {gercek_fiyat:.8f} sl:{sl_gercek:.8f} atr:{atr_val:.8f}")
+    log.info(f"[AÇIK] {sym} @ {gercek_fiyat:.8f}")
     return True
 
 # ════════════════════════════════════════
 # İŞLEM KAPAT
 # ════════════════════════════════════════
 def close_pos(symbol, reason, exit_price=None):
-    global daily_pnl
-
     with pos_lock:
         pos = positions.pop(symbol, None)
     if not pos:
@@ -535,23 +482,19 @@ def close_pos(symbol, reason, exit_price=None):
 
     sym    = symbol.split("/")[0]
     amount = pos.get("amount", 0)
-
     if not amount or amount <= 0:
         amount = round(POS_SIZE / pos["entry"], 4)
 
-    # Borsadan gerçek miktar al
     try:
         pos_list = safe_api(exchange.fetch_positions, [symbol])
         if pos_list:
             for p in pos_list:
-                contracts = float(p.get("contracts") or 0)
-                if contracts > 0 and p.get("side") == "long":
-                    amount = contracts
+                c = float(p.get("contracts") or 0)
+                if c > 0 and p.get("side") == "long":
+                    amount = c
                     break
-    except Exception as e:
-        log.warning(f"[KAPAT_POS] {sym}: {e}")
+    except: pass
 
-    # Kapanış emri
     try:
         safe_api(
             exchange.create_order,
@@ -560,9 +503,7 @@ def close_pos(symbol, reason, exit_price=None):
         )
     except Exception as e:
         err = str(e)
-        if "22002" in err or "No position" in err or "position not exist" in err.lower():
-            log.info(f"[KAPAT] {sym}: Borsada pozisyon yok")
-        else:
+        if "22002" not in err and "No position" not in err:
             log.error(f"[KAPAT] {sym}: {e}")
 
     if exit_price is None:
@@ -589,19 +530,14 @@ def close_pos(symbol, reason, exit_price=None):
         tg(f"⛔ GÜNLÜK LİMİT! {yeni_toplam:+.2f}$")
 
     icon = "🟢" if pnl >= 0 else "🔴"
-    tg(
-        f"{icon} {sym_base} KAPANDI\n"
-        f"{reason}\n"
-        f"PnL: {pnl:+.2f}$ ({pnl_pct:+.1f}%) | {sure}dk\n"
-        f"Günlük: {yeni_toplam:+.2f}$"
-    )
+    tg(f"{icon} {sym_base} KAPANDI\n{reason}\nPnL: {pnl:+.2f}$ ({pnl_pct:+.1f}%) | {sure}dk\nGünlük: {yeni_toplam:+.2f}$")
 
 # ════════════════════════════════════════
 # YÖNETİM DÖNGÜSÜ
 # ════════════════════════════════════════
 def manage_loop():
     while True:
-        time.sleep(8)
+        time.sleep(5)  # Scalp için 5sn kontrol
         try:
             with pos_lock:
                 syms = list(positions.keys())
@@ -611,11 +547,7 @@ def manage_loop():
             for symbol in syms:
                 with pos_lock:
                     pos = positions.get(symbol)
-                if not pos:
-                    continue
-
-                # Emir bekleniyorsa yönetme
-                if pos.get("pending"):
+                if not pos or pos.get("pending"):
                     continue
 
                 t = safe_api(exchange.fetch_ticker, symbol)
@@ -630,28 +562,23 @@ def manage_loop():
                 tps          = pos["tps"]
                 tp_idx       = pos.get("tp_idx", 0)
                 max_price    = pos.get("max_price", entry)
-                atr_val      = pos.get("atr", entry * 0.015)
+                atr_val      = pos.get("atr", entry * 0.01)
 
-                # Max fiyatı güncelle
+                # Max fiyat güncelle
                 if price > max_price:
                     with pos_lock:
                         if symbol in positions:
                             positions[symbol]["max_price"] = price
                     max_price = price
 
-                # Stop Loss
+                # SL
                 if price <= sl:
-                    close_pos(symbol, f"🚫 Stop Loss ({sl:.8f})", price)
+                    close_pos(symbol, f"🚫 SL ({sl:.8f})", price)
                     continue
 
-                # Erken zarar (ilk 8dk)
-                if sure <= 8 and pnl_pct <= -1.5:
-                    close_pos(symbol, f"Erken zarar ({pnl_pct:.1f}%)", price)
-                    continue
-
-                # Zaman aşımı 3 saat
-                if sure >= 180:
-                    close_pos(symbol, "Zaman aşımı 3 saat", price)
+                # Scalp max süre — 20 dakika
+                if sure >= MAX_SURE:
+                    close_pos(symbol, f"⏰ Süre doldu ({MAX_SURE}dk)", price)
                     continue
 
                 # Günlük limit
@@ -661,32 +588,21 @@ def manage_loop():
 
                 # TP seviyeleri
                 if tp_idx < len(tps) and price >= tps[tp_idx]:
-                    if tp_idx == 0:
-                        yeni_sl = entry                           # başabaş
-                    elif tp_idx == 1:
-                        yeni_sl = tps[0]                         # TP1 seviyesi
-                    else:
-                        yeni_sl = tps[tp_idx - 1]                # önceki TP
-
+                    yeni_sl = entry if tp_idx == 0 else tps[0]
                     with pos_lock:
                         if symbol in positions:
                             positions[symbol]["tp_idx"] = tp_idx + 1
                             positions[symbol]["sl"]     = yeni_sl
-
-                    sym     = symbol.split("/")[0]
+                    sym = symbol.split("/")[0]
                     sonraki = f"{tps[tp_idx+1]:.8f}" if tp_idx + 1 < len(tps) else "∞"
-                    tg(
-                        f"🎯 {sym} TP{tp_idx+1} HIT! +{pnl_pct:.1f}%\n"
-                        f"SL → {yeni_sl:.8f}\n"
-                        f"Sonraki TP: {sonraki}"
-                    )
+                    tg(f"🎯 {sym} TP{tp_idx+1}! +{pnl_pct:.1f}%\nSL→{yeni_sl:.8f}\nSonraki:{sonraki}")
                     tp_idx += 1
 
-                # TP1 sonrası trailing stop
+                # TP1 sonrası trailing
                 if tp_idx > 0:
                     geri = (max_price - price) / max_price * 100
                     if geri >= TP_TRAILING:
-                        close_pos(symbol, f"Trailing stop (tepeden -%{geri:.1f})", price)
+                        close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
 
         except Exception as e:
@@ -696,30 +612,29 @@ def manage_loop():
 # TARAYICI
 # ════════════════════════════════════════
 def scanner_loop():
-    time.sleep(15)
+    time.sleep(10)
     while True:
         try:
             if günlük_limit_asıldı():
                 time.sleep(SCAN_INTERVAL)
                 continue
 
-            btc_trend, btc_price, btc_chg = get_btc_trend()
+            btc_trend, btc_price, _ = get_btc_trend()
 
-            # BTC DOWN → dur
             if btc_trend == "DOWN":
-                log.info("[SCAN] BTC DOWN - bekleniyor")
+                log.info("[SCAN] BTC DOWN")
                 time.sleep(SCAN_INTERVAL)
                 continue
 
-            fg_val, fg_lbl = get_fear_greed()
+            fg_val, _ = get_fear_greed()
             if fg_val <= FG_MIN:
-                log.info(f"[SCAN] Extreme Fear ({fg_val}) - bekleniyor")
+                log.info(f"[SCAN] Extreme Fear {fg_val}")
                 time.sleep(SCAN_INTERVAL)
                 continue
 
             with pos_lock:
                 if len(positions) >= MAX_OPEN:
-                    time.sleep(15)
+                    time.sleep(10)
                     continue
                 open_syms = set(positions.keys())
 
@@ -728,7 +643,7 @@ def scanner_loop():
                 time.sleep(SCAN_INTERVAL)
                 continue
 
-            # Aday filtrele — hacim artışı olan coinler
+            # Aday filtrele
             candidates = []
             for symbol, ticker in tickers.items():
                 if not symbol.endswith("/USDT:USDT"): continue
@@ -742,22 +657,22 @@ def scanner_loop():
 
                 if qv    < MIN_VOL_USDT or qv > MAX_VOL_USDT: continue
                 if price < MIN_PRICE    or price > MAX_PRICE:  continue
-                if abs(pct) > 25: continue
-                if pct < 0.5: continue   # En az %0.5 hareket
+                if abs(pct) > 20: continue
+                if pct < 0.3: continue  # En az %0.3 hareket
 
                 sym_base = sym.upper()
                 with closed_lock:
                     if sym_base in recently_closed:
-                        if time.time() - recently_closed[sym_base] < 14400: continue
+                        if time.time() - recently_closed[sym_base] < 1800: continue
 
-                candidates.append({"symbol": symbol, "pct": pct, "qv": qv})
+                candidates.append({"symbol": symbol, "pct": pct})
 
-            # En yüksek momentumlu 10 coin
+            # En yüksek momentumlu 8'i al
             candidates.sort(key=lambda x: x["pct"], reverse=True)
-            top5   = candidates[:5]
-            rest   = candidates[5:]
+            top3  = candidates[:3]
+            rest  = candidates[3:]
             random.shuffle(rest)
-            candidates = (top5 + rest)[:10]
+            candidates = (top3 + rest)[:8]
 
             log.info(f"[SCAN] {len(candidates)} aday | BTC:{btc_trend} FG:{fg_val}")
 
@@ -769,16 +684,10 @@ def scanner_loop():
                     if len(positions) >= MAX_OPEN: break
                     if symbol in open_syms: continue
 
-                # Hacim patlaması kontrolü
-                gecti, detay, price = hacim_patlamasi_var_mi(symbol)
+                gecti, detay = scalp_sinyal(symbol)
 
                 if gecti:
-                    log.info(
-                        f"[SİNYAL] {sym} "
-                        f"Hacim:{detay['vol_oran']:.1f}x "
-                        f"Alım:%{detay['alim_orani']:.0f} "
-                        f"RSI:{detay['rsi']:.0f} → GİRİYOR"
-                    )
+                    log.info(f"[SCALP] {sym} Vol:{detay['vol']:.1f}x Alım:%{detay['alim']:.0f} RSI:{detay['rsi']:.0f}")
                     threading.Thread(
                         target=open_pos,
                         args=(symbol, detay, btc_trend),
@@ -790,13 +699,9 @@ def scanner_loop():
                     if detay.get("red"):
                         log.info(f"[PAS] {sym}: {detay['red']}")
                     else:
-                        log.info(
-                            f"[PAS] {sym}: "
-                            f"Hacim:{detay.get('vol_oran',0):.1f}x "
-                            f"Alım:%{detay.get('alim_orani',0):.0f}"
-                        )
+                        log.info(f"[PAS] {sym}: Vol:{detay.get('vol',0):.1f}x Alım:%{detay.get('alim',0):.0f} RSI:{detay.get('rsi',0):.0f}")
 
-                time.sleep(1)
+                time.sleep(0.8)
 
             time.sleep(SCAN_INTERVAL)
 
@@ -813,17 +718,13 @@ def gunluk_reset_loop():
     while True:
         try:
             simdi = datetime.datetime.now()
-            yarin = (simdi + datetime.timedelta(days=1)).replace(
-                hour=0, minute=0, second=5, microsecond=0
-            )
+            yarin = (simdi + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
             time.sleep((yarin - simdi).total_seconds())
             with daily_pnl_lock:
-                eski      = daily_pnl
-                daily_pnl = 0.0
+                eski = daily_pnl; daily_pnl = 0.0
             tg(f"🔄 Yeni gün! Dün: {eski:+.2f}$")
         except Exception as e:
-            log.error(f"[RESET] {e}")
-            time.sleep(3600)
+            log.error(f"[RESET] {e}"); time.sleep(3600)
 
 # ════════════════════════════════════════
 # HEALTH SERVER
@@ -832,17 +733,14 @@ def health_server():
     from http.server import HTTPServer, BaseHTTPRequestHandler
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            fg, _       = get_fear_greed()
+            self.send_response(200); self.end_headers()
             trend, _, _ = get_btc_trend()
+            fg, _       = get_fear_greed()
             with pos_lock:
-                pos_str = ",".join(s.split("/")[0] for s in positions)
+                ps = ",".join(s.split("/")[0] for s in positions)
             with daily_pnl_lock:
                 pnl = daily_pnl
-            self.wfile.write(
-                f"OK|btc:{trend}|fg:{fg}|pos:{len(positions)}({pos_str})|pnl:{pnl:+.2f}".encode()
-            )
+            self.wfile.write(f"OK|btc:{trend}|fg:{fg}|pos:{len(positions)}({ps})|pnl:{pnl:+.2f}".encode())
         def log_message(self, *a): pass
     HTTPServer(("0.0.0.0", 8080), H).serve_forever()
 
@@ -851,43 +749,25 @@ def health_server():
 # ════════════════════════════════════════
 def load_open_positions():
     try:
-        log.info("[YUKLE] Kontrol ediliyor...")
         raw = safe_api(exchange.fetch_positions)
-        if not raw:
-            log.info("[YUKLE] Pozisyon yok")
-            return
-
-        if raw:
-            log.info(f"[YUKLE] Alan formatı: {list(raw[0].keys())}")
-
+        if not raw: return
         btc_trend, _, _ = get_btc_trend()
         yuklenen = 0
-        lines    = ["♻️ Önceki pozisyonlar yüklendi:\n"]
-
+        lines = ["♻️ Pozisyonlar yüklendi:\n"]
         for p in raw:
             try:
-                contracts = float(p.get("contracts") or p.get("size") or 0)
+                contracts = float(p.get("contracts") or 0)
                 symbol    = p.get("symbol", "")
                 side      = p.get("side", "")
                 entry     = float(p.get("entryPrice") or 0)
-
-                if contracts == 0 or not symbol or side != "long" or entry == 0:
-                    continue
-
-                atr_val = entry * 0.015
-                tps = [
-                    round(entry + atr_val * ATR_TP1, 8),
-                    round(entry + atr_val * ATR_TP2, 8),
-                    round(entry + atr_val * ATR_TP3, 8),
-                ]
-                sl = round(entry - atr_val * ATR_SL, 8)
-
+                if contracts == 0 or not symbol or side != "long" or entry == 0: continue
+                atr_val = entry * 0.01
                 with pos_lock:
                     if symbol not in positions:
                         positions[symbol] = {
                             "entry":     entry,
-                            "sl":        sl,
-                            "tps":       tps,
+                            "sl":        round(entry - atr_val * ATR_SL, 8),
+                            "tps":       [round(entry + atr_val * ATR_TP1, 8), round(entry + atr_val * ATR_TP2, 8)],
                             "tp_idx":    0,
                             "max_price": entry,
                             "open_time": time.time(),
@@ -897,19 +777,14 @@ def load_open_positions():
                             "pending":   False,
                         }
                         yuklenen += 1
-                        t   = safe_api(exchange.fetch_ticker, symbol)
+                        t = safe_api(exchange.fetch_ticker, symbol)
                         now = float(t["last"]) if t else entry
-                        pnl = (now - entry) * contracts - POS_SIZE * COMMISSION
-                        icon = "🟢" if pnl >= 0 else "🔴"
-                        lines.append(f"{icon} {symbol.split('/')[0]} @ {entry:.8f} | {pnl:+.2f}$")
-                        log.info(f"[YUKLE] {symbol.split('/')[0]} LONG @ {entry}")
+                        pnl = (now - entry) * contracts
+                        lines.append(f"{'🟢' if pnl>=0 else '🔴'} {symbol.split('/')[0]} @ {entry:.8f} | {pnl:+.2f}$")
             except Exception as e:
                 log.warning(f"[YUKLE] {e}")
-
         if yuklenen > 0:
             tg("\n".join(lines))
-        else:
-            log.info("[YUKLE] Yüklenecek pozisyon yok")
     except Exception as e:
         log.error(f"[YUKLE] {e}")
 
@@ -940,47 +815,37 @@ def handle_async(msg):
     if "/durum" in lower:
         with pos_lock:
             if not positions:
-                bot.send_message(msg.chat.id, "📋 Açık pozisyon yok.")
-                return
+                bot.send_message(msg.chat.id, "📋 Açık pozisyon yok."); return
             lines = ["📋 POZİSYONLAR\n"]
             for sym, pos in positions.items():
                 t = safe_api(exchange.fetch_ticker, sym)
                 if not t: continue
-                price        = float(t["last"])
-                pnl, pnl_pct = hesap_pnl(pos, price)
-                sure         = int((time.time() - pos["open_time"]) / 60)
-                tp_idx       = pos.get("tp_idx", 0)
+                price = float(t["last"])
+                pnl, pct = hesap_pnl(pos, price)
+                sure = int((time.time() - pos["open_time"]) / 60)
                 lines.append(
-                    f"{'🟢' if pnl>=0 else '🔴'} {sym.split('/')[0]} LONG\n"
-                    f"   {pos['entry']:.8f} → {price:.8f}\n"
-                    f"   PnL: {pnl:+.2f}$ ({pnl_pct:+.1f}%) | {sure}dk\n"
-                    f"   SL: {pos['sl']:.8f} | TP{tp_idx} geçildi\n"
+                    f"{'🟢' if pnl>=0 else '🔴'} {sym.split('/')[0]}\n"
+                    f"   {pos['entry']:.8f}→{price:.8f}\n"
+                    f"   PnL:{pnl:+.2f}$ ({pct:+.1f}%) | {sure}dk\n"
+                    f"   SL:{pos['sl']:.8f} TP{pos.get('tp_idx',0)}\n"
                 )
             bot.send_message(msg.chat.id, "\n".join(lines))
         return
 
     if "/istatistik" in lower:
         if not supa:
-            bot.send_message(msg.chat.id, "Supabase bağlı değil.")
-            return
+            bot.send_message(msg.chat.id, "Supabase yok."); return
         try:
             r    = supa.table("gpt_trades").select("pnl,signal").execute()
             data = [d for d in (r.data or []) if d.get("signal") == "LONG"]
             if not data:
-                bot.send_message(msg.chat.id, "Kayıt yok.")
-                return
+                bot.send_message(msg.chat.id, "Kayıt yok."); return
             toplam = len(data)
             kazan  = sum(1 for d in data if float(d.get("pnl") or 0) > 0)
             net    = sum(float(d.get("pnl") or 0) for d in data)
-            with daily_pnl_lock:
-                gunluk = daily_pnl
-            bot.send_message(
-                msg.chat.id,
-                f"📊 İSTATİSTİK\n"
-                f"Toplam: {toplam} | Kazanan: {kazan} (%{kazan/toplam*100:.0f})\n"
-                f"Net PnL: {net:+.2f}$\n"
-                f"Günlük: {gunluk:+.2f}$"
-            )
+            with daily_pnl_lock: gunluk = daily_pnl
+            bot.send_message(msg.chat.id,
+                f"📊 İSTATİSTİK\nToplam:{toplam} Kazanan:{kazan} (%{kazan/toplam*100:.0f})\nNet:{net:+.2f}$\nGünlük:{gunluk:+.2f}$")
         except Exception as e:
             bot.send_message(msg.chat.id, f"Hata: {e}")
         return
@@ -988,19 +853,13 @@ def handle_async(msg):
     if "/btc" in lower:
         trend, price, chg = get_btc_trend()
         fg, fl = get_fear_greed()
-        bot.send_message(
-            msg.chat.id,
-            f"BTC: {trend}\n${price:,.0f} ({chg:+.1f}%)\n\n"
-            f"Fear&Greed: {fg} ({fl})"
-        )
+        bot.send_message(msg.chat.id, f"BTC: {trend}\n${price:,.0f} ({chg:+.1f}%)\nFG: {fg} ({fl})")
         return
 
     if "kapat" in lower:
-        with pos_lock:
-            syms = list(positions.keys())
+        with pos_lock: syms = list(positions.keys())
         if not syms:
-            bot.send_message(msg.chat.id, "Açık pozisyon yok.")
-            return
+            bot.send_message(msg.chat.id, "Açık pozisyon yok."); return
         kapatildi = False
         for symbol in syms:
             if symbol.split("/")[0].upper() in text.upper() or "hepsi" in lower:
@@ -1010,31 +869,24 @@ def handle_async(msg):
             bot.send_message(msg.chat.id, f"Hangisini? {', '.join(s.split('/')[0] for s in syms)}")
         return
 
-    # Coin analizi
     coin = find_coin(text)
     if coin:
         sym = coin.split("/")[0]
-        bot.send_message(msg.chat.id, f"🔍 {sym} analiz ediliyor...")
-        gecti, detay, price = hacim_patlamasi_var_mi(coin)
-        trend, _, _ = get_btc_trend()
-        fg, fl      = get_fear_greed()
-        bot.send_message(
-            msg.chat.id,
-            f"📊 {sym}\n"
-            f"Fiyat: {price:.8f}\n"
-            f"Hacim: {detay.get('vol_oran', 0):.1f}x {'✅' if detay.get('vol_oran', 0) >= VOL_SPIKE_MIN else '❌'}\n"
-            f"Alım: %{detay.get('alim_orani', 0):.0f} {'✅' if detay.get('alim_orani', 0) >= ALIM_MIN else '❌'}\n"
-            f"RSI: {detay.get('rsi', 0):.0f} {'✅' if detay.get('rsi', 0) < RSI_MAX else '❌'}\n"
-            f"5m hareket: {detay.get('pct_5m', 0):+.1f}%\n"
-            f"BTC: {trend} | FG: {fg} ({fl})\n\n"
+        bot.send_message(msg.chat.id, f"🔍 {sym} analiz...")
+        gecti, detay = scalp_sinyal(coin)
+        trend, _, _  = get_btc_trend()
+        bot.send_message(msg.chat.id,
+            f"⚡ {sym} SCALP ANALİZ\n"
+            f"Hacim: {detay.get('vol',0):.1f}x {'✅' if detay.get('vol',0)>=VOL_SPIKE_MIN else '❌'}\n"
+            f"Alım: %{detay.get('alim',0):.0f} {'✅' if detay.get('alim',0)>=ALIM_MIN else '❌'}\n"
+            f"RSI: {detay.get('rsi',0):.0f} {'✅' if RSI_MIN<=detay.get('rsi',0)<=RSI_MAX else '❌'}\n"
+            f"1m: {detay.get('pct',0):+.1f}%\n"
+            f"BTC: {trend}\n\n"
             f"{'✅ GİRİLİR' if gecti else '❌ PAS'}"
         )
         return
 
-    bot.send_message(
-        msg.chat.id,
-        "Komutlar:\n/durum\n/istatistik\n/btc\nCOIN_ADI - analiz\nCOIN kapat / hepsi kapat"
-    )
+    bot.send_message(msg.chat.id, "Komutlar:\n/durum\n/istatistik\n/btc\nCOIN kapat / hepsi kapat")
 
 # ════════════════════════════════════════
 # SHUTDOWN
@@ -1042,20 +894,18 @@ def handle_async(msg):
 import signal as sig_mod, sys
 
 def shutdown(signum, frame):
-    with pos_lock:
-        syms = list(positions.keys())
-    if syms:
-        tg(f"⏸ Bot yeniden başlıyor...\n{len(syms)} pozisyon açık, yüklenecek.")
+    with pos_lock: syms = list(positions.keys())
+    if syms: tg(f"⏸ Yeniden başlıyor...\n{len(syms)} pozisyon açık.")
     sys.exit(0)
 
 sig_mod.signal(sig_mod.SIGTERM, shutdown)
-sig_mod.signal(sig_mod.SIGINT,  shutdown)
+sig_mod.signal(sig_mod.SIGINT, shutdown)
 
 # ════════════════════════════════════════
 # MAIN
 # ════════════════════════════════════════
 if __name__ == "__main__":
-    print("SADIK TRADER v9 BAŞLIYOR...")
+    print("SADIK SCALP v1 BAŞLIYOR...")
     load_open_positions()
     threading.Thread(target=health_server,     daemon=True).start()
     threading.Thread(target=manage_loop,       daemon=True).start()
@@ -1066,17 +916,16 @@ if __name__ == "__main__":
     trend, price, chg = get_btc_trend()
 
     tg(
-        "🤖 SADIK TRADER v9 — HACİM PATLAMASI STRATEJİSİ\n\n"
+        "⚡ SADIK SCALP v1\n\n"
         "📊 Strateji:\n"
-        "  ✅ Anlık hacim patlaması (2x+)\n"
+        "  ✅ Hacim patlaması 2x+\n"
         "  ✅ Alım baskısı %65+\n"
+        "  ✅ RSI 30-55 arası\n"
         "  ✅ BTC DOWN değil\n"
-        "  ✅ RSI 68 altı\n"
-        "  ✅ Limit → Market emir\n\n"
-        "🎯 ATR Bazlı TP/SL:\n"
-        f"  TP1: ATR×{ATR_TP1} | TP2: ATR×{ATR_TP2} | TP3: ATR×{ATR_TP3}\n"
-        f"  SL:  ATR×{ATR_SL}\n\n"
-        f"BTC: {trend} ${price:,.0f} ({chg:+.1f}%)\n"
+        "  ✅ Limit→Market emir\n\n"
+        f"⚡ TP1: ATR×{ATR_TP1} | TP2: ATR×{ATR_TP2}\n"
+        f"🚫 SL: ATR×{ATR_SL} | Max: {MAX_SURE}dk\n\n"
+        f"BTC: {trend} ${price:,.0f}\n"
         f"Fear&Greed: {fg} ({fl})\n\n"
         "/durum /istatistik /btc"
     )
@@ -1085,5 +934,4 @@ if __name__ == "__main__":
         try:
             bot.infinity_polling(timeout=30, long_polling_timeout=30)
         except Exception as e:
-            log.error(f"[BOT] {e}")
-            time.sleep(5)
+            log.error(f"[BOT] {e}"); time.sleep(5)
