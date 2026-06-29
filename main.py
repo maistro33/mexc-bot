@@ -45,20 +45,20 @@ MAX_OPEN       = 2
 MAX_DAILY_LOSS = -10.0
 SCAN_INTERVAL  = 20   # 20sn'de bir tara
 
-# TP/SL — ATR bazlı scalp
-ATR_TP1       = 1.0   # TP1 = ATR × 1.0
-ATR_TP2       = 2.0   # TP2 = ATR × 2.0
-ATR_SL        = 1.0   # SL  = ATR × 1.0 (dar stop)
+# TP/SL — Sabit yüzde (scalp için ideal)
+TP1_PCT       = 0.8   # TP1 = +%0.8
+TP2_PCT       = 1.5   # TP2 = +%1.5
+SL_PCT        = 0.5   # SL  = -%0.5 (dar stop)
 ATR_LIMIT     = 0.2   # Limit emir ATR×0.2 aşağı
 LIMIT_BEKLE   = 20    # 20sn limit bekle
-MAX_SURE      = 20    # 20 dakika max pozisyon süresi
-TP_TRAILING   = 0.40  # TP1 sonrası %0.40 geri dönerse kapat
+MAX_SURE      = 20    # 20 dakika max
+TP_TRAILING   = 0.30  # TP1 sonrası %0.30 geri dönerse kapat
 
 # Scalp filtreleri
 VOL_SPIKE_MIN = 2.0   # 2x hacim
 ALIM_MIN      = 65.0  # %65 alım
 RSI_MIN       = 30    # RSI alt sınır
-RSI_MAX       = 55    # RSI üst sınır (tepede giriş yok!)
+RSI_MAX       = 60    # RSI üst sınır
 PCT_1M_MAX    = 2.0   # 1m'de %2'den fazla pompa = geç kaldın
 MIN_VOL_USDT  = 500_000
 MAX_VOL_USDT  = 20_000_000
@@ -343,11 +343,11 @@ def open_pos(symbol, detay, btc_trend):
     price   = detay["price"]
     atr_val = detay["atr"]
 
-    # Limit fiyat
+    # Sabit yüzde TP/SL
     limit_p = round(price - atr_val * ATR_LIMIT, 8)
-    sl      = round(limit_p - atr_val * ATR_SL, 8)
-    tp1     = round(limit_p + atr_val * ATR_TP1, 8)
-    tp2     = round(limit_p + atr_val * ATR_TP2, 8)
+    sl      = round(limit_p * (1 - SL_PCT / 100), 8)
+    tp1     = round(limit_p * (1 + TP1_PCT / 100), 8)
+    tp2     = round(limit_p * (1 + TP2_PCT / 100), 8)
     tps     = [tp1, tp2]
 
     with pos_lock:
@@ -434,10 +434,10 @@ def open_pos(symbol, detay, btc_trend):
                 return False
             gercek_fiyat = mp
 
-        # Gerçek fiyata göre güncelle
-        sl_g  = round(gercek_fiyat - atr_val * ATR_SL, 8)
-        tp1_g = round(gercek_fiyat + atr_val * ATR_TP1, 8)
-        tp2_g = round(gercek_fiyat + atr_val * ATR_TP2, 8)
+        # Gerçek fiyata göre sabit yüzde TP/SL
+        sl_g  = round(gercek_fiyat * (1 - SL_PCT  / 100), 8)
+        tp1_g = round(gercek_fiyat * (1 + TP1_PCT / 100), 8)
+        tp2_g = round(gercek_fiyat * (1 + TP2_PCT / 100), 8)
 
         with pos_lock:
             if symbol in positions:
@@ -461,12 +461,12 @@ def open_pos(symbol, detay, btc_trend):
     tg(
         f"⚡ #{sym}USDT.P SCALP\n"
         f"🏁 Giriş: {gercek_fiyat:.8f}\n"
-        f"🚫 SL: {sl_g:.8f} (-%{sl_pct:.1f})\n"
-        f"🎯 TP1: {tp1_g:.8f} (+%{tp1_pct:.1f})\n"
-        f"🎯 TP2: {tp2_g:.8f} (+%{tp2_pct:.1f})\n\n"
+        f"🚫 SL: {sl_g:.8f} (-%{SL_PCT})\n"
+        f"🎯 TP1: {tp1_g:.8f} (+%{TP1_PCT})\n"
+        f"🎯 TP2: {tp2_g:.8f} (+%{TP2_PCT})\n\n"
         f"Hacim: {detay['vol']:.1f}x | Alım: %{detay['alim']:.0f}\n"
         f"RSI: {detay['rsi']:.0f} | 1m: {detay['pct']:+.1f}%\n"
-        f"BTC: {btc_trend} | ATR: {atr_val:.6f}"
+        f"BTC: {btc_trend} | Max: {MAX_SURE}dk"
     )
     log.info(f"[AÇIK] {sym} @ {gercek_fiyat:.8f}")
     return True
@@ -923,8 +923,9 @@ if __name__ == "__main__":
         "  ✅ RSI 30-55 arası\n"
         "  ✅ BTC DOWN değil\n"
         "  ✅ Limit→Market emir\n\n"
-        f"⚡ TP1: ATR×{ATR_TP1} | TP2: ATR×{ATR_TP2}\n"
-        f"🚫 SL: ATR×{ATR_SL} | Max: {MAX_SURE}dk\n\n"
+        f"⚡ TP1: +%{TP1_PCT} | TP2: +%{TP2_PCT}\n"
+        f"🚫 SL: -%{SL_PCT} | Max: {MAX_SURE}dk\n"
+        f"📉 Trailing: -%{TP_TRAILING} (TP1 sonrası)\n\n"
         f"BTC: {trend} ${price:,.0f}\n"
         f"Fear&Greed: {fg} ({fl})\n\n"
         "/durum /istatistik /btc"
