@@ -501,12 +501,14 @@ def open_pos_manuel(symbol, giris, sl, tps, btc_trend):
                 tg(f"⏰ {sym} limit dolmadı (5dk), iptal edildi.")
                 return
 
-            # SL gerçek fiyata göre güncelle (sinyalde SL varsa orijinali kullan)
-            # SL her zaman giriş fiyatının ALTINDA olmalı
-            if sl > 0 and sl < gercek:
-                sl_gercek = sl
+            # SL — sinyeldeki değer her zaman giriş fiyatının altında olmalı
+            # sl değişkeni dışarıdan geliyor (sinyal parse'dan)
+            if sl and sl > 0 and sl < gercek * 0.999:
+                sl_gercek = sl  # Sinyeldeki SL geçerli, kullan
             else:
+                # Geçersiz veya yoksa gerçek giriş fiyatından hesapla
                 sl_gercek = round(gercek * (1 - MANUEL_SL_PCT / 100), 8)
+                log.warning(f"[MANUEL] {sym} SL geçersiz (sl={sl} gercek={gercek}), varsayılan kullanıldı: {sl_gercek}")
 
             # TP'leri güncelle — sinyaldeki oranı koru, gerçek fiyata uygula
             if tps:
@@ -871,7 +873,7 @@ def sinyal_parse(text):
             giris = float(m.group(1))
             break
 
-    # SL
+    # SL — "Stop: 0.0256025 ya da sonraki sinyal" formatını da destekle
     sl = None
     m = re.search(r'Stop[:\s]+([0-9.]+)', text, re.IGNORECASE)
     if m:
