@@ -45,7 +45,7 @@ AUTO_TP1_PCT  = 2.1   # +%2.1 → direkt kapat (~1$ net)
 AUTO_TP2_PCT  = 4.0   # +%4.0 → trailing
 AUTO_SL_PCT   = 1.0   # -%1.0
 AUTO_TRAILING = 0.40  # TP2 sonrası %0.40 geri dönerse kapat
-MAX_SURE      = 25    # Max 25 dakika
+MAX_SURE      = 60    # Max 60 dakika
 
 # Manuel mod — sinyaldeki TP/SL kullan
 MANUEL_SL_PCT  = 1.0   # Sinyalde SL yoksa varsayılan -%1.0
