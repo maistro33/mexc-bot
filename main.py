@@ -53,7 +53,7 @@ MANUEL_BEKLE   = 300   # 5 dakika (300sn) limit emir bekle
 MANUEL_TRAILING = 0.40  # TP sonrası trailing
 
 # Limit emir
-LIMIT_ALTI_PCT = 0.3   # Fiyatın %0.3 altına limit koy
+LIMIT_ALTI_PCT = 0.1   # Fiyatın %0.1 altına limit koy (daha kolay dolar)
 
 # Tarama
 VOL_SPIKE_MIN = 2.0
@@ -726,6 +726,7 @@ def scanner_loop():
                 if qv < MIN_VOL_USDT or qv > MAX_VOL_USDT: continue
                 if price < MIN_PRICE or price > MAX_PRICE: continue
                 if abs(pct) > 20 or pct < 0.3: continue
+                if pct > 15: continue  # 24h +15% üstü çok pompalanmış, atlat
                 sym_base = sym.upper()
                 with closed_lock:
                     if sym_base in recently_closed:
