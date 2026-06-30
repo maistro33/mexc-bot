@@ -686,10 +686,17 @@ def manage_loop():
                         tg(f"🎯 {sym} TP{tp_idx+1}! +{pnl_pct:.1f}%\nSL → {yeni_sl:.8f}\nSonraki: {sonraki}")
                         tp_idx += 1
 
-                # TP1+ sonrası trailing stop — SADECE otomatik modda
+                # TP1+ sonrası trailing stop
                 if mod == "auto" and tp_idx > 0:
+                    # Otomatik mod: TP1 sonrası trailing
                     geri = (max_price - price) / max_price * 100
                     if geri >= AUTO_TRAILING:
+                        close_pos(symbol, f"Trailing -%{geri:.1f}", price)
+                        continue
+                elif mod == "manuel" and len(tps) >= 4 and tp_idx >= 3:
+                    # Manuel mod (4 TP'li): TP3 sonrası trailing
+                    geri = (max_price - price) / max_price * 100
+                    if geri >= MANUEL_TRAILING:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
 
@@ -1045,8 +1052,10 @@ def handle_async(msg):
 
         sl  = round(price_now * (1 - sl_pct / 100), 8)
         tps = [
-            round(price_now * (1 + sl_pct * 1.5 / 100), 8),
-            round(price_now * (1 + sl_pct * 3.0 / 100), 8),
+            round(price_now * (1 + sl_pct * 1.0 / 100), 8),  # TP1 = SL×1.0
+            round(price_now * (1 + sl_pct * 2.0 / 100), 8),  # TP2 = SL×2.0
+            round(price_now * (1 + sl_pct * 3.0 / 100), 8),  # TP3 = SL×3.0
+            round(price_now * (1 + sl_pct * 4.5 / 100), 8),  # TP4 = SL×4.5
         ]
 
         trend, _, _ = get_btc_trend()
