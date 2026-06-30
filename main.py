@@ -1071,7 +1071,7 @@ def handle_async(msg):
             f"Limit emir koyuluyor..."
         )
 
-        ok, mesaj = open_pos_manuel(coin, price_now, sl, tps, trend, bekle_sn=30)
+        ok, mesaj = open_pos_manuel(coin, price_now, sl, tps, trend, bekle_sn=180)
         if not ok:
             bot.send_message(msg.chat.id, f"❌ {coin_adi}: {mesaj}")
         return
