@@ -678,11 +678,10 @@ def manage_loop():
                         tg(f"🎯 {sym} TP{tp_idx+1}! +{pnl_pct:.1f}%\nSL → {yeni_sl:.8f}\nSonraki: {sonraki}")
                         tp_idx += 1
 
-                # TP1+ sonrası trailing stop
-                if tp_idx > 0:
-                    trailing = AUTO_TRAILING if mod == "auto" else MANUEL_TRAILING
+                # TP1+ sonrası trailing stop — SADECE otomatik modda
+                if mod == "auto" and tp_idx > 0:
                     geri = (max_price - price) / max_price * 100
-                    if geri >= trailing:
+                    if geri >= AUTO_TRAILING:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
 
