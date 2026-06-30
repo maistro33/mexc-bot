@@ -693,10 +693,11 @@ def manage_loop():
                     if geri >= AUTO_TRAILING:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
-                elif mod == "manuel" and len(tps) >= 4 and tp_idx >= 3:
-                    # Manuel mod (4 TP'li): TP3 sonrası trailing
+                elif mod == "manuel" and len(tps) >= 5 and tp_idx >= 5:
+                    # Manuel mod (5 TP'li): TP5 sonrası trailing
                     geri = (max_price - price) / max_price * 100
-                    if geri >= MANUEL_TRAILING:
+                    # 0.50$ trailing = %1.0 (50$ pozisyonun %1'i)
+                    if geri >= 1.0:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
 
@@ -1051,11 +1052,14 @@ def handle_async(msg):
             sl_pct = MANUEL_SL_PCT
 
         sl  = round(price_now * (1 - sl_pct / 100), 8)
+        # TP'ler 50$ pozisyona göre USDT hedefleri:
+        # TP1~+1$, TP2~+1.7$, TP3~+2$, TP4~+2.5$, TP5~+3$
         tps = [
-            round(price_now * (1 + sl_pct * 0.5 / 100), 8),  # TP1 = SL×0.5 (yakın, hızlı)
-            round(price_now * (1 + sl_pct * 1.2 / 100), 8),  # TP2 = SL×1.2
-            round(price_now * (1 + sl_pct * 2.0 / 100), 8),  # TP3 = SL×2.0
-            round(price_now * (1 + sl_pct * 3.5 / 100), 8),  # TP4 = SL×3.5
+            round(price_now * (1 + 2.1 / 100), 8),   # TP1 ~+1$
+            round(price_now * (1 + 3.5 / 100), 8),   # TP2 ~+1.75$
+            round(price_now * (1 + 4.1 / 100), 8),   # TP3 ~+2$
+            round(price_now * (1 + 5.1 / 100), 8),   # TP4 ~+2.5$
+            round(price_now * (1 + 6.1 / 100), 8),   # TP5 ~+3$
         ]
 
         trend, _, _ = get_btc_trend()
