@@ -673,7 +673,18 @@ def manage_loop():
                     else:
                         # Manuel mod veya TP2+: SL bir önceki TP'ye çek
                         if tp_idx == 0:
-                            yeni_sl = entry  # TP1 sonrası başabaş
+                            # TP1 sonrası SL → gerçek giriş fiyatını borsadan al
+                            try:
+                                pos_list = safe_api(exchange.fetch_positions, [symbol])
+                                gercek_giris = entry  # varsayılan
+                                if pos_list:
+                                    for p in pos_list:
+                                        if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                                            gercek_giris = float(p.get("entryPrice") or entry)
+                                            break
+                            except:
+                                gercek_giris = entry
+                            yeni_sl = round(gercek_giris * 0.9995, 8)  # %0.05 altı (slippage payı)
                         else:
                             yeni_sl = tps[tp_idx - 1]  # Önceki TP
 
