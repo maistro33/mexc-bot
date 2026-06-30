@@ -1052,10 +1052,10 @@ def handle_async(msg):
 
         sl  = round(price_now * (1 - sl_pct / 100), 8)
         tps = [
-            round(price_now * (1 + sl_pct * 1.0 / 100), 8),  # TP1 = SL×1.0
-            round(price_now * (1 + sl_pct * 2.0 / 100), 8),  # TP2 = SL×2.0
-            round(price_now * (1 + sl_pct * 3.0 / 100), 8),  # TP3 = SL×3.0
-            round(price_now * (1 + sl_pct * 4.5 / 100), 8),  # TP4 = SL×4.5
+            round(price_now * (1 + sl_pct * 0.5 / 100), 8),  # TP1 = SL×0.5 (yakın, hızlı)
+            round(price_now * (1 + sl_pct * 1.2 / 100), 8),  # TP2 = SL×1.2
+            round(price_now * (1 + sl_pct * 2.0 / 100), 8),  # TP3 = SL×2.0
+            round(price_now * (1 + sl_pct * 3.5 / 100), 8),  # TP4 = SL×3.5
         ]
 
         trend, _, _ = get_btc_trend()
