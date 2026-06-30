@@ -254,10 +254,18 @@ def scalp_sinyal(symbol):
         df1m  = pd.DataFrame(r1m, columns=["t","o","h","l","c","v"])
         price = float(df1m["c"].iloc[-1])
 
-        # Hacim patlaması
+        # Hacim patlaması — son 1 mum (anlık)
         son_hacim = float(df1m["v"].iloc[-1])
         ort_hacim = float(df1m["v"].iloc[:-1].tail(20).mean())
         vol_oran  = son_hacim / max(ort_hacim, 0.0001)
+
+        # Hacim patlaması — son 3 mum (yakın geçmiş, momentum devam ediyor mu)
+        son3_hacim = float(df1m["v"].tail(3).sum())
+        ort3_hacim = float(df1m["v"].iloc[:-3].tail(20).mean()) * 3
+        vol_oran_3m = son3_hacim / max(ort3_hacim, 0.0001)
+
+        # İkisinden büyük olanı kullan
+        vol_oran_final = max(vol_oran, vol_oran_3m)
 
         # Alım oranı (son 3 tamamlanmış mum)
         son3 = df1m.tail(4).iloc[:-1]
@@ -268,10 +276,10 @@ def scalp_sinyal(symbol):
         # RSI (9 periyot — scalp için hızlı)
         rsi_val = calc_rsi(df1m["c"])
 
-        # Geç kalma kontrolü
-        pct_1m = (price - float(df1m["c"].iloc[-3])) / float(df1m["c"].iloc[-3]) * 100
-        if pct_1m > PCT_1M_MAX:
-            return False, {"red": f"Geç +{pct_1m:.1f}%"}
+        # Geç kalma kontrolü — son 3 dakikada çok pompaladıysa
+        pct_3m = (price - float(df1m["c"].iloc[-4])) / float(df1m["c"].iloc[-4]) * 100
+        if pct_3m > 4.0:
+            return False, {"red": f"Geç kalındı 3m+{pct_3m:.1f}%"}
 
         # ATR (1h verisiyle)
         r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
@@ -281,16 +289,16 @@ def scalp_sinyal(symbol):
         atr_val = calc_atr(df1h)
 
         gecti = (
-            vol_oran   >= VOL_SPIKE_MIN and
-            alim_orani >= ALIM_MIN      and
-            RSI_MIN    <= rsi_val <= RSI_MAX
+            vol_oran_final >= VOL_SPIKE_MIN and
+            alim_orani      >= ALIM_MIN      and
+            RSI_MIN         <= rsi_val <= RSI_MAX
         )
 
         return gecti, {
-            "vol":     round(vol_oran, 1),
+            "vol":     round(vol_oran_final, 1),
             "alim":    round(alim_orani, 1),
             "rsi":     round(rsi_val, 1),
-            "pct":     round(pct_1m, 2),
+            "pct":     round(pct_3m, 2),
             "atr":     atr_val,
             "price":   price,
             "son5_low": float(df1m["l"].tail(5).min()),
