@@ -864,6 +864,10 @@ def handle_async(msg):
             coin_adi, giris, sl, tps = sonuc
             symbol = f"{coin_adi}/USDT:USDT"
 
+            # Format tespiti: FuturesKripto mu TradingView mı?
+            is_futureskripto = "🏁 long" in lower or "long - giri" in lower
+            is_tradingview   = "tradingview" in lower
+
             # Kontroller
             try:
                 tickers = get_tickers_cached()
@@ -887,25 +891,62 @@ def handle_async(msg):
 
             trend, _, _ = get_btc_trend()
 
-            # Giriş fiyatı yoksa mevcut fiyat kullan
-            if not giris:
-                t0 = safe_api(exchange.fetch_ticker, symbol)
-                if not t0:
-                    bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
+            # ── FuturesKripto formatı: giriş + SL + TP'lerin HEPSİ sinyalden ──
+            if is_futureskripto:
+                if not giris or not sl or not tps:
+                    bot.send_message(
+                        msg.chat.id,
+                        f"❌ {coin_adi} sinyal eksik (giriş/SL/TP okunamadı).\n"
+                        f"Giriş:{giris} SL:{sl} TP sayısı:{len(tps) if tps else 0}"
+                    )
                     return
-                giris = float(t0["last"])
+                if sl >= giris:
+                    bot.send_message(msg.chat.id, f"❌ {coin_adi} SL geçersiz (giriş altında değil).")
+                    return
+                # Sinyaldeki değerler birebir kullanılacak
 
-            # SL yoksa varsayılan
-            if not sl:
-                sl = round(giris * (1 - MANUEL_SL_PCT / 100), 8)
+            # ── TradingView formatı: sadece coin/fiyat al, SL/TP bizim bot hesaplar ──
+            elif is_tradingview:
+                if not giris:
+                    t0 = safe_api(exchange.fetch_ticker, symbol)
+                    if not t0:
+                        bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
+                        return
+                    giris = float(t0["last"])
 
-            # TP yoksa varsayılan
-            if not tps:
-                tps = [round(giris * (1 + AUTO_TP1_PCT / 100), 8)]
+                # ATR bazlı sağlam SL/TP hesapla
+                try:
+                    r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
+                    df1h = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
+                    atr_val = calc_atr(df1h)
+                    atr_pct = (atr_val / giris) * 100
+                    # SL: ATR bazlı ama min %1, max %3
+                    sl_pct = max(1.0, min(atr_pct * 1.2, 3.0))
+                except:
+                    sl_pct = MANUEL_SL_PCT
+
+                sl  = round(giris * (1 - sl_pct / 100), 8)
+                tps = [
+                    round(giris * (1 + sl_pct * 1.5 / 100), 8),  # TP1 = SL×1.5 (R:R 1:1.5)
+                    round(giris * (1 + sl_pct * 3.0 / 100), 8),  # TP2 = SL×3.0
+                ]
+
+            # ── Bilinmeyen format: en güvenli varsayılanlar ──
+            else:
+                if not giris:
+                    t0 = safe_api(exchange.fetch_ticker, symbol)
+                    if not t0:
+                        bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
+                        return
+                    giris = float(t0["last"])
+                if not sl:
+                    sl = round(giris * (1 - MANUEL_SL_PCT / 100), 8)
+                if not tps:
+                    tps = [round(giris * (1 + AUTO_TP1_PCT / 100), 8)]
 
             bot.send_message(
                 msg.chat.id,
-                f"📡 {coin_adi} sinyali alındı\n"
+                f"📡 {coin_adi} sinyali alındı [{'FuturesKripto' if is_futureskripto else 'TradingView' if is_tradingview else 'Bilinmeyen'}]\n"
                 f"Giriş: {giris} | SL: {sl}\n"
                 f"TP sayısı: {len(tps)} | Limit emir açılıyor..."
             )
