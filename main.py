@@ -503,12 +503,12 @@ def open_pos_manuel(symbol, giris, sl, tps, btc_trend):
 
             # SL — sinyeldeki değer her zaman giriş fiyatının altında olmalı
             # sl değişkeni dışarıdan geliyor (sinyal parse'dan)
-            if sl and sl > 0 and sl < gercek * 0.999:
-                sl_gercek = sl  # Sinyeldeki SL geçerli, kullan
+            if sl and sl > 0 and sl < gercek * 0.990:
+                sl_gercek = sl  # Sinyeldeki SL geçerli (en az %1 aşağıda)
             else:
                 # Geçersiz veya yoksa gerçek giriş fiyatından hesapla
                 sl_gercek = round(gercek * (1 - MANUEL_SL_PCT / 100), 8)
-                log.warning(f"[MANUEL] {sym} SL geçersiz (sl={sl} gercek={gercek}), varsayılan kullanıldı: {sl_gercek}")
+                log.info(f"[MANUEL] {sym} SL varsayılan: {sl_gercek:.8f} (giriş: {gercek:.8f})")
 
             # TP'leri güncelle — sinyaldeki oranı koru, gerçek fiyata uygula
             if tps:
