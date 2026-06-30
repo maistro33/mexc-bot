@@ -700,78 +700,10 @@ def manage_loop():
 # TARAYICI
 # ════════════════════════════════════════════
 def scanner_loop():
-    time.sleep(10)
+    """Otomatik tarama KAPALI — sadece manuel sinyal forward ile işlem açılır."""
+    log.info("[SCANNER] Otomatik tarama devre dışı, sadece manuel sinyal bekleniyor.")
     while True:
-        try:
-            if günlük_limit_asıldı():
-                time.sleep(SCAN_INTERVAL); continue
-
-            btc_trend, _, _ = get_btc_trend()
-            if btc_trend == "DOWN":
-                log.info("[SCAN] BTC DOWN"); time.sleep(SCAN_INTERVAL); continue
-
-            fg_val, _ = get_fear_greed()
-            if fg_val <= FG_MIN:
-                log.info(f"[SCAN] Fear {fg_val}"); time.sleep(SCAN_INTERVAL); continue
-
-            with pos_lock:
-                if len(positions) >= MAX_OPEN_AUTO:
-                    time.sleep(10); continue
-                open_syms = set(positions.keys())
-
-            tickers = get_tickers_cached()
-            if not tickers:
-                time.sleep(SCAN_INTERVAL); continue
-
-            candidates = []
-            for symbol, ticker in tickers.items():
-                if not symbol.endswith("/USDT:USDT"): continue
-                sym = symbol.split("/")[0]
-                if sym in BLACKLIST or symbol in open_syms: continue
-                qv    = ticker.get("quoteVolume") or 0
-                pct   = ticker.get("percentage")  or 0
-                price = float(ticker.get("last") or 0)
-                if qv < MIN_VOL_USDT or qv > MAX_VOL_USDT: continue
-                if price < MIN_PRICE or price > MAX_PRICE: continue
-                if abs(pct) > 20 or pct < 0.3: continue
-                if pct > 15: continue  # 24h +15% üstü çok pompalanmış, atlat
-                sym_base = sym.upper()
-                with closed_lock:
-                    if sym_base in recently_closed:
-                        if time.time() - recently_closed[sym_base] < RECENTLY_TTL: continue
-                candidates.append({"symbol": symbol, "pct": pct})
-
-            candidates.sort(key=lambda x: x["pct"], reverse=True)
-            top3  = candidates[:3]
-            rest  = candidates[3:]
-            random.shuffle(rest)
-            candidates = (top3 + rest)[:8]
-
-            log.info(f"[SCAN] {len(candidates)} aday | BTC:{btc_trend} FG:{fg_val}")
-
-            for c in candidates:
-                symbol = c["symbol"]
-                sym    = symbol.split("/")[0]
-                with pos_lock:
-                    if len(positions) >= MAX_OPEN_AUTO: break
-                    if symbol in open_syms: continue
-
-                gecti, detay = scalp_sinyal(symbol)
-                if gecti:
-                    log.info(f"[SCALP] {sym} Vol:{detay['vol']:.1f}x Alım:%{detay['alim']:.0f} RSI:{detay['rsi']:.0f}")
-                    open_pos_auto(symbol, detay, btc_trend)
-                    with pos_lock: open_syms = set(positions.keys())
-                else:
-                    if detay.get("red"):
-                        log.info(f"[PAS] {sym}: {detay['red']}")
-                    else:
-                        log.info(f"[PAS] {sym}: Vol:{detay.get('vol',0):.1f}x Alım:%{detay.get('alim',0):.0f} RSI:{detay.get('rsi',0):.0f}")
-                time.sleep(0.8)
-
-            time.sleep(SCAN_INTERVAL)
-
-        except Exception as e:
-            log.error(f"[SCANNER] {e}"); time.sleep(10)
+        time.sleep(300)  # Sadece yaşam belirtisi, işlem açmaz
 
 # ════════════════════════════════════════════
 # GÜNLÜK SIFIRLAMA
@@ -1089,15 +1021,14 @@ if __name__ == "__main__":
     trend, price, chg = get_btc_trend()
 
     tg(
-        "⚡ SADIK SCALP v2\n\n"
-        "🤖 OTOMATİK MOD:\n"
-        f"  Hacim 2x+ | Alım %65+ | RSI {RSI_MIN}-{RSI_MAX}\n"
-        f"  TP1 +%{AUTO_TP1_PCT} → Direkt kapat (~1$)\n"
-        f"  TP2 +%{AUTO_TP2_PCT} → Trailing\n"
-        f"  SL -%{AUTO_SL_PCT} | Max {MAX_SURE}dk\n\n"
-        "📡 MANUEL MOD (Sinyal Forward):\n"
-        "  Sinyali bota gönder → Sinyaldeki TP/SL kullan\n"
-        "  5 dakika limit emir bekler\n\n"
+        "⚡ SADIK SCALP v2 — MANUEL MOD\n\n"
+        "🔇 Otomatik tarama KAPALI\n\n"
+        "📡 Sadece sinyal forward ile çalışır:\n"
+        "  Sinyali bota gönder → Sinyaldeki TP/SL kullanır\n"
+        "  5 dakika limit emir bekler\n"
+        "  TP1→TP2→...→TP6 sırayla yönetilir\n"
+        "  Trailing YOK, SL bir önceki TP'ye çekilir\n\n"
+        f"Max {MAX_OPEN_MANUEL} pozisyon | SL varsayılan -%{MANUEL_SL_PCT}\n\n"
         f"BTC: {trend} ${price:,.0f}\n"
         f"Fear&Greed: {fg} ({fl})\n\n"
         "/durum /istatistik /btc"
