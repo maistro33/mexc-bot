@@ -375,7 +375,7 @@ def pozisyon_slot_al(symbol, entry, sl, tps, btc_trend, atr, mod="auto"):
                 return False
         with closed_lock:
             if sym_base in recently_closed:
-                if time.time() - recently_closed[sym_base] < RECENTLY_TTL:
+                if mod == "auto" and time.time() - recently_closed[sym_base] < RECENTLY_TTL:
                     return False
         if len(positions) >= max_open:
             return False
