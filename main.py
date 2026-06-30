@@ -502,7 +502,11 @@ def open_pos_manuel(symbol, giris, sl, tps, btc_trend):
                 return
 
             # SL gerçek fiyata göre güncelle (sinyalde SL varsa orijinali kullan)
-            sl_gercek = sl if abs(sl - giris) / giris < 0.1 else round(gercek * (1 - MANUEL_SL_PCT / 100), 8)
+            # SL her zaman giriş fiyatının ALTINDA olmalı
+            if sl > 0 and sl < gercek:
+                sl_gercek = sl
+            else:
+                sl_gercek = round(gercek * (1 - MANUEL_SL_PCT / 100), 8)
 
             # TP'leri güncelle — sinyaldeki oranı koru, gerçek fiyata uygula
             if tps:
