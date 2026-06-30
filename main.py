@@ -475,7 +475,7 @@ def open_pos_auto(symbol, detay, btc_trend):
 # ════════════════════════════════════════════
 # MANUEL POZİSYON AÇ (Sinyal Forward)
 # ════════════════════════════════════════════
-def open_pos_manuel(symbol, giris, sl, tps, btc_trend):
+def open_pos_manuel(symbol, giris, sl, tps, btc_trend, bekle_sn=MANUEL_BEKLE):
     """Kullanıcının gönderdiği sinyaldeki fiyatlarla giriş."""
     sym = symbol.split("/")[0]
 
@@ -500,9 +500,9 @@ def open_pos_manuel(symbol, giris, sl, tps, btc_trend):
                 tg(f"❌ {sym} miktar hesaplanamadı.")
                 return
 
-            tg(f"📡 {sym} limit emir açılıyor @ {giris:.8f}\n5 dakika bekleniyor...")
+            tg(f"📡 {sym} limit emir açılıyor @ {giris:.8f}\n{bekle_sn}sn bekleniyor...")
 
-            gercek, _ = limit_emir_ac(symbol, giris, amount, bekle_sn=MANUEL_BEKLE)
+            gercek, _ = limit_emir_ac(symbol, giris, amount, bekle_sn=bekle_sn)
 
             if not gercek:
                 with pos_lock: positions.pop(symbol, None)
@@ -1002,6 +1002,67 @@ def handle_async(msg):
         bot.send_message(msg.chat.id, f"BTC: {trend}\n${price:,.0f} ({chg:+.1f}%)\nFG: {fg} ({fl})")
         return
 
+    # ── "COIN long aç" KOMUTU ──
+    if "long ac" in lower or "long aç" in lower:
+        coin = find_coin(text)
+        if not coin:
+            bot.send_message(msg.chat.id, "❌ Coin bulunamadı.")
+            return
+
+        coin_adi = coin.split("/")[0]
+
+        if coin_adi in BLACKLIST:
+            bot.send_message(msg.chat.id, f"❌ {coin_adi} blacklist'te.")
+            return
+
+        if günlük_limit_asıldı():
+            bot.send_message(msg.chat.id, "❌ Günlük limit aşıldı.")
+            return
+
+        with pos_lock:
+            if len(positions) >= MAX_OPEN_MANUEL:
+                bot.send_message(msg.chat.id, f"❌ Max pozisyon ({MAX_OPEN_MANUEL}) dolu.")
+                return
+            if coin in positions:
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} zaten açık.")
+                return
+
+        t0 = safe_api(exchange.fetch_ticker, coin)
+        if not t0:
+            bot.send_message(msg.chat.id, f"❌ {coin_adi} fiyat alınamadı.")
+            return
+        price_now = float(t0["last"])
+
+        # ATR bazlı sağlam SL/TP
+        try:
+            r1h = safe_api(exchange.fetch_ohlcv, coin, "1h", limit=15)
+            df1h = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
+            atr_val = calc_atr(df1h)
+            atr_pct = (atr_val / price_now) * 100
+            sl_pct = max(1.0, min(atr_pct * 1.2, 3.0))
+        except:
+            sl_pct = MANUEL_SL_PCT
+
+        sl  = round(price_now * (1 - sl_pct / 100), 8)
+        tps = [
+            round(price_now * (1 + sl_pct * 1.5 / 100), 8),
+            round(price_now * (1 + sl_pct * 3.0 / 100), 8),
+        ]
+
+        trend, _, _ = get_btc_trend()
+
+        bot.send_message(
+            msg.chat.id,
+            f"📡 {coin_adi} manuel long açılıyor\n"
+            f"Fiyat: {price_now:.8f} | SL: -%{sl_pct:.1f}\n"
+            f"Limit emir koyuluyor..."
+        )
+
+        ok, mesaj = open_pos_manuel(coin, price_now, sl, tps, trend, bekle_sn=30)
+        if not ok:
+            bot.send_message(msg.chat.id, f"❌ {coin_adi}: {mesaj}")
+        return
+
     if "kapat" in lower:
         with pos_lock: syms = list(positions.keys())
         if not syms:
@@ -1032,7 +1093,7 @@ def handle_async(msg):
         )
         return
 
-    bot.send_message(msg.chat.id, "Komutlar:\n/durum\n/istatistik\n/btc\nCOIN kapat / hepsi kapat")
+    bot.send_message(msg.chat.id, "Komutlar:\n/durum\n/istatistik\n/btc\nCOIN long aç\nCOIN kapat / hepsi kapat")
 
 # ════════════════════════════════════════════
 # SHUTDOWN
