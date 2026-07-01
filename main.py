@@ -32,8 +32,8 @@ SUPA_URL     = os.getenv("SUPABASE_URL", "")
 SUPA_KEY     = os.getenv("SUPABASE_KEY", "")
 
 LEVERAGE        = 5
-MARGIN          = 10.0
-POS_SIZE        = MARGIN * LEVERAGE   # 50$
+MARGIN          = 15.0
+POS_SIZE        = MARGIN * LEVERAGE   # 75$
 COMMISSION      = 0.0006
 MAX_OPEN_AUTO   = 2    # Bot kendi açarsa max 2
 MAX_OPEN_MANUEL = 3    # Sen sinyal gönderirsen max 3
@@ -684,7 +684,7 @@ def manage_loop():
                                             break
                             except:
                                 gercek_giris = entry
-                            yeni_sl = round(gercek_giris * 0.9995, 8)  # %0.05 altı (slippage payı)
+                            yeni_sl = round(gercek_giris * 1.002, 8)  # %0.2 üstü, komisyon karşılanır
                         else:
                             yeni_sl = tps[tp_idx - 1]  # Önceki TP
 
@@ -704,10 +704,9 @@ def manage_loop():
                     if geri >= AUTO_TRAILING:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
-                elif mod == "manuel" and len(tps) >= 5 and tp_idx >= 5:
-                    # Manuel mod (5 TP'li): TP5 sonrası trailing
+                elif mod == "manuel" and len(tps) >= 6 and tp_idx >= 6:
+                    # Manuel mod (6 TP'li): TP6 sonrası trailing
                     geri = (max_price - price) / max_price * 100
-                    # 0.50$ trailing = %1.0 (50$ pozisyonun %1'i)
                     if geri >= 1.0:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
@@ -1064,13 +1063,14 @@ def handle_async(msg):
 
         sl  = round(price_now * (1 - sl_pct / 100), 8)
         # TP'ler 50$ pozisyona göre USDT hedefleri:
-        # TP1~+1$, TP2~+1.7$, TP3~+2$, TP4~+2.5$, TP5~+3$
+        # TP1~1$, TP2~1.75$, TP3~2$, TP4~2.5$, TP5~3$, TP6~3.5$
         tps = [
             round(price_now * (1 + 2.1 / 100), 8),   # TP1 ~+1$
             round(price_now * (1 + 3.5 / 100), 8),   # TP2 ~+1.75$
             round(price_now * (1 + 4.1 / 100), 8),   # TP3 ~+2$
             round(price_now * (1 + 5.1 / 100), 8),   # TP4 ~+2.5$
             round(price_now * (1 + 6.1 / 100), 8),   # TP5 ~+3$
+            round(price_now * (1 + 7.1 / 100), 8),   # TP6 ~+3.5$
         ]
 
         trend, _, _ = get_btc_trend()
