@@ -7,4 +7,5 @@ supabase
 xgboost
 scikit-learn
 matplotlib
+telethon
 
