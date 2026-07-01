@@ -615,7 +615,7 @@ def close_pos(symbol, reason, exit_price=None):
 # ════════════════════════════════════════════
 def manage_loop():
     while True:
-        time.sleep(5)
+        time.sleep(3)
         try:
             with pos_lock:
                 syms = list(positions.keys())
