@@ -71,15 +71,7 @@ BTC_TTL       = 120
 FG_TTL        = 600
 RECENTLY_TTL  = 1800   # 30dk aynı coin tekrar açılmaz
 
-BLACKLIST = {
-    "BANANAS31","BSB","JCT","MEGA","ALLO","FTM","MU",
-    "TURBO","MOODENG","SUNDOG","NEIRO","HMSTR","CATI","DOGS","MYRO",
-    "BOME","SLERF","PNUT","RGTI","SATL","WET","POET",
-    "SOXL","SOXS","UVXY","SVIX","KORU","AMC","GME",
-    "SHIB","DOGE","PEPE","FLOKI","BONK","WIF","MEME",
-    "1000SHIB","1000DOGE","1000PEPE","1000FLOKI","1000BONK","1000WIF",
-    "COOKIE",
-}
+BLACKLIST = set()  # Blacklist kaldırıldı
 
 # ════════════════════════════════════════════
 # STATE
