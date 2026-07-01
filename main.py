@@ -652,7 +652,6 @@ def coinsonar_isle(text):
         if not detay.get("vol_ok"): reason.append(f"Hacim düşük")
         if not detay.get("rsi_ok"): reason.append(f"RSI:{detay.get('rsi',0):.1f}")
         log.info(f"[COINSONAR] {coin_adi} ❌ PAS — {', '.join(reason)}")
-        tg(f"❌ CoinSonar {coin_adi} — PAS\n{', '.join(reason)}")
 
 # ════════════════════════════════════════════
 # TELETHON — KANAL DİNLEYİCİ
