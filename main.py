@@ -534,20 +534,19 @@ def manage_loop():
                         close_pos(symbol, f"🎯 TP1 +{pct:.1f}%", price)
                         continue
                     else:
-                        if tp_idx == 0:
-                            try:
-                                pos_list = safe_api(exchange.fetch_positions, [symbol])
-                                gercek_giris = entry
-                                if pos_list:
-                                    for p in pos_list:
-                                        if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
-                                            gercek_giris = float(p.get("entryPrice") or entry)
-                                            break
-                            except:
-                                gercek_giris = entry
-                            yeni_sl = round(gercek_giris * 1.002, 8)
-                        else:
-                            yeni_sl = tps[tp_idx - 1]
+                        # Her TP sonrası SL → başabaş (giriş fiyatının %0.2 üstü)
+                        # (önceki TP'ye çekme yerine, daha geniş nefes payı bırakır)
+                        try:
+                            pos_list = safe_api(exchange.fetch_positions, [symbol])
+                            gercek_giris = entry
+                            if pos_list:
+                                for p in pos_list:
+                                    if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                                        gercek_giris = float(p.get("entryPrice") or entry)
+                                        break
+                        except:
+                            gercek_giris = entry
+                        yeni_sl = round(gercek_giris * 1.002, 8)
 
                         with pos_lock:
                             if symbol in positions:
