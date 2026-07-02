@@ -60,10 +60,14 @@ MAX_DAILY_LOSS  = -15.0
 MAX_SURE        = 240   # Max 4 saat
 
 # Manuel/CoinSonar TP/SL (sabit yüzde, 75$ pozisyon)
-TP_PCTS = [2.1, 3.5, 4.1, 5.1, 6.1, 7.1]
+TP_PCTS = [1.2, 2.0, 2.8, 3.6, 4.5, 5.5]
 SL_PCT  = 1.5    # -%1.5 varsayılan SL
 TRAILING_PCT = 1.0  # TP6 sonrası trailing
 RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
+
+# TP1'e hiç ulaşılmadan fiyat yükselip geri düşerse kâr korumak için:
+PRE_TP1_TRIGGER_PCT = 1.0   # Fiyat girişten +%1 yukarı çıktıysa koruma modu başlasın
+PRE_TP1_TRAIL_PCT   = 0.6   # Zirveden %0.6 geri çekilirse kârla kapat
 
 # 15m Filtre eşikleri
 RSI_MIN = 30
@@ -557,6 +561,19 @@ def manage_loop():
                 if price <= sl:
                     close_pos(symbol, f"🚫 SL ({sl:.8f})", price)
                     continue
+
+                # TP1'e hiç ulaşılmadan fiyat yükselip geri düşerse — kâr koru
+                if tp_idx == 0:
+                    tepe_yukselis = (max_price - entry) / entry * 100
+                    if tepe_yukselis >= PRE_TP1_TRIGGER_PCT:
+                        geri_cekilme = (max_price - price) / max_price * 100
+                        if geri_cekilme >= PRE_TP1_TRAIL_PCT and price > entry:
+                            close_pos(
+                                symbol,
+                                f"🛡️ Erken koruma (zirve +{tepe_yukselis:.1f}%, geri -{geri_cekilme:.1f}%)",
+                                price
+                            )
+                            continue
 
                 if sure >= MAX_SURE:
                     close_pos(symbol, f"⏰ Süre doldu ({MAX_SURE}dk)", price)
