@@ -358,8 +358,31 @@ def open_pos_auto(symbol, kaynak="coinsonar", bekle_sn=180):
             gercek  = limit_emir_ac(symbol, limit_p, amount, bekle_sn)
 
             if not gercek:
+                # Limit dolmadı — fiyat daha da yukarı kaçtıysa, market emirle
+                # son bir giriş denemesi yapalım (fırsatı tamamen kaçırmayalım)
+                t_check = safe_api(exchange.fetch_ticker, symbol)
+                fiyat_simdi = float(t_check["last"]) if t_check else None
+
+                if fiyat_simdi and fiyat_simdi > price * 1.003:
+                    tg(f"⚡ {sym} [{kaynak}] fiyat yukarı kaçtı ({fiyat_simdi:.8f}), market emirle giriliyor...")
+                    order = safe_api(
+                        exchange.create_order, symbol, "market", "buy", amount, None,
+                        {"marginMode": "isolated", "marginCoin": "USDT"}
+                    )
+                    if order:
+                        time.sleep(2)
+                        pos_list = safe_api(exchange.fetch_positions, [symbol])
+                        if pos_list:
+                            for p in pos_list:
+                                if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                                    gercek = float(p.get("entryPrice") or fiyat_simdi)
+                                    break
+                        if not gercek:
+                            gercek = fiyat_simdi
+
+            if not gercek:
                 with pos_lock: positions.pop(symbol, None)
-                tg(f"⏰ {sym} limit dolmadı, iptal.")
+                tg(f"⏰ {sym} işlem gerçekleşmedi, iptal.")
                 return
 
             sl_g  = round(gercek * (1 - sl_pct / 100), 8)
