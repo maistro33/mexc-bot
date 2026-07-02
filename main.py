@@ -160,8 +160,13 @@ def pnl_ekle(miktar):
 def hesap_pnl(pos, price):
     entry  = pos["entry"]
     amount = pos.get("amount", POS_SIZE / max(entry, 0.000001))
-    pnl    = (price - entry) * amount - POS_SIZE * COMMISSION
-    pct    = (price - entry) / entry * 100
+    side   = pos.get("side", "long")
+    if side == "short":
+        pnl = (entry - price) * amount - POS_SIZE * COMMISSION
+        pct = (entry - price) / entry * 100
+    else:
+        pnl = (price - entry) * amount - POS_SIZE * COMMISSION
+        pct = (price - entry) / entry * 100
     return pnl, pct
 
 # ════════════════════════════════════════════
@@ -290,7 +295,7 @@ def limit_emir_ac(symbol, fiyat, amount, bekle_sn=300):
         log.error(f"[LİMİT] {symbol}: {e}")
         return None
 
-def pozisyon_slot_al(symbol, entry, sl, tps, kaynak, mod="auto"):
+def pozisyon_slot_al(symbol, entry, sl, tps, kaynak, mod="auto", side="long"):
     sym_base = symbol.split("/")[0].upper()
     max_open = MAX_OPEN_AUTO if mod == "auto" else MAX_OPEN_MANUEL
 
@@ -311,10 +316,12 @@ def pozisyon_slot_al(symbol, entry, sl, tps, kaynak, mod="auto"):
             "tps":       tps,
             "tp_idx":    0,
             "max_price": entry,
+            "min_price": entry,
             "open_time": time.time(),
             "amount":    0,
             "kaynak":    kaynak,
             "mod":       mod,
+            "side":      side,
             "pending":   True,
         }
         return True
@@ -411,6 +418,96 @@ def open_pos_auto(symbol, kaynak="coinsonar", bekle_sn=180):
 
         except Exception as e:
             log.error(f"[OPEN_AUTO] {sym}: {e}")
+            with pos_lock: positions.pop(symbol, None)
+
+    threading.Thread(target=_ac, daemon=True).start()
+    return True, "OK"
+
+# ════════════════════════════════════════════
+# İŞLEM AÇ — Manuel SHORT
+# ════════════════════════════════════════════
+def open_pos_short_manuel(symbol, bekle_sn=180):
+    """Manuel SHORT girişi — 'COIN short aç' komutu için.
+    SL girişin ÜSTÜNDE, TP'ler ALTINDA (long'un tam tersi)."""
+    sym = symbol.split("/")[0]
+
+    t0 = safe_api(exchange.fetch_ticker, symbol)
+    if not t0: return False, "Fiyat alınamadı"
+    price = float(t0["last"])
+
+    try:
+        r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
+        df1h = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
+        atr = calc_atr(df1h)
+        sl_pct = max(1.0, min(atr / price * 100 * 1.2, 3.0))
+    except:
+        sl_pct = SL_PCT
+
+    sl  = round(price * (1 + sl_pct / 100), 8)
+    tps = [round(price * (1 - pct / 100), 8) for pct in TP_PCTS]
+
+    if not pozisyon_slot_al(symbol, price, sl, tps, "manuel", "manuel", side="short"):
+        return False, "Slot alınamadı"
+
+    def _ac():
+        try:
+            borsa_hazirla(symbol)
+            amount = float(exchange.amount_to_precision(symbol, round(POS_SIZE / price, 4)))
+            if amount <= 0:
+                with pos_lock: positions.pop(symbol, None)
+                return
+
+            tg(f"📉 {sym} SHORT açılıyor (market) @ ~{price:.8f}...")
+
+            order = safe_api(
+                exchange.create_order, symbol, "market", "sell", amount, None,
+                {"marginMode": "isolated", "marginCoin": "USDT"}
+            )
+
+            gercek = None
+            if order:
+                time.sleep(2)
+                pos_list = safe_api(exchange.fetch_positions, [symbol])
+                if pos_list:
+                    for p in pos_list:
+                        if float(p.get("contracts") or 0) > 0 and p.get("side") == "short":
+                            gercek = float(p.get("entryPrice") or price)
+                            break
+                if not gercek:
+                    gercek = price
+
+            if not gercek:
+                with pos_lock: positions.pop(symbol, None)
+                tg(f"❌ {sym} short işlem gerçekleşmedi, iptal.")
+                return
+
+            sl_g  = round(gercek * (1 + sl_pct / 100), 8)
+            tps_g = [round(gercek * (1 - pct / 100), 8) for pct in TP_PCTS]
+
+            with pos_lock:
+                if symbol in positions:
+                    positions[symbol].update({
+                        "entry":     gercek,
+                        "sl":        sl_g,
+                        "tps":       tps_g,
+                        "amount":    amount,
+                        "min_price": gercek,
+                        "pending":   False,
+                    })
+
+            tp_str = "\n".join([f"TP{i+1}: {tp:.8f} (-%{TP_PCTS[i]})" for i, tp in enumerate(tps_g)])
+            tg(
+                f"🔻 #{sym}USDT.P SHORT\n"
+                f"📡 Kaynak: MANUEL\n"
+                f"🏁 Giriş: {gercek:.8f}\n"
+                f"🚫 SL: {sl_g:.8f} (+%{sl_pct:.1f})\n\n"
+                f"{tp_str}\n\n"
+                f"💰 Pozisyon: {POS_SIZE}$ | Kaldıraç: {LEVERAGE}x"
+            )
+            log.info(f"[AÇIK-SHORT] {sym} @ {gercek:.8f}")
+
+        except Exception as e:
+            log.error(f"[OPEN_SHORT] {sym}: {e}")
             with pos_lock: positions.pop(symbol, None)
 
     threading.Thread(target=_ac, daemon=True).start()
@@ -516,6 +613,7 @@ def close_pos(symbol, reason, exit_price=None):
     if not pos: return
 
     sym    = symbol.split("/")[0]
+    side   = pos.get("side", "long")
     amount = pos.get("amount", 0)
     if not amount or amount <= 0:
         amount = round(POS_SIZE / pos["entry"], 4)
@@ -525,13 +623,14 @@ def close_pos(symbol, reason, exit_price=None):
         if pos_list:
             for p in pos_list:
                 c = float(p.get("contracts") or 0)
-                if c > 0 and p.get("side") == "long":
+                if c > 0 and p.get("side") == side:
                     amount = c; break
     except: pass
 
+    kapat_yonu = "buy" if side == "short" else "sell"
     try:
         safe_api(
-            exchange.create_order, symbol, "market", "sell", amount, None,
+            exchange.create_order, symbol, "market", kapat_yonu, amount, None,
             {"reduceOnly": True, "marginCoin": "USDT"}
         )
     except Exception as e:
@@ -597,30 +696,43 @@ def manage_loop():
                 tps          = pos["tps"]
                 tp_idx       = pos.get("tp_idx", 0)
                 max_price    = pos.get("max_price", entry)
+                min_price    = pos.get("min_price", entry)
                 mod          = pos.get("mod", "auto")
+                side         = pos.get("side", "long")
 
                 if price > max_price:
                     with pos_lock:
                         if symbol in positions:
                             positions[symbol]["max_price"] = price
                     max_price = price
+                if price < min_price:
+                    with pos_lock:
+                        if symbol in positions:
+                            positions[symbol]["min_price"] = price
+                    min_price = price
 
-                if price <= sl:
+                sl_tetiklendi = (price <= sl) if side == "long" else (price >= sl)
+                if sl_tetiklendi:
                     close_pos(symbol, f"🚫 SL ({sl:.8f})", price)
                     continue
 
-                # TP1'e hiç ulaşılmadan fiyat yükselip geri düşerse — kâr koru
+                # TP1'e hiç ulaşılmadan fiyat elverişli yönde gidip geri dönerse — kâr koru
                 if tp_idx == 0:
-                    tepe_yukselis = (max_price - entry) / entry * 100
-                    if tepe_yukselis >= PRE_TP1_TRIGGER_PCT:
-                        geri_cekilme = (max_price - price) / max_price * 100
-                        if geri_cekilme >= PRE_TP1_TRAIL_PCT and price > entry:
-                            close_pos(
-                                symbol,
-                                f"🛡️ Erken koruma (zirve +{tepe_yukselis:.1f}%, geri -{geri_cekilme:.1f}%)",
-                                price
-                            )
-                            continue
+                    if side == "long":
+                        zirve_hareket = (max_price - entry) / entry * 100
+                        geri_cekilme  = (max_price - price) / max_price * 100 if max_price > 0 else 0
+                        koru_sart     = zirve_hareket >= PRE_TP1_TRIGGER_PCT and geri_cekilme >= PRE_TP1_TRAIL_PCT and price > entry
+                    else:
+                        zirve_hareket = (entry - min_price) / entry * 100
+                        geri_cekilme  = (price - min_price) / min_price * 100 if min_price > 0 else 0
+                        koru_sart     = zirve_hareket >= PRE_TP1_TRIGGER_PCT and geri_cekilme >= PRE_TP1_TRAIL_PCT and price < entry
+                    if koru_sart:
+                        close_pos(
+                            symbol,
+                            f"🛡️ Erken koruma (zirve %{zirve_hareket:.1f}, geri -%{geri_cekilme:.1f})",
+                            price
+                        )
+                        continue
 
                 if sure >= MAX_SURE:
                     close_pos(symbol, f"⏰ Süre doldu ({MAX_SURE}dk)", price)
@@ -630,7 +742,10 @@ def manage_loop():
                     close_pos(symbol, "Günlük limit", price)
                     continue
 
-                if tp_idx < len(tps) and price >= tps[tp_idx]:
+                tp_tetiklendi = tp_idx < len(tps) and (
+                    (price >= tps[tp_idx]) if side == "long" else (price <= tps[tp_idx])
+                )
+                if tp_tetiklendi:
                     sym = symbol.split("/")[0]
 
                     if mod == "auto" and tp_idx == 0:
@@ -638,20 +753,20 @@ def manage_loop():
                         continue
                     else:
                         if tp_idx >= 2:
-                            # TP3 ve sonrası: SL → başabaş (giriş fiyatının %0.2 üstü)
-                            # TP1/TP2'de dokunmuyoruz, kanalın güçlü hareketlerinde
-                            # erken çıkmayı önlemek için biraz daha nefes payı bırakıyoruz
+                            # TP3 ve sonrası: SL → başabaş
+                            # TP1/TP2'de dokunmuyoruz, güçlü hareketlerde erken
+                            # çıkmayı önlemek için biraz daha nefes payı bırakıyoruz
                             try:
                                 pos_list = safe_api(exchange.fetch_positions, [symbol])
                                 gercek_giris = entry
                                 if pos_list:
                                     for p in pos_list:
-                                        if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                                        if float(p.get("contracts") or 0) > 0 and p.get("side") == side:
                                             gercek_giris = float(p.get("entryPrice") or entry)
                                             break
                             except:
                                 gercek_giris = entry
-                            yeni_sl = round(gercek_giris * 1.002, 8)
+                            yeni_sl = round(gercek_giris * (1.002 if side == "long" else 0.998), 8)
                         else:
                             # TP1, TP2: SL'e dokunma, orijinal SL geçerli kalsın
                             yeni_sl = sl
@@ -671,7 +786,10 @@ def manage_loop():
                         tp_idx += 1
 
                 if tp_idx >= len(tps):
-                    geri = (max_price - price) / max_price * 100
+                    if side == "long":
+                        geri = (max_price - price) / max_price * 100 if max_price > 0 else 0
+                    else:
+                        geri = (price - min_price) / min_price * 100 if min_price > 0 else 0
                     if geri >= TRAILING_PCT:
                         close_pos(symbol, f"Trailing -%{geri:.1f}", price)
                         continue
@@ -832,24 +950,28 @@ def load_open_positions():
             try:
                 contracts = float(p.get("contracts") or 0)
                 symbol    = p.get("symbol", "")
-                side      = p.get("side", "")
+                p_side    = p.get("side", "")
                 entry     = float(p.get("entryPrice") or 0)
-                if contracts == 0 or not symbol or side != "long" or entry == 0: continue
-                sl  = round(entry * (1 - SL_PCT / 100), 8)
-                tps = [round(entry * (1 + pct / 100), 8) for pct in TP_PCTS]
+                if contracts == 0 or not symbol or p_side not in ("long", "short") or entry == 0: continue
+                if p_side == "short":
+                    sl  = round(entry * (1 + SL_PCT / 100), 8)
+                    tps = [round(entry * (1 - pct / 100), 8) for pct in TP_PCTS]
+                else:
+                    sl  = round(entry * (1 - SL_PCT / 100), 8)
+                    tps = [round(entry * (1 + pct / 100), 8) for pct in TP_PCTS]
                 with pos_lock:
                     if symbol not in positions:
                         positions[symbol] = {
                             "entry": entry, "sl": sl, "tps": tps,
-                            "tp_idx": 0, "max_price": entry,
+                            "tp_idx": 0, "max_price": entry, "min_price": entry,
                             "open_time": time.time(), "amount": contracts,
-                            "kaynak": "yukle", "mod": "manuel", "pending": False,
+                            "kaynak": "yukle", "mod": "manuel", "side": p_side, "pending": False,
                         }
                         yuklenen += 1
                         t  = safe_api(exchange.fetch_ticker, symbol)
                         now = float(t["last"]) if t else entry
-                        pnl = (now - entry) * contracts
-                        lines.append(f"{'🟢' if pnl>=0 else '🔴'} {symbol.split('/')[0]} @ {entry:.8f} | {pnl:+.2f}$")
+                        pnl = (now - entry) * contracts if p_side == "long" else (entry - now) * contracts
+                        lines.append(f"{'🟢' if pnl>=0 else '🔴'} {symbol.split('/')[0]} [{p_side}] @ {entry:.8f} | {pnl:+.2f}$")
             except Exception as e:
                 log.warning(f"[YUKLE] {e}")
         if yuklenen > 0:
@@ -968,6 +1090,30 @@ def handle_async(msg):
                     open_pos_auto(symbol, "tradingview")
             return
 
+    if "short ac" in lower or "short aç" in lower:
+        coin = find_coin(text)
+        if not coin:
+            bot.send_message(msg.chat.id, "❌ Coin bulunamadı.")
+            return
+
+        coin_adi = coin.split("/")[0]
+
+        if günlük_limit_asıldı():
+            bot.send_message(msg.chat.id, "❌ Günlük limit aşıldı.")
+            return
+
+        with pos_lock:
+            if len(positions) >= MAX_OPEN_MANUEL:
+                bot.send_message(msg.chat.id, f"❌ Max pozisyon dolu.")
+                return
+            if coin in positions:
+                bot.send_message(msg.chat.id, f"❌ {coin_adi} zaten açık.")
+                return
+
+        bot.send_message(msg.chat.id, f"📉 {coin_adi} SHORT açılıyor...")
+        open_pos_short_manuel(coin)
+        return
+
     if "long ac" in lower or "long aç" in lower:
         coin = find_coin(text)
         if not coin:
@@ -1004,7 +1150,7 @@ def handle_async(msg):
                 pnl, pct = hesap_pnl(pos, price)
                 sure = int((time.time() - pos["open_time"]) / 60)
                 lines.append(
-                    f"{'🟢' if pnl>=0 else '🔴'} {sym.split('/')[0]} [{pos.get('kaynak','?')}]\n"
+                    f"{'🟢' if pnl>=0 else '🔴'} {sym.split('/')[0]} [{pos.get('side','long').upper()}/{pos.get('kaynak','?')}]\n"
                     f"   {pos['entry']:.8f}→{price:.8f}\n"
                     f"   PnL:{pnl:+.2f}$ ({pct:+.1f}%) | {sure}dk\n"
                     f"   SL:{pos['sl']:.8f} TP{pos.get('tp_idx',0)}/{len(pos.get('tps',[]))}\n"
@@ -1067,7 +1213,8 @@ def handle_async(msg):
         "Komutlar:\n"
         "/durum — Açık pozisyonlar\n"
         "/istatistik — Geçmiş işlemler\n"
-        "COIN long aç — Manuel giriş\n"
+        "COIN long aç — Manuel LONG giriş\n"
+        "COIN short aç — Manuel SHORT giriş\n"
         "COIN kapat / hepsi kapat\n"
         "COIN adı yaz — Analiz"
     )
@@ -1112,7 +1259,7 @@ if __name__ == "__main__":
         f"  • Max: {MAX_SURE}dk\n\n"
         "Komutlar:\n"
         "/durum | /istatistik\n"
-        "COIN long aç | COIN kapat"
+        "COIN long aç | COIN short aç | COIN kapat"
     )
 
     while True:
