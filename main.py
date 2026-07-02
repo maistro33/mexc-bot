@@ -348,7 +348,11 @@ def open_pos_auto(symbol, kaynak="coinsonar", bekle_sn=180):
     sl  = round(price * (1 - sl_pct / 100), 8)
     tps = [round(price * (1 + pct / 100), 8) for pct in TP_PCTS]
 
-    if not pozisyon_slot_al(symbol, price, sl, tps, kaynak, "auto"):
+    # "COIN long aç" (manuel) artık kademeli yönetim kullanır (short ile tutarlı).
+    # CoinSonar/TradingView otomatik sinyalleri hâlâ hızlı TP1-kapat modunda kalır.
+    giris_modu = "manuel" if kaynak == "manuel" else "auto"
+
+    if not pozisyon_slot_al(symbol, price, sl, tps, kaynak, giris_modu):
         return False, "Slot alınamadı"
 
     def _ac():
@@ -753,9 +757,11 @@ def manage_loop():
                         continue
                     else:
                         if tp_idx >= 2:
-                            # TP3 ve sonrası: SL → başabaş
-                            # TP1/TP2'de dokunmuyoruz, güçlü hareketlerde erken
-                            # çıkmayı önlemek için biraz daha nefes payı bırakıyoruz
+                            # TP3'te SL → başabaş (ilk koruma, gevşek).
+                            # TP4/TP5/TP6'da ise SL, 3 seviye geride kalan TP'ye
+                            # kilitlenir (örn. TP5'te SL → TP2 seviyesi) — böylece
+                            # ilerledikçe daha fazla kâr korunur, sadece başabaşta
+                            # sabit kalıp geri vermeyiz.
                             try:
                                 pos_list = safe_api(exchange.fetch_positions, [symbol])
                                 gercek_giris = entry
@@ -766,7 +772,13 @@ def manage_loop():
                                             break
                             except:
                                 gercek_giris = entry
-                            yeni_sl = round(gercek_giris * (1.002 if side == "long" else 0.998), 8)
+                            basabas = round(gercek_giris * (1.002 if side == "long" else 0.998), 8)
+
+                            if tp_idx >= 3:
+                                uc_geri = tps[tp_idx - 3]
+                                yeni_sl = max(basabas, uc_geri) if side == "long" else min(basabas, uc_geri)
+                            else:
+                                yeni_sl = basabas
                         else:
                             # TP1, TP2: SL'e dokunma, orijinal SL geçerli kalsın
                             yeni_sl = sl
