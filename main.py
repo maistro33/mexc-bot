@@ -63,6 +63,7 @@ MAX_SURE        = 240   # Max 4 saat
 TP_PCTS = [2.1, 3.5, 4.1, 5.1, 6.1, 7.1]
 SL_PCT  = 1.5    # -%1.5 varsayılan SL
 TRAILING_PCT = 1.0  # TP6 sonrası trailing
+RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
 
 # 15m Filtre eşikleri
 RSI_MIN = 30
@@ -78,6 +79,8 @@ positions       = {}
 pos_lock        = threading.Lock()
 daily_pnl       = 0.0
 daily_pnl_lock  = threading.Lock()
+recently_closed = {}
+closed_lock     = threading.Lock()
 
 # ════════════════════════════════════════════
 # TELEGRAM BOT
@@ -263,6 +266,10 @@ def pozisyon_slot_al(symbol, entry, sl, tps, kaynak, mod="auto"):
         if symbol in positions: return False
         for ex in positions:
             if ex.split("/")[0].upper() == sym_base: return False
+        with closed_lock:
+            if sym_base in recently_closed:
+                if time.time() - recently_closed[sym_base] < RECENTLY_TTL:
+                    return False
         if len(positions) >= max_open: return False
         if günlük_limit_asıldı(): return False
 
@@ -461,6 +468,10 @@ def close_pos(symbol, reason, exit_price=None):
     toplam    = pnl_ekle(pnl)
     kaynak    = pos.get("kaynak", "?")
 
+    sym_base = sym.upper()
+    with closed_lock:
+        recently_closed[sym_base] = time.time()
+
     try:
         save_trade({
             "symbol": symbol, "signal": "LONG",
@@ -485,7 +496,7 @@ def close_pos(symbol, reason, exit_price=None):
 # ════════════════════════════════════════════
 def manage_loop():
     while True:
-        time.sleep(3)
+        time.sleep(1)
         try:
             with pos_lock:
                 syms = list(positions.keys())
