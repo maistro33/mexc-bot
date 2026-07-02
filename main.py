@@ -246,9 +246,37 @@ def limit_emir_ac(symbol, fiyat, amount, bekle_sn=300):
         order_id = order.get("id")
         for _ in range(bekle_sn // 3):
             time.sleep(3)
+
+            # 1. Emir durumunu sor
             durum = safe_api(exchange.fetch_order, order_id, symbol)
             if durum and durum.get("status") == "closed":
                 return float(durum.get("average") or fiyat_p)
+
+            # 2. Yedek kontrol — fetch_order güvenilmez dönebiliyor,
+            #    bu yüzden pozisyonun borsada gerçekten açılıp açılmadığına
+            #    da doğrudan bakıyoruz (close_pos'ta da aynı yöntem kullanılıyor)
+            try:
+                pos_list = safe_api(exchange.fetch_positions, [symbol])
+                if pos_list:
+                    for p in pos_list:
+                        if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                            gercek_fiyat = float(p.get("entryPrice") or fiyat_p)
+                            log.info(f"[LİMİT] {symbol} pozisyon doğrudan tespit edildi @ {gercek_fiyat}")
+                            return gercek_fiyat
+            except Exception as e:
+                log.warning(f"[LİMİT_POS_CHECK] {symbol}: {e}")
+
+        # Süre doldu — iptal etmeden önce SON KEZ pozisyon var mı kontrol et
+        try:
+            pos_list = safe_api(exchange.fetch_positions, [symbol])
+            if pos_list:
+                for p in pos_list:
+                    if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                        gercek_fiyat = float(p.get("entryPrice") or fiyat_p)
+                        log.info(f"[LİMİT] {symbol} son kontrolde pozisyon bulundu @ {gercek_fiyat}, iptal edilmiyor")
+                        return gercek_fiyat
+        except Exception as e:
+            log.warning(f"[LİMİT_SON_KONTROL] {symbol}: {e}")
 
         try: safe_api(exchange.cancel_order, order_id, symbol)
         except: pass
