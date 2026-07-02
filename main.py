@@ -65,9 +65,9 @@ SL_PCT  = 1.5    # -%1.5 varsayılan SL
 TRAILING_PCT = 1.0  # TP6 sonrası trailing
 RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
 
-# TP1'e hiç ulaşılmadan fiyat yükselip geri düşerse kâr korumak için:
-PRE_TP1_TRIGGER_PCT = 1.0   # Fiyat girişten +%1 yukarı çıktıysa koruma modu başlasın
-PRE_TP1_TRAIL_PCT   = 0.6   # Zirveden %0.6 geri çekilirse kârla kapat
+# TP1'e hiç ulaşılmadan fiyat elverişli yönde gidip geri dönerse kâr korumak için:
+PRE_TP1_TRIGGER_PCT = 1.5   # Fiyat girişten en az %1.5 elverişli yöne gittiyse koruma modu başlasın
+PRE_TP1_TRAIL_PCT   = 1.0   # Zirveden/dipten %1.0 geri dönerse kârla kapat
 
 # 15m Filtre eşikleri
 RSI_MIN = 30
