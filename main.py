@@ -411,13 +411,37 @@ def open_pos_futureskripto(symbol, giris, sl, tps):
                 with pos_lock: positions.pop(symbol, None)
                 return
 
-            tg(f"📡 {sym} [FuturesKripto] limit emir @ {giris:.8f}\n5 dakika bekleniyor...")
+            # Fiyat sinyalden bu yana yukarı kaçmış mı kontrol et
+            t0 = safe_api(exchange.fetch_ticker, symbol)
+            piyasa_fiyat = float(t0["last"]) if t0 else giris
 
-            gercek = limit_emir_ac(symbol, giris, amount, bekle_sn=300)
+            if piyasa_fiyat > giris * 1.001:
+                # Fiyat zaten sinyal seviyesinin üstüne çıkmış — limit'in dolmasını
+                # beklemek (geri çekilme gerektirir) bizi kanaldan geç bırakır.
+                # Market emirle anında girip senkron kalıyoruz.
+                tg(f"⚡ {sym} [FuturesKripto] fiyat sinyalden uzaklaşmış ({piyasa_fiyat:.8f} > {giris:.8f})\nMarket emirle giriliyor...")
+                order = safe_api(
+                    exchange.create_order, symbol, "market", "buy", amount, None,
+                    {"marginMode": "isolated", "marginCoin": "USDT"}
+                )
+                gercek = None
+                if order:
+                    time.sleep(2)
+                    pos_list = safe_api(exchange.fetch_positions, [symbol])
+                    if pos_list:
+                        for p in pos_list:
+                            if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                                gercek = float(p.get("entryPrice") or piyasa_fiyat)
+                                break
+                    if not gercek:
+                        gercek = piyasa_fiyat
+            else:
+                tg(f"📡 {sym} [FuturesKripto] limit emir @ {giris:.8f}\n5 dakika bekleniyor...")
+                gercek = limit_emir_ac(symbol, giris, amount, bekle_sn=300)
 
             if not gercek:
                 with pos_lock: positions.pop(symbol, None)
-                tg(f"⏰ {sym} limit dolmadı (5dk), iptal.")
+                tg(f"⏰ {sym} işlem gerçekleşmedi, iptal.")
                 return
 
             if sl > 0 and sl < gercek * 0.990:
