@@ -632,8 +632,9 @@ def close_pos(symbol, reason, exit_price=None):
     except: pass
 
     kapat_yonu = "buy" if side == "short" else "sell"
+    order = None
     try:
-        safe_api(
+        order = safe_api(
             exchange.create_order, symbol, "market", kapat_yonu, amount, None,
             {"reduceOnly": True, "marginCoin": "USDT"}
         )
@@ -641,7 +642,23 @@ def close_pos(symbol, reason, exit_price=None):
         if "22002" not in str(e) and "No position" not in str(e):
             log.error(f"[KAPAT] {sym}: {e}")
 
-    if exit_price is None:
+    # Gerçek kapanış fiyatını bulmaya çalış — verilen exit_price sadece bir
+    # TAHMİN (emir gönderilmeden önceki fiyat), kayma (slippage) olabilir.
+    gercek_exit = None
+    if order:
+        order_id = order.get("id")
+        if order_id:
+            time.sleep(1)
+            durum = safe_api(exchange.fetch_order, order_id, symbol)
+            if durum:
+                avg = durum.get("average") or durum.get("price")
+                if avg:
+                    try: gercek_exit = float(avg)
+                    except: gercek_exit = None
+
+    if gercek_exit and gercek_exit > 0:
+        exit_price = gercek_exit
+    elif exit_price is None:
         t = safe_api(exchange.fetch_ticker, symbol)
         exit_price = float(t["last"]) if t else pos["entry"]
 
