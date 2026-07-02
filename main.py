@@ -637,19 +637,24 @@ def manage_loop():
                         close_pos(symbol, f"🎯 TP1 +{pct:.1f}%", price)
                         continue
                     else:
-                        # Her TP sonrası SL → başabaş (giriş fiyatının %0.2 üstü)
-                        # (önceki TP'ye çekme yerine, daha geniş nefes payı bırakır)
-                        try:
-                            pos_list = safe_api(exchange.fetch_positions, [symbol])
-                            gercek_giris = entry
-                            if pos_list:
-                                for p in pos_list:
-                                    if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
-                                        gercek_giris = float(p.get("entryPrice") or entry)
-                                        break
-                        except:
-                            gercek_giris = entry
-                        yeni_sl = round(gercek_giris * 1.002, 8)
+                        if tp_idx >= 2:
+                            # TP3 ve sonrası: SL → başabaş (giriş fiyatının %0.2 üstü)
+                            # TP1/TP2'de dokunmuyoruz, kanalın güçlü hareketlerinde
+                            # erken çıkmayı önlemek için biraz daha nefes payı bırakıyoruz
+                            try:
+                                pos_list = safe_api(exchange.fetch_positions, [symbol])
+                                gercek_giris = entry
+                                if pos_list:
+                                    for p in pos_list:
+                                        if float(p.get("contracts") or 0) > 0 and p.get("side") == "long":
+                                            gercek_giris = float(p.get("entryPrice") or entry)
+                                            break
+                            except:
+                                gercek_giris = entry
+                            yeni_sl = round(gercek_giris * 1.002, 8)
+                        else:
+                            # TP1, TP2: SL'e dokunma, orijinal SL geçerli kalsın
+                            yeni_sl = sl
 
                         with pos_lock:
                             if symbol in positions:
@@ -657,9 +662,10 @@ def manage_loop():
                                 positions[symbol]["sl"]     = yeni_sl
 
                         sonraki = f"{tps[tp_idx+1]:.8f}" if tp_idx + 1 < len(tps) else "∞"
+                        sl_bilgi = f"SL → {yeni_sl:.8f}" if tp_idx >= 2 else f"SL değişmedi ({yeni_sl:.8f})"
                         tg(
                             f"🎯 {sym} TP{tp_idx+1}! +{pct:.1f}%\n"
-                            f"SL → {yeni_sl:.8f}\n"
+                            f"{sl_bilgi}\n"
                             f"Sonraki: {sonraki}"
                         )
                         tp_idx += 1
