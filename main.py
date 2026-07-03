@@ -53,6 +53,12 @@ TG_SESSION    = os.getenv("TG_SESSION", "")
 COINSONAR_KANAL     = "CoinSonarV2"
 FUTURESKRIPTO_KANAL = "FuturesKripto"
 
+# ── Sinyal kaynağı anahtarları ──
+# False yaparsan o kanaldan gelen sinyaller görmezden gelinir, hiç işlem açılmaz.
+# Sadece kendi tarayıcın (scanner) ve manuel komutların çalışır.
+COINSONAR_AKTIF     = False
+FUTURESKRIPTO_AKTIF = False
+
 # ── Pozisyon ──
 MARGIN          = 15.0
 LEVERAGE        = 5
@@ -71,6 +77,10 @@ NET_TP_HEDEF  = 0.80     # $ — trigger + floor seviyesi (masraf sonrası net)
 
 # ── Trailing stop (fiyat yükseldikçe stop da yükselir, giriş yönüne yaklaşır) ──
 TRAIL_PCT = 0.80          # tepeden bu kadar geri çekilirse kapat (SL ile aynı mesafe)
+
+# ── 4 kademeli TP (dolar bazlı, ana para hiç çekilmez — sadece floor/stop güncellenir) ──
+TP_LEVELS_NET   = [0.80, 1.60, 2.40, 3.20]   # $ net kâr seviyeleri (her biri $0.80 aralıklı)
+TRAIL_BACK_NET  = 0.40                        # zirveden bu kadar $ geri çekilirse kapat
 
 RECENTLY_TTL  = 1800     # coin kapandıktan sonra 30dk tekrar açılmasın
 
@@ -382,7 +392,7 @@ def pozisyon_slot_al(symbol, entry, sl, kaynak, mod="auto", side="long"):
 
         positions[symbol] = {
             "entry": entry, "sl": sl,
-            "tetiklendi": False, "floor_price": None,
+            "tetiklendi": False, "last_tp_idx": -1, "peak_net": 0.0,
             "max_price": entry, "min_price": entry,
             "open_time": time.time(), "amount": 0,
             "kaynak": kaynak, "mod": mod, "side": side, "pending": True,
@@ -429,7 +439,7 @@ def open_pos_auto(symbol, kaynak="coinsonar"):
                 f"📡 Kaynak: {kaynak.upper()}\n"
                 f"🏁 Giriş: {gercek:.8f}\n"
                 f"🚫 SL: {sl_g:.8f} (-%{SL_PCT})\n"
-                f"🎯 Net ${NET_TP_HEDEF:.2f} kâr trigger'ı sonrası trailing\n"
+                f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
                 f"💰 Pozisyon: {POS_SIZE}$ | Kaldıraç: {LEVERAGE}x"
             )
             log.info(f"[AÇIK] {sym} @ {gercek:.8f} [{kaynak}]")
@@ -481,7 +491,7 @@ def open_pos_short_manuel(symbol, kaynak="manuel"):
                 f"📡 Kaynak: {kaynak.upper()}\n"
                 f"🏁 Giriş: {gercek:.8f}\n"
                 f"🚫 SL: {sl_g:.8f} (+%{SL_PCT})\n"
-                f"🎯 Net ${NET_TP_HEDEF:.2f} kâr trigger'ı sonrası trailing\n"
+                f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
                 f"💰 Pozisyon: {POS_SIZE}$ | Kaldıraç: {LEVERAGE}x"
             )
             log.info(f"[AÇIK-SHORT] {sym} @ {gercek:.8f}")
@@ -528,7 +538,7 @@ def open_pos_futureskripto(symbol, giris_sinyal):
                 f"📡 Kaynak: FUTURESKRIPTO\n"
                 f"🏁 Giriş: {gercek:.8f}\n"
                 f"🚫 SL: {sl_g:.8f} (-%{SL_PCT})\n"
-                f"🎯 Net ${NET_TP_HEDEF:.2f} kâr trigger'ı sonrası trailing\n"
+                f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
                 f"💰 Pozisyon: {POS_SIZE}$ | Kaldıraç: {LEVERAGE}x"
             )
             log.info(f"[AÇIK] {sym} @ {gercek:.8f} [futureskripto]")
@@ -623,64 +633,53 @@ def manage_loop():
                 net, pct = net_pnl_hesapla({**pos, "amount": amount}, price)
                 sure = int((time.time() - pos["open_time"]) / 60)
 
-                # ── Henüz trigger'a ulaşılmadıysa: SL kontrolü ──
+                # ── Henüz TP1'e ulaşılmadıysa: sabit SL kontrolü ──
                 if not pos.get("tetiklendi"):
                     sl_tetiklendi = (price <= sl) if side == "long" else (price >= sl)
                     if sl_tetiklendi:
                         close_pos(symbol, f"🚫 SL ({sl:.8f})")
                         continue
 
-                    if net >= NET_TP_HEDEF:
-                        floor_price = fiyat_for_net(entry, amount, side, NET_TP_HEDEF)
+                    if net >= TP_LEVELS_NET[0]:
                         with pos_lock:
                             if symbol in positions:
                                 positions[symbol]["tetiklendi"] = True
-                                positions[symbol]["floor_price"] = floor_price
-                                positions[symbol]["max_price"] = price
-                                positions[symbol]["min_price"] = price
+                                positions[symbol]["last_tp_idx"] = 0
+                                positions[symbol]["peak_net"] = net
                         tg(
-                            f"🎯 {sym} net ${net:.2f} kâra ulaştı — TRAILING başladı\n"
-                            f"Stop: {floor_price:.8f} (garanti net ${NET_TP_HEDEF:.2f}, fiyat yükseldikçe stop da yükselir)"
+                            f"🎯 {sym} TP1 (${TP_LEVELS_NET[0]:.2f}) net kâra ulaştı\n"
+                            f"Garanti: ${TP_LEVELS_NET[0]:.2f} | Zirveden ${TRAIL_BACK_NET:.2f} geri çekilirse kapanır"
                         )
                         continue
 
-                # ── Trigger sonrası: fiyat yükseldikçe stop da yükselir, asla $0.80 garantisinin altına inmez ──
+                # ── TP1 sonrası: kademe takibi + $ bazlı geri çekilme kontrolü ──
                 else:
-                    floor_price = pos["floor_price"]   # $0.80 net garanti seviyesi — mutlak taban
-                    stop_price  = pos.get("stop_price", floor_price)
+                    peak_net    = pos.get("peak_net", net)
+                    last_tp_idx = pos.get("last_tp_idx", 0)
 
-                    if side == "long":
-                        if price > pos.get("max_price", entry):
+                    if net > peak_net:
+                        peak_net = net
+                        with pos_lock:
+                            if symbol in positions:
+                                positions[symbol]["peak_net"] = peak_net
+
+                        # Yeni kademe(ler) geçildi mi?
+                        yeni_idx = last_tp_idx
+                        while yeni_idx + 1 < len(TP_LEVELS_NET) and peak_net >= TP_LEVELS_NET[yeni_idx + 1]:
+                            yeni_idx += 1
+                        if yeni_idx > last_tp_idx:
                             with pos_lock:
                                 if symbol in positions:
-                                    positions[symbol]["max_price"] = price
-                            trail_aday = round(price * (1 - TRAIL_PCT / 100), 8)
-                            yeni_stop = max(stop_price, trail_aday, floor_price)
-                            if yeni_stop > stop_price:
-                                with pos_lock:
-                                    if symbol in positions:
-                                        positions[symbol]["stop_price"] = yeni_stop
-                                stop_price = yeni_stop
+                                    positions[symbol]["last_tp_idx"] = yeni_idx
+                            last_tp_idx = yeni_idx
+                            tg(f"🎯 {sym} TP{yeni_idx+1} (${TP_LEVELS_NET[yeni_idx]:.2f}) net kâra ulaştı — garanti yükseldi")
 
-                        if price <= stop_price:
-                            close_pos(symbol, f"🎯 Trailing stop tetiklendi ({stop_price:.8f})")
-                            continue
-                    else:
-                        if price < pos.get("min_price", entry):
-                            with pos_lock:
-                                if symbol in positions:
-                                    positions[symbol]["min_price"] = price
-                            trail_aday = round(price * (1 + TRAIL_PCT / 100), 8)
-                            yeni_stop = min(stop_price, trail_aday, floor_price)
-                            if yeni_stop < stop_price:
-                                with pos_lock:
-                                    if symbol in positions:
-                                        positions[symbol]["stop_price"] = yeni_stop
-                                stop_price = yeni_stop
+                    floor_net = TP_LEVELS_NET[last_tp_idx]
 
-                        if price >= stop_price:
-                            close_pos(symbol, f"🎯 Trailing stop tetiklendi ({stop_price:.8f})")
-                            continue
+                    # Zirveden $ bazlı geri çekilme VEYA garanti seviyesinin altına inme → kapat
+                    if (peak_net - net) >= TRAIL_BACK_NET or net <= floor_net - 0.01:
+                        close_pos(symbol, f"🎯 TP{last_tp_idx+1} garantisi kilitlendi (zirve ${peak_net:.2f} → ${net:.2f})")
+                        continue
 
                 # ── Süre kontrolü ──
                 if sure >= MAX_SURE:
@@ -824,6 +823,11 @@ def coinsonar_isle(text):
 # ════════════════════════════════════════════
 async def telethon_loop():
     try:
+        if not COINSONAR_AKTIF and not FUTURESKRIPTO_AKTIF:
+            log.info("[TELETHON] Her iki kanal da pasif — Telethon başlatılmadı, sadece scanner/manuel çalışıyor")
+            tg("📡 Kanal sinyalleri kapalı — sadece kendi tarayıcın (scanner) ve manuel komutlar aktif")
+            return
+
         if TG_SESSION:
             client = TelegramClient(StringSession(TG_SESSION), TG_API_ID, TG_API_HASH)
         else:
@@ -831,17 +835,24 @@ async def telethon_loop():
 
         await client.start()
         log.info("[TELETHON] Bağlandı!")
-        tg("📡 Telethon aktif — CoinSonar + FuturesKripto dinleniyor")
+        aktif_kanallar = []
+        if COINSONAR_AKTIF: aktif_kanallar.append("CoinSonar")
+        if FUTURESKRIPTO_AKTIF: aktif_kanallar.append("FuturesKripto")
+        tg(f"📡 Telethon aktif — {' + '.join(aktif_kanallar)} dinleniyor")
 
-        @client.on(events.NewMessage(chats=[COINSONAR_KANAL, FUTURESKRIPTO_KANAL]))
+        dinlenecek = []
+        if COINSONAR_AKTIF: dinlenecek.append(COINSONAR_KANAL)
+        if FUTURESKRIPTO_AKTIF: dinlenecek.append(FUTURESKRIPTO_KANAL)
+
+        @client.on(events.NewMessage(chats=dinlenecek))
         async def handler(event):
             text = event.message.text or ""
             chat = await event.get_chat()
             kanal = getattr(chat, "username", "") or ""
 
-            if COINSONAR_KANAL.lower() in kanal.lower():
+            if COINSONAR_AKTIF and COINSONAR_KANAL.lower() in kanal.lower():
                 threading.Thread(target=coinsonar_isle, args=(text,), daemon=True).start()
-            elif FUTURESKRIPTO_KANAL.lower() in kanal.lower():
+            elif FUTURESKRIPTO_AKTIF and FUTURESKRIPTO_KANAL.lower() in kanal.lower():
                 sonuc = sinyal_parse(text)
                 if sonuc:
                     coin_adi, giris = sonuc
@@ -885,7 +896,7 @@ def load_open_positions():
                 with pos_lock:
                     if symbol not in positions:
                         positions[symbol] = {
-                            "entry": entry, "sl": sl, "tetiklendi": False, "floor_price": None,
+                            "entry": entry, "sl": sl, "tetiklendi": False, "last_tp_idx": -1, "peak_net": 0.0,
                             "max_price": entry, "min_price": entry, "open_time": time.time(),
                             "amount": contracts, "kaynak": "yukle", "mod": "manuel",
                             "side": p_side, "pending": False,
@@ -1000,7 +1011,7 @@ def handle_async(msg):
                 amount = pos.get("amount") or (POS_SIZE / pos["entry"])
                 net, pct = net_pnl_hesapla({**pos, "amount": amount}, price)
                 sure = int((time.time() - pos["open_time"]) / 60)
-                durum_str = "TRAILING 🎯" if pos.get("tetiklendi") else f"SL:{pos['sl']:.8f}"
+                durum_str = (f"TP{pos.get('last_tp_idx',0)+1} garantili 🎯" if pos.get("tetiklendi") else f"SL:{pos['sl']:.8f}")
                 lines.append(
                     f"{'🟢' if net>=0 else '🔴'} {sym.split('/')[0]} [{pos.get('side','long').upper()}/{pos.get('kaynak','?')}]\n"
                     f"   {pos['entry']:.8f}→{price:.8f}\n"
@@ -1084,10 +1095,11 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST\n\n"
-        "📡 Kaynaklar: CoinSonar V2 | FuturesKripto | Manuel | Tarayıcı\n\n"
+        f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
+        f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
         f"🚫 SL: -%{SL_PCT}\n"
-        f"🎯 Net ${NET_TP_HEDEF:.2f} kâr trigger'ı → trailing → geri dönerse floor'dan kapanır\n"
+        f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
         f"📐 Giriş/Çıkış: SADECE LİMİT emir\n\n"
         "Komutlar:\n/durum | /istatistik\nCOIN long aç | COIN short aç | COIN kapat"
     )
