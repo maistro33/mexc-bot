@@ -70,6 +70,10 @@ STAIRCASE_START_USD      = 1.0   # Kâr $1'e ulaşınca trailing başlar
 STAIRCASE_FIRST_LOCK_USD = 0.80  # İlk kilitlenen kâr — borsa masrafı sonrası en az bu kadar
 STAIRCASE_STEP_USD       = 0.5   # Sonraki her $0.5 ilerlemede SL bir kademe daha kilitlenir
 
+# Kapanışta önce sınırlı limit dene (aşırı kaymayı önlemek için)
+LIMIT_KAPAT_TOLERANS_PCT = 0.3   # Şu anki fiyattan en fazla bu kadar kayma kabul edilir
+LIMIT_KAPAT_BEKLE_SN     = 3     # Bu süre (sn) içinde dolmazsa market emre düşülür
+
 # TP1'e hiç ulaşılmadan fiyat elverişli yönde gidip geri dönerse kâr korumak için:
 PRE_TP1_TRIGGER_PCT = 1.5   # Fiyat girişten en az %1.5 elverişli yöne gittiyse koruma modu başlasın
 PRE_TP1_TRAIL_PCT   = 1.0   # Zirveden/dipten %1.0 geri dönerse kârla kapat
@@ -625,29 +629,89 @@ def close_pos(symbol, reason, exit_price=None):
     except: pass
 
     kapat_yonu = "buy" if side == "short" else "sell"
-    order = None
-    try:
-        order = safe_api(
-            exchange.create_order, symbol, "market", kapat_yonu, amount, None,
-            {"reduceOnly": True, "marginCoin": "USDT"}
-        )
-    except Exception as e:
-        if "22002" not in str(e) and "No position" not in str(e):
-            log.error(f"[KAPAT] {sym}: {e}")
 
-    # Gerçek kapanış fiyatını bulmaya çalış — verilen exit_price sadece bir
-    # TAHMİN (emir gönderilmeden önceki fiyat), kayma (slippage) olabilir.
+    # ── ÖNCE SINIRLI LİMİT DENE (kaymayı sınırlamak için) ──
+    # Şu anki fiyata çok yakın bir limit emir koyup kısa süre bekliyoruz.
+    # Dolmazsa (fiyat çok hızlı kaçtıysa) market emre düşüyoruz — pozisyon
+    # asla korumasız kalmaz, sadece kabul ettiğimiz kaymanın üst sınırını koyarız.
+    order = None
     gercek_exit = None
-    if order:
-        order_id = order.get("id")
-        if order_id:
-            time.sleep(1)
-            durum = safe_api(exchange.fetch_order, order_id, symbol)
-            if durum:
-                avg = durum.get("average") or durum.get("price")
-                if avg:
-                    try: gercek_exit = float(avg)
-                    except: gercek_exit = None
+    try:
+        t0 = safe_api(exchange.fetch_ticker, symbol)
+        piyasa_fiyat = float(t0["last"]) if t0 else None
+    except:
+        piyasa_fiyat = None
+
+    if piyasa_fiyat:
+        if kapat_yonu == "sell":
+            limit_fiyat = round(piyasa_fiyat * (1 - LIMIT_KAPAT_TOLERANS_PCT / 100), 8)
+        else:
+            limit_fiyat = round(piyasa_fiyat * (1 + LIMIT_KAPAT_TOLERANS_PCT / 100), 8)
+
+        try:
+            limit_order = safe_api(
+                exchange.create_order, symbol, "limit", kapat_yonu, amount, limit_fiyat,
+                {"reduceOnly": True, "marginCoin": "USDT", "timeInForce": "GTC"}
+            )
+        except Exception as e:
+            limit_order = None
+            if "22002" not in str(e) and "No position" not in str(e):
+                log.warning(f"[KAPAT_LİMİT] {sym}: {e}")
+
+        if limit_order:
+            order_id = limit_order.get("id")
+            doldu = False
+            for _ in range(LIMIT_KAPAT_BEKLE_SN):
+                time.sleep(1)
+                durum = safe_api(exchange.fetch_order, order_id, symbol)
+                if durum and durum.get("status") == "closed":
+                    avg = durum.get("average") or durum.get("price")
+                    if avg:
+                        try:
+                            gercek_exit = float(avg)
+                            doldu = True
+                        except: pass
+                    break
+                # Yedek kontrol: pozisyon gerçekten kapanmış mı?
+                try:
+                    pos_list = safe_api(exchange.fetch_positions, [symbol])
+                    hala_acik = False
+                    if pos_list:
+                        for p in pos_list:
+                            if float(p.get("contracts") or 0) > 0 and p.get("side") == side:
+                                hala_acik = True
+                                break
+                    if not hala_acik:
+                        gercek_exit = limit_fiyat
+                        doldu = True
+                        break
+                except: pass
+
+            if not doldu:
+                try: safe_api(exchange.cancel_order, order_id, symbol)
+                except: pass
+
+    # ── LİMİT DOLMADIYSA MARKET EMRE DÜŞ ──
+    if not gercek_exit:
+        try:
+            order = safe_api(
+                exchange.create_order, symbol, "market", kapat_yonu, amount, None,
+                {"reduceOnly": True, "marginCoin": "USDT"}
+            )
+        except Exception as e:
+            if "22002" not in str(e) and "No position" not in str(e):
+                log.error(f"[KAPAT] {sym}: {e}")
+
+        if order:
+            order_id = order.get("id")
+            if order_id:
+                time.sleep(1)
+                durum = safe_api(exchange.fetch_order, order_id, symbol)
+                if durum:
+                    avg = durum.get("average") or durum.get("price")
+                    if avg:
+                        try: gercek_exit = float(avg)
+                        except: gercek_exit = None
 
     if gercek_exit and gercek_exit > 0:
         exit_price = gercek_exit
