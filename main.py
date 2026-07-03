@@ -72,7 +72,7 @@ MAX_DAILY_LOSS  = -15.0
 MAX_SURE        = 240    # dk — süre dolunca limitle kapat
 
 # ── Çıkış parametreleri ──
-SL_PCT        = 0.80     # sabit -%0.8 SL (tüm kaynaklarda aynı)
+SL_PCT        = 1.20     # sabit -%1.2 SL (tüm kaynaklarda aynı)
 NET_TP_HEDEF  = 0.80     # $ — trigger + floor seviyesi (masraf sonrası net)
 
 # ── Trailing stop (fiyat yükseldikçe stop da yükselir, giriş yönüne yaklaşır) ──
