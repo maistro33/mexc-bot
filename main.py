@@ -61,7 +61,7 @@ MAX_SURE        = 240   # Max 4 saat
 
 # Manuel/CoinSonar TP/SL (sabit yüzde, 75$ pozisyon)
 TP_PCTS = [1.2, 2.0, 2.8, 3.6, 4.5, 5.5]
-SL_PCT  = 1.5    # -%1.5 varsayılan SL
+SL_PCT  = 2.0    # Sabit -%2.0 SL — tüm kaynaklarda kullanılır
 TRAILING_PCT = 1.0  # TP6 sonrası trailing
 RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
 
@@ -343,13 +343,7 @@ def open_pos_auto(symbol, kaynak="coinsonar", bekle_sn=180):
     if not t0: return False, "Fiyat alınamadı"
     price = float(t0["last"])
 
-    try:
-        r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
-        df1h = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
-        atr = calc_atr(df1h)
-        sl_pct = max(1.0, min(atr / price * 100 * 1.2, 3.0))
-    except:
-        sl_pct = SL_PCT
+    sl_pct = SL_PCT  # Sabit %2.0 — tüm coinlerde aynı
 
     sl  = round(price * (1 - sl_pct / 100), 8)
     tps = [round(price * (1 + pct / 100), 8) for pct in TP_PCTS]
@@ -445,13 +439,7 @@ def open_pos_short_manuel(symbol, bekle_sn=180):
     if not t0: return False, "Fiyat alınamadı"
     price = float(t0["last"])
 
-    try:
-        r1h = safe_api(exchange.fetch_ohlcv, symbol, "1h", limit=15)
-        df1h = pd.DataFrame(r1h, columns=["t","o","h","l","c","v"])
-        atr = calc_atr(df1h)
-        sl_pct = max(1.0, min(atr / price * 100 * 1.2, 3.0))
-    except:
-        sl_pct = SL_PCT
+    sl_pct = SL_PCT  # Sabit %2.0 — tüm coinlerde aynı
 
     sl  = round(price * (1 + sl_pct / 100), 8)
     tps = [round(price * (1 - pct / 100), 8) for pct in TP_PCTS]
@@ -574,10 +562,8 @@ def open_pos_futureskripto(symbol, giris, sl, tps):
                 tg(f"⏰ {sym} işlem gerçekleşmedi, iptal.")
                 return
 
-            if sl > 0 and sl < gercek * 0.990:
-                sl_gercek = sl
-            else:
-                sl_gercek = round(gercek * (1 - SL_PCT / 100), 8)
+            # Kanalın kendi SL'i yerine sabit %2.0 kullanıyoruz — tutarlılık için
+            sl_gercek = round(gercek * (1 - SL_PCT / 100), 8)
 
             if tps:
                 tp_oran  = [(tp - giris) / giris for tp in tps]
