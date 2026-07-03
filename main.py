@@ -765,7 +765,7 @@ def manage_loop():
 
                 if max_pnl >= STAIRCASE_START_USD:
                     basamak = int((max_pnl - STAIRCASE_START_USD) // STAIRCASE_STEP_USD)
-                    kilitli_kar = basamak * STAIRCASE_STEP_USD
+                    kilitli_kar = (basamak + 1) * STAIRCASE_STEP_USD
                     fee = POS_SIZE * COMMISSION
                     if side == "short":
                         hedef_sl = round(entry - (kilitli_kar + fee) / amount, 8)
