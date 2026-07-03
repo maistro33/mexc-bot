@@ -949,13 +949,16 @@ def scanner_loop():
         time.sleep(SCAN_INTERVAL)
         try:
             if günlük_limit_asıldı():
+                log.info("[SCANNER] Günlük limit aşıldı, tur atlandı")
                 continue
             with pos_lock:
                 if len(positions) >= MAX_OPEN_AUTO:
+                    log.info(f"[SCANNER] Max pozisyon ({MAX_OPEN_AUTO}) dolu, tur atlandı")
                     continue
 
             tickers = safe_api(exchange.fetch_tickers)
             if not tickers:
+                log.warning("[SCANNER] fetch_tickers boş döndü, tur atlandı")
                 continue
 
             adaylar = []
@@ -987,6 +990,8 @@ def scanner_loop():
 
             adaylar.sort(key=lambda x: x[1], reverse=True)
             adaylar = adaylar[:SCAN_MAX_ADAY]
+
+            log.info(f"[SCANNER] Tur tamamlandı — {len(adaylar)} aday derin kontrol edilecek")
 
             for sym, _ in adaylar:
                 with pos_lock:
