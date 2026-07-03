@@ -66,8 +66,9 @@ TRAILING_PCT = 1.0  # TP6 sonrası trailing
 RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
 
 # Dolar bazlı kademeli kâr kilitleme
-STAIRCASE_START_USD = 1.0   # Kâr $1'e ulaşınca trailing başlar
-STAIRCASE_STEP_USD  = 0.5   # Her $0.5 ilerlemede SL bir kademe kilitlenir
+STAIRCASE_START_USD      = 1.0   # Kâr $1'e ulaşınca trailing başlar
+STAIRCASE_FIRST_LOCK_USD = 0.80  # İlk kilitlenen kâr — borsa masrafı sonrası en az bu kadar
+STAIRCASE_STEP_USD       = 0.5   # Sonraki her $0.5 ilerlemede SL bir kademe daha kilitlenir
 
 # TP1'e hiç ulaşılmadan fiyat elverişli yönde gidip geri dönerse kâr korumak için:
 PRE_TP1_TRIGGER_PCT = 1.5   # Fiyat girişten en az %1.5 elverişli yöne gittiyse koruma modu başlasın
@@ -430,8 +431,8 @@ def open_pos_auto(symbol, kaynak="coinsonar", bekle_sn=180):
 # ════════════════════════════════════════════
 # İŞLEM AÇ — Manuel SHORT
 # ════════════════════════════════════════════
-def open_pos_short_manuel(symbol, bekle_sn=180):
-    """Manuel SHORT girişi — 'COIN short aç' komutu için.
+def open_pos_short_manuel(symbol, bekle_sn=180, kaynak="manuel"):
+    """SHORT girişi — 'COIN short aç' komutu veya tarayıcı (dump tespiti) için.
     SL girişin ÜSTÜNDE, TP'ler ALTINDA (long'un tam tersi)."""
     sym = symbol.split("/")[0]
 
@@ -444,7 +445,7 @@ def open_pos_short_manuel(symbol, bekle_sn=180):
     sl  = round(price * (1 + sl_pct / 100), 8)
     tps = [round(price * (1 - pct / 100), 8) for pct in TP_PCTS]
 
-    if not pozisyon_slot_al(symbol, price, sl, tps, "manuel", "manuel", side="short"):
+    if not pozisyon_slot_al(symbol, price, sl, tps, kaynak, "manuel", side="short"):
         return False, "Slot alınamadı"
 
     def _ac():
@@ -496,7 +497,7 @@ def open_pos_short_manuel(symbol, bekle_sn=180):
             tp_str = "\n".join([f"TP{i+1}: {tp:.8f} (-%{TP_PCTS[i]})" for i, tp in enumerate(tps_g)])
             tg(
                 f"🔻 #{sym}USDT.P SHORT\n"
-                f"📡 Kaynak: MANUEL\n"
+                f"📡 Kaynak: {kaynak.upper()}\n"
                 f"🏁 Giriş: {gercek:.8f}\n"
                 f"🚫 SL: {sl_g:.8f} (+%{sl_pct:.1f})\n\n"
                 f"{tp_str}\n\n"
@@ -751,7 +752,7 @@ def manage_loop():
 
                 if max_pnl >= STAIRCASE_START_USD:
                     basamak = int((max_pnl - STAIRCASE_START_USD) // STAIRCASE_STEP_USD)
-                    kilitli_kar = (basamak + 1) * STAIRCASE_STEP_USD
+                    kilitli_kar = STAIRCASE_FIRST_LOCK_USD + basamak * STAIRCASE_STEP_USD
                     fee = POS_SIZE * COMMISSION
                     if side == "short":
                         hedef_sl = round(entry - (kilitli_kar + fee) / amount, 8)
@@ -807,6 +808,133 @@ def sinyal_parse(text):
     tps = [float(x) for x in re.findall(r'TP\d+[:\s]+([0-9.]+)', text)]
 
     return coin_adi, giris, sl, tps
+
+# ════════════════════════════════════════════
+# BAĞIMSIZ TARAYICI — Kanallara bağımlı kalmadan
+# tüm piyasayı tarar, uygun coin bulunca otomatik girer
+# ════════════════════════════════════════════
+# ════════════════════════════════════════════
+# BAĞIMSIZ TARAYICI — Kanallara bağımlı kalmadan
+# tüm piyasayı tarar, ANİ pump/dump bulunca otomatik girer
+# ════════════════════════════════════════════
+SCAN_INTERVAL     = 30    # Her 30sn bir tarama
+SCAN_MAX_ADAY     = 20    # Bir turda en fazla bu kadar aday derin analiz edilir
+ANI_VOL_SPIKE_MIN = 2.0   # Son mumun hacmi, ortalamanın en az bu katı olmalı
+ANI_PCT_MIN       = 1.5   # Son ~3 dakikada en az bu kadar hareket (pump:+ / dump:-)
+
+def ani_hareket_tespit(symbol):
+    """
+    Son birkaç dakikadaki ANİ hacim + fiyat hareketini tespit eder.
+    24 saatlik değişime değil, ŞU AN olan patlamaya bakar.
+    Döner: ("pump" | "dump" | None, detay)
+    """
+    try:
+        r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=25)
+        if not r1m or len(r1m) < 15:
+            return None, {}
+
+        df    = pd.DataFrame(r1m, columns=["t","o","h","l","c","v"])
+        price = float(df["c"].iloc[-1])
+
+        son_hacim = float(df["v"].iloc[-1])
+        ort_hacim = float(df["v"].iloc[:-1].tail(20).mean())
+        vol_oran  = son_hacim / max(ort_hacim, 0.0001)
+
+        if vol_oran < ANI_VOL_SPIKE_MIN:
+            return None, {"vol": round(vol_oran, 1)}
+
+        pct_3m = (price - float(df["c"].iloc[-4])) / float(df["c"].iloc[-4]) * 100
+
+        detay = {"vol": round(vol_oran, 1), "pct": round(pct_3m, 2), "price": price}
+
+        if pct_3m >= ANI_PCT_MIN:
+            return "pump", detay
+        elif pct_3m <= -ANI_PCT_MIN:
+            return "dump", detay
+        return None, detay
+
+    except Exception as e:
+        log.warning(f"[ANİ] {symbol}: {e}")
+        return None, {}
+
+def scanner_loop():
+    log.info("[SCANNER] Bağımsız pump/dump tarama başladı")
+    while True:
+        time.sleep(SCAN_INTERVAL)
+        try:
+            if günlük_limit_asıldı():
+                continue
+            with pos_lock:
+                if len(positions) >= MAX_OPEN_AUTO:
+                    continue
+
+            tickers = safe_api(exchange.fetch_tickers)
+            if not tickers:
+                continue
+
+            adaylar = []
+            for sym, t in tickers.items():
+                if not sym.endswith("/USDT:USDT"):
+                    continue
+                sym_base = sym.split("/")[0].upper()
+
+                with pos_lock:
+                    if sym in positions:
+                        continue
+                    if any(ex.split("/")[0].upper() == sym_base for ex in positions):
+                        continue
+                with closed_lock:
+                    if sym_base in recently_closed and time.time() - recently_closed[sym_base] < RECENTLY_TTL:
+                        continue
+
+                last = t.get("last")
+                vol  = t.get("quoteVolume") or 0
+                chg  = abs(t.get("percentage") or 0)
+                if not last or last < MIN_PRICE or last > MAX_PRICE:
+                    continue
+                if vol < MIN_TURNOVER:
+                    continue
+
+                # 24s mutlak değişime göre öncelik sırala — en hareketli
+                # coinleri önce derin kontrol ederiz (API maliyetini sınırlar)
+                adaylar.append((sym, chg))
+
+            adaylar.sort(key=lambda x: x[1], reverse=True)
+            adaylar = adaylar[:SCAN_MAX_ADAY]
+
+            for sym, _ in adaylar:
+                with pos_lock:
+                    if len(positions) >= MAX_OPEN_AUTO:
+                        break
+
+                yon, detay = ani_hareket_tespit(sym)
+                if yon is None:
+                    continue
+
+                sym_kisa = sym.split("/")[0]
+
+                if yon == "pump":
+                    log.info(f"[SCANNER] {sym} ✅ PUMP — vol:{detay['vol']}x pct:{detay['pct']:+.1f}%")
+                    tg(
+                        f"🚀 Ani PUMP tespit edildi: {sym_kisa}\n"
+                        f"Hacim: {detay['vol']}x | Son 3dk: {detay['pct']:+.1f}%\n"
+                        f"LONG açılıyor..."
+                    )
+                    open_pos_auto(sym, "scanner")
+                    break
+
+                elif yon == "dump":
+                    log.info(f"[SCANNER] {sym} ✅ DUMP — vol:{detay['vol']}x pct:{detay['pct']:+.1f}%")
+                    tg(
+                        f"📉 Ani DUMP tespit edildi: {sym_kisa}\n"
+                        f"Hacim: {detay['vol']}x | Son 3dk: {detay['pct']:+.1f}%\n"
+                        f"SHORT açılıyor..."
+                    )
+                    open_pos_short_manuel(sym, kaynak="scanner")
+                    break
+
+        except Exception as e:
+            log.error(f"[SCANNER] {e}")
 
 # ════════════════════════════════════════════
 # COINSONAR SİNYALİ İŞLE
@@ -1115,6 +1243,22 @@ def handle_async(msg):
                 bot.send_message(msg.chat.id, f"❌ {coin_adi} zaten açık.")
                 return
 
+        bot.send_message(msg.chat.id, f"🔍 {coin_adi} analiz ediliyor...")
+        gecti, detay = filtre_15m(coin)
+
+        if not gecti:
+            reason = []
+            if not detay.get("ma_ok"): reason.append("MA sırası uygun değil")
+            if not detay.get("vol_ok"): reason.append("Hacim düşük")
+            if not detay.get("rsi_ok"): reason.append(f"RSI:{detay.get('rsi',0):.1f}")
+            bot.send_message(
+                msg.chat.id,
+                f"⚠️ {coin_adi} — Şartlar tam uygun değil ({', '.join(reason) if reason else 'belirsiz'})\n"
+                f"Yine de senin isteğinle açılıyor..."
+            )
+        else:
+            bot.send_message(msg.chat.id, f"✅ {coin_adi} şartlar uygun, açılıyor...")
+
         bot.send_message(msg.chat.id, f"⚡ {coin_adi} açılıyor, 3 dakika bekleniyor...")
         open_pos_auto(coin, "manuel", bekle_sn=180)
         return
@@ -1221,6 +1365,7 @@ if __name__ == "__main__":
     load_open_positions()
     threading.Thread(target=health_server,     daemon=True).start()
     threading.Thread(target=manage_loop,       daemon=True).start()
+    threading.Thread(target=scanner_loop,      daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
     threading.Thread(target=telethon_thread,   daemon=True).start()
 
