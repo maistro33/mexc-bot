@@ -743,6 +743,45 @@ def ani_hareket_tespit(symbol):
         log.warning(f"[ANİ] {symbol}: {e}")
         return None, {}
 
+def giris_onayi_bekle(symbol, yon, bekle_sn=15, pullback_pct=0.15):
+    """
+    Momentum tespit edildikten sonra hemen girmek yerine kısa bir onay
+    penceresi açar: fiyatın zirvesinden/dibinden küçük bir geri çekilme
+    (pullback) görülene kadar bekler. Böylece tam tepe/dip noktasından
+    değil, biraz daha iyi bir fiyattan girilir.
+
+    pump (long): zirveyi takip et, zirveden %pullback_pct geri gelirse onay.
+    dump (short): dibi takip et, dipten %pullback_pct yukarı gelirse onay.
+
+    Döner: (onaylandi: bool, giris_fiyati: float|None)
+    """
+    ekstrem = None
+    for _ in range(bekle_sn):
+        t = safe_api(exchange.fetch_ticker, symbol)
+        if not t:
+            time.sleep(1); continue
+        price = float(t["last"])
+
+        if ekstrem is None:
+            ekstrem = price
+        elif yon == "pump":
+            ekstrem = max(ekstrem, price)
+        else:
+            ekstrem = min(ekstrem, price)
+
+        if yon == "pump":
+            geri_cekilme = (ekstrem - price) / ekstrem * 100
+            if geri_cekilme >= pullback_pct:
+                return True, price
+        else:
+            geri_cekilme = (price - ekstrem) / ekstrem * 100
+            if geri_cekilme >= pullback_pct:
+                return True, price
+
+        time.sleep(1)
+
+    return False, None
+
 def scanner_loop():
     log.info("[SCANNER] Bağımsız pump/dump tarama başladı")
     while True:
@@ -779,14 +818,28 @@ def scanner_loop():
                 yon, detay = ani_hareket_tespit(sym)
                 if yon is None: continue
                 sym_kisa = sym.split("/")[0]
+
                 if yon == "pump":
-                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\nLONG açılıyor...")
-                    open_pos_auto(sym, "scanner")
-                    break
+                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\nGeri çekilme onayı bekleniyor...")
+                    onaylandi, giris_fiyat = giris_onayi_bekle(sym, "pump")
+                    if onaylandi:
+                        tg(f"✅ {sym_kisa} geri çekilme onaylandı @ {giris_fiyat:.8f} — LONG açılıyor...")
+                        open_pos_auto(sym, "scanner")
+                        break
+                    else:
+                        log.info(f"[SCANNER] {sym_kisa} pullback onayı gelmedi, atlandı")
+                        continue
+
                 elif yon == "dump":
-                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\nSHORT açılıyor...")
-                    open_pos_short_manuel(sym, "scanner")
-                    break
+                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\nGeri çekilme onayı bekleniyor...")
+                    onaylandi, giris_fiyat = giris_onayi_bekle(sym, "dump")
+                    if onaylandi:
+                        tg(f"✅ {sym_kisa} geri çekilme onaylandı @ {giris_fiyat:.8f} — SHORT açılıyor...")
+                        open_pos_short_manuel(sym, "scanner")
+                        break
+                    else:
+                        log.info(f"[SCANNER] {sym_kisa} pullback onayı gelmedi, atlandı")
+                        continue
         except Exception as e:
             log.error(f"[SCANNER] {e}")
 
