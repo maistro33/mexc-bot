@@ -938,7 +938,7 @@ def scanner_loop():
                         f"Hacim: {detay['vol']}x | Son 3dk: {detay['pct']:+.1f}%\n"
                         f"LONG açılıyor..."
                     )
-                    open_pos_auto(sym, "scanner")
+                    open_pos_auto(sym, "scanner", bekle_sn=20)
                     break
 
                 elif yon == "dump":
@@ -948,7 +948,7 @@ def scanner_loop():
                         f"Hacim: {detay['vol']}x | Son 3dk: {detay['pct']:+.1f}%\n"
                         f"SHORT açılıyor..."
                     )
-                    open_pos_short_manuel(sym, kaynak="scanner")
+                    open_pos_short_manuel(sym, bekle_sn=20, kaynak="scanner")
                     break
 
         except Exception as e:
