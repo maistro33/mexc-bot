@@ -69,6 +69,9 @@ MAX_SURE        = 240    # dk — süre dolunca limitle kapat
 SL_PCT        = 0.80     # sabit -%0.8 SL (tüm kaynaklarda aynı)
 NET_TP_HEDEF  = 0.80     # $ — trigger + floor seviyesi (masraf sonrası net)
 
+# ── Trailing stop (fiyat yükseldikçe stop da yükselir, giriş yönüne yaklaşır) ──
+TRAIL_PCT = 0.80          # tepeden bu kadar geri çekilirse kapat (SL ile aynı mesafe)
+
 RECENTLY_TTL  = 1800     # coin kapandıktan sonra 30dk tekrar açılmasın
 
 # ── Limit emir parametreleri (SADECE LİMİT — market emir yok) ──
@@ -637,28 +640,46 @@ def manage_loop():
                                 positions[symbol]["min_price"] = price
                         tg(
                             f"🎯 {sym} net ${net:.2f} kâra ulaştı — TRAILING başladı\n"
-                            f"Floor: {floor_price:.8f} (geri dönerse buradan net ${NET_TP_HEDEF:.2f} kilitlenir)"
+                            f"Stop: {floor_price:.8f} (garanti net ${NET_TP_HEDEF:.2f}, fiyat yükseldikçe stop da yükselir)"
                         )
                         continue
 
-                # ── Trigger sonrası: trailing / floor kontrolü ──
+                # ── Trigger sonrası: fiyat yükseldikçe stop da yükselir, asla $0.80 garantisinin altına inmez ──
                 else:
-                    floor_price = pos["floor_price"]
+                    floor_price = pos["floor_price"]   # $0.80 net garanti seviyesi — mutlak taban
+                    stop_price  = pos.get("stop_price", floor_price)
+
                     if side == "long":
                         if price > pos.get("max_price", entry):
                             with pos_lock:
                                 if symbol in positions:
                                     positions[symbol]["max_price"] = price
-                        if price <= floor_price:
-                            close_pos(symbol, f"🎯 Trailing geri döndü, floor'dan kapandı (${NET_TP_HEDEF:.2f} net)")
+                            trail_aday = round(price * (1 - TRAIL_PCT / 100), 8)
+                            yeni_stop = max(stop_price, trail_aday, floor_price)
+                            if yeni_stop > stop_price:
+                                with pos_lock:
+                                    if symbol in positions:
+                                        positions[symbol]["stop_price"] = yeni_stop
+                                stop_price = yeni_stop
+
+                        if price <= stop_price:
+                            close_pos(symbol, f"🎯 Trailing stop tetiklendi ({stop_price:.8f})")
                             continue
                     else:
                         if price < pos.get("min_price", entry):
                             with pos_lock:
                                 if symbol in positions:
                                     positions[symbol]["min_price"] = price
-                        if price >= floor_price:
-                            close_pos(symbol, f"🎯 Trailing geri döndü, floor'dan kapandı (${NET_TP_HEDEF:.2f} net)")
+                            trail_aday = round(price * (1 + TRAIL_PCT / 100), 8)
+                            yeni_stop = min(stop_price, trail_aday, floor_price)
+                            if yeni_stop < stop_price:
+                                with pos_lock:
+                                    if symbol in positions:
+                                        positions[symbol]["stop_price"] = yeni_stop
+                                stop_price = yeni_stop
+
+                        if price >= stop_price:
+                            close_pos(symbol, f"🎯 Trailing stop tetiklendi ({stop_price:.8f})")
                             continue
 
                 # ── Süre kontrolü ──
