@@ -65,6 +65,10 @@ SL_PCT  = 1.5    # -%1.5 varsayılan SL
 TRAILING_PCT = 1.0  # TP6 sonrası trailing
 RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
 
+# Dolar bazlı kademeli kâr kilitleme
+STAIRCASE_START_USD = 1.0   # Kâr $1'e ulaşınca trailing başlar
+STAIRCASE_STEP_USD  = 0.5   # Her $0.5 ilerlemede SL bir kademe kilitlenir
+
 # TP1'e hiç ulaşılmadan fiyat elverişli yönde gidip geri dönerse kâr korumak için:
 PRE_TP1_TRIGGER_PCT = 1.5   # Fiyat girişten en az %1.5 elverişli yöne gittiyse koruma modu başlasın
 PRE_TP1_TRAIL_PCT   = 1.0   # Zirveden/dipten %1.0 geri dönerse kârla kapat
@@ -311,18 +315,20 @@ def pozisyon_slot_al(symbol, entry, sl, tps, kaynak, mod="auto", side="long"):
         if günlük_limit_asıldı(): return False
 
         positions[symbol] = {
-            "entry":     entry,
-            "sl":        sl,
-            "tps":       tps,
-            "tp_idx":    0,
-            "max_price": entry,
-            "min_price": entry,
-            "open_time": time.time(),
-            "amount":    0,
-            "kaynak":    kaynak,
-            "mod":       mod,
-            "side":      side,
-            "pending":   True,
+            "entry":       entry,
+            "sl":          sl,
+            "tps":         tps,
+            "tp_idx":      0,
+            "max_price":   entry,
+            "min_price":   entry,
+            "max_pnl":     0.0,
+            "son_basamak": -1,
+            "open_time":   time.time(),
+            "amount":      0,
+            "kaynak":      kaynak,
+            "mod":         mod,
+            "side":        side,
+            "pending":     True,
         }
         return True
 
@@ -737,24 +743,6 @@ def manage_loop():
                     close_pos(symbol, f"🚫 SL ({sl:.8f})", price)
                     continue
 
-                # TP1'e hiç ulaşılmadan fiyat elverişli yönde gidip geri dönerse — kâr koru
-                if tp_idx == 0:
-                    if side == "long":
-                        zirve_hareket = (max_price - entry) / entry * 100
-                        geri_cekilme  = (max_price - price) / max_price * 100 if max_price > 0 else 0
-                        koru_sart     = zirve_hareket >= PRE_TP1_TRIGGER_PCT and geri_cekilme >= PRE_TP1_TRAIL_PCT and price > entry
-                    else:
-                        zirve_hareket = (entry - min_price) / entry * 100
-                        geri_cekilme  = (price - min_price) / min_price * 100 if min_price > 0 else 0
-                        koru_sart     = zirve_hareket >= PRE_TP1_TRIGGER_PCT and geri_cekilme >= PRE_TP1_TRAIL_PCT and price < entry
-                    if koru_sart:
-                        close_pos(
-                            symbol,
-                            f"🛡️ Erken koruma (zirve %{zirve_hareket:.1f}, geri -%{geri_cekilme:.1f})",
-                            price
-                        )
-                        continue
-
                 if sure >= MAX_SURE:
                     close_pos(symbol, f"⏰ Süre doldu ({MAX_SURE}dk)", price)
                     continue
@@ -763,60 +751,42 @@ def manage_loop():
                     close_pos(symbol, "Günlük limit", price)
                     continue
 
-                tp_tetiklendi = tp_idx < len(tps) and (
-                    (price >= tps[tp_idx]) if side == "long" else (price <= tps[tp_idx])
-                )
-                if tp_tetiklendi:
-                    sym = symbol.split("/")[0]
+                # ── DOLAR BAZLI KADEMELİ KÂR KİLİTLEME ──
+                # Kâr $1'e ulaşınca trailing başlar. Sonrasında her $0.5 ilerlemede
+                # SL bir kademe yukarı (short'ta aşağı) çekilir — kazanılan kârın
+                # bir kısmı her zaman kilitli kalır, sabit TP seviyeleri beklenmez.
+                amount = pos.get("amount", POS_SIZE / max(entry, 0.000001))
+                max_pnl = pos.get("max_pnl", 0.0)
+                if pnl > max_pnl:
+                    max_pnl = pnl
+                    with pos_lock:
+                        if symbol in positions:
+                            positions[symbol]["max_pnl"] = max_pnl
 
-                    if mod == "auto" and tp_idx == 0:
-                        close_pos(symbol, f"🎯 TP1 +{pct:.1f}%", price)
-                        continue
+                if max_pnl >= STAIRCASE_START_USD:
+                    basamak = int((max_pnl - STAIRCASE_START_USD) // STAIRCASE_STEP_USD)
+                    kilitli_kar = basamak * STAIRCASE_STEP_USD
+                    fee = POS_SIZE * COMMISSION
+                    if side == "short":
+                        hedef_sl = round(entry - (kilitli_kar + fee) / amount, 8)
+                        sl_iyilesti = hedef_sl < sl
                     else:
-                        if tp_idx >= 2:
-                            # TP3'ten itibaren SL, 2 seviye geride kalan TP'ye
-                            # kilitlenir (örn. TP3'te SL→TP1, TP5'te SL→TP3).
-                            # Sıkı takip: hızlı geri dönüşlerde daha az kâr geri verilir.
-                            try:
-                                pos_list = safe_api(exchange.fetch_positions, [symbol])
-                                gercek_giris = entry
-                                if pos_list:
-                                    for p in pos_list:
-                                        if float(p.get("contracts") or 0) > 0 and p.get("side") == side:
-                                            gercek_giris = float(p.get("entryPrice") or entry)
-                                            break
-                            except:
-                                gercek_giris = entry
-                            basabas = round(gercek_giris * (1.002 if side == "long" else 0.998), 8)
+                        hedef_sl = round(entry + (kilitli_kar + fee) / amount, 8)
+                        sl_iyilesti = hedef_sl > sl
 
-                            iki_geri = tps[tp_idx - 2]
-                            yeni_sl = max(basabas, iki_geri) if side == "long" else min(basabas, iki_geri)
-                        else:
-                            # TP1, TP2: SL'e dokunma, orijinal SL geçerli kalsın
-                            yeni_sl = sl
-
+                    if sl_iyilesti:
+                        son_basamak = pos.get("son_basamak", -1)
                         with pos_lock:
                             if symbol in positions:
-                                positions[symbol]["tp_idx"] = tp_idx + 1
-                                positions[symbol]["sl"]     = yeni_sl
-
-                        sonraki = f"{tps[tp_idx+1]:.8f}" if tp_idx + 1 < len(tps) else "∞"
-                        sl_bilgi = f"SL → {yeni_sl:.8f}" if tp_idx >= 2 else f"SL değişmedi ({yeni_sl:.8f})"
-                        tg(
-                            f"🎯 {sym} TP{tp_idx+1}! +{pct:.1f}%\n"
-                            f"{sl_bilgi}\n"
-                            f"Sonraki: {sonraki}"
-                        )
-                        tp_idx += 1
-
-                if tp_idx >= len(tps):
-                    if side == "long":
-                        geri = (max_price - price) / max_price * 100 if max_price > 0 else 0
-                    else:
-                        geri = (price - min_price) / min_price * 100 if min_price > 0 else 0
-                    if geri >= TRAILING_PCT:
-                        close_pos(symbol, f"Trailing -%{geri:.1f}", price)
-                        continue
+                                positions[symbol]["sl"] = hedef_sl
+                                positions[symbol]["son_basamak"] = basamak
+                        sl = hedef_sl
+                        if basamak != son_basamak:
+                            sym = symbol.split("/")[0]
+                            tg(
+                                f"📈 {sym} kâr ${max_pnl:.2f}\n"
+                                f"SL → {hedef_sl:.8f} (kilitli kâr: ${kilitli_kar:.2f})"
+                            )
 
         except Exception as e:
             log.error(f"[MANAGE] {e}")
@@ -988,6 +958,7 @@ def load_open_positions():
                         positions[symbol] = {
                             "entry": entry, "sl": sl, "tps": tps,
                             "tp_idx": 0, "max_price": entry, "min_price": entry,
+                            "max_pnl": 0.0, "son_basamak": -1,
                             "open_time": time.time(), "amount": contracts,
                             "kaynak": "yukle", "mod": "manuel", "side": p_side, "pending": False,
                         }
