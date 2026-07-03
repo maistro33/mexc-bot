@@ -891,12 +891,10 @@ def ani_hareket_tespit(symbol):
     Son birkaç dakikadaki ANİ hacim + fiyat hareketini tespit eder.
     24 saatlik değişime değil, ŞU AN olan patlamaya bakar.
 
-    RSI kontrolü eklendi: sadece hacim+fiyat patlamasına bakmak,
-    "tepe yapmış ama hâlâ yukarı trendde olan" bir coin'in ufak bir
-    geri çekilmesini "dump" sanıp yanlışlıkla short açmamıza yol
-    açıyordu (ve tersi de long için geçerli). RSI, o anki hareketin
-    gerçekten trend değişimi mi yoksa geçici bir nefes alma mı
-    olduğunu ayırt etmemize yardımcı olur.
+    RSI kontrolü — 15m zaman diliminde (grafikte görülenle aynı).
+    1m RSI çok gürültülü olduğu için "tepe yapmış ama hâlâ yukarı
+    trendde olan" bir coin'de yanlışlıkla short/long açmaya yol
+    açıyordu. 15m RSI, gerçek trend bağlamını daha doğru yansıtır.
 
     Döner: ("pump" | "dump" | None, detay)
     """
@@ -916,19 +914,25 @@ def ani_hareket_tespit(symbol):
             return None, {"vol": round(vol_oran, 1)}
 
         pct_3m = (price - float(df["c"].iloc[-4])) / float(df["c"].iloc[-4]) * 100
-        rsi    = calc_rsi(df["c"])
+
+        # RSI'ı 15m'den hesapla — grafikte gördüğünüzle aynı zaman dilimi
+        r15m = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=20)
+        if not r15m or len(r15m) < 15:
+            return None, {}
+        df15m = pd.DataFrame(r15m, columns=["t","o","h","l","c","v"])
+        rsi   = calc_rsi(df15m["c"])
 
         detay = {"vol": round(vol_oran, 1), "pct": round(pct_3m, 2), "price": price, "rsi": round(rsi, 1)}
 
         if pct_3m >= ANI_PCT_MIN:
-            # PUMP: RSI zaten çok yüksekse (>75) muhtemelen tepe — girme
+            # PUMP: RSI(15m) zaten çok yüksekse (>75) muhtemelen tepe — girme
             if rsi > 75:
                 return None, detay
             return "pump", detay
 
         elif pct_3m <= -ANI_PCT_MIN:
-            # DUMP: RSI hâlâ yüksekse (>50) bu sadece yukarı trend içinde
-            # ufak bir geri çekilme — gerçek dönüş değil, short açma
+            # DUMP: RSI(15m) hâlâ yüksekse (>50) bu sadece yukarı trend
+            # içinde ufak bir geri çekilme — gerçek dönüş değil, short açma
             if rsi > 50:
                 return None, detay
             return "dump", detay
