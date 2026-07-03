@@ -51,8 +51,8 @@ FUTURESKRIPTO_KANAL = "FuturesKripto"
 
 # İşlem parametreleri
 LEVERAGE        = 5
-MARGIN          = 15.0
-POS_SIZE        = MARGIN * LEVERAGE   # 75$
+MARGIN          = 5.0
+POS_SIZE        = MARGIN * LEVERAGE   # 25$
 COMMISSION      = 0.0006
 MAX_OPEN_AUTO   = 2
 MAX_OPEN_MANUEL = 3
@@ -66,9 +66,9 @@ TRAILING_PCT = 1.0  # TP6 sonrası trailing
 RECENTLY_TTL = 1800  # Bir coin kapandıktan sonra 30dk tekrar açılmasın
 
 # Dolar bazlı kademeli kâr kilitleme
-STAIRCASE_START_USD      = 1.0   # Kâr $1'e ulaşınca trailing başlar
-STAIRCASE_FIRST_LOCK_USD = 0.80  # İlk kilitlenen kâr — borsa masrafı sonrası en az bu kadar
-STAIRCASE_STEP_USD       = 0.5   # Sonraki her $0.5 ilerlemede SL bir kademe daha kilitlenir
+STAIRCASE_START_USD      = 0.35  # Kâr $0.35'e ulaşınca trailing başlar (25$ pozisyona göre ölçeklendi)
+STAIRCASE_FIRST_LOCK_USD = 0.27  # İlk kilitlenen kâr — borsa masrafı sonrası en az bu kadar
+STAIRCASE_STEP_USD       = 0.17  # Sonraki her $0.17 ilerlemede SL bir kademe daha kilitlenir
 
 # Kapanışta önce sınırlı limit dene (aşırı kaymayı önlemek için)
 LIMIT_KAPAT_TOLERANS_PCT = 0.3   # Şu anki fiyattan en fazla bu kadar kayma kabul edilir
