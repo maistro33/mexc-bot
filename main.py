@@ -774,11 +774,9 @@ def manage_loop():
                         continue
                     else:
                         if tp_idx >= 2:
-                            # TP3'te SL → başabaş (ilk koruma, gevşek).
-                            # TP4/TP5/TP6'da ise SL, 3 seviye geride kalan TP'ye
-                            # kilitlenir (örn. TP5'te SL → TP2 seviyesi) — böylece
-                            # ilerledikçe daha fazla kâr korunur, sadece başabaşta
-                            # sabit kalıp geri vermeyiz.
+                            # TP3'ten itibaren SL, 2 seviye geride kalan TP'ye
+                            # kilitlenir (örn. TP3'te SL→TP1, TP5'te SL→TP3).
+                            # Sıkı takip: hızlı geri dönüşlerde daha az kâr geri verilir.
                             try:
                                 pos_list = safe_api(exchange.fetch_positions, [symbol])
                                 gercek_giris = entry
@@ -791,11 +789,8 @@ def manage_loop():
                                 gercek_giris = entry
                             basabas = round(gercek_giris * (1.002 if side == "long" else 0.998), 8)
 
-                            if tp_idx >= 3:
-                                uc_geri = tps[tp_idx - 3]
-                                yeni_sl = max(basabas, uc_geri) if side == "long" else min(basabas, uc_geri)
-                            else:
-                                yeni_sl = basabas
+                            iki_geri = tps[tp_idx - 2]
+                            yeni_sl = max(basabas, iki_geri) if side == "long" else min(basabas, iki_geri)
                         else:
                             # TP1, TP2: SL'e dokunma, orijinal SL geçerli kalsın
                             yeni_sl = sl
