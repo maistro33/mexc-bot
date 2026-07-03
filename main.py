@@ -826,6 +826,14 @@ def ani_hareket_tespit(symbol):
     """
     Son birkaç dakikadaki ANİ hacim + fiyat hareketini tespit eder.
     24 saatlik değişime değil, ŞU AN olan patlamaya bakar.
+
+    RSI kontrolü eklendi: sadece hacim+fiyat patlamasına bakmak,
+    "tepe yapmış ama hâlâ yukarı trendde olan" bir coin'in ufak bir
+    geri çekilmesini "dump" sanıp yanlışlıkla short açmamıza yol
+    açıyordu (ve tersi de long için geçerli). RSI, o anki hareketin
+    gerçekten trend değişimi mi yoksa geçici bir nefes alma mı
+    olduğunu ayırt etmemize yardımcı olur.
+
     Döner: ("pump" | "dump" | None, detay)
     """
     try:
@@ -844,13 +852,23 @@ def ani_hareket_tespit(symbol):
             return None, {"vol": round(vol_oran, 1)}
 
         pct_3m = (price - float(df["c"].iloc[-4])) / float(df["c"].iloc[-4]) * 100
+        rsi    = calc_rsi(df["c"])
 
-        detay = {"vol": round(vol_oran, 1), "pct": round(pct_3m, 2), "price": price}
+        detay = {"vol": round(vol_oran, 1), "pct": round(pct_3m, 2), "price": price, "rsi": round(rsi, 1)}
 
         if pct_3m >= ANI_PCT_MIN:
+            # PUMP: RSI zaten çok yüksekse (>75) muhtemelen tepe — girme
+            if rsi > 75:
+                return None, detay
             return "pump", detay
+
         elif pct_3m <= -ANI_PCT_MIN:
+            # DUMP: RSI hâlâ yüksekse (>50) bu sadece yukarı trend içinde
+            # ufak bir geri çekilme — gerçek dönüş değil, short açma
+            if rsi > 50:
+                return None, detay
             return "dump", detay
+
         return None, detay
 
     except Exception as e:
