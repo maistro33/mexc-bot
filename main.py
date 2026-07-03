@@ -29,7 +29,6 @@ import os, time, threading, logging, re, asyncio
 import ccxt
 import pandas as pd
 import telebot
-from supabase import create_client
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -131,13 +130,7 @@ def tg(msg):
 # ════════════════════════════════════════════
 # SUPABASE
 # ════════════════════════════════════════════
-supa = None
-if SUPA_URL and SUPA_KEY:
-    try:
-        supa = create_client(SUPA_URL, SUPA_KEY)
-        log.info("[SUPA] Bağlandı")
-    except Exception as e:
-        log.error(f"[SUPA] {e}")
+supa = None  # Supabase tamamen kapatıldı — kayıt/istatistik özelliği kullanılmıyor
 
 def save_trade(data):
     if not supa: return
