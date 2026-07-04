@@ -12,7 +12,7 @@ Pozisyon:
   Margin: 15$ | Kaldıraç: 5x | Pozisyon büyüklüğü: 75$
 
 Çıkış mantığı (TEK TP + TEK SL + KÂR FLOORU İLE TRAILING):
-  - SL: -%0.8 (net kayıp ≈ -$0.69, komisyonlar dahil)
+  - SL: -%2.0 (net kayıp ≈ -$1.59, komisyonlar dahil)
   - Net kâr $0.80'e ulaşılınca pozisyon KAPANMAZ — trailing moduna geçer.
     Fiyat lehte gitmeye devam ettiği sürece pozisyon açık kalır.
     Fiyat geri dönüp net kârı tekrar $0.80 seviyesine indirirse,
@@ -71,12 +71,7 @@ MAX_DAILY_LOSS  = -15.0
 MAX_SURE        = 240    # dk — süre dolunca limitle kapat
 
 # ── Çıkış parametreleri ──
-SL_PCT        = 1.20     # sabit -%1.2 SL (tüm kaynaklarda aynı)
-NET_TP_HEDEF  = 0.80     # $ — trigger + floor seviyesi (masraf sonrası net)
-
-# ── Trailing stop (fiyat yükseldikçe stop da yükselir, giriş yönüne yaklaşır) ──
-TRAIL_PCT = 0.80          # tepeden bu kadar geri çekilirse kapat (SL ile aynı mesafe)
-
+SL_PCT        = 2.00     # sabit -%2.0 SL (tüm kaynaklarda aynı)
 # ── 4 kademeli TP (dolar bazlı, ana para hiç çekilmez — sadece floor/stop güncellenir) ──
 TP_LEVELS_NET   = [0.80, 1.60, 2.40, 3.20]   # $ net kâr seviyeleri (her biri $0.80 aralıklı)
 TRAIL_BACK_NET  = 0.40                        # zirveden bu kadar $ geri çekilirse kapat
@@ -89,8 +84,10 @@ GIRIS_BEKLE_SN     = 3     # her denemede bekleme süresi
 GIRIS_OFFSET_PCT   = 0.05  # ilk giriş limiti mid'den ne kadar içeride denensin
 
 KAPAT_DENEME       = 8     # limit kapatma: kaç kez agresifleştirilerek denenir
-KAPAT_BEKLE_SN     = 2     # her denemede bekleme süresi
-KAPAT_ADIM_PCT     = 0.06  # her başarısız denemede fiyat bu kadar daha agresifleşir
+KAPAT_BEKLE_SN     = 1     # her denemede bekleme süresi (hızlı tepki için kısaltıldı)
+KAPAT_ILK_AGRESIFLIK = 0.45  # İLK denemeden itibaren spread'i ciddi geçen fiyat (neredeyse market hızı)
+KAPAT_ADIM_PCT     = 0.18  # her başarısız sonraki denemede fiyat bu kadar daha agresifleşir
+                            # (hızlı scalp'te kayma riskini azaltmak için artırıldı)
                             # (spread'i aşamalı geçip hızlı dolum sağlar, yine de LIMIT emir)
 
 # ── 15m Filtre (CoinSonar için) ──
@@ -362,7 +359,7 @@ def limit_kapat(symbol, side, amount, reason=""):
 
         # Deneme arttıkça fiyatı piyasanın "kötü" tarafına doğru kaydırarak
         # dolma ihtimalini artırıyoruz (yine de LİMİT emir).
-        agresiflik = KAPAT_ADIM_PCT * deneme
+        agresiflik = KAPAT_ILK_AGRESIFLIK + (KAPAT_ADIM_PCT * deneme)  # ilk denemeden itibaren ciddi agresif
         if kapat_yonu == "sell":
             limit_fiyat = round(piyasa * (1 - agresiflik / 100), 8)
         else:
@@ -1211,13 +1208,14 @@ if __name__ == "__main__":
     threading.Thread(target=telethon_thread, daemon=True).start()
 
     tg(
-        "🚀 SADIK SCALP FAST\n\n"
+        "🚀 SADIK SCALP FAST\n"
+        "🔖 Versiyon: 2026-07-04-v6 (SL %2.0 + agresif kapatma)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
         f"🚫 SL: -%{SL_PCT}\n"
         f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
-        f"📐 Giriş/Çıkış: SADECE LİMİT emir\n\n"
+        f"📐 Giriş/Çıkış: SADECE LİMİT emir (ilk kapatma denemesi %{KAPAT_ILK_AGRESIFLIK} agresif)\n\n"
         "Komutlar:\n/durum | /istatistik\nCOIN long aç | COIN short aç | COIN kapat"
     )
 
