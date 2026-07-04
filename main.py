@@ -14,7 +14,7 @@ DEĞİŞİKLİK NOTLARI (bu sürümde neler farklı):
   2) TP/SL dolar hedefleri yeni pozisyon büyüklüğüne ORANTILI küçültüldü
      (risk/ödül oranı eskisiyle birebir aynı kaldı, sadece mutlak tutar küçüldü):
        Eski: SL≈-$1.59 | TP: 0.80/1.60/2.40/3.20 | Trail geri: 0.40
-       Yeni: SL≈-$1.06 | TP: 0.53/1.07/1.60/2.13 | Trail geri: 0.27
+       Yeni: SL≈-$1.06 | TP: 0.80/1.61/2.41/3.21 | Trail geri: 0.27
   3) Günlük zarar limiti -15$ → -10$ (aynı orana çekildi)
   4) SADECE SCANNER (bağımsız tarayıcı) kaynağı için yön mantığı TERSİNE çevrildi:
        - Eskiden: "pump" tespit + pullback onayı → LONG (trend takibi)
@@ -40,10 +40,10 @@ Pozisyon:
 
 Çıkış mantığı (TEK TP + TEK SL + KÂR FLOORU İLE TRAILING):
   - SL: -%2.0 (net kayıp ≈ -$1.06, komisyonlar dahil)
-  - Net kâr $0.53'e ulaşılınca pozisyon KAPANMAZ — trailing moduna geçer.
+  - Net kâr $0.80'e ulaşılınca pozisyon KAPANMAZ — trailing moduna geçer.
     Fiyat lehte gitmeye devam ettiği sürece pozisyon açık kalır.
-    Fiyat geri dönüp net kârı tekrar $0.53 seviyesine indirirse,
-    o anda LİMİT emirle kapatılıp $0.53 net kâr kasaya konur.
+    Fiyat geri dönüp net kârı tekrar $0.80 seviyesine indirirse,
+    o anda LİMİT emirle kapatılıp $0.80 net kâr kasaya konur.
   - Trigger'a ulaşılmadan SL'e çarparsa normal SL ile kapanır.
 
 Emir tipi:
@@ -101,7 +101,8 @@ MAX_SURE        = 240    # dk — süre dolunca limitle kapat
 SL_PCT        = 2.00     # sabit -%2.0 SL (tüm kaynaklarda aynı)
 # ── 4 kademeli TP (dolar bazlı, ana para hiç çekilmez — sadece floor/stop güncellenir) ──
 # Yeni pozisyon büyüklüğüne (50$) orantılı küçültüldü — risk/ödül oranı eskisiyle aynı.
-TP_LEVELS_NET   = [0.53, 1.07, 1.60, 2.13]   # $ net kâr seviyeleri
+TP_LEVELS_NET   = [0.80, 1.61, 2.41, 3.21]   # $ net kâr seviyeleri (taban $0.53→$0.80 yükseltildi,
+                                               # SL -$1.06'ya karşı risk/ödül 1:2'den ~1:1.3'e iyileşti)
 TRAIL_BACK_NET  = 0.27                        # zirveden bu kadar $ geri çekilirse kapat (KÜÇÜK kârlarda taban)
 TRAIL_GIVEBACK_PCT = 0.30                     # BÜYÜK kârlarda: zirvenin bu yüzdesi kadar geri çekilme payı
                                                # (ikisinin BÜYÜĞÜ kullanılır — küçük kârda sabit, büyük kârda yüzdesel devreye girer)
@@ -145,6 +146,21 @@ daily_pnl       = 0.0
 daily_pnl_lock  = threading.Lock()
 recently_closed = {}
 closed_lock     = threading.Lock()
+
+# ── Panel için işlem geçmişi (bot içi HTML panelde gösterilir) ──
+trade_log       = []
+trade_log_lock  = threading.Lock()
+MAX_TRADE_LOG   = 500   # bellek şişmesin diye üst sınır
+
+def kaydet_islem(sembol, yon, net, sure_dk, kaynak, sonuc_metni):
+    with trade_log_lock:
+        trade_log.append({
+            "zaman": time.strftime("%H:%M:%S"),
+            "sembol": sembol, "yon": yon, "net": net,
+            "sure": sure_dk, "kaynak": kaynak, "sonuc": sonuc_metni,
+        })
+        if len(trade_log) > MAX_TRADE_LOG:
+            del trade_log[0]
 
 # ════════════════════════════════════════════
 # TELEGRAM BOT
@@ -212,7 +228,10 @@ def pnl_ekle(miktar):
         return daily_pnl
 
 def net_pnl_hesapla(pos, price):
-    """Round-trip komisyon dahil NET pnl döner (giriş+çıkış masrafı düşülmüş)."""
+    """Round-trip komisyon dahil NET pnl döner (giriş+çıkış masrafı düşülmüş).
+    Komisyon, POZİSYONUN GERÇEK boyutuna göre hesaplanır (sabit varsayılan
+    POS_SIZE değil) — böylece double-fill veya yüklenen pozisyonlar gibi
+    standarttan farklı boyuttaki işlemlerde de doğru net kâr/zarar çıkar."""
     entry  = pos["entry"]
     amount = pos["amount"]
     side   = pos.get("side", "long")
@@ -220,8 +239,10 @@ def net_pnl_hesapla(pos, price):
         gross = (entry - price) * amount
     else:
         gross = (price - entry) * amount
-    net = gross - ROUNDTRIP_FEE
-    pct = (gross / (entry * amount)) * 100 if entry and amount else 0.0
+    gercek_notional = entry * amount
+    gercek_fee = gercek_notional * COMMISSION * 2
+    net = gross - gercek_fee
+    pct = (gross / gercek_notional) * 100 if gercek_notional else 0.0
     return net, pct
 
 def fiyat_for_net(entry, amount, side, net_hedef):
@@ -691,6 +712,8 @@ def close_pos(symbol, reason):
     toplam = pnl_ekle(net)
     kaynak = pos.get("kaynak", "?")
 
+    kaydet_islem(sym.upper(), pos.get("side", "long"), net, sure, kaynak, reason)
+
     sym_base = sym.upper()
     with closed_lock:
         recently_closed[sym_base] = time.time()
@@ -1112,6 +1135,39 @@ def telethon_thread():
     loop.run_until_complete(telethon_loop())
 
 # ════════════════════════════════════════════
+# BAŞLANGIÇTA ASKIDA KALAN EMİRLERİ TEMİZLE (double-fill koruması)
+# ════════════════════════════════════════════
+def eski_emirleri_iptal_et():
+    """
+    Bot her başladığında (yeniden başlatma dahil) borsada önceki oturumdan
+    kalmış olabilecek DOLMAMIŞ limit emirlerini iptal eder. Bu, "eski bir
+    giriş emri bot yeniden başladıktan SONRA sessizce dolup, botun az önce
+    açtığı yeni pozisyonla birleşerek beklenenden büyük (double-fill)
+    pozisyon oluşması" riskini kökten engeller — TLM/EPIC/ARPA
+    işlemlerinde gördüğümüz ~2x boyutlu pozisyonların kök nedeni buydu.
+    """
+    try:
+        acik_emirler = safe_api(exchange.fetch_open_orders)
+        if not acik_emirler:
+            log.info("[TEMİZLİK] Askıda emir yok")
+            return
+        iptal_sayisi = 0
+        for o in acik_emirler:
+            try:
+                oid = o.get("id")
+                sym = o.get("symbol")
+                if oid and sym:
+                    safe_api(exchange.cancel_order, oid, sym)
+                    iptal_sayisi += 1
+            except Exception as e:
+                log.warning(f"[TEMİZLİK] Emir iptal hatası: {e}")
+        if iptal_sayisi > 0:
+            tg(f"🧹 Başlangıç temizliği: {iptal_sayisi} askıda emir iptal edildi (double-fill koruması)")
+        log.info(f"[TEMİZLİK] {iptal_sayisi} askıda emir iptal edildi")
+    except Exception as e:
+        log.error(f"[TEMİZLİK] {e}")
+
+# ════════════════════════════════════════════
 # AÇILIŞTA POZİSYON YÜKLE
 # ════════════════════════════════════════════
 def load_open_positions():
@@ -1166,12 +1222,128 @@ def gunluk_reset_loop():
             log.error(f"[RESET] {e}"); time.sleep(3600)
 
 # ════════════════════════════════════════════
+# PANEL (HTML) — botun kendi işlem geçmişinden üretilir
+# ════════════════════════════════════════════
+def panel_html():
+    with trade_log_lock:
+        kayitlar = list(trade_log)
+
+    n = len(kayitlar)
+    kazananlar = [t for t in kayitlar if t["net"] > 0]
+    kaybedenler = [t for t in kayitlar if t["net"] <= 0]
+    net_toplam = sum(t["net"] for t in kayitlar)
+    avg_win = (sum(t["net"] for t in kazananlar) / len(kazananlar)) if kazananlar else 0.0
+    avg_loss = (abs(sum(t["net"] for t in kaybedenler) / len(kaybedenler))) if kaybedenler else 0.0
+    win_rate = (len(kazananlar) / n * 100) if n else 0.0
+    breakeven = (avg_loss / (avg_win + avg_loss) * 100) if (avg_win + avg_loss) > 0 else 0.0
+
+    # Kümülatif eğri için basit SVG polyline (istemci tarafı JS gerektirmez)
+    kumulatif = []
+    running = 0.0
+    for t in kayitlar:
+        running += t["net"]
+        kumulatif.append(running)
+
+    svg_polyline = ""
+    if len(kumulatif) >= 2:
+        vmin, vmax = min(kumulatif + [0]), max(kumulatif + [0])
+        span = (vmax - vmin) or 1.0
+        w, h = 600, 160
+        pts = []
+        for i, v in enumerate(kumulatif):
+            x = (i / (len(kumulatif) - 1)) * w
+            y = h - ((v - vmin) / span) * h
+            pts.append(f"{x:.1f},{y:.1f}")
+        svg_polyline = " ".join(pts)
+        sifir_y = h - ((0 - vmin) / span) * h
+    else:
+        sifir_y = 80
+
+    renk = "#00C6AE" if net_toplam >= 0 else "#FF5C77"
+    be_renk = "#00C6AE" if win_rate > breakeven else "#FF5C77"
+
+    satirlar = ""
+    for t in reversed(kayitlar[-100:]):
+        r = "#00C6AE" if t["net"] >= 0 else "#FF5C77"
+        satirlar += f"""
+        <div class="row">
+          <div>
+            <div class="sym">{t['sembol']} <span class="tag {t['yon']}">{t['yon']}</span></div>
+            <div class="meta">{t['zaman']} · {t['sure']}dk · {t['kaynak']}</div>
+          </div>
+          <div class="pnl" style="color:{r}">{t['net']:+.2f}$</div>
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sadık Scalp Fast — Performans Paneli</title>
+<style>
+  body {{ background:#0B0E11; color:#E8ECEF; font-family:-apple-system,Segoe UI,sans-serif; margin:0; padding:20px 16px 60px; }}
+  .mono {{ font-family: 'JetBrains Mono', monospace; }}
+  .eyebrow {{ font-size:12px; letter-spacing:1.5px; color:#6B7684; text-transform:uppercase; font-weight:600; }}
+  h1 {{ margin:2px 0 18px; font-size:22px; }}
+  .grid2 {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }}
+  .card {{ background:#12161C; border:1px solid #1E242C; border-radius:10px; padding:14px; }}
+  .label {{ font-size:11px; color:#6B7684; text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }}
+  .big {{ font-size:26px; font-weight:700; }}
+  .row {{ display:flex; justify-content:space-between; align-items:center; background:#12161C; border:1px solid #1E242C; border-radius:10px; padding:10px 12px; margin-bottom:6px; }}
+  .sym {{ font-weight:600; font-size:13.5px; }}
+  .meta {{ font-size:11px; color:#5B6572; margin-top:2px; }}
+  .pnl {{ font-weight:700; font-size:14px; font-family:monospace; }}
+  .tag {{ font-size:10px; padding:1px 6px; border-radius:4px; text-transform:uppercase; font-weight:600; margin-left:4px; }}
+  .tag.long {{ background:#00C6AE1A; color:#00C6AE; }}
+  .tag.short {{ background:#FF5C771A; color:#FF5C77; }}
+  .sectionlabel {{ font-size:11.5px; color:#6B7684; text-transform:uppercase; letter-spacing:.5px; margin:16px 2px 8px; }}
+</style></head>
+<body>
+  <div class="eyebrow">Sadık Scalp Fast</div>
+  <h1>Performans Paneli</h1>
+  <div style="font-size:12px;color:#4A5361;margin-bottom:18px">{n} işlem · sayfa her yenilendiğinde güncellenir</div>
+
+  <div class="grid2">
+    <div class="card"><div class="label">Net Toplam</div><div class="big mono" style="color:{renk}">{net_toplam:+.2f}$</div></div>
+    <div class="card"><div class="label">Kazanma Oranı</div><div class="big mono">%{win_rate:.1f}</div></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><div class="label">Kazanan ({len(kazananlar)})</div><div class="mono" style="font-size:17px;font-weight:600;color:#00C6AE">ort +{avg_win:.2f}$</div></div>
+    <div class="card"><div class="label">Kaybeden ({len(kaybedenler)})</div><div class="mono" style="font-size:17px;font-weight:600;color:#FF5C77">ort -{avg_loss:.2f}$</div></div>
+  </div>
+  <div class="card" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <span style="font-size:11.5px;color:#8B95A1">Başa baş için gereken kazanma oranı</span>
+    <span class="mono" style="font-size:15px;font-weight:700;color:{be_renk}">%{breakeven:.1f}</span>
+  </div>
+
+  <div class="card" style="padding:16px 8px 8px;margin-bottom:16px">
+    <div style="font-size:11.5px;color:#8B95A1;text-transform:uppercase;letter-spacing:.5px;padding:0 8px 10px">Kümülatif Net PnL</div>
+    <svg viewBox="0 0 600 160" width="100%" height="160" preserveAspectRatio="none">
+      <line x1="0" y1="{sifir_y:.1f}" x2="600" y2="{sifir_y:.1f}" stroke="#2A323C" stroke-width="1"/>
+      <polyline points="{svg_polyline}" fill="none" stroke="#1E90FF" stroke-width="2.5"/>
+    </svg>
+  </div>
+
+  <div class="sectionlabel">İşlem Geçmişi (yeniden eskiye, son 100)</div>
+  {satirlar if satirlar else '<div style="text-align:center;color:#4A5361;font-size:13px;padding:30px 0">Henüz kapanan işlem yok</div>'}
+</body></html>"""
+
+# ════════════════════════════════════════════
 # HEALTH SERVER
 # ════════════════════════════════════════════
 def health_server():
     from http.server import HTTPServer, BaseHTTPRequestHandler
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.startswith("/panel"):
+                try:
+                    html = panel_html()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(html.encode("utf-8"))
+                except Exception as e:
+                    self.send_response(500); self.end_headers()
+                    self.wfile.write(f"Panel hatası: {e}".encode())
+                return
             self.send_response(200); self.end_headers()
             with pos_lock: ps = ",".join(s.split("/")[0] for s in positions)
             with daily_pnl_lock: pnl = daily_pnl
@@ -1321,6 +1493,7 @@ sig_mod.signal(sig_mod.SIGINT, shutdown)
 # ════════════════════════════════════════════
 if __name__ == "__main__":
     print("SADIK SCALP FAST (FADE TEST) BAŞLIYOR...")
+    eski_emirleri_iptal_et()
     load_open_positions()
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop, daemon=True).start()
@@ -1330,7 +1503,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST — FADE TEST\n"
-        "🔖 Versiyon: v2 (dinamik yüzdesel trailing eklendi — büyük hareketlerde daha fazla pay)\n\n"
+        "🔖 Versiyon: v4 (TP taban $0.80 + double-fill koruması + dinamik komisyon + HTML panel /panel)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅ (FADE)\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
