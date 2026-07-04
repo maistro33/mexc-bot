@@ -416,6 +416,21 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
         except: pass
         order_id = None
 
+        # ── KRİTİK KONTROL: cancel gönderildi ama tam o anda emir borsada
+        # DOLMUŞ olabilir (cancel çok geç kalmış olabilir, borsa sessizce
+        # reddetmiş olabilir). Yeni bir emir açmadan ÖNCE pozisyonun
+        # gerçekten oluşup oluşmadığını kesin doğrula — doğrulanmadan yeni
+        # emir açmak, eski emrin de sonradan dolup İKİ POZİSYONUN BİRLEŞMESİ
+        # (double-fill) riskini doğurur. ──
+        basarili, acik, entry = _pozisyon_kontrol(symbol, side)
+        if basarili and acik:
+            return entry
+        if not basarili:
+            # Borsadan güvenilir cevap alınamadı — riske girmemek için burada
+            # DUR, yeni emir AÇMA. Bir sonraki dış döngüye (varsa) bırak.
+            log.warning(f"[GİRİŞ] {symbol} cancel sonrası durum doğrulanamadı, güvenlik için duruluyor")
+            return None
+
         t = safe_api(exchange.fetch_ticker, symbol)
         if not t: continue
         guncel = float(t["last"])
@@ -1577,7 +1592,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST — FADE TEST\n"
-        "🔖 Versiyon: v5 (ADX rejim tespiti — düşük ADX'te FADE, yüksek ADX'te TREND takibi)\n\n"
+        "🔖 Versiyon: v6 (double-fill race condition düzeltmesi — cancel sonrası pozisyon tekrar doğrulanıyor)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅ (FADE)\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
