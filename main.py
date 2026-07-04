@@ -1320,7 +1320,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST — FADE TEST\n"
-        "🔖 Versiyon: 2026-07-04-v9 (küçük sermaye + scanner FADE modu)\n\n"
+        "🔖 Versiyon: v1 (küçük sermaye + scanner FADE + pullback %0.35 + fitil/hacim hızlı onay)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅ (FADE)\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
