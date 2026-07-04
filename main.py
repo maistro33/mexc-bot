@@ -82,6 +82,7 @@ RECENTLY_TTL  = 1800     # coin kapandıktan sonra 30dk tekrar açılmasın
 GIRIS_DENEME       = 5     # limit giriş: kaç kez fiyat güncellenip denenir
 GIRIS_BEKLE_SN     = 3     # her denemede bekleme süresi
 GIRIS_OFFSET_PCT   = 0.05  # ilk giriş limiti mid'den ne kadar içeride denensin
+MAX_KOVALAMA_PCT   = 1.0   # fiyat sinyal seviyesinden bu kadar uzaklaşırsa kovalama bırakılır
 
 KAPAT_DENEME       = 8     # limit kapatma: kaç kez agresifleştirilerek denenir
 KAPAT_BEKLE_SN     = 1     # her denemede bekleme süresi (hızlı tepki için kısaltıldı)
@@ -279,6 +280,7 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
     fiyat = ilk_fiyat
     order_id = None
     fiyat_p = None
+    sinyal_fiyat = ilk_fiyat  # orijinal sinyal fiyatı — kovalama mesafesini buna göre ölçüyoruz
 
     for deneme in range(GIRIS_DENEME):
         if order_id is None:
@@ -329,6 +331,16 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
         t = safe_api(exchange.fetch_ticker, symbol)
         if not t: continue
         guncel = float(t["last"])
+
+        # ── KOVALAMA MESAFESİ KONTROLÜ ──
+        # Fiyat orijinal sinyal seviyesinden çok uzaklaştıysa (gerçek bir trend
+        # dönüşü/devam eden hareket olabilir) kovalamayı BIRAK — düşen bıçağı
+        # yakalamak (veya tepeden short'u kovalamak) istemiyoruz.
+        sapma_pct = abs(guncel - sinyal_fiyat) / sinyal_fiyat * 100
+        if sapma_pct >= MAX_KOVALAMA_PCT:
+            log.warning(f"[GİRİŞ] {symbol} fiyat sinyalden %{sapma_pct:.2f} uzaklaştı, kovalama bırakılıyor")
+            return None
+
         if side == "long":
             fiyat = round(guncel * (1 - GIRIS_OFFSET_PCT / 100), 8)
         else:
