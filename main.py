@@ -1267,7 +1267,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST\n"
-        "🔖 Versiyon: 2026-07-04-v6 (SL %2.0 + agresif kapatma)\n\n"
+        "🔖 Versiyon: 2026-07-04-v8 (uzama filtresi + kovalama limiti + kısmi-dolum fix)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
