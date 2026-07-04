@@ -65,8 +65,19 @@ PAPER_TRADING   = True
 # ── Pozisyon (simüle) ──
 MARGIN          = 10.0
 LEVERAGE        = 5
-POS_SIZE        = MARGIN * LEVERAGE     # 50$ (simüle)
+POS_SIZE        = MARGIN * LEVERAGE     # 50$ (referans/varsayılan — gerçek boyut ATR'e göre değişir)
 COMMISSION      = 0.0006                # taker, tek yön (simüle komisyon, gerçekçilik için düşülür)
+
+# ── RİSK BAZLI POZİSYON BOYUTLANDIRMA ──
+# ATR bazlı SL kullanınca, sabit $ pozisyon boyutu her coin için FARKLI dolar
+# riski demek (oynak coinde çok büyük risk, sakin coinde çok küçük risk).
+# Bunu düzeltmek için: her işlemde HEDEF DOLAR RİSKİNİ sabit tutuyoruz
+# (marjinin %10'u), pozisyon boyutunu buna göre HESAPLIYORUZ — oynak
+# coinde otomatik küçük, sakin coinde otomatik büyük pozisyon.
+RISK_PER_TRADE_PCT = 0.10                        # marjinin %10'u kadar dolar risk hedefi
+HEDEF_RISK_DOLAR    = MARGIN * RISK_PER_TRADE_PCT  # örn. 10$ × %10 = 1.00$
+MAX_POS_SIZE        = MARGIN * LEVERAGE * 3        # üst sınır (aşırı düşük ATR'de bile çok büyümesin)
+MIN_POS_SIZE        = MARGIN * LEVERAGE * 0.3      # alt sınır (aşırı yüksek ATR'de bile çok küçülmesin)
 
 MAX_OPEN        = 3
 MAX_DAILY_LOSS  = -10.0    # simüle günlük zarar limiti (gerçek para değil, ama disiplin için korunuyor)
@@ -266,7 +277,7 @@ def ani_hareket_tespit(symbol):
 # ════════════════════════════════════════════
 # POZİSYON SLOTU
 # ════════════════════════════════════════════
-def pozisyon_slot_al(symbol, entry, sl, kaynak, side, tp_levels, r_dollar):
+def pozisyon_slot_al(symbol, entry, sl, kaynak, side, tp_levels, r_dollar, amount):
     sym_base = symbol.split("/")[0].upper()
     with pos_lock:
         if symbol in positions: return False
@@ -279,7 +290,6 @@ def pozisyon_slot_al(symbol, entry, sl, kaynak, side, tp_levels, r_dollar):
         if len(positions) >= MAX_OPEN: return False
         if gunluk_limit_asildi(): return False
 
-        amount = POS_SIZE / entry
         positions[symbol] = {
             "entry": entry, "sl": sl, "side": side, "amount": amount,
             "tetiklendi": False, "last_tp_idx": -1, "peak_net": 0.0,
@@ -291,11 +301,35 @@ def pozisyon_slot_al(symbol, entry, sl, kaynak, side, tp_levels, r_dollar):
 # ════════════════════════════════════════════
 # GİRİŞ (SİMÜLE — gerçek emir YOK)
 # ════════════════════════════════════════════
+def pozisyon_boyutu_hesapla(risk_mesafe, price):
+    """
+    Hedef dolar riskine (HEDEF_RISK_DOLAR) göre pozisyon miktarını hesaplar.
+    Oynak coin (büyük risk_mesafe) → küçük miktar. Sakin coin (küçük
+    risk_mesafe) → büyük miktar. MIN/MAX_POS_SIZE ile sınırlanır.
+    Döner: (amount, pos_size_dolar, gercek_r_dolar)
+    """
+    if risk_mesafe <= 0 or price <= 0:
+        return None, None, None
+
+    amount = HEDEF_RISK_DOLAR / risk_mesafe
+    pos_size = amount * price
+
+    if pos_size > MAX_POS_SIZE:
+        pos_size = MAX_POS_SIZE
+        amount = pos_size / price
+    elif pos_size < MIN_POS_SIZE:
+        pos_size = MIN_POS_SIZE
+        amount = pos_size / price
+
+    gercek_r_dolar = risk_mesafe * amount
+    return amount, pos_size, gercek_r_dolar
+
 def paper_giris_dene(symbol, yon_pump_dump, adx, atr):
     """
     ADX teyitli sinyal geldiğinde ÇAĞRILIR. Güncel piyasa fiyatından
     ANINDA simüle giriş yapar (gerçek emir yok, gerçek para riski yok).
-    SL'i ATR'e göre, TP kademelerini R katlarına göre hesaplar.
+    SL'i ATR'e göre, pozisyon boyutunu RİSK BAZLI (HEDEF_RISK_DOLAR sabit
+    kalacak şekilde), TP kademelerini R katlarına göre hesaplar.
     """
     t = safe_api(exchange.fetch_ticker, symbol)
     if not t: return False
@@ -312,13 +346,12 @@ def paper_giris_dene(symbol, yon_pump_dump, adx, atr):
     else:
         sl = price + risk_mesafe
 
-    amount = POS_SIZE / price
-    r_dollar = risk_mesafe * amount   # 1R'ın dolar karşılığı (bu pozisyon için)
-    if r_dollar <= 0: return False
+    amount, pos_size, r_dollar = pozisyon_boyutu_hesapla(risk_mesafe, price)
+    if amount is None or r_dollar <= 0: return False
 
     tp_levels = [round(r_dollar * k, 4) for k in R_KADEMELERI]
 
-    if not pozisyon_slot_al(symbol, price, sl, "scanner_trend", side, tp_levels, r_dollar):
+    if not pozisyon_slot_al(symbol, price, sl, "scanner_trend", side, tp_levels, r_dollar, amount):
         return False
 
     yon_metni = "LONG" if side == "long" else "SHORT"
@@ -327,8 +360,8 @@ def paper_giris_dene(symbol, yon_pump_dump, adx, atr):
         f"📡 Kaynak: SCANNER_TREND | ADX:{adx:.1f}\n"
         f"🏁 Giriş: {price:.8f}\n"
         f"🚫 SL: {sl:.8f} (ATR bazlı, {ATR_SL_MULT}×ATR)\n"
-        f"🎯 TP (R bazlı): " + " / ".join(f"${x:.2f}" for x in tp_levels) + f" | R=${r_dollar:.2f}\n"
-        f"💰 Pozisyon: {POS_SIZE}$ | Kaldıraç: {LEVERAGE}x (SİMÜLE)"
+        f"🎯 TP (R bazlı): " + " / ".join(f"${x:.2f}" for x in tp_levels) + f" | R=${r_dollar:.2f} (hedef risk: ${HEDEF_RISK_DOLAR:.2f})\n"
+        f"💰 Pozisyon: ${pos_size:.2f} | Kaldıraç: {LEVERAGE}x (SİMÜLE, risk bazlı boyutlandırıldı)"
     )
     log.info(f"[AÇIK-KAĞIT] {sym} {yon_metni} @ {price:.8f} ADX:{adx:.1f}")
     return True
@@ -689,11 +722,12 @@ def manuel_giris(symbol, side, kaynak="manuel"):
 
     risk_mesafe = ATR_SL_MULT * atr
     sl = price - risk_mesafe if side == "long" else price + risk_mesafe
-    amount = POS_SIZE / price
-    r_dollar = risk_mesafe * amount
+    amount, pos_size, r_dollar = pozisyon_boyutu_hesapla(risk_mesafe, price)
+    if amount is None:
+        return False, "Risk mesafesi hesaplanamadı"
     tp_levels = [round(r_dollar * k, 4) for k in R_KADEMELERI]
 
-    if not pozisyon_slot_al(symbol, price, sl, kaynak, side, tp_levels, r_dollar):
+    if not pozisyon_slot_al(symbol, price, sl, kaynak, side, tp_levels, r_dollar, amount):
         return False, "Slot alınamadı (zaten açık / limit dolu)"
 
     sym = symbol.split("/")[0]
@@ -703,7 +737,7 @@ def manuel_giris(symbol, side, kaynak="manuel"):
         f"🏁 Giriş: {price:.8f}\n"
         f"🚫 SL: {sl:.8f} (ATR bazlı)\n"
         f"🎯 TP (R bazlı): " + " / ".join(f"${x:.2f}" for x in tp_levels) + f" | R=${r_dollar:.2f}\n"
-        f"💰 Pozisyon: {POS_SIZE}$ (SİMÜLE)"
+        f"💰 Pozisyon: ${pos_size:.2f} (SİMÜLE, risk bazlı boyutlandırıldı)"
     )
     return True, "OK"
 
@@ -799,7 +833,7 @@ if __name__ == "__main__":
         "🔖 Versiyon: v8 (GERÇEK PARA KULLANILMIYOR — tam simülasyon)\n\n"
         "🧠 Strateji: ADX ile trend teyidi olmadan işlem AÇILMAZ (fade kaldırıldı).\n"
         f"   ADX ≥ {ADX_ESIK} → hareketin YÖNÜNDE gir. ADX < {ADX_ESIK} → sinyal atlanır.\n\n"
-        f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$ (simüle)\n"
+        f"💰 Pozisyon: RİSK BAZLI boyutlandırma (hedef risk: ${HEDEF_RISK_DOLAR:.2f} = marjinin %{int(RISK_PER_TRADE_PCT*100)}'si, {MIN_POS_SIZE:.0f}$-{MAX_POS_SIZE:.0f}$ arası)\n"
         f"🚫 SL: {ATR_SL_MULT}×ATR (coinin kendi oynaklığına göre otomatik)\n"
         f"🎯 TP: 1R/2R/3R/4R kademeli + %{int(TRAIL_GIVEBACK_PCT*100)} yüzdesel trailing\n"
         f"⏱️ Zaman stopu: {ZAMAN_STOPU_DK}dk'da 1R'a ulaşmayan zarardaki işlem erken kapanır\n\n"
