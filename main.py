@@ -102,6 +102,7 @@ SCAN_INTERVAL     = 30
 SCAN_MAX_ADAY     = 20
 ANI_VOL_SPIKE_MIN = 2.0
 ANI_PCT_MIN       = 1.5
+UZAMA_LIMIT_PCT   = 8.0   # coin son ~1 saatte bu yüzdenin üzerinde hareket ettiyse sinyal elenir (tepe/dip riski)
 
 # ════════════════════════════════════════════
 # STATE
@@ -351,7 +352,27 @@ def limit_kapat(symbol, side, amount, reason=""):
     (spread'e doğru kayar) — hızlı dolum sağlar ama emir tipi hep LİMİT kalır."""
     kapat_yonu = "sell" if side == "long" else "buy"
 
+    kalan_miktar = amount
+
     for deneme in range(KAPAT_DENEME):
+        # Her denemede GERÇEK kalan miktarı borsadan tazele — önceki deneme
+        # kısmen dolmuş olabilir, eski (tam) miktarla kapatmaya çalışmak
+        # "kapatılacak miktar pozisyondan fazla" hatasına yol açar.
+        basarili, acik, _ = _pozisyon_kontrol(symbol, side)
+        if basarili and not acik:
+            return None  # zaten kapanmış — üst katman (close_pos) kesin doğrulayacak
+        if basarili and acik:
+            try:
+                pos_list = safe_api(exchange.fetch_positions, [symbol])
+                if pos_list:
+                    for p in pos_list:
+                        c = float(p.get("contracts") or 0)
+                        if c > 0 and p.get("side") == side:
+                            kalan_miktar = c
+                            break
+            except: pass
+        # basarili=False (belirsiz) ise elimizdeki son bilinen kalan_miktar ile devam
+
         t = safe_api(exchange.fetch_ticker, symbol)
         if not t: 
             time.sleep(1); continue
@@ -367,12 +388,12 @@ def limit_kapat(symbol, side, amount, reason=""):
 
         try:
             order = safe_api(
-                exchange.create_order, symbol, "limit", kapat_yonu, amount, limit_fiyat,
+                exchange.create_order, symbol, "limit", kapat_yonu, kalan_miktar, limit_fiyat,
                 {"reduceOnly": True, "marginCoin": "USDT", "timeInForce": "GTC"}
             )
         except Exception as e:
             order = None
-            if "22002" not in str(e) and "No position" not in str(e):
+            if "22002" not in str(e) and "No position" not in str(e) and "40804" not in str(e):
                 log.warning(f"[KAPAT_LİMİT] {symbol}: {e}")
 
         if not order:
@@ -393,6 +414,17 @@ def limit_kapat(symbol, side, amount, reason=""):
         except: pass
 
     # Son çare: hâlâ pozisyon açıksa en agresif limit fiyatla son bir deneme
+    basarili, acik, _ = _pozisyon_kontrol(symbol, side)
+    if basarili and acik:
+        try:
+            pos_list = safe_api(exchange.fetch_positions, [symbol])
+            if pos_list:
+                for p in pos_list:
+                    c = float(p.get("contracts") or 0)
+                    if c > 0 and p.get("side") == side:
+                        kalan_miktar = c
+                        break
+        except: pass
     t = safe_api(exchange.fetch_ticker, symbol)
     if t:
         piyasa = float(t["last"])
@@ -402,7 +434,7 @@ def limit_kapat(symbol, side, amount, reason=""):
         else:
             son_fiyat = round(piyasa * (1 + son_agresiflik / 100), 8)
         try:
-            safe_api(exchange.create_order, symbol, "limit", kapat_yonu, amount, son_fiyat,
+            safe_api(exchange.create_order, symbol, "limit", kapat_yonu, kalan_miktar, son_fiyat,
                      {"reduceOnly": True, "marginCoin": "USDT", "timeInForce": "GTC"})
             time.sleep(2)
         except: pass
@@ -792,12 +824,26 @@ def ani_hareket_tespit(symbol):
         df15m = pd.DataFrame(r15m, columns=["t","o","h","l","c","v"])
         rsi = calc_rsi(df15m["c"])
 
-        detay = {"vol": round(vol_oran,1), "pct": round(pct_3m,2), "price": price, "rsi": round(rsi,1)}
+        # ── AŞIRI UZAMA FİLTRESİ ──
+        # Coin son ~1 saatte (4 x 15m mum) zaten çok hareket etmişse, üstüne
+        # gelen küçük bir ek kıpırdanma "yeni pump/dump" değil, muhtemelen
+        # tükenmiş bir hareketin son safhasıdır — tepeden/dipten girmemek
+        # için bu durumda sinyali eliyoruz.
+        fiyat_1s_once = float(df15m["c"].iloc[-5]) if len(df15m) >= 5 else float(df15m["c"].iloc[0])
+        pct_1s = (price - fiyat_1s_once) / fiyat_1s_once * 100
+
+        detay = {"vol": round(vol_oran,1), "pct": round(pct_3m,2), "price": price,
+                  "rsi": round(rsi,1), "pct_1s": round(pct_1s,1)}
+
         if pct_3m >= ANI_PCT_MIN:
             if rsi > 75: return None, detay
+            if pct_1s >= UZAMA_LIMIT_PCT:
+                return None, detay  # coin son 1 saatte zaten çok yükselmiş — tepe riski
             return "pump", detay
         elif pct_3m <= -ANI_PCT_MIN:
             if rsi > 50: return None, detay
+            if pct_1s <= -UZAMA_LIMIT_PCT:
+                return None, detay  # coin son 1 saatte zaten çok düşmüş — dip riski
             return "dump", detay
         return None, detay
     except Exception as e:
