@@ -102,7 +102,9 @@ SL_PCT        = 2.00     # sabit -%2.0 SL (tüm kaynaklarda aynı)
 # ── 4 kademeli TP (dolar bazlı, ana para hiç çekilmez — sadece floor/stop güncellenir) ──
 # Yeni pozisyon büyüklüğüne (50$) orantılı küçültüldü — risk/ödül oranı eskisiyle aynı.
 TP_LEVELS_NET   = [0.53, 1.07, 1.60, 2.13]   # $ net kâr seviyeleri
-TRAIL_BACK_NET  = 0.27                        # zirveden bu kadar $ geri çekilirse kapat
+TRAIL_BACK_NET  = 0.27                        # zirveden bu kadar $ geri çekilirse kapat (KÜÇÜK kârlarda taban)
+TRAIL_GIVEBACK_PCT = 0.30                     # BÜYÜK kârlarda: zirvenin bu yüzdesi kadar geri çekilme payı
+                                               # (ikisinin BÜYÜĞÜ kullanılır — küçük kârda sabit, büyük kârda yüzdesel devreye girer)
 
 RECENTLY_TTL  = 1800     # coin kapandıktan sonra 30dk tekrar açılmasın
 
@@ -773,8 +775,16 @@ def manage_loop():
 
                     floor_net = TP_LEVELS_NET[last_tp_idx]
 
-                    if (peak_net - net) >= TRAIL_BACK_NET or net <= floor_net - 0.01:
-                        close_pos(symbol, f"🎯 TP{last_tp_idx+1} garantisi kilitlendi (zirve ${peak_net:.2f} → ${net:.2f})")
+                    # ── DİNAMİK TRAILING: küçük kârda sabit ($0.27), büyük kârda
+                    # zirvenin %30'u — hangisi BÜYÜKSE o kullanılır. Böylece büyük
+                    # hareketlerde (örn. güçlü trend) pozisyon daha uzun süre nefes
+                    # alabilir, küçük kârlarda ise eski sıkı koruma aynen kalır.
+                    # Taban (floor_net) HER ZAMAN mutlak alt sınır — dinamik trail
+                    # ne olursa olsun, garanti edilen TP seviyesinin altına inilmez.
+                    dinamik_trail = max(TRAIL_BACK_NET, peak_net * TRAIL_GIVEBACK_PCT)
+
+                    if (peak_net - net) >= dinamik_trail or net <= floor_net - 0.01:
+                        close_pos(symbol, f"🎯 TP{last_tp_idx+1} garantisi kilitlendi (zirve ${peak_net:.2f} → ${net:.2f}, pay:${dinamik_trail:.2f})")
                         continue
 
                 if sure >= MAX_SURE:
@@ -1320,7 +1330,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST — FADE TEST\n"
-        "🔖 Versiyon: v1 (küçük sermaye + scanner FADE + pullback %0.35 + fitil/hacim hızlı onay)\n\n"
+        "🔖 Versiyon: v2 (dinamik yüzdesel trailing eklendi — büyük hareketlerde daha fazla pay)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅ (FADE)\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
