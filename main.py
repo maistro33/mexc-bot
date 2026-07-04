@@ -1,22 +1,45 @@
 #!/usr/bin/env python3
 """
-SADIK SCALP FAST
+SADIK SCALP FAST — FADE TEST SÜRÜMÜ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Strateji: Gir → Kâr Al → Çık (hızlı scalp), aynı sinyal kaynakları korunuyor:
   1. CoinSonar V2 — Telegram kanalı (Telethon)
   2. FuturesKripto — Telegram kanalı (Telethon)
   3. Manuel — Sen bota yazarsın
-  4. Bağımsız tarayıcı — ani pump/dump tespiti
+  4. Bağımsız tarayıcı — ani pump/dump tespiti (BU SÜRÜMDE: FADE / TERS MANTIK)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DEĞİŞİKLİK NOTLARI (bu sürümde neler farklı):
+  1) Pozisyon küçültüldü: Margin 15$→10$ | Kaldıraç 5x (aynı) | Pozisyon 75$→50$
+  2) TP/SL dolar hedefleri yeni pozisyon büyüklüğüne ORANTILI küçültüldü
+     (risk/ödül oranı eskisiyle birebir aynı kaldı, sadece mutlak tutar küçüldü):
+       Eski: SL≈-$1.59 | TP: 0.80/1.60/2.40/3.20 | Trail geri: 0.40
+       Yeni: SL≈-$1.06 | TP: 0.53/1.07/1.60/2.13 | Trail geri: 0.27
+  3) Günlük zarar limiti -15$ → -10$ (aynı orana çekildi)
+  4) SADECE SCANNER (bağımsız tarayıcı) kaynağı için yön mantığı TERSİNE çevrildi:
+       - Eskiden: "pump" tespit + pullback onayı → LONG (trend takibi)
+       - Yeni:    "pump" tespit + pullback onayı → SHORT (fade/ters)
+       - Eskiden: "dump" tespit + bounce onayı   → SHORT (trend takibi)
+       - Yeni:    "dump" tespit + bounce onayı   → LONG (fade/ters)
+     RSI ve "uzama filtresi" (UZAMA_LIMIT_PCT) bilinçli olarak DOKUNULMADAN
+     bırakıldı — böylece tek değişkeni (yön) test edip fade hipotezinin
+     gerçekten işe yarayıp yaramadığını net görebiliriz. Bu filtreler hâlâ
+     eski (trend-takip) mantığıyla çalıştığı için ileride ayrıca gözden
+     geçirilmesi gerekebilir (örn. RSI>75'te pump'ı ELEMEK yerine fade için
+     bir AVANTAJ sayılabilir — bu değişiklik bilinçli olarak YAPILMADI).
+  5) CoinSonar / FuturesKripto / Manuel komutlar (long aç / short aç) HİÇBİR
+     ŞEKİLDE değiştirilmedi — sadece scanner'ın otomatik yönü değişti.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Pozisyon:
-  Margin: 15$ | Kaldıraç: 5x | Pozisyon büyüklüğü: 75$
+  Margin: 10$ | Kaldıraç: 5x | Pozisyon büyüklüğü: 50$
 
 Çıkış mantığı (TEK TP + TEK SL + KÂR FLOORU İLE TRAILING):
-  - SL: -%2.0 (net kayıp ≈ -$1.59, komisyonlar dahil)
-  - Net kâr $0.80'e ulaşılınca pozisyon KAPANMAZ — trailing moduna geçer.
+  - SL: -%2.0 (net kayıp ≈ -$1.06, komisyonlar dahil)
+  - Net kâr $0.53'e ulaşılınca pozisyon KAPANMAZ — trailing moduna geçer.
     Fiyat lehte gitmeye devam ettiği sürece pozisyon açık kalır.
-    Fiyat geri dönüp net kârı tekrar $0.80 seviyesine indirirse,
-    o anda LİMİT emirle kapatılıp $0.80 net kâr kasaya konur.
+    Fiyat geri dönüp net kârı tekrar $0.53 seviyesine indirirse,
+    o anda LİMİT emirle kapatılıp $0.53 net kâr kasaya konur.
   - Trigger'a ulaşılmadan SL'e çarparsa normal SL ile kapanır.
 
 Emir tipi:
@@ -58,23 +81,24 @@ FUTURESKRIPTO_KANAL = "FuturesKripto"
 COINSONAR_AKTIF     = False
 FUTURESKRIPTO_AKTIF = False
 
-# ── Pozisyon ──
-MARGIN          = 15.0
+# ── Pozisyon (KÜÇÜK TEST BOYUTU) ──
+MARGIN          = 10.0
 LEVERAGE        = 5
-POS_SIZE        = MARGIN * LEVERAGE     # 75$
+POS_SIZE        = MARGIN * LEVERAGE     # 50$
 COMMISSION      = 0.0006                # taker, tek yön
-ROUNDTRIP_FEE   = POS_SIZE * COMMISSION * 2   # ≈ 0.09$ (giriş+çıkış)
+ROUNDTRIP_FEE   = POS_SIZE * COMMISSION * 2   # ≈ 0.06$ (giriş+çıkış)
 
 MAX_OPEN_AUTO   = 2
 MAX_OPEN_MANUEL = 3
-MAX_DAILY_LOSS  = -15.0
+MAX_DAILY_LOSS  = -10.0
 MAX_SURE        = 240    # dk — süre dolunca limitle kapat
 
 # ── Çıkış parametreleri ──
 SL_PCT        = 2.00     # sabit -%2.0 SL (tüm kaynaklarda aynı)
 # ── 4 kademeli TP (dolar bazlı, ana para hiç çekilmez — sadece floor/stop güncellenir) ──
-TP_LEVELS_NET   = [0.80, 1.60, 2.40, 3.20]   # $ net kâr seviyeleri (her biri $0.80 aralıklı)
-TRAIL_BACK_NET  = 0.40                        # zirveden bu kadar $ geri çekilirse kapat
+# Yeni pozisyon büyüklüğüne (50$) orantılı küçültüldü — risk/ödül oranı eskisiyle aynı.
+TP_LEVELS_NET   = [0.53, 1.07, 1.60, 2.13]   # $ net kâr seviyeleri
+TRAIL_BACK_NET  = 0.27                        # zirveden bu kadar $ geri çekilirse kapat
 
 RECENTLY_TTL  = 1800     # coin kapandıktan sonra 30dk tekrar açılmasın
 
@@ -88,8 +112,6 @@ KAPAT_DENEME       = 8     # limit kapatma: kaç kez agresifleştirilerek deneni
 KAPAT_BEKLE_SN     = 1     # her denemede bekleme süresi (hızlı tepki için kısaltıldı)
 KAPAT_ILK_AGRESIFLIK = 0.45  # İLK denemeden itibaren spread'i ciddi geçen fiyat (neredeyse market hızı)
 KAPAT_ADIM_PCT     = 0.18  # her başarısız sonraki denemede fiyat bu kadar daha agresifleşir
-                            # (hızlı scalp'te kayma riskini azaltmak için artırıldı)
-                            # (spread'i aşamalı geçip hızlı dolum sağlar, yine de LIMIT emir)
 
 # ── 15m Filtre (CoinSonar için) ──
 RSI_MIN = 30
@@ -98,12 +120,15 @@ MIN_PRICE    = 0.0001
 MAX_PRICE    = 100.0
 MIN_TURNOVER = 200_000
 
-# ── Bağımsız tarayıcı (pump/dump) ──
+# ── Bağımsız tarayıcı (pump/dump) — FADE (TERS) MANTIK ──
 SCAN_INTERVAL     = 30
 SCAN_MAX_ADAY     = 20
 ANI_VOL_SPIKE_MIN = 2.0
 ANI_PCT_MIN       = 1.5
-UZAMA_LIMIT_PCT   = 8.0   # coin son ~1 saatte bu yüzdenin üzerinde hareket ettiyse sinyal elenir (tepe/dip riski)
+UZAMA_LIMIT_PCT   = 8.0   # coin son ~1 saatte bu yüzdenin üzerinde hareket ettiyse sinyal elenir
+                          # (NOT: bu filtre hâlâ ESKİ trend-takip mantığıyla çalışıyor,
+                          #  fade için tersine çevrilmesi ayrı bir test konusu — bilinçli
+                          #  olarak bu sürümde DOKUNULMADI, sadece yön değişti)
 
 # ════════════════════════════════════════════
 # STATE
@@ -251,14 +276,11 @@ def _pozisyon_var_mi(symbol, side):
 def _pozisyon_kontrol(symbol, side):
     """
     Borsadan KESİN doğrulama yapar. Dönüş: (basarili, acik_mi, entry_price)
-    - basarili=False  → API çağrısı başarısız oldu, sonuç GÜVENİLMEZ (kapandı SANMA)
-    - basarili=True, acik_mi=True  → pozisyon hâlâ açık
-    - basarili=True, acik_mi=False → pozisyon gerçekten kapanmış
     """
     try:
         pos_list = safe_api(exchange.fetch_positions, [symbol])
         if pos_list is None:
-            return False, None, None  # safe_api tüm denemeleri tüketti — belirsiz, güvenme
+            return False, None, None
         for p in pos_list:
             if float(p.get("contracts") or 0) > 0 and p.get("side") == side:
                 return True, True, float(p.get("entryPrice") or 0)
@@ -269,18 +291,12 @@ def _pozisyon_kontrol(symbol, side):
 
 def limit_giris(symbol, side, amount, ilk_fiyat):
     """SADECE LİMİT emirle giriş. GIRIS_DENEME kez, her seferinde güncel fiyata
-    göre limiti yeniden konumlandırır. Doldurulamazsa None döner (market YOK).
-
-    ÖNEMLİ: Emrin dolup dolmadığı KESİN doğrulanamazsa (API hatası), aynı emri
-    iptal ETMEDEN bekleyip tekrar kontrol ederiz — yeni bir emir AÇMAYIZ.
-    Böylece ilk emrin aslında dolmuş olma ihtimaline karşı çift pozisyon
-    (double-fill) riski engellenmiş olur.
-    """
+    göre limiti yeniden konumlandırır. Doldurulamazsa None döner (market YOK)."""
     yon = "buy" if side == "long" else "sell"
     fiyat = ilk_fiyat
     order_id = None
     fiyat_p = None
-    sinyal_fiyat = ilk_fiyat  # orijinal sinyal fiyatı — kovalama mesafesini buna göre ölçüyoruz
+    sinyal_fiyat = ilk_fiyat
 
     for deneme in range(GIRIS_DENEME):
         if order_id is None:
@@ -317,13 +333,10 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
             if basarili and acik:
                 return entry
             if not basarili:
-                # Belirsiz durum — emri iptal ETMEDEN bekle, yeni emir AÇMA
                 log.warning(f"[GİRİŞ] {symbol} durum doğrulanamadı, emir korunuyor, tekrar kontrol edilecek")
                 time.sleep(2)
-                continue  # order_id set kalıyor — bir sonraki turda YENİ emir açılmaz
-            # basarili=True, acik=False → kesin dolmadığı doğrulandı
+                continue
 
-        # Buraya geldiysek KESİN olarak dolmadığı doğrulandı — güvenle iptal et
         try: safe_api(exchange.cancel_order, order_id, symbol)
         except: pass
         order_id = None
@@ -332,10 +345,6 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
         if not t: continue
         guncel = float(t["last"])
 
-        # ── KOVALAMA MESAFESİ KONTROLÜ ──
-        # Fiyat orijinal sinyal seviyesinden çok uzaklaştıysa (gerçek bir trend
-        # dönüşü/devam eden hareket olabilir) kovalamayı BIRAK — düşen bıçağı
-        # yakalamak (veya tepeden short'u kovalamak) istemiyoruz.
         sapma_pct = abs(guncel - sinyal_fiyat) / sinyal_fiyat * 100
         if sapma_pct >= MAX_KOVALAMA_PCT:
             log.warning(f"[GİRİŞ] {symbol} fiyat sinyalden %{sapma_pct:.2f} uzaklaştı, kovalama bırakılıyor")
@@ -346,13 +355,10 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
         else:
             fiyat = round(guncel * (1 + GIRIS_OFFSET_PCT / 100), 8)
 
-    # Denemeler tükendi — son bir KESİN kontrol (belki son emir aslında dolmuştur)
     basarili, acik, entry = _pozisyon_kontrol(symbol, side)
     if basarili and acik:
         return entry
 
-    # Vazgeçiyoruz — eğer hâlâ asılı bir emir varsa (belirsizlik yüzünden iptal
-    # edilememiş olabilir) son kez temizlemeyi dene, borsada başıboş emir kalmasın
     if order_id is not None:
         try: safe_api(exchange.cancel_order, order_id, symbol)
         except: pass
@@ -360,19 +366,14 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
     return None
 
 def limit_kapat(symbol, side, amount, reason=""):
-    """SADECE LİMİT emirle kapama. Her denemede fiyatı biraz daha agresifleştirir
-    (spread'e doğru kayar) — hızlı dolum sağlar ama emir tipi hep LİMİT kalır."""
+    """SADECE LİMİT emirle kapama."""
     kapat_yonu = "sell" if side == "long" else "buy"
-
     kalan_miktar = amount
 
     for deneme in range(KAPAT_DENEME):
-        # Her denemede GERÇEK kalan miktarı borsadan tazele — önceki deneme
-        # kısmen dolmuş olabilir, eski (tam) miktarla kapatmaya çalışmak
-        # "kapatılacak miktar pozisyondan fazla" hatasına yol açar.
         basarili, acik, _ = _pozisyon_kontrol(symbol, side)
         if basarili and not acik:
-            return None  # zaten kapanmış — üst katman (close_pos) kesin doğrulayacak
+            return None
         if basarili and acik:
             try:
                 pos_list = safe_api(exchange.fetch_positions, [symbol])
@@ -383,16 +384,13 @@ def limit_kapat(symbol, side, amount, reason=""):
                             kalan_miktar = c
                             break
             except: pass
-        # basarili=False (belirsiz) ise elimizdeki son bilinen kalan_miktar ile devam
 
         t = safe_api(exchange.fetch_ticker, symbol)
-        if not t: 
+        if not t:
             time.sleep(1); continue
         piyasa = float(t["last"])
 
-        # Deneme arttıkça fiyatı piyasanın "kötü" tarafına doğru kaydırarak
-        # dolma ihtimalini artırıyoruz (yine de LİMİT emir).
-        agresiflik = KAPAT_ILK_AGRESIFLIK + (KAPAT_ADIM_PCT * deneme)  # ilk denemeden itibaren ciddi agresif
+        agresiflik = KAPAT_ILK_AGRESIFLIK + (KAPAT_ADIM_PCT * deneme)
         if kapat_yonu == "sell":
             limit_fiyat = round(piyasa * (1 - agresiflik / 100), 8)
         else:
@@ -420,12 +418,11 @@ def limit_kapat(symbol, side, amount, reason=""):
                 return float(avg)
             gercek = _pozisyon_var_mi(symbol, side)
             if not gercek:
-                return limit_fiyat  # pozisyon borsada kapanmış
+                return limit_fiyat
 
         try: safe_api(exchange.cancel_order, order_id, symbol)
         except: pass
 
-    # Son çare: hâlâ pozisyon açıksa en agresif limit fiyatla son bir deneme
     basarili, acik, _ = _pozisyon_kontrol(symbol, side)
     if basarili and acik:
         try:
@@ -482,7 +479,7 @@ def pozisyon_slot_al(symbol, entry, sl, kaynak, mod="auto", side="long"):
         return True
 
 # ════════════════════════════════════════════
-# İŞLEM AÇ — LONG (CoinSonar / Manuel / Tarayıcı)
+# İŞLEM AÇ — LONG (CoinSonar / Manuel / Tarayıcı-fade)
 # ════════════════════════════════════════════
 def open_pos_auto(symbol, kaynak="coinsonar"):
     sym = symbol.split("/")[0]
@@ -533,7 +530,7 @@ def open_pos_auto(symbol, kaynak="coinsonar"):
     return True, "OK"
 
 # ════════════════════════════════════════════
-# İŞLEM AÇ — SHORT (Manuel / Tarayıcı)
+# İŞLEM AÇ — SHORT (Manuel / Tarayıcı-fade)
 # ════════════════════════════════════════════
 def open_pos_short_manuel(symbol, kaynak="manuel"):
     sym = symbol.split("/")[0]
@@ -585,7 +582,7 @@ def open_pos_short_manuel(symbol, kaynak="manuel"):
     return True, "OK"
 
 # ════════════════════════════════════════════
-# İŞLEM AÇ — FuturesKripto (giriş fiyatı sinyalden, SL/TP mantığımız uygulanır)
+# İŞLEM AÇ — FuturesKripto
 # ════════════════════════════════════════════
 def open_pos_futureskripto(symbol, giris_sinyal):
     sym = symbol.split("/")[0]
@@ -645,7 +642,6 @@ def close_pos(symbol, reason):
     if not amount or amount <= 0:
         amount = round(POS_SIZE / pos["entry"], 4)
 
-    # Gerçek borsa miktarını doğrula
     try:
         pos_list = safe_api(exchange.fetch_positions, [symbol])
         if pos_list:
@@ -657,12 +653,9 @@ def close_pos(symbol, reason):
 
     exit_price = limit_kapat(symbol, side, amount, reason)
 
-    # ── KESİN DOĞRULAMA — borsadan onay almadan ASLA "kapandı" varsayma ──
     basarili, acik, _ = _pozisyon_kontrol(symbol, side)
 
     if not basarili:
-        # API'den güvenilir cevap alınamadı — kapandığını VARSAYMIYORUZ.
-        # Pozisyon takipte kalır, bir sonraki manage_loop turunda tekrar denenir.
         deneme = pos.get("kapanma_deneme", 0) + 1
         with pos_lock:
             if symbol in positions:
@@ -672,7 +665,6 @@ def close_pos(symbol, reason):
         return
 
     if acik:
-        # Borsa kesin olarak pozisyonun hâlâ açık olduğunu söylüyor — tekrar denenecek
         deneme = pos.get("kapanma_deneme", 0) + 1
         with pos_lock:
             if symbol in positions:
@@ -681,7 +673,6 @@ def close_pos(symbol, reason):
             tg(f"⚠️ {sym} hâlâ açık, kapatma tekrar denenecek (deneme {deneme})")
         return
 
-    # Buraya geldiysek borsa pozisyonun KESİN kapandığını doğruladı
     with pos_lock:
         positions.pop(symbol, None)
 
@@ -710,7 +701,7 @@ def close_pos(symbol, reason):
     )
 
 # ════════════════════════════════════════════
-# YÖNETİM DÖNGÜSÜ — TEK TP TRİGGER + KÂR FLOORU İLE TRAILING
+# YÖNETİM DÖNGÜSÜ
 # ════════════════════════════════════════════
 def manage_loop():
     while True:
@@ -738,7 +729,6 @@ def manage_loop():
                 net, pct = net_pnl_hesapla({**pos, "amount": amount}, price)
                 sure = int((time.time() - pos["open_time"]) / 60)
 
-                # ── Henüz TP1'e ulaşılmadıysa: sabit SL kontrolü ──
                 if not pos.get("tetiklendi"):
                     sl_tetiklendi = (price <= sl) if side == "long" else (price >= sl)
                     if sl_tetiklendi:
@@ -757,7 +747,6 @@ def manage_loop():
                         )
                         continue
 
-                # ── TP1 sonrası: kademe takibi + $ bazlı geri çekilme kontrolü ──
                 else:
                     peak_net    = pos.get("peak_net", net)
                     last_tp_idx = pos.get("last_tp_idx", 0)
@@ -768,7 +757,6 @@ def manage_loop():
                             if symbol in positions:
                                 positions[symbol]["peak_net"] = peak_net
 
-                        # Yeni kademe(ler) geçildi mi?
                         yeni_idx = last_tp_idx
                         while yeni_idx + 1 < len(TP_LEVELS_NET) and peak_net >= TP_LEVELS_NET[yeni_idx + 1]:
                             yeni_idx += 1
@@ -781,12 +769,10 @@ def manage_loop():
 
                     floor_net = TP_LEVELS_NET[last_tp_idx]
 
-                    # Zirveden $ bazlı geri çekilme VEYA garanti seviyesinin altına inme → kapat
                     if (peak_net - net) >= TRAIL_BACK_NET or net <= floor_net - 0.01:
                         close_pos(symbol, f"🎯 TP{last_tp_idx+1} garantisi kilitlendi (zirve ${peak_net:.2f} → ${net:.2f})")
                         continue
 
-                # ── Süre kontrolü ──
                 if sure >= MAX_SURE:
                     close_pos(symbol, f"⏰ Süre doldu ({MAX_SURE}dk)")
                     continue
@@ -817,9 +803,13 @@ def sinyal_parse(text):
     return coin_adi, giris
 
 # ════════════════════════════════════════════
-# BAĞIMSIZ TARAYICI — ani pump/dump
+# BAĞIMSIZ TARAYICI — ani pump/dump (FADE / TERS MANTIK)
 # ════════════════════════════════════════════
 def ani_hareket_tespit(symbol):
+    """
+    "pump"/"dump" etiketleri hâlâ ham piyasa hareketinin yönünü tanımlıyor.
+    FADE kararı scanner_loop içinde veriliyor — bu fonksiyon değişmedi.
+    """
     try:
         r1m = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=25)
         if not r1m or len(r1m) < 15: return None, {}
@@ -836,26 +826,22 @@ def ani_hareket_tespit(symbol):
         df15m = pd.DataFrame(r15m, columns=["t","o","h","l","c","v"])
         rsi = calc_rsi(df15m["c"])
 
-        # ── AŞIRI UZAMA FİLTRESİ ──
-        # Coin son ~1 saatte (4 x 15m mum) zaten çok hareket etmişse, üstüne
-        # gelen küçük bir ek kıpırdanma "yeni pump/dump" değil, muhtemelen
-        # tükenmiş bir hareketin son safhasıdır — tepeden/dipten girmemek
-        # için bu durumda sinyali eliyoruz.
         fiyat_1s_once = float(df15m["c"].iloc[-5]) if len(df15m) >= 5 else float(df15m["c"].iloc[0])
         pct_1s = (price - fiyat_1s_once) / fiyat_1s_once * 100
 
         detay = {"vol": round(vol_oran,1), "pct": round(pct_3m,2), "price": price,
                   "rsi": round(rsi,1), "pct_1s": round(pct_1s,1)}
 
+        # NOT: eşikler hâlâ ESKİ (trend-takip) mantığından kalma — bilinçli DOKUNULMADI.
         if pct_3m >= ANI_PCT_MIN:
             if rsi > 75: return None, detay
             if pct_1s >= UZAMA_LIMIT_PCT:
-                return None, detay  # coin son 1 saatte zaten çok yükselmiş — tepe riski
+                return None, detay
             return "pump", detay
         elif pct_3m <= -ANI_PCT_MIN:
             if rsi > 50: return None, detay
             if pct_1s <= -UZAMA_LIMIT_PCT:
-                return None, detay  # coin son 1 saatte zaten çok düşmüş — dip riski
+                return None, detay
             return "dump", detay
         return None, detay
     except Exception as e:
@@ -864,15 +850,9 @@ def ani_hareket_tespit(symbol):
 
 def giris_onayi_bekle(symbol, yon, bekle_sn=15, pullback_pct=0.15):
     """
-    Momentum tespit edildikten sonra hemen girmek yerine kısa bir onay
-    penceresi açar: fiyatın zirvesinden/dibinden küçük bir geri çekilme
-    (pullback) görülene kadar bekler. Böylece tam tepe/dip noktasından
-    değil, biraz daha iyi bir fiyattan girilir.
-
-    pump (long): zirveyi takip et, zirveden %pullback_pct geri gelirse onay.
-    dump (short): dibi takip et, dipten %pullback_pct yukarı gelirse onay.
-
-    Döner: (onaylandi: bool, giris_fiyati: float|None)
+    FADE mantığında bu geri çekilme artık "olası dönüşün ilk işareti" olarak
+    yorumlanıyor — scanner_loop bu onayı aldıktan sonra hareketin TERSİ
+    yönünde pozisyon açıyor.
     """
     ekstrem = None
     for _ in range(bekle_sn):
@@ -902,7 +882,7 @@ def giris_onayi_bekle(symbol, yon, bekle_sn=15, pullback_pct=0.15):
     return False, None
 
 def scanner_loop():
-    log.info("[SCANNER] Bağımsız pump/dump tarama başladı")
+    log.info("[SCANNER] Bağımsız pump/dump tarama başladı (FADE / TERS MOD)")
     while True:
         time.sleep(SCAN_INTERVAL)
         try:
@@ -938,26 +918,27 @@ def scanner_loop():
                 if yon is None: continue
                 sym_kisa = sym.split("/")[0]
 
+                # ══ FADE MANTIK: pump tespit edilirse SHORT, dump tespit edilirse LONG ══
                 if yon == "pump":
-                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\nGeri çekilme onayı bekleniyor...")
+                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (SHORT) için geri çekilme onayı bekleniyor...")
                     onaylandi, giris_fiyat = giris_onayi_bekle(sym, "pump")
                     if onaylandi:
-                        tg(f"✅ {sym_kisa} geri çekilme onaylandı @ {giris_fiyat:.8f} — LONG açılıyor...")
-                        open_pos_auto(sym, "scanner")
+                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] SHORT açılıyor...")
+                        open_pos_short_manuel(sym, "scanner_fade")
                         break
                     else:
-                        log.info(f"[SCANNER] {sym_kisa} pullback onayı gelmedi, atlandı")
+                        log.info(f"[SCANNER] {sym_kisa} dönüş onayı gelmedi, atlandı")
                         continue
 
                 elif yon == "dump":
-                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\nGeri çekilme onayı bekleniyor...")
+                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (LONG) için geri çekilme onayı bekleniyor...")
                     onaylandi, giris_fiyat = giris_onayi_bekle(sym, "dump")
                     if onaylandi:
-                        tg(f"✅ {sym_kisa} geri çekilme onaylandı @ {giris_fiyat:.8f} — SHORT açılıyor...")
-                        open_pos_short_manuel(sym, "scanner")
+                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] LONG açılıyor...")
+                        open_pos_auto(sym, "scanner_fade")
                         break
                     else:
-                        log.info(f"[SCANNER] {sym_kisa} pullback onayı gelmedi, atlandı")
+                        log.info(f"[SCANNER] {sym_kisa} dönüş onayı gelmedi, atlandı")
                         continue
         except Exception as e:
             log.error(f"[SCANNER] {e}")
@@ -997,7 +978,7 @@ async def telethon_loop():
     try:
         if not COINSONAR_AKTIF and not FUTURESKRIPTO_AKTIF:
             log.info("[TELETHON] Her iki kanal da pasif — Telethon başlatılmadı, sadece scanner/manuel çalışıyor")
-            tg("📡 Kanal sinyalleri kapalı — sadece kendi tarayıcın (scanner) ve manuel komutlar aktif")
+            tg("📡 Kanal sinyalleri kapalı — sadece kendi tarayıcın (scanner, FADE modda) ve manuel komutlar aktif")
             return
 
         if TG_SESSION:
@@ -1257,7 +1238,7 @@ sig_mod.signal(sig_mod.SIGINT, shutdown)
 # MAIN
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("SADIK SCALP FAST BAŞLIYOR...")
+    print("SADIK SCALP FAST (FADE TEST) BAŞLIYOR...")
     load_open_positions()
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop, daemon=True).start()
@@ -1266,14 +1247,15 @@ if __name__ == "__main__":
     threading.Thread(target=telethon_thread, daemon=True).start()
 
     tg(
-        "🚀 SADIK SCALP FAST\n"
-        "🔖 Versiyon: 2026-07-04-v8 (uzama filtresi + kovalama limiti + kısmi-dolum fix)\n\n"
+        "🚀 SADIK SCALP FAST — FADE TEST\n"
+        "🔖 Versiyon: 2026-07-04-v9 (küçük sermaye + scanner FADE modu)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
-        f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅\n\n"
+        f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅ (FADE)\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
-        f"🚫 SL: -%{SL_PCT}\n"
+        f"🚫 SL: -%{SL_PCT} (net ≈ -${ROUNDTRIP_FEE + POS_SIZE*SL_PCT/100:.2f})\n"
         f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
-        f"📐 Giriş/Çıkış: SADECE LİMİT emir (ilk kapatma denemesi %{KAPAT_ILK_AGRESIFLIK} agresif)\n\n"
+        f"📐 Giriş/Çıkış: SADECE LİMİT emir (ilk kapatma denemesi %{KAPAT_ILK_AGRESIFLIK} agresif)\n"
+        f"🔀 Scanner: pump→SHORT / dump→LONG (FADE) | RSI+uzama filtreleri eski haliyle korundu\n\n"
         "Komutlar:\n/durum | /istatistik\nCOIN long aç | COIN short aç | COIN kapat"
     )
 
