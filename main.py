@@ -245,15 +245,28 @@ def borsa_hazirla(symbol):
     except: pass
 
 def _pozisyon_var_mi(symbol, side):
+    """Geriye uyumluluk için: pozisyon varsa entry price, yoksa/hata varsa None döner."""
+    basarili, acik, entry = _pozisyon_kontrol(symbol, side)
+    return entry if (basarili and acik) else None
+
+def _pozisyon_kontrol(symbol, side):
+    """
+    Borsadan KESİN doğrulama yapar. Dönüş: (basarili, acik_mi, entry_price)
+    - basarili=False  → API çağrısı başarısız oldu, sonuç GÜVENİLMEZ (kapandı SANMA)
+    - basarili=True, acik_mi=True  → pozisyon hâlâ açık
+    - basarili=True, acik_mi=False → pozisyon gerçekten kapanmış
+    """
     try:
         pos_list = safe_api(exchange.fetch_positions, [symbol])
-        if pos_list:
-            for p in pos_list:
-                if float(p.get("contracts") or 0) > 0 and p.get("side") == side:
-                    return float(p.get("entryPrice") or 0)
+        if pos_list is None:
+            return False, None, None  # safe_api tüm denemeleri tüketti — belirsiz, güvenme
+        for p in pos_list:
+            if float(p.get("contracts") or 0) > 0 and p.get("side") == side:
+                return True, True, float(p.get("entryPrice") or 0)
+        return True, False, None
     except Exception as e:
         log.warning(f"[POS_CHECK] {symbol}: {e}")
-    return None
+        return False, None, None
 
 def limit_giris(symbol, side, amount, ilk_fiyat):
     """SADECE LİMİT emirle giriş. GIRIS_DENEME kez, her seferinde güncel fiyata
@@ -547,7 +560,7 @@ def open_pos_futureskripto(symbol, giris_sinyal):
 # ════════════════════════════════════════════
 def close_pos(symbol, reason):
     with pos_lock:
-        pos = positions.pop(symbol, None)
+        pos = positions.get(symbol)
     if not pos: return
 
     sym    = symbol.split("/")[0]
@@ -567,10 +580,38 @@ def close_pos(symbol, reason):
     except: pass
 
     exit_price = limit_kapat(symbol, side, amount, reason)
+
+    # ── KESİN DOĞRULAMA — borsadan onay almadan ASLA "kapandı" varsayma ──
+    basarili, acik, _ = _pozisyon_kontrol(symbol, side)
+
+    if not basarili:
+        # API'den güvenilir cevap alınamadı — kapandığını VARSAYMIYORUZ.
+        # Pozisyon takipte kalır, bir sonraki manage_loop turunda tekrar denenir.
+        deneme = pos.get("kapanma_deneme", 0) + 1
+        with pos_lock:
+            if symbol in positions:
+                positions[symbol]["kapanma_deneme"] = deneme
+        if deneme == 1 or deneme % 5 == 0:
+            tg(f"⚠️ {sym} kapatma durumu DOĞRULANAMADI (API hatası) — pozisyon takipte kalıyor, tekrar denenecek (deneme {deneme})")
+        return
+
+    if acik:
+        # Borsa kesin olarak pozisyonun hâlâ açık olduğunu söylüyor — tekrar denenecek
+        deneme = pos.get("kapanma_deneme", 0) + 1
+        with pos_lock:
+            if symbol in positions:
+                positions[symbol]["kapanma_deneme"] = deneme
+        if deneme == 1 or deneme % 5 == 0:
+            tg(f"⚠️ {sym} hâlâ açık, kapatma tekrar denenecek (deneme {deneme})")
+        return
+
+    # Buraya geldiysek borsa pozisyonun KESİN kapandığını doğruladı
+    with pos_lock:
+        positions.pop(symbol, None)
+
     if not exit_price:
         t = safe_api(exchange.fetch_ticker, symbol)
         exit_price = float(t["last"]) if t else pos["entry"]
-        tg(f"⚠️ {sym} limit kapatma doğrulanamadı, tahmini fiyatla kayıt ediliyor.")
 
     net, pct = net_pnl_hesapla({**pos, "amount": amount}, exit_price)
     sure   = int((time.time() - pos["open_time"]) / 60)
@@ -580,11 +621,6 @@ def close_pos(symbol, reason):
     sym_base = sym.upper()
     with closed_lock:
         recently_closed[sym_base] = time.time()
-
-    try:
-        save_trade({"symbol": symbol, "signal": side.upper(), "pnl": round(net, 4),
-                     "sure_dk": sure, "reason": reason, "kaynak": kaynak})
-    except: pass
 
     if toplam <= MAX_DAILY_LOSS:
         tg(f"⛔ GÜNLÜK LİMİT! {toplam:+.2f}$")
