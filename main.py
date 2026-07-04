@@ -137,6 +137,14 @@ UZAMA_LIMIT_PCT   = 8.0   # coin son ~1 saatte bu yüzdenin üzerinde hareket et
                           #  fade için tersine çevrilmesi ayrı bir test konusu — bilinçli
                           #  olarak bu sürümde DOKUNULMADI, sadece yön değişti)
 
+# ── REJİM TESPİTİ (ADX) — fade mi trend-takip mi? ──
+# ADX düşükse (yatay/sıkışık piyasa) → FADE (ters) mantığı uygulanır.
+# ADX yüksekse (güçlü, kararlı trend — örn. EPIC gibi) → TREND TAKİBİ uygulanır
+# (pump'ta LONG, dump'ta SHORT — yani hareketin yönünde girilir).
+# Böylece hiçbir sinyal atlanmaz, sadece yön kararı piyasa karakterine göre verilir.
+ADX_PERIOD      = 14
+ADX_TREND_ESIK  = 25   # bu değerin üzerinde ADX = "gerçek trend var" kabul edilir
+
 # ════════════════════════════════════════════
 # STATE
 # ════════════════════════════════════════════
@@ -255,6 +263,46 @@ def fiyat_for_net(entry, amount, side, net_hedef):
 # ════════════════════════════════════════════
 # İNDİKATÖRLER
 # ════════════════════════════════════════════
+def calc_adx(df, period=14):
+    """
+    ADX (Average Directional Index) — trend gücünü ölçer (yön değil, GÜÇ).
+    Yüksek ADX = güçlü/kararlı trend var. Düşük ADX = yatay/sıkışık piyasa.
+    Sadece pandas ile (Wilder'ın orijinal smoothing yöntemine yakın, EMA ile
+    yaklaştırılmış) hesaplanır.
+    """
+    high, low, close = df["h"], df["l"], df["c"]
+    up_move   = high.diff()
+    down_move = -low.diff()
+
+    plus_dm  = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    plus_di  = 100 * plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr.replace(0, 0.0001)
+    minus_di = 100 * minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr.replace(0, 0.0001)
+
+    dx  = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 0.0001)
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+    return float(adx.iloc[-1])
+
+def trend_gucu_adx(symbol, period=ADX_PERIOD):
+    """15m mumlardan ADX hesaplar. Veri yetersizse/hata olursa None döner
+    (bu durumda çağıran taraf güvenli varsayılan olarak FADE'e düşer)."""
+    try:
+        r = safe_api(exchange.fetch_ohlcv, symbol, "15m", limit=period * 3)
+        if not r or len(r) < period * 2:
+            return None
+        df = pd.DataFrame(r, columns=["t", "o", "h", "l", "c", "v"])
+        return calc_adx(df, period)
+    except Exception as e:
+        log.warning(f"[ADX] {symbol}: {e}")
+        return None
+
 def calc_rsi(series, period=14):
     delta = series.diff()
     gain  = delta.clip(lower=0).rolling(period).mean()
@@ -1005,45 +1053,71 @@ def scanner_loop():
                 if yon is None: continue
                 sym_kisa = sym.split("/")[0]
 
-                # ══ FADE MANTIK: pump tespit edilirse SHORT, dump tespit edilirse LONG ══
+                # ══ REJİM TESPİTİ: ADX düşükse FADE, yüksekse TREND TAKİBİ ══
+                adx = trend_gucu_adx(sym)
+                adx_guclu = (adx is not None) and (adx >= ADX_TREND_ESIK)
+                adx_str = f"{adx:.1f}" if adx is not None else "N/A"
+
                 if yon == "pump":
-                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (SHORT) için onay aranıyor...")
+                    if adx_guclu:
+                        hedef_yon, mod, kaynak_etiket = "long", "TREND", "scanner_trend"
+                        aciklama = f"[TREND ADX:{adx_str}] Yönünde (LONG) onay aranıyor..."
+                    else:
+                        hedef_yon, mod, kaynak_etiket = "short", "FADE", "scanner_fade"
+                        aciklama = f"[FADE ADX:{adx_str}] Ters (SHORT) için onay aranıyor..."
 
-                    # ── HIZLI YOL: fitil/ret + azalan hacim zaten oluştu mu? ──
-                    hizli_bulundu, hizli_fiyat = tepe_dip_reddi_var_mi(sym, "pump")
-                    if hizli_bulundu:
-                        tg(f"⚡ {sym_kisa} fitil+hacim reddi tespit edildi @ {hizli_fiyat:.8f} — [FADE] SHORT açılıyor (hızlı onay)...")
-                        open_pos_short_manuel(sym, "scanner_fade")
-                        break
+                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n{aciklama}")
 
-                    # ── YEDEK YOL: hızlı onay yoksa eski pullback beklemesi ──
+                    # Hızlı fitil/hacim reddi SADECE fade senaryosunda anlamlı
+                    # (dönüş/tükenme sinyali arıyor — trend takibinde kullanılmaz)
+                    if mod == "FADE":
+                        hizli_bulundu, hizli_fiyat = tepe_dip_reddi_var_mi(sym, "pump")
+                        if hizli_bulundu:
+                            tg(f"⚡ {sym_kisa} fitil+hacim reddi tespit edildi @ {hizli_fiyat:.8f} — [{mod}] SHORT açılıyor (hızlı onay)...")
+                            open_pos_short_manuel(sym, kaynak_etiket)
+                            break
+
                     onaylandi, giris_fiyat = giris_onayi_bekle(sym, "pump")
                     if onaylandi:
-                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] SHORT açılıyor (pullback onayı)...")
-                        open_pos_short_manuel(sym, "scanner_fade")
+                        yon_metni = "LONG" if hedef_yon == "long" else "SHORT"
+                        tg(f"✅ {sym_kisa} onaylandı @ {giris_fiyat:.8f} — [{mod}] {yon_metni} açılıyor...")
+                        if hedef_yon == "long":
+                            open_pos_auto(sym, kaynak_etiket)
+                        else:
+                            open_pos_short_manuel(sym, kaynak_etiket)
                         break
                     else:
-                        log.info(f"[SCANNER] {sym_kisa} dönüş onayı gelmedi, atlandı")
+                        log.info(f"[SCANNER] {sym_kisa} onay gelmedi, atlandı")
                         continue
 
                 elif yon == "dump":
-                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (LONG) için onay aranıyor...")
+                    if adx_guclu:
+                        hedef_yon, mod, kaynak_etiket = "short", "TREND", "scanner_trend"
+                        aciklama = f"[TREND ADX:{adx_str}] Yönünde (SHORT) onay aranıyor..."
+                    else:
+                        hedef_yon, mod, kaynak_etiket = "long", "FADE", "scanner_fade"
+                        aciklama = f"[FADE ADX:{adx_str}] Ters (LONG) için onay aranıyor..."
 
-                    # ── HIZLI YOL: fitil/ret + azalan hacim zaten oluştu mu? ──
-                    hizli_bulundu, hizli_fiyat = tepe_dip_reddi_var_mi(sym, "dump")
-                    if hizli_bulundu:
-                        tg(f"⚡ {sym_kisa} fitil+hacim reddi tespit edildi @ {hizli_fiyat:.8f} — [FADE] LONG açılıyor (hızlı onay)...")
-                        open_pos_auto(sym, "scanner_fade")
-                        break
+                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n{aciklama}")
 
-                    # ── YEDEK YOL: hızlı onay yoksa eski pullback beklemesi ──
+                    if mod == "FADE":
+                        hizli_bulundu, hizli_fiyat = tepe_dip_reddi_var_mi(sym, "dump")
+                        if hizli_bulundu:
+                            tg(f"⚡ {sym_kisa} fitil+hacim reddi tespit edildi @ {hizli_fiyat:.8f} — [{mod}] LONG açılıyor (hızlı onay)...")
+                            open_pos_auto(sym, kaynak_etiket)
+                            break
+
                     onaylandi, giris_fiyat = giris_onayi_bekle(sym, "dump")
                     if onaylandi:
-                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] LONG açılıyor (pullback onayı)...")
-                        open_pos_auto(sym, "scanner_fade")
+                        yon_metni = "SHORT" if hedef_yon == "short" else "LONG"
+                        tg(f"✅ {sym_kisa} onaylandı @ {giris_fiyat:.8f} — [{mod}] {yon_metni} açılıyor...")
+                        if hedef_yon == "short":
+                            open_pos_short_manuel(sym, kaynak_etiket)
+                        else:
+                            open_pos_auto(sym, kaynak_etiket)
                         break
                     else:
-                        log.info(f"[SCANNER] {sym_kisa} dönüş onayı gelmedi, atlandı")
+                        log.info(f"[SCANNER] {sym_kisa} onay gelmedi, atlandı")
                         continue
         except Exception as e:
             log.error(f"[SCANNER] {e}")
@@ -1503,7 +1577,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 SADIK SCALP FAST — FADE TEST\n"
-        "🔖 Versiyon: v4 (TP taban $0.80 + double-fill koruması + dinamik komisyon + HTML panel /panel)\n\n"
+        "🔖 Versiyon: v5 (ADX rejim tespiti — düşük ADX'te FADE, yüksek ADX'te TREND takibi)\n\n"
         f"📡 Kaynaklar: {'CoinSonar V2 ✅' if COINSONAR_AKTIF else 'CoinSonar V2 ❌'} | "
         f"{'FuturesKripto ✅' if FUTURESKRIPTO_AKTIF else 'FuturesKripto ❌'} | Manuel ✅ | Tarayıcı ✅ (FADE)\n\n"
         f"💰 Pozisyon: {MARGIN}$ margin × {LEVERAGE}x = {POS_SIZE}$\n"
