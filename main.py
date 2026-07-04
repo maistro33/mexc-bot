@@ -270,40 +270,64 @@ def _pozisyon_kontrol(symbol, side):
 
 def limit_giris(symbol, side, amount, ilk_fiyat):
     """SADECE LİMİT emirle giriş. GIRIS_DENEME kez, her seferinde güncel fiyata
-    göre limiti yeniden konumlandırır. Doldurulamazsa None döner (market YOK)."""
+    göre limiti yeniden konumlandırır. Doldurulamazsa None döner (market YOK).
+
+    ÖNEMLİ: Emrin dolup dolmadığı KESİN doğrulanamazsa (API hatası), aynı emri
+    iptal ETMEDEN bekleyip tekrar kontrol ederiz — yeni bir emir AÇMAYIZ.
+    Böylece ilk emrin aslında dolmuş olma ihtimaline karşı çift pozisyon
+    (double-fill) riski engellenmiş olur.
+    """
     yon = "buy" if side == "long" else "sell"
     fiyat = ilk_fiyat
+    order_id = None
+    fiyat_p = None
 
     for deneme in range(GIRIS_DENEME):
-        try:
-            fiyat_p = float(exchange.price_to_precision(symbol, fiyat))
-            order = safe_api(
-                exchange.create_order, symbol, "limit", yon, amount, fiyat_p,
-                {"marginMode": "isolated", "marginCoin": "USDT", "timeInForce": "GTC"}
-            )
-        except Exception as e:
-            log.warning(f"[GİRİŞ_LİMİT] {symbol}: {e}")
-            order = None
+        if order_id is None:
+            try:
+                fiyat_p = float(exchange.price_to_precision(symbol, fiyat))
+                order = safe_api(
+                    exchange.create_order, symbol, "limit", yon, amount, fiyat_p,
+                    {"marginMode": "isolated", "marginCoin": "USDT", "timeInForce": "GTC"}
+                )
+            except Exception as e:
+                log.warning(f"[GİRİŞ_LİMİT] {symbol}: {e}")
+                order = None
+            if not order:
+                time.sleep(1)
+                continue
+            order_id = order.get("id")
 
-        if not order:
-            time.sleep(1)
-            continue
-
-        order_id = order.get("id")
+        kesin_dolmadi = False
         for _ in range(GIRIS_BEKLE_SN):
             time.sleep(1)
             durum = safe_api(exchange.fetch_order, order_id, symbol)
             if durum and durum.get("status") == "closed":
                 avg = durum.get("average") or fiyat_p
                 return float(avg)
-            gercek = _pozisyon_var_mi(symbol, side)
-            if gercek:
-                return gercek
+            basarili, acik, entry = _pozisyon_kontrol(symbol, side)
+            if basarili and acik:
+                return entry
+            if basarili and not acik:
+                kesin_dolmadi = True
+                break
 
+        if not kesin_dolmadi:
+            basarili, acik, entry = _pozisyon_kontrol(symbol, side)
+            if basarili and acik:
+                return entry
+            if not basarili:
+                # Belirsiz durum — emri iptal ETMEDEN bekle, yeni emir AÇMA
+                log.warning(f"[GİRİŞ] {symbol} durum doğrulanamadı, emir korunuyor, tekrar kontrol edilecek")
+                time.sleep(2)
+                continue  # order_id set kalıyor — bir sonraki turda YENİ emir açılmaz
+            # basarili=True, acik=False → kesin dolmadığı doğrulandı
+
+        # Buraya geldiysek KESİN olarak dolmadığı doğrulandı — güvenle iptal et
         try: safe_api(exchange.cancel_order, order_id, symbol)
         except: pass
+        order_id = None
 
-        # Doldurulamadı — güncel fiyata göre limiti yenile
         t = safe_api(exchange.fetch_ticker, symbol)
         if not t: continue
         guncel = float(t["last"])
@@ -311,6 +335,17 @@ def limit_giris(symbol, side, amount, ilk_fiyat):
             fiyat = round(guncel * (1 - GIRIS_OFFSET_PCT / 100), 8)
         else:
             fiyat = round(guncel * (1 + GIRIS_OFFSET_PCT / 100), 8)
+
+    # Denemeler tükendi — son bir KESİN kontrol (belki son emir aslında dolmuştur)
+    basarili, acik, entry = _pozisyon_kontrol(symbol, side)
+    if basarili and acik:
+        return entry
+
+    # Vazgeçiyoruz — eğer hâlâ asılı bir emir varsa (belirsizlik yüzünden iptal
+    # edilememiş olabilir) son kez temizlemeyi dene, borsada başıboş emir kalmasın
+    if order_id is not None:
+        try: safe_api(exchange.cancel_order, order_id, symbol)
+        except: pass
 
     return None
 
