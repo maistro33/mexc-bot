@@ -29,6 +29,10 @@ DEĞİŞİKLİK NOTLARI (bu sürümde neler farklı):
      bir AVANTAJ sayılabilir — bu değişiklik bilinçli olarak YAPILMADI).
   5) CoinSonar / FuturesKripto / Manuel komutlar (long aç / short aç) HİÇBİR
      ŞEKİLDE değiştirilmedi — sadece scanner'ın otomatik yönü değişti.
+  6) [GÜNCELLEME] Pullback onay eşiği %0.15 → %0.35 büyütüldü. İlk canlı
+     testte (EPICUSDT, 2dk'da SL) çok küçük bir geri çekilmenin gerçek bir
+     dönüş sinyali olmadan da tetiklendiği görüldü — eşik büyütülerek
+     gürültüden kaynaklı erken girişler azaltılmaya çalışılıyor.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Pozisyon:
@@ -848,7 +852,57 @@ def ani_hareket_tespit(symbol):
         log.warning(f"[ANİ] {symbol}: {e}")
         return None, {}
 
-def giris_onayi_bekle(symbol, yon, bekle_sn=15, pullback_pct=0.15):
+# ── Fitil/Ret mumu + hacim klimaksı tespiti (hızlı dönüş onayı) ──
+WICK_BODY_ORANI = 1.5    # üst/alt fitil, gövdenin en az bu katı olmalı
+MIN_WICK_PCT    = 0.15   # fitil, fiyatın en az bu yüzdesi kadar olmalı (gürültüyü ele)
+
+def tepe_dip_reddi_var_mi(symbol, yon):
+    """
+    Son KAPANMIŞ 1m mumda fitil/ret + azalan hacim ile hızlı bir dönüş
+    sinyali arar. Bulunursa giris_onayi_bekle'nin pullback beklemesine
+    gerek kalmadan hemen giriş onayı verilir (hızlı yol). Bulunamazsa
+    scanner_loop eski pullback bekleme yöntemine düşer (yedek yol).
+
+    yon="pump" → tepe reddi arar (üst fitil + kırmızı mum → SHORT için hızlı onay)
+    yon="dump" → dip reddi arar (alt fitil + yeşil mum → LONG için hızlı onay)
+
+    Döner: (bulundu: bool, fiyat: float|None)
+    """
+    try:
+        r = safe_api(exchange.fetch_ohlcv, symbol, "1m", limit=5)
+        if not r or len(r) < 3:
+            return False, None
+        df = pd.DataFrame(r, columns=["t","o","h","l","c","v"])
+        son     = df.iloc[-2]   # son KAPANMIŞ mum (son satır hâlâ açık olabilir)
+        onceki  = df.iloc[-3]
+
+        o, h, l, c, v = float(son["o"]), float(son["h"]), float(son["l"]), float(son["c"]), float(son["v"])
+        v_onceki = float(onceki["v"])
+        govde = max(abs(c - o), (h - l) * 0.01, 1e-12)  # sıfıra bölünmeyi engelle
+
+        if yon == "pump":
+            ust_fitil = h - max(o, c)
+            fitil_pct = (ust_fitil / h) * 100 if h else 0
+            ret_var = (ust_fitil >= WICK_BODY_ORANI * govde) and (fitil_pct >= MIN_WICK_PCT)
+            hacim_azaliyor = v < v_onceki
+            kirmizi = c < o
+            if ret_var and hacim_azaliyor and kirmizi:
+                return True, c
+            return False, None
+        else:  # dump
+            alt_fitil = min(o, c) - l
+            fitil_pct = (alt_fitil / l) * 100 if l else 0
+            ret_var = (alt_fitil >= WICK_BODY_ORANI * govde) and (fitil_pct >= MIN_WICK_PCT)
+            hacim_azaliyor = v < v_onceki
+            yesil = c > o
+            if ret_var and hacim_azaliyor and yesil:
+                return True, c
+            return False, None
+    except Exception as e:
+        log.warning(f"[TEPE_DIP] {symbol}: {e}")
+        return False, None
+
+def giris_onayi_bekle(symbol, yon, bekle_sn=15, pullback_pct=0.35):
     """
     FADE mantığında bu geri çekilme artık "olası dönüşün ilk işareti" olarak
     yorumlanıyor — scanner_loop bu onayı aldıktan sonra hareketin TERSİ
@@ -920,10 +974,19 @@ def scanner_loop():
 
                 # ══ FADE MANTIK: pump tespit edilirse SHORT, dump tespit edilirse LONG ══
                 if yon == "pump":
-                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (SHORT) için geri çekilme onayı bekleniyor...")
+                    tg(f"🚀 Ani PUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (SHORT) için onay aranıyor...")
+
+                    # ── HIZLI YOL: fitil/ret + azalan hacim zaten oluştu mu? ──
+                    hizli_bulundu, hizli_fiyat = tepe_dip_reddi_var_mi(sym, "pump")
+                    if hizli_bulundu:
+                        tg(f"⚡ {sym_kisa} fitil+hacim reddi tespit edildi @ {hizli_fiyat:.8f} — [FADE] SHORT açılıyor (hızlı onay)...")
+                        open_pos_short_manuel(sym, "scanner_fade")
+                        break
+
+                    # ── YEDEK YOL: hızlı onay yoksa eski pullback beklemesi ──
                     onaylandi, giris_fiyat = giris_onayi_bekle(sym, "pump")
                     if onaylandi:
-                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] SHORT açılıyor...")
+                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] SHORT açılıyor (pullback onayı)...")
                         open_pos_short_manuel(sym, "scanner_fade")
                         break
                     else:
@@ -931,10 +994,19 @@ def scanner_loop():
                         continue
 
                 elif yon == "dump":
-                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (LONG) için geri çekilme onayı bekleniyor...")
+                    tg(f"📉 Ani DUMP: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}%\n[FADE] Ters (LONG) için onay aranıyor...")
+
+                    # ── HIZLI YOL: fitil/ret + azalan hacim zaten oluştu mu? ──
+                    hizli_bulundu, hizli_fiyat = tepe_dip_reddi_var_mi(sym, "dump")
+                    if hizli_bulundu:
+                        tg(f"⚡ {sym_kisa} fitil+hacim reddi tespit edildi @ {hizli_fiyat:.8f} — [FADE] LONG açılıyor (hızlı onay)...")
+                        open_pos_auto(sym, "scanner_fade")
+                        break
+
+                    # ── YEDEK YOL: hızlı onay yoksa eski pullback beklemesi ──
                     onaylandi, giris_fiyat = giris_onayi_bekle(sym, "dump")
                     if onaylandi:
-                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] LONG açılıyor...")
+                        tg(f"✅ {sym_kisa} dönüş sinyali onaylandı @ {giris_fiyat:.8f} — [FADE] LONG açılıyor (pullback onayı)...")
                         open_pos_auto(sym, "scanner_fade")
                         break
                     else:
