@@ -1584,7 +1584,7 @@ if __name__ == "__main__":
         f"🚫 SL: -%{SL_PCT} (net ≈ -${ROUNDTRIP_FEE + POS_SIZE*SL_PCT/100:.2f})\n"
         f"🎯 TP seviyeleri: " + " / ".join(f"${x:.2f}" for x in TP_LEVELS_NET) + f" | ${TRAIL_BACK_NET:.2f} geri çekilince kilitlenir\n"
         f"📐 Giriş/Çıkış: SADECE LİMİT emir (ilk kapatma denemesi %{KAPAT_ILK_AGRESIFLIK} agresif)\n"
-        f"🔀 Scanner: pump→SHORT / dump→LONG (FADE) | RSI+uzama filtreleri eski haliyle korundu\n\n"
+        f"🔀 Scanner: ADX<{ADX_TREND_ESIK} → FADE (ters) | ADX≥{ADX_TREND_ESIK} → TREND takibi | RSI+uzama filtreleri eski haliyle korundu\n\n"
         "Komutlar:\n/durum | /istatistik\nCOIN long aç | COIN short aç | COIN kapat"
     )
 
