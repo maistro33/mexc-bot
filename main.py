@@ -29,9 +29,8 @@ from datetime import datetime, timedelta, timezone
 # ════════════════════════════════════════════
 # CONFIG — istediğin gibi değiştirebilirsin
 # ════════════════════════════════════════════
-GECMIS_GUN     = 120     # kaç gün geriye gidilecek
-TOP_COINS      = 30      # en yüksek hacimli kaç coin denenecek (80 yerine
-                          # başta az tutuldu — API çağrısı/süre daha az)
+GECMIS_GUN     = 365     # kaç gün geriye gidilecek (1 yıl)
+TOP_COINS      = 100     # en yüksek hacimli kaç coin denenecek
 MIN_VOLUME     = 5_000_000
 BUFFER_PCT     = 0.0015
 LEV            = 10
@@ -175,7 +174,7 @@ def islemi_simule_et(m15_df, giris_idx, direction, entry, sl):
         if sl_vuruldu:
             r_bu_parca = (aktif_sl - entry) / risk if direction == "long" else (entry - aktif_sl) / risk
             r_toplam += r_bu_parca * kalan
-            return {"r": r_toplam, "sure_mum": i - giris_idx, "sonuc": "SL/BE"}
+            return {"r": r_toplam, "sure_mum": i - giris_idx, "sonuc": "SL/BE", "cikis_i": i}
 
         if not tp1_oldu:
             tp1_vuruldu = (h >= tp1) if direction == "long" else (l <= tp1)
@@ -196,15 +195,15 @@ def islemi_simule_et(m15_df, giris_idx, direction, entry, sl):
             tp3_vuruldu = (h >= tp3) if direction == "long" else (l <= tp3)
             if tp3_vuruldu:
                 r_toplam += 3.0 * TP_SPLIT[2]
-                return {"r": r_toplam, "sure_mum": i - giris_idx, "sonuc": "TP3"}
+                return {"r": r_toplam, "sure_mum": i - giris_idx, "sonuc": "TP3", "cikis_i": i}
 
-    return {"r": r_toplam, "sure_mum": len(m15_df) - giris_idx, "sonuc": "AÇIK_KALDI(veri bitti)"}
+    return {"r": r_toplam, "sure_mum": len(m15_df) - giris_idx, "sonuc": "AÇIK_KALDI(veri bitti)", "cikis_i": len(m15_df) - 1}
 
 
 # ════════════════════════════════════════════
-# ANA BACKTEST DÖNGÜSÜ
+# ADIM 1: HER COIN İÇİN ADAY SİNYALLERİ TOPLA (henüz simüle etmeden)
 # ════════════════════════════════════════════
-def coin_backtest(symbol):
+def coin_sinyalleri_bul(symbol):
     print(f"[{symbol}] veri indiriliyor...")
     d_df   = gecmis_veri_cek(symbol, "1d", GECMIS_GUN + 5)
     h4_df  = gecmis_veri_cek(symbol, "4h", GECMIS_GUN + 5)
@@ -213,15 +212,10 @@ def coin_backtest(symbol):
 
     if any(df is None or len(df) < 60 for df in [d_df, h4_df, h1_df, m15_df]):
         print(f"[{symbol}] yetersiz veri, atlandı")
-        return []
+        return None, []
 
-    islemler = []
-    son_cikis_idx = -1  # aynı anda tek pozisyon varsayımı (orijinal bot gibi MAX_POS=1)
-
+    sinyaller = []
     for i in range(60, len(m15_df)):
-        if i <= son_cikis_idx:
-            continue
-
         simdiki_zaman = m15_df["t"].iloc[i]
 
         i_d = d_df[d_df["t"] <= simdiki_zaman].shape[0]
@@ -237,16 +231,48 @@ def coin_backtest(symbol):
         if not setup:
             continue
 
-        sonuc = islemi_simule_et(m15_df, i, direction, setup["entry"], setup["sl"])
-        if sonuc:
-            sonuc["symbol"] = symbol
-            sonuc["direction"] = direction
-            sonuc["zaman"] = datetime.fromtimestamp(simdiki_zaman / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-            islemler.append(sonuc)
-            son_cikis_idx = i + sonuc["sure_mum"]
+        sinyaller.append({
+            "symbol": symbol, "i": i, "t": simdiki_zaman,
+            "direction": direction, "entry": setup["entry"], "sl": setup["sl"],
+        })
 
-    print(f"[{symbol}] {len(islemler)} işlem bulundu")
+    print(f"[{symbol}] {len(sinyaller)} aday sinyal bulundu")
+    return m15_df, sinyaller
+
+
+# ════════════════════════════════════════════
+# ADIM 2: TÜM SİNYALLERİ ZAMANA GÖRE SIRALA, TEK-POZİSYON (MAX_POS=1)
+# KISITINI PORTFÖY GENELİNDE GERÇEKÇİ ŞEKİLDE UYGULA
+# ════════════════════════════════════════════
+def portfoy_simulasyonu(tum_m15, tum_sinyaller):
+    tum_sinyaller.sort(key=lambda s: s["t"])
+
+    islemler = []
+    sonraki_musait_zaman = -1
+
+    for sig in tum_sinyaller:
+        if sig["t"] < sonraki_musait_zaman:
+            continue  # o an başka bir coinde pozisyon açıkmış (MAX_POS=1) — bu sinyal kaçırılır
+
+        m15_df = tum_m15[sig["symbol"]]
+        sonuc = islemi_simule_et(m15_df, sig["i"], sig["direction"], sig["entry"], sig["sl"])
+        if not sonuc:
+            continue
+
+        cikis_i = sonuc["cikis_i"]
+        cikis_zaman = m15_df["t"].iloc[min(cikis_i, len(m15_df) - 1)]
+
+        sonuc["symbol"] = sig["symbol"]
+        sonuc["direction"] = sig["direction"]
+        sonuc["zaman"] = datetime.fromtimestamp(sig["t"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        islemler.append(sonuc)
+
+        sonraki_musait_zaman = cikis_zaman
+
     return islemler
+
+
+
 
 
 def main():
@@ -254,12 +280,21 @@ def main():
     semboller = sembol_listesi_al(TOP_COINS, MIN_VOLUME)
     print(f"{len(semboller)} coin bulundu: {', '.join(s.split('/')[0] for s in semboller[:10])}...\n")
 
-    tum_islemler = []
+    tum_m15 = {}
+    tum_sinyaller = []
     for sym in semboller:
         try:
-            tum_islemler.extend(coin_backtest(sym))
+            m15_df, sinyaller = coin_sinyalleri_bul(sym)
+            if m15_df is not None:
+                tum_m15[sym] = m15_df
+                tum_sinyaller.extend(sinyaller)
         except Exception as e:
             print(f"[{sym}] HATA: {e}")
+
+    print(f"\nToplam aday sinyal (tüm coinlerde): {len(tum_sinyaller)}")
+    print("Portföy genelinde MAX_POS=1 kısıtı uygulanıyor (gerçek bot davranışı)...\n")
+
+    tum_islemler = portfoy_simulasyonu(tum_m15, tum_sinyaller)
 
     if not tum_islemler:
         print("\nHİÇ İŞLEM BULUNAMADI — filtre çok sıkı olabilir veya veri çekilemedi.")
@@ -270,7 +305,7 @@ def main():
     kaybeden = df[df["r"] <= 0]
 
     print("\n" + "═" * 50)
-    print(f"TOPLAM İŞLEM: {len(df)}")
+    print(f"TOPLAM İŞLEM: {len(df)} (aday sinyal: {len(tum_sinyaller)}, MAX_POS=1 nedeniyle {len(tum_sinyaller)-len(df)} kaçırıldı)")
     print(f"Kazanan: {len(kazanan)} ({len(kazanan)/len(df)*100:.1f}%)")
     print(f"Kaybeden: {len(kaybeden)} ({len(kaybeden)/len(df)*100:.1f}%)")
     print(f"Toplam R: {df['r'].sum():+.2f}")
@@ -278,7 +313,7 @@ def main():
     print(f"Ortalama kazanan R: {kazanan['r'].mean():+.3f}" if len(kazanan) else "Kazanan yok")
     print(f"Ortalama kaybeden R: {kaybeden['r'].mean():+.3f}" if len(kaybeden) else "Kaybeden yok")
     print(f"Ortalama işlem süresi: {df['sure_mum'].mean()*15:.0f} dakika")
-    print(f"Günde ortalama işlem: {len(df)/GECMIS_GUN:.2f}")
+    print(f"Aya ortalama işlem: {len(df)/GECMIS_GUN*30:.2f}")
     print("═" * 50)
 
     df.to_csv("fvg_backtest_sonuclar.csv", index=False)
