@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v4 (oynaklık şartı %15→%2, taranan coin 80→100 — backtest koşullarına daha yakın)
+🔖 VERSİYON: v5 (MAX_POS 2→4 — daha fazla eşzamanlı fırsat değerlendiriliyor)
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -60,7 +60,8 @@ exchange = ccxt.bitget({
 })
 
 # ── Sermaye ve risk ──
-MAX_POS           = 2        # 35$'ı 2 işleme bölüyoruz
+MAX_POS           = 4        # 2'den artırıldı — daha fazla eşzamanlı fırsat değerlendirilsin
+                              # (sermaye otomatik olarak buna göre bölünür, aşağıdaki formül)
 LEV               = 10
 TOPLAM_SERMAYE    = 35.0     # bilgi amaçlı — gerçek limit borsadan kontrol edilir
 HEDEF_RISK_DOLAR  = 2.5      # her işlemde hedeflenen dolar riski (~toplamın %7'si / slot)
@@ -570,7 +571,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v4 (daha fazla coin taranıyor)\n\n"
+        "🔖 VERSİYON: v5 (MAX_POS 2→4)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
