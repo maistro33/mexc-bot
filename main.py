@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 FVG/SMC STRATEJİSİ — GEÇMİŞ VERİYLE BACKTEST
+🔖 VERSİYON: v2 (MAX_POS_BACKTEST ayarlanabilir hale getirildi — v1'de
+    sabit MAX_POS=1 kullanılıyordu, 74 aday sinyalin 62'si kaçırılmıştı)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Amaç: "Profesyonel FVG bot" stratejisinin (günlük+4h trend teyidi +
 likidite süpürmesi + 15m FVG girişi + R bazlı kademeli TP/başa baş)
@@ -31,6 +33,9 @@ from datetime import datetime, timedelta, timezone
 # ════════════════════════════════════════════
 GECMIS_GUN     = 365     # kaç gün geriye gidilecek (1 yıl)
 TOP_COINS      = 100     # en yüksek hacimli kaç coin denenecek
+MAX_POS_BACKTEST = 3     # aynı anda kaç işleme izin verilir (orijinal bot 1
+                          # kullanıyordu — burada artırıp fırsat kaçırma
+                          # etkisini test ediyoruz)
 MIN_VOLUME     = 5_000_000
 BUFFER_PCT     = 0.0015
 LEV            = 10
@@ -244,15 +249,23 @@ def coin_sinyalleri_bul(symbol):
 # ADIM 2: TÜM SİNYALLERİ ZAMANA GÖRE SIRALA, TEK-POZİSYON (MAX_POS=1)
 # KISITINI PORTFÖY GENELİNDE GERÇEKÇİ ŞEKİLDE UYGULA
 # ════════════════════════════════════════════
-def portfoy_simulasyonu(tum_m15, tum_sinyaller):
+def portfoy_simulasyonu(tum_m15, tum_sinyaller, max_pos=1):
+    """
+    max_pos: aynı anda kaç işleme izin verilir (orijinal bot MAX_POS=1
+    kullanıyordu; burada bunu artırıp gerçekten bu kısıtın fırsat
+    kaçırdığını doğrulayabiliyoruz).
+    """
     tum_sinyaller.sort(key=lambda s: s["t"])
 
     islemler = []
-    sonraki_musait_zaman = -1
+    acik_pozisyonlar = []  # her eleman: bitiş zamanı (timestamp, ms)
 
     for sig in tum_sinyaller:
-        if sig["t"] < sonraki_musait_zaman:
-            continue  # o an başka bir coinde pozisyon açıkmış (MAX_POS=1) — bu sinyal kaçırılır
+        # Süresi dolmuş (kapanmış) pozisyonları listeden temizle
+        acik_pozisyonlar = [bitis for bitis in acik_pozisyonlar if bitis > sig["t"]]
+
+        if len(acik_pozisyonlar) >= max_pos:
+            continue  # slot dolu, bu sinyal kaçırılır
 
         m15_df = tum_m15[sig["symbol"]]
         sonuc = islemi_simule_et(m15_df, sig["i"], sig["direction"], sig["entry"], sig["sl"])
@@ -267,7 +280,7 @@ def portfoy_simulasyonu(tum_m15, tum_sinyaller):
         sonuc["zaman"] = datetime.fromtimestamp(sig["t"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
         islemler.append(sonuc)
 
-        sonraki_musait_zaman = cikis_zaman
+        acik_pozisyonlar.append(cikis_zaman)
 
     return islemler
 
@@ -276,7 +289,8 @@ def portfoy_simulasyonu(tum_m15, tum_sinyaller):
 
 
 def main():
-    print(f"═══ FVG/SMC BACKTEST — son {GECMIS_GUN} gün, en yüksek hacimli {TOP_COINS} coin ═══\n")
+    print("🔖 VERSİYON: v2 (MAX_POS_BACKTEST ayarlanabilir)\n")
+    print(f"═══ FVG/SMC BACKTEST — son {GECMIS_GUN} gün, en yüksek hacimli {TOP_COINS} coin, MAX_POS={MAX_POS_BACKTEST} ═══\n")
     semboller = sembol_listesi_al(TOP_COINS, MIN_VOLUME)
     print(f"{len(semboller)} coin bulundu: {', '.join(s.split('/')[0] for s in semboller[:10])}...\n")
 
@@ -292,9 +306,9 @@ def main():
             print(f"[{sym}] HATA: {e}")
 
     print(f"\nToplam aday sinyal (tüm coinlerde): {len(tum_sinyaller)}")
-    print("Portföy genelinde MAX_POS=1 kısıtı uygulanıyor (gerçek bot davranışı)...\n")
+    print(f"Portföy genelinde MAX_POS={MAX_POS_BACKTEST} kısıtı uygulanıyor...\n")
 
-    tum_islemler = portfoy_simulasyonu(tum_m15, tum_sinyaller)
+    tum_islemler = portfoy_simulasyonu(tum_m15, tum_sinyaller, max_pos=MAX_POS_BACKTEST)
 
     if not tum_islemler:
         print("\nHİÇ İŞLEM BULUNAMADI — filtre çok sıkı olabilir veya veri çekilemedi.")
@@ -305,7 +319,7 @@ def main():
     kaybeden = df[df["r"] <= 0]
 
     print("\n" + "═" * 50)
-    print(f"TOPLAM İŞLEM: {len(df)} (aday sinyal: {len(tum_sinyaller)}, MAX_POS=1 nedeniyle {len(tum_sinyaller)-len(df)} kaçırıldı)")
+    print(f"TOPLAM İŞLEM: {len(df)} (aday sinyal: {len(tum_sinyaller)}, MAX_POS={MAX_POS_BACKTEST} nedeniyle {len(tum_sinyaller)-len(df)} kaçırıldı)")
     print(f"Kazanan: {len(kazanan)} ({len(kazanan)/len(df)*100:.1f}%)")
     print(f"Kaybeden: {len(kaybeden)} ({len(kaybeden)/len(df)*100:.1f}%)")
     print(f"Toplam R: {df['r'].sum():+.2f}")
