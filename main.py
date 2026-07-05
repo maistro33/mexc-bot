@@ -96,7 +96,13 @@ ADX_ESIK    = 20    # bu değerin altında ADX = "zayıf/yatay piyasa" → sinya
 # açarsak, "chasing" (anında giriş) mantığının gerçekten iyi mi kötü mü
 # olduğunu hiç net göremeyiz. 40-50 işlemlik temiz bir v8 verisi
 # toplandıktan sonra bu bayrak True yapılıp karşılaştırma yapılacak.
-SOLUKLANMA_BEKLE_AKTIF = False
+# ── Soluklanma bekleme — v10'da AÇILDI ──
+# v9'da 57 işlem toplandı: kazanma oranı %15.8'de stabilize oldu, başa baş
+# (%21.7) noktasının belirgin altında kaldı. Risk/ödül oranı iyiydi
+# (ort. kazanç $0.95 / ort. kayıp $0.26) — sorun kazanma oranıydı. Bu,
+# "anında giriş = tam tepe/dipten giriş" hipotezini destekliyor. Artık
+# yeterli veri var, bu özelliği açıp karşılaştırma yapıyoruz.
+SOLUKLANMA_BEKLE_AKTIF = True
 
 # ── ATR bazlı risk yönetimi ──
 ATR_PERIOD    = 14
@@ -924,7 +930,7 @@ if __name__ == "__main__":
 
     tg(
         "📝 SADIK SCALP — KAĞIT (PAPER) MOD\n"
-        "🔖 Versiyon: v9 (kalıcı işlem geçmişi/Volume AKTİF | soluklanma bekleme hazır ama KAPALI — v8 verisi bozulmasın diye)\n\n"
+        "🔖 Versiyon: v10 (soluklanma bekleme AÇILDI — v9'da 57 işlemde %15.8 kazanma oranı görüldü)\n\n"
         "🧠 Strateji: ADX ile trend teyidi olmadan işlem AÇILMAZ (fade kaldırıldı).\n"
         f"   ADX ≥ {ADX_ESIK} → hareketin YÖNÜNDE gir. ADX < {ADX_ESIK} → sinyal atlanır.\n\n"
         f"💰 Pozisyon: RİSK BAZLI boyutlandırma (hedef risk: ${HEDEF_RISK_DOLAR:.2f} = marjinin %{int(RISK_PER_TRADE_PCT*100)}'si, {MIN_POS_SIZE:.0f}$-{MAX_POS_SIZE:.0f}$ arası)\n"
