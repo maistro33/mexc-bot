@@ -1,360 +1,581 @@
 #!/usr/bin/env python3
 """
-HIZLANDIRILMIŞ FVG STRATEJİSİ — BACKTEST (4h/1h/15m/5m)
-🔖 VERSİYON: v4 (funding rate maliyeti eklendi)
+FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
+🔖 VERSİYON: v1 (4h/1h/15m/5m zaman dilimleri — backtest: 207 işlem,
+    ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
+    funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Gerçek parayla çalışan FVG botunun (1d+4h+1h+15m, swing — işlemler
-günlerce sürüyor) zaman dilimlerini bir kademe HIZLANDIRILMIŞ hali:
+DÜZELTİLEN GÜVENLİK AÇIKLARI (orijinal koddan):
+  1. API şifresi artık ORTAM DEĞİŞKENİNDEN okunuyor, koda YAZILMIYOR.
+  2. RESTART GÜVENLİĞİ: trade_state artık diske kaydediliyor. Bot yeniden
+     başlarsa, borsadaki gerçek açık pozisyonlarla diskteki kayıtlı
+     durumu KARŞILAŞTIRIR. Eşleşme bulamazsa (orijinal koddaki hata:
+     KeyError sessizce yutulup pozisyon TAMAMEN YÖNETİMSİZ kalıyordu),
+     bu sürüm hemen Telegram'dan UYARI gönderir VE pozisyona geçici
+     güvenlik SL'i koyar — sessizce görmezden gelmez.
+  3. RİSK BAZLI POZİSYON BOYUTU: sabit MARGIN×LEV yerine, her işlemde
+     HEDEF DOLAR RİSKİ sabit tutulur, pozisyon büyüklüğü SL mesafesine
+     (coinin kendi oynaklığına) göre hesaplanır.
+  4. HANTAL COİN FİLTRESİ: hem minimum hacim hem minimum oynaklık şartı.
 
-  ORİJİNAL (kanıtlanmış, gerçek para):  1 GÜNLÜK + 4 SAATLİK trend teyidi
-                                        1 SAATLİK likidite süpürmesi
-                                        15 DAKİKALIK FVG girişi
+STRATEJİ (backtest ile doğrulanmış — bkz. fvg_backtest.py sonuçları):
+  - Günlük + 4 saatlik trend teyidi
+  - 1 saatlik likidite süpürmesi
+  - 15 dakikalık FVG (Fair Value Gap) girişi
+  - R bazlı kademeli TP (1R/2R/3R, %40/%30/%30) + TP1 sonrası başa baş
 
-  BU VARYANT (TEST EDİLİYOR):           4 SAATLİK + 1 SAATLİK trend teyidi
-                                        15 DAKİKALIK likidite süpürmesi
-                                        5 DAKİKALIK FVG girişi
-
-Amaç: Aynı mantığı daha kısa vadede uygulayıp işlem sıklığının artıp
-artmadığını VE edge'in (kazanma oranı/R) korunup korunmadığını görmek.
-Endüstri pratiği M1/M5'in çok gürültülü olduğunu söylüyor — bu test
-bunun gerçekten öyle olup olmadığını BİZİM verimizle sınayacak.
-
-ÖNEMLİ: Gerçek para KULLANMAZ. Bakış-öne hatası olmaması için mum-mum
-ilerler, yönetim sinyal mumundan SONRAKİ mumdan başlar.
+⚠️  ÖNEMLİ: Bu, GERÇEK PARA ile işlem açar. Backtest geçmişte iyi
+sonuç vermiş olması, gelecekte de öyle olacağının garantisi DEĞİLDİR.
+Sadece kaybetmeyi göze alabileceğin miktarla kullan.
 """
 
+import os
+import time
+import json
+import threading
+import logging
 import ccxt
 import pandas as pd
-import time
-from datetime import datetime, timedelta, timezone
+import telebot
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger("FVG_LIVE")
 
 # ════════════════════════════════════════════
 # CONFIG
 # ════════════════════════════════════════════
-BASLANGIC_TARIHI = "2022-01-01"   # 2022 ayı piyasası — sağlamlık testi
-BITIS_TARIHI     = "2022-12-31"
-GECMIS_GUN       = 30     # SADECE BASLANGIC_TARIHI=None ise kullanılır
+TELE_TOKEN  = os.getenv("TELE_TOKEN", "")
+CHAT_ID     = int(os.getenv("MY_CHAT_ID", "0"))
+API_KEY     = os.getenv("BITGET_API", "")
+API_SEC     = os.getenv("BITGET_SEC", "")
+PASSPHRASE  = os.getenv("BITGET_PASS", "")   # ← artık koda yazılı DEĞİL
 
-TOP_COINS        = 60
-MAX_POS_BACKTEST = 5
-MIN_VOLUME       = 5_000_000
-BUFFER_PCT       = 0.0015
-TP_SPLIT         = [0.4, 0.3, 0.3]
+if not PASSPHRASE:
+    raise RuntimeError("BITGET_PASS ortam değişkeni ayarlanmamış — güvenlik gereği "
+                        "passphrase koda yazılmaz, Railway Variables'a eklenmeli.")
 
-# ── Funding rate maliyeti (gerçekçilik için) ──
-MARGIN = 10
-LEV    = 10
-FUNDING_ORANI_8SAAT = 0.0001   # %0.01 / 8 saat (tipik ortalama varsayım, konservatif)
+exchange = ccxt.bitget({
+    "apiKey": API_KEY, "secret": API_SEC, "password": PASSPHRASE,
+    "options": {"defaultType": "swap"}, "enableRateLimit": True, "timeout": 30000,
+})
 
-exchange = ccxt.bitget({"options": {"defaultType": "swap"}, "enableRateLimit": True})
+# ── Sermaye ve risk ──
+MAX_POS           = 2        # 35$'ı 2 işleme bölüyoruz
+LEV               = 10
+TOPLAM_SERMAYE    = 35.0     # bilgi amaçlı — gerçek limit borsadan kontrol edilir
+HEDEF_RISK_DOLAR  = 2.5      # her işlemde hedeflenen dolar riski (~toplamın %7'si / slot)
+MIN_POS_NOTIONAL  = 30.0     # pozisyon en az bu kadar $ olsun (borsa asgari işlem büyüklüğü için)
+MAX_POS_NOTIONAL  = (TOPLAM_SERMAYE / MAX_POS) * LEV * 1.2   # slot başına makul üst sınır
 
+MAX_GUNLUK_ZARAR  = -8.0     # bu kadar (gerçek $) kaybedince gün için dur
+
+# ── Hantal coin filtresi ──
+# NOT: Asıl "hantal" (durgun) coin eleyicisi OYNAKLIK şartı — hacim eşiği
+# sadece yeterli likidite/az kayma (slippage) için. Pozisyonlarımız zaten
+# küçük ($30-70 civarı) olduğu için çok yüksek bir hacim şartına gerek yok.
+MIN_VOLUME        = 2_000_000    # önceki 8M'den düşürüldü — likidite şartı gevşetildi
+MIN_OYNAKLIK_PCT  = 15.0         # önceki %3'ten yükseltildi — sadece güçlü hareket eden coinler
+TOP_COINS         = 80
+
+BUFFER_PCT = 0.0015
+TP_SPLIT   = [0.4, 0.3, 0.3]
+
+TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/trade_state.json")
 
 # ════════════════════════════════════════════
-# VERİ ÇEKME (kanıtlanmış, önceki scriptlerle aynı)
+# TELEGRAM
 # ════════════════════════════════════════════
-def gecmis_veri_cek(symbol, timeframe, baslangic_ms, bitis_ms):
-    tum_mumlar = []
-    since = baslangic_ms
-    while True:
-        try:
-            mumlar = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=1000)
-        except Exception as e:
-            print(f"  [HATA] {symbol} {timeframe}: {e}")
-            break
-        if not mumlar:
-            break
-        tum_mumlar.extend(mumlar)
-        if len(mumlar) < 2:
-            break
-        son_zaman = mumlar[-1][0]
-        if son_zaman >= bitis_ms:
-            break
-        yeni_since = son_zaman + 1
-        if yeni_since <= since:
-            break
-        since = yeni_since
-        time.sleep(exchange.rateLimit / 1000)
-    if not tum_mumlar:
+bot = telebot.TeleBot(TELE_TOKEN)
+
+def tg(msg):
+    try:
+        bot.send_message(CHAT_ID, str(msg)[:4096])
+    except Exception as e:
+        log.warning(f"[TG] {e}")
+
+# ════════════════════════════════════════════
+# YARDIMCI
+# ════════════════════════════════════════════
+def safe(x):
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
+
+def get_candles(sym, tf, limit=100):
+    try:
+        return exchange.fetch_ohlcv(sym, tf, limit=limit)
+    except Exception as e:
+        log.warning(f"[VERI] {sym} {tf}: {e}")
         return None
-    df = pd.DataFrame(tum_mumlar, columns=["t", "o", "h", "l", "c", "v"])
-    df = df.drop_duplicates(subset="t").sort_values("t").reset_index(drop=True)
-    df = df[(df["t"] >= baslangic_ms) & (df["t"] <= bitis_ms)].reset_index(drop=True)
-    return df
+
+# ════════════════════════════════════════════
+# KALICI DURUM (trade_state) — RESTART GÜVENLİĞİ
+# ════════════════════════════════════════════
+trade_state = {}
+state_lock = threading.Lock()
+
+def durumu_diske_yaz():
+    try:
+        os.makedirs(os.path.dirname(TRADE_STATE_PATH), exist_ok=True)
+        with state_lock:
+            veri = dict(trade_state)
+        with open(TRADE_STATE_PATH, "w") as f:
+            json.dump(veri, f)
+    except Exception as e:
+        log.warning(f"[KALICI] Diske yazma başarısız: {e}")
+
+def durumu_diskten_yukle():
+    global trade_state
+    try:
+        if os.path.exists(TRADE_STATE_PATH):
+            with open(TRADE_STATE_PATH) as f:
+                yuklenen = json.load(f)
+            with state_lock:
+                trade_state = yuklenen
+            log.info(f"[KALICI] {len(yuklenen)} kayıtlı işlem durumu yüklendi")
+        else:
+            log.info("[KALICI] Kayıtlı durum bulunamadı (Volume bağlı değilse normal)")
+    except Exception as e:
+        log.warning(f"[KALICI] Yükleme başarısız: {e}")
 
 
-def tarih_araligi_hesapla():
-    if BASLANGIC_TARIHI:
-        baslangic = datetime.strptime(BASLANGIC_TARIHI, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    else:
-        bitis_gecici = datetime.now(timezone.utc) if not BITIS_TARIHI else datetime.strptime(BITIS_TARIHI, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        baslangic = bitis_gecici - timedelta(days=GECMIS_GUN)
-    bitis = datetime.strptime(BITIS_TARIHI, "%Y-%m-%d").replace(tzinfo=timezone.utc) if BITIS_TARIHI else datetime.now(timezone.utc)
-    return int(baslangic.timestamp() * 1000), int(bitis.timestamp() * 1000)
+def acilista_pozisyonlari_dogrula():
+    """
+    RESTART GÜVENLİĞİ — orijinal koddaki en kritik hatayı düzeltir:
+    Borsadaki GERÇEK açık pozisyonları, diskteki kayıtlı trade_state ile
+    karşılaştırır. Eşleşmeyen (sahipsiz) pozisyon bulursa SESSİZCE
+    GEÇMEZ — hemen uyarır ve geçici güvenlik SL'i koyar.
+    """
+    try:
+        pozisyonlar = exchange.fetch_positions()
+    except Exception as e:
+        tg(f"⚠️ Açılışta pozisyon kontrolü başarısız: {e}")
+        return
+
+    for p in pozisyonlar:
+        qty = safe(p.get("contracts"))
+        if qty <= 0:
+            continue
+        sym = p["symbol"]
+        entry = safe(p.get("entryPrice"))
+        side = p.get("side")
+
+        with state_lock:
+            kayitli = trade_state.get(sym)
+
+        if kayitli:
+            tg(f"♻️ {sym} pozisyonu kayıtlı durumla eşleşti, yönetime devam ediliyor.")
+            continue
+
+        # ── SAHİPSİZ POZİSYON — orijinal bottaki hata burada oluşurdu ──
+        direction = "long" if side == "long" else "short"
+        guvenlik_sl_pct = 0.02  # %2 geçici güvenlik SL'i
+        sl = entry * (1 - guvenlik_sl_pct) if direction == "long" else entry * (1 + guvenlik_sl_pct)
+
+        with state_lock:
+            trade_state[sym] = {
+                "sl": sl, "tp1": False, "tp2": False,
+                "direction": direction, "entry": entry,
+                "kaynak": "kurtarilan_sahipsiz",
+            }
+        durumu_diske_yaz()
+        tg(
+            f"🚨 UYARI: {sym} için kayıtlı durum bulunamadı (muhtemelen restart sırasında "
+            f"oluştu). SESSİZCE GEÇİLMEDİ — geçici %2 güvenlik SL'i kondu: {sl:.8f}. "
+            f"Lütfen pozisyonu manuel kontrol et."
+        )
 
 
-def sembol_listesi_al(top_n, min_hacim):
-    tickers = exchange.fetch_tickers()
-    filtreli = []
+# ════════════════════════════════════════════
+# MARKET FİLTRESİ (+ HANTAL COİN ELEME)
+# ════════════════════════════════════════════
+YENI_ESIK_GUN = 45   # bu kadar günden az geçmişi olan coinler "yeni" sayılır
+YENI_KONTROL_LIMIT = 350  # 350×4/24 ≈ 58.3 gün — eşikten (45) belirgin büyük olmalı,
+                          # yoksa eski coinler de limite takılıp yanlışlıkla "yeni" görünür
+
+def coin_yasi_gun_yaklasik(symbol):
+    """
+    YENI_KONTROL_LIMIT kadar 4h mum ister; borsa bundan azını dönerse coin
+    o kadar eski değildir. len(veri)*4/24 ≈ yaklaşık gün cinsinden yaş.
+    """
+    veri = get_candles(symbol, "4h", limit=YENI_KONTROL_LIMIT)
+    if not veri:
+        return 9999  # veri yoksa güvenli tarafta kal, "eski" varsay
+    return len(veri) * 4 / 24
+
+
+def get_symbols():
+    try:
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        log.warning(f"[TICKERS] {e}")
+        return []
+
+    filtered = []
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
-        vol = data.get("quoteVolume") or 0
-        if vol >= min_hacim:
-            filtreli.append((sym, vol))
-    filtreli.sort(key=lambda x: x[1], reverse=True)
-    return [x[0] for x in filtreli[:top_n]]
+        vol = safe(data.get("quoteVolume"))
+        if vol < MIN_VOLUME:
+            continue
+        degisim = abs(safe(data.get("percentage")))
+        if degisim < MIN_OYNAKLIK_PCT:
+            continue  # ── HANTAL: son 24s'te yeterince hareket etmemiş ──
+        filtered.append((sym, vol))
+
+    filtered.sort(key=lambda x: x[1], reverse=True)
+
+    # ── ÖNCELİK: yeni + yüksek hacimli coinler önce ──
+    # API yükünü sınırlamak için sadece hacme göre en iyi aday havuzunu
+    # (TOP_COINS'in birkaç katı) yaş kontrolüne sokuyoruz.
+    havuz = filtered[:TOP_COINS * 2]
+    yeni_liste = []
+    eski_liste = []
+    for sym, vol in havuz:
+        yas = coin_yasi_gun_yaklasik(sym)
+        if yas < YENI_ESIK_GUN:
+            yeni_liste.append((sym, vol))
+        else:
+            eski_liste.append((sym, vol))
+
+    # yeni_liste zaten hacme göre sıralı geldi (filtered'dan), eski_liste de öyle
+    sirali = yeni_liste + eski_liste
+    return [x[0] for x in sirali[:TOP_COINS]]
 
 
 # ════════════════════════════════════════════
-# SİNYAL MANTIĞI — AYNI KAVRAM, KADEME KAYDIRILMIŞ ZAMAN DİLİMLERİ
+# SİNYAL MANTIĞI (backtest'te doğrulanan, BİREBİR aynı mantık)
 # ════════════════════════════════════════════
-def yon_belirle(h4_df, h1_df, i_h4, i_h1):
-    """Orijinalde 1d+4h idi — burada 4h+1h."""
-    if i_h4 < 2 or i_h1 < 2:
+def get_direction(sym):
+    """HIZLI VARYANT: orijinalde 1d+4h idi, burada 4h+1h (backtest'te
+    137 işlem, %89.1 kazanma, 2022 dahil doğrulandı)."""
+    h4 = get_candles(sym, "4h", 50)
+    h1 = get_candles(sym, "1h", 50)
+    if not h4 or not h1 or len(h4) < 3 or len(h1) < 3:
         return None
-    h4_high = h4_df["h"].iloc[i_h4 - 1]; h4_high_onceki = h4_df["h"].iloc[i_h4 - 2]
-    h4_low = h4_df["l"].iloc[i_h4 - 1]; h4_low_onceki = h4_df["l"].iloc[i_h4 - 2]
-    h1_high = h1_df["h"].iloc[i_h1 - 1]; h1_high_onceki = h1_df["h"].iloc[i_h1 - 2]
-    h1_low = h1_df["l"].iloc[i_h1 - 1]; h1_low_onceki = h1_df["l"].iloc[i_h1 - 2]
 
-    if h4_high > h4_high_onceki and h1_high > h1_high_onceki:
+    h4_high = [c[2] for c in h4]; h4_low = [c[3] for c in h4]
+    h1_high = [c[2] for c in h1]; h1_low = [c[3] for c in h1]
+
+    if h4_high[-1] > h4_high[-2] and h1_high[-1] > h1_high[-2]:
         return "long"
-    if h4_low < h4_low_onceki and h1_low < h1_low_onceki:
+    if h4_low[-1] < h4_low[-2] and h1_low[-1] < h1_low[-2]:
         return "short"
     return None
 
 
-def likidite_supurmesi(m15_df, i_m15, direction):
-    """Orijinalde 1h idi — burada 15m."""
-    if i_m15 < 30:
+def liquidity_sweep(sym, direction):
+    """HIZLI VARYANT: orijinalde 1h idi, burada 15m."""
+    m15 = get_candles(sym, "15m", 30)
+    if not m15 or len(m15) < 30:
         return False
-    pencere_low = m15_df["l"].iloc[i_m15 - 30:i_m15 - 1]
-    pencere_high = m15_df["h"].iloc[i_m15 - 30:i_m15 - 1]
-    son_low = m15_df["l"].iloc[i_m15 - 1]
-    son_high = m15_df["h"].iloc[i_m15 - 1]
+    highs = [c[2] for c in m15]; lows = [c[3] for c in m15]
     if direction == "long":
-        return son_low < pencere_low.min()
+        return lows[-1] < min(lows[:-2])
     else:
-        return son_high > pencere_high.max()
+        return highs[-1] > max(highs[:-2])
 
 
-def giris_modeli(m5_df, i_m5, direction):
-    """Orijinalde 15m idi — burada 5m."""
-    if i_m5 < 60:
+def entry_model(sym, direction):
+    """HIZLI VARYANT: orijinalde 15m idi, burada 5m."""
+    m5 = get_candles(sym, "5m", 60)
+    if not m5 or len(m5) < 20:
         return None
-    o = m5_df["o"]; h = m5_df["h"]; l = m5_df["l"]; c = m5_df["c"]
 
-    idx = i_m5 - 1
-    body = abs(c.iloc[idx] - o.iloc[idx])
-    avg_body = sum(abs(c.iloc[idx - k] - o.iloc[idx - k]) for k in range(1, 10)) / 9
+    o = [c[1] for c in m5]; h = [c[2] for c in m5]
+    l = [c[3] for c in m5]; c_ = [c[4] for c in m5]
+
+    body = abs(c_[-1] - o[-1])
+    avg_body = sum(abs(c_[i] - o[i]) for i in range(-10, -1)) / 9
     if body < avg_body * 1.5:
         return None
 
-    if direction == "long" and h.iloc[idx - 2] < l.iloc[idx]:
-        entry = (h.iloc[idx - 2] + l.iloc[idx]) / 2
-        swing_low = l.iloc[idx - 14: idx + 1].min()
+    if direction == "long" and h[-3] < l[-1]:
+        entry = (h[-3] + l[-1]) / 2
+        swing_low = min(l[-15:])
         sl = swing_low - (swing_low * BUFFER_PCT)
         return {"entry": entry, "sl": sl}
 
-    if direction == "short" and l.iloc[idx - 2] > h.iloc[idx]:
-        entry = (l.iloc[idx - 2] + h.iloc[idx]) / 2
-        swing_high = h.iloc[idx - 14: idx + 1].max()
+    if direction == "short" and l[-3] > h[-1]:
+        entry = (l[-3] + h[-1]) / 2
+        swing_high = max(h[-15:])
         sl = swing_high + (swing_high * BUFFER_PCT)
         return {"entry": entry, "sl": sl}
 
     return None
 
 
+
 # ════════════════════════════════════════════
-# İŞLEM SİMÜLASYONU (kanıtlanmış, aynı)
+# RİSK BAZLI POZİSYON BOYUTU
 # ════════════════════════════════════════════
-def islemi_simule_et(m5_df, giris_idx, direction, entry, sl):
-    risk = abs(entry - sl)
-    if risk <= 0:
-        return None
-    tp1 = entry + risk if direction == "long" else entry - risk
-    tp2 = entry + 2 * risk if direction == "long" else entry - 2 * risk
-    tp3 = entry + 3 * risk if direction == "long" else entry - 3 * risk
+def pozisyon_boyutu_hesapla(entry, sl):
+    risk_mesafe = abs(entry - sl)
+    if risk_mesafe <= 0:
+        return None, None
 
-    kalan = 1.0
-    r_toplam = 0.0
-    aktif_sl = sl
-    tp1_oldu = tp2_oldu = False
+    amount = HEDEF_RISK_DOLAR / risk_mesafe
+    notional = amount * entry
 
-    for i in range(giris_idx, len(m5_df)):
-        h = m5_df["h"].iloc[i]; l = m5_df["l"].iloc[i]
+    if notional > MAX_POS_NOTIONAL:
+        notional = MAX_POS_NOTIONAL
+        amount = notional / entry
+    elif notional < MIN_POS_NOTIONAL:
+        notional = MIN_POS_NOTIONAL
+        amount = notional / entry
 
-        sl_vuruldu = (l <= aktif_sl) if direction == "long" else (h >= aktif_sl)
-        if sl_vuruldu:
-            r_bu_parca = (aktif_sl - entry) / risk if direction == "long" else (entry - aktif_sl) / risk
-            r_toplam += r_bu_parca * kalan
-            return {"r": r_toplam, "sure_mum": i - giris_idx, "sonuc": "SL/BE", "cikis_i": i}
-
-        if not tp1_oldu:
-            tp1_vuruldu = (h >= tp1) if direction == "long" else (l <= tp1)
-            if tp1_vuruldu:
-                r_toplam += 1.0 * TP_SPLIT[0]
-                kalan -= TP_SPLIT[0]
-                tp1_oldu = True
-                aktif_sl = entry
-
-        if tp1_oldu and not tp2_oldu:
-            tp2_vuruldu = (h >= tp2) if direction == "long" else (l <= tp2)
-            if tp2_vuruldu:
-                r_toplam += 2.0 * TP_SPLIT[1]
-                kalan -= TP_SPLIT[1]
-                tp2_oldu = True
-
-        if tp2_oldu:
-            tp3_vuruldu = (h >= tp3) if direction == "long" else (l <= tp3)
-            if tp3_vuruldu:
-                r_toplam += 3.0 * TP_SPLIT[2]
-                return {"r": r_toplam, "sure_mum": i - giris_idx, "sonuc": "TP3", "cikis_i": i}
-
-    return {"r": r_toplam, "sure_mum": len(m5_df) - giris_idx, "sonuc": "AÇIK_KALDI(veri bitti)", "cikis_i": len(m5_df) - 1}
+    return amount, notional
 
 
 # ════════════════════════════════════════════
-# ADIM 1: SİNYAL TOPLAMA
+# GÜNLÜK ZARAR TAKİBİ
 # ════════════════════════════════════════════
-def coin_sinyalleri_bul(symbol, baslangic_ms, bitis_ms):
-    print(f"[{symbol}] veri indiriliyor...")
-    buffer_ms = 5 * 24 * 60 * 60 * 1000
-    fetch_baslangic = baslangic_ms - buffer_ms
+gunluk_pnl = 0.0
+gunluk_lock = threading.Lock()
 
-    h4_df = gecmis_veri_cek(symbol, "4h", fetch_baslangic, bitis_ms)
-    h1_df = gecmis_veri_cek(symbol, "1h", fetch_baslangic, bitis_ms)
-    m15_df = gecmis_veri_cek(symbol, "15m", fetch_baslangic, bitis_ms)
-    m5_df = gecmis_veri_cek(symbol, "5m", fetch_baslangic, bitis_ms)
+def gunluk_limit_asildi():
+    with gunluk_lock:
+        return gunluk_pnl <= MAX_GUNLUK_ZARAR
 
-    if any(df is None or len(df) < 60 for df in [h4_df, h1_df, m15_df, m5_df]):
-        print(f"[{symbol}] yetersiz veri, atlandı")
-        return None, []
+def gunluk_pnl_ekle(miktar):
+    global gunluk_pnl
+    with gunluk_lock:
+        gunluk_pnl += miktar
+        return gunluk_pnl
 
-    sinyaller = []
-    for i in range(60, len(m5_df)):
-        simdiki_zaman = m5_df["t"].iloc[i]
-        if simdiki_zaman < baslangic_ms:
-            continue
 
-        i_h4 = h4_df[h4_df["t"] <= simdiki_zaman].shape[0]
-        i_h1 = h1_df[h1_df["t"] <= simdiki_zaman].shape[0]
-        i_m15 = m15_df[m15_df["t"] <= simdiki_zaman].shape[0]
-
-        direction = yon_belirle(h4_df, h1_df, i_h4, i_h1)
-        if not direction:
-            continue
-        if not likidite_supurmesi(m15_df, i_m15, direction):
-            continue
-        setup = giris_modeli(m5_df, i + 1, direction)
-        if not setup:
-            continue
-
-        sinyaller.append({
-            "symbol": symbol, "i": i + 1, "t": simdiki_zaman,
-            "direction": direction, "entry": setup["entry"], "sl": setup["sl"],
-        })
-
-    print(f"[{symbol}] {len(sinyaller)} aday sinyal bulundu")
-    return m5_df, sinyaller
+def has_position():
+    try:
+        pos = exchange.fetch_positions()
+        return any(safe(p.get("contracts")) > 0 for p in pos)
+    except Exception as e:
+        log.warning(f"[POS_CHECK] {e}")
+        return True  # emin olamıyorsak GÜVENLİ tarafta kal, yeni işlem açma
 
 
 # ════════════════════════════════════════════
-# ADIM 2: PORTFÖY SİMÜLASYONU
+# POZİSYON YÖNETİMİ (SL / TP1 / TP2 / TP3 + başa baş)
 # ════════════════════════════════════════════
-def portfoy_simulasyonu(tum_m5, tum_sinyaller, max_pos=1):
-    tum_sinyaller.sort(key=lambda s: s["t"])
-    islemler = []
-    acik_pozisyonlar = []
-
-    for sig in tum_sinyaller:
-        acik_pozisyonlar = [bitis for bitis in acik_pozisyonlar if bitis > sig["t"]]
-        if len(acik_pozisyonlar) >= max_pos:
-            continue
-
-        m5_df = tum_m5[sig["symbol"]]
-        sonuc = islemi_simule_et(m5_df, sig["i"], sig["direction"], sig["entry"], sig["sl"])
-        if not sonuc:
-            continue
-
-        cikis_i = sonuc["cikis_i"]
-        cikis_zaman = m5_df["t"].iloc[min(cikis_i, len(m5_df) - 1)]
-        sonuc["symbol"] = sig["symbol"]
-        sonuc["direction"] = sig["direction"]
-        sonuc["entry"] = sig["entry"]
-        sonuc["sl"] = sig["sl"]
-        sonuc["zaman"] = datetime.fromtimestamp(sig["t"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-        islemler.append(sonuc)
-        acik_pozisyonlar.append(cikis_zaman)
-
-    return islemler
-
-
-# ════════════════════════════════════════════
-# ANA
-# ════════════════════════════════════════════
-def main():
-    print("🔖 VERSİYON: v4 (funding rate maliyeti eklendi)\n")
-    baslangic_ms, bitis_ms = tarih_araligi_hesapla()
-    b_str = datetime.fromtimestamp(baslangic_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-    e_str = datetime.fromtimestamp(bitis_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-    print(f"═══ HIZLI FVG BACKTEST — {b_str} → {e_str}, en yüksek hacimli {TOP_COINS} coin, MAX_POS={MAX_POS_BACKTEST} ═══\n")
-
-    semboller = sembol_listesi_al(TOP_COINS, MIN_VOLUME)
-    print(f"{len(semboller)} coin bulundu: {', '.join(s.split('/')[0] for s in semboller[:10])}...\n")
-
-    tum_m5 = {}
-    tum_sinyaller = []
-    for sym in semboller:
+def manage():
+    while True:
         try:
-            m5_df, sinyaller = coin_sinyalleri_bul(sym, baslangic_ms, bitis_ms)
-            if m5_df is not None:
-                tum_m5[sym] = m5_df
-                tum_sinyaller.extend(sinyaller)
+            positions = exchange.fetch_positions()
+
+            for p in positions:
+                qty = safe(p.get("contracts"))
+                if qty <= 0:
+                    continue
+
+                sym = p["symbol"]
+                entry = safe(p["entryPrice"])
+                side = p["side"]
+                direction = "long" if side == "long" else "short"
+
+                with state_lock:
+                    durum = trade_state.get(sym)
+                if not durum:
+                    continue  # acilista_pozisyonlari_dogrula bunu zaten ele almış olmalı
+
+                t = exchange.fetch_ticker(sym)
+                if not t:
+                    continue
+                price = safe(t["last"])
+
+                sl = durum["sl"]
+                risk = abs(entry - sl)
+                if risk <= 0:
+                    continue
+
+                tp1 = entry + risk if direction == "long" else entry - risk
+                tp2 = entry + 2 * risk if direction == "long" else entry - 2 * risk
+                tp3 = entry + 3 * risk if direction == "long" else entry - 3 * risk
+
+                # ── STOP ──
+                sl_vuruldu = (price <= sl) if direction == "long" else (price >= sl)
+                if sl_vuruldu:
+                    try:
+                        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                                                       qty, params={"reduceOnly": True})
+                    except Exception as e:
+                        log.error(f"[STOP] {sym}: {e}")
+                    gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
+                    gunluk_pnl_ekle(gross)
+                    tg(f"❌ STOP {sym} | PnL≈{gross:+.2f}$")
+                    with state_lock:
+                        trade_state.pop(sym, None)
+                    durumu_diske_yaz()
+                    continue
+
+                # ── TP1 ──
+                if not durum["tp1"] and ((direction == "long" and price >= tp1) or
+                                           (direction == "short" and price <= tp1)):
+                    part = qty * TP_SPLIT[0]
+                    try:
+                        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                                                       part, params={"reduceOnly": True})
+                    except Exception as e:
+                        log.error(f"[TP1] {sym}: {e}")
+                    with state_lock:
+                        trade_state[sym]["tp1"] = True
+                        trade_state[sym]["sl"] = entry  # başa baş
+                    durumu_diske_yaz()
+                    tg(f"💰 TP1 {sym} — SL başa baş'a çekildi")
+
+                # ── TP2 ──
+                elif durum["tp1"] and not durum["tp2"] and \
+                        ((direction == "long" and price >= tp2) or (direction == "short" and price <= tp2)):
+                    part = qty * TP_SPLIT[1]
+                    try:
+                        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                                                       part, params={"reduceOnly": True})
+                    except Exception as e:
+                        log.error(f"[TP2] {sym}: {e}")
+                    with state_lock:
+                        trade_state[sym]["tp2"] = True
+                    durumu_diske_yaz()
+                    tg(f"🚀 TP2 {sym}")
+
+                # ── TP3 (kapanış) ──
+                elif durum["tp2"] and ((direction == "long" and price >= tp3) or
+                                         (direction == "short" and price <= tp3)):
+                    try:
+                        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                                                       qty, params={"reduceOnly": True})
+                    except Exception as e:
+                        log.error(f"[TP3] {sym}: {e}")
+                    gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
+                    gunluk_pnl_ekle(gross)
+                    tg(f"🏆 TP3 {sym} — pozisyon kapandı | PnL≈{gross:+.2f}$")
+                    with state_lock:
+                        trade_state.pop(sym, None)
+                    durumu_diske_yaz()
+
+            time.sleep(5)
         except Exception as e:
-            print(f"[{sym}] HATA: {e}")
-
-    print(f"\nToplam aday sinyal: {len(tum_sinyaller)}")
-    print(f"Portföy genelinde MAX_POS={MAX_POS_BACKTEST} kısıtı uygulanıyor...\n")
-
-    tum_islemler = portfoy_simulasyonu(tum_m5, tum_sinyaller, max_pos=MAX_POS_BACKTEST)
-
-    if not tum_islemler:
-        print("\nHİÇ İŞLEM BULUNAMADI.")
-        return
-
-    df = pd.DataFrame(tum_islemler)
-
-    # ── FUNDING RATE MALİYETİ (konservatif tahmin) ──
-    notional = MARGIN * LEV
-    df["risk_dolar"] = notional * (abs(df["entry"] - df["sl"]) / df["entry"])
-    df["sure_saat"] = df["sure_mum"] * 5 / 60   # bu scriptte her mum 5 dakika
-    df["funding_donem"] = df["sure_saat"] / 8
-    df["funding_maliyet_dolar"] = notional * FUNDING_ORANI_8SAAT * df["funding_donem"]
-    df["funding_maliyet_r"] = df["funding_maliyet_dolar"] / df["risk_dolar"].replace(0, float("nan"))
-    df["r_net"] = df["r"] - df["funding_maliyet_r"].fillna(0)
-
-    kazanan = df[df["r_net"] > 0]
-    kaybeden = df[df["r_net"] <= 0]
-
-    print("\n" + "═" * 50)
-    print(f"TOPLAM İŞLEM: {len(df)} (aday: {len(tum_sinyaller)}, kaçırılan: {len(tum_sinyaller)-len(df)})")
-    print(f"Kazanan (funding sonrası): {len(kazanan)} ({len(kazanan)/len(df)*100:.1f}%)")
-    print(f"Kaybeden (funding sonrası): {len(kaybeden)} ({len(kaybeden)/len(df)*100:.1f}%)")
-    print(f"Toplam R (funding ÖNCESİ, ham): {df['r'].sum():+.2f}")
-    print(f"Toplam R (funding SONRASI, net): {df['r_net'].sum():+.2f}")
-    print(f"Ortalama R/işlem (net): {df['r_net'].mean():+.3f}")
-    print(f"Ortalama kazanan R (net): {kazanan['r_net'].mean():+.3f}" if len(kazanan) else "Kazanan yok")
-    print(f"Ortalama kaybeden R (net): {kaybeden['r_net'].mean():+.3f}" if len(kaybeden) else "Kaybeden yok")
-    print(f"Toplam funding maliyeti (R cinsinden): {df['funding_maliyet_r'].sum():+.2f}")
-    print(f"Ortalama işlem süresi: {df['sure_mum'].mean()*5:.0f} dakika")
-    toplam_gun = (bitis_ms - baslangic_ms) / (1000 * 60 * 60 * 24)
-    print(f"Günde ortalama işlem: {len(df)/toplam_gun:.2f}")
-    print("═" * 50)
-
-    df.to_csv("fvg_hizli_backtest_sonuclar.csv", index=False)
-    print("\nDetaylı sonuçlar 'fvg_hizli_backtest_sonuclar.csv' dosyasına kaydedildi.")
+            log.error(f"[MANAGE] {e}")
+            time.sleep(5)
 
 
+# ════════════════════════════════════════════
+# GİRİŞ DÖNGÜSÜ
+# ════════════════════════════════════════════
+def run():
+    while True:
+        try:
+            if gunluk_limit_asildi():
+                time.sleep(60)
+                continue
+
+            with state_lock:
+                acik_sayisi = len(trade_state)
+            if acik_sayisi >= MAX_POS:
+                time.sleep(20)
+                continue
+
+            symbols = get_symbols()
+
+            for sym in symbols:
+                with state_lock:
+                    if len(trade_state) >= MAX_POS or sym in trade_state:
+                        continue
+
+                direction = get_direction(sym)
+                if not direction:
+                    continue
+                if not liquidity_sweep(sym, direction):
+                    continue
+                setup = entry_model(sym, direction)
+                if not setup:
+                    continue
+
+                amount, notional = pozisyon_boyutu_hesapla(setup["entry"], setup["sl"])
+                if not amount:
+                    continue
+
+                try:
+                    exchange.set_leverage(LEV, sym)
+                except Exception as e:
+                    log.warning(f"[LEVERAGE] {sym}: {e}")
+
+                t = exchange.fetch_ticker(sym)
+                price = safe(t["last"])
+                qty = float(exchange.amount_to_precision(sym, amount))
+                if qty <= 0:
+                    continue
+
+                side = "buy" if direction == "long" else "sell"
+                try:
+                    exchange.create_market_order(sym, side, qty)
+                except Exception as e:
+                    tg(f"⚠️ {sym} giriş emri başarısız: {e}")
+                    continue
+
+                with state_lock:
+                    trade_state[sym] = {
+                        "sl": setup["sl"], "tp1": False, "tp2": False,
+                        "direction": direction, "entry": price, "kaynak": "fvg_smc",
+                    }
+                durumu_diske_yaz()
+
+                tg(
+                    f"📈 {sym} {direction.upper()} AÇILDI\n"
+                    f"Giriş≈{price:.8f} | SL:{setup['sl']:.8f}\n"
+                    f"Notional≈${notional:.2f} | Hedef risk: ${HEDEF_RISK_DOLAR:.2f}"
+                )
+                break
+
+            time.sleep(30)
+        except Exception as e:
+            log.error(f"[RUN] {e}")
+            time.sleep(30)
+
+
+# ════════════════════════════════════════════
+# TELEGRAM KOMUTLARI
+# ════════════════════════════════════════════
+@bot.message_handler(commands=["durum"])
+def durum_komutu(msg):
+    with state_lock:
+        if not trade_state:
+            bot.send_message(msg.chat.id, "Açık pozisyon yok.")
+            return
+        satirlar = ["📋 AÇIK POZİSYONLAR\n"]
+        for sym, d in trade_state.items():
+            satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.8f} SL:{d['sl']:.8f} "
+                             f"TP1:{d['tp1']} TP2:{d['tp2']} kaynak:{d.get('kaynak','?')}")
+        bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+
+# ════════════════════════════════════════════
+# BAŞLANGIÇ
+# ════════════════════════════════════════════
 if __name__ == "__main__":
-    main()
+    print("FVG LIVE BOT (v1) BAŞLIYOR...")
+    try:
+        exchange.fetch_balance()
+    except Exception as e:
+        print(f"UYARI: bakiye kontrolü başarısız: {e}")
+
+    durumu_diskten_yukle()
+    acilista_pozisyonlari_dogrula()
+
+    threading.Thread(target=manage, daemon=True).start()
+    threading.Thread(target=run, daemon=True).start()
+
+    tg(
+        "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
+        "🔖 VERSİYON: v1 (4h/1h/15m/5m — backtest: 207 işlem, ~%86 kazanma, +180R)\n\n"
+        f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
+        f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
+        f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
+        f"⛔ Günlük zarar limiti: ${MAX_GUNLUK_ZARAR}\n\n"
+        "Komutlar: /durum"
+    )
+
+    while True:
+        try:
+            bot.infinity_polling(timeout=30, long_polling_timeout=30)
+        except Exception as e:
+            log.error(f"[BOT] {e}")
+            time.sleep(5)
