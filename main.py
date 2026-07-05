@@ -91,6 +91,13 @@ ZAMAN_STOPU_AKTIF = True
 ADX_PERIOD  = 14
 ADX_ESIK    = 20    # bu değerin altında ADX = "zayıf/yatay piyasa" → sinyal ATLANIR
 
+# ── Soluklanma bekleme (v9'da eklendi) — ŞİMDİLİK KAPALI ──
+# v8'in kazanma oranı toparlanmakta (13%→26%→37.5%) — bu özelliği hemen
+# açarsak, "chasing" (anında giriş) mantığının gerçekten iyi mi kötü mü
+# olduğunu hiç net göremeyiz. 40-50 işlemlik temiz bir v8 verisi
+# toplandıktan sonra bu bayrak True yapılıp karşılaştırma yapılacak.
+SOLUKLANMA_BEKLE_AKTIF = False
+
 # ── ATR bazlı risk yönetimi ──
 ATR_PERIOD    = 14
 ATR_SL_MULT   = 1.5     # SL mesafesi = 1.5 × ATR (coinin kendi oynaklığına göre)
@@ -121,6 +128,38 @@ trade_log       = []
 trade_log_lock  = threading.Lock()
 MAX_TRADE_LOG   = 500
 
+# ── KALICI DEPOLAMA (Railway Volume) ──
+# /data yolu, Railway'de eklenecek bir Volume'a bağlanmalı — böylece kod
+# güncellemelerinde (yeniden deploy) bile işlem geçmişi KAYBOLMAZ.
+# Volume yoksa (yol yazılabilir değilse) bot yine de çalışır, sadece
+# kalıcılık olmadan (eski davranış) devam eder — hata vermez.
+import json
+TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/trade_log.json")
+
+def trade_log_yukle():
+    global trade_log
+    try:
+        if os.path.exists(TRADE_LOG_PATH):
+            with open(TRADE_LOG_PATH, "r", encoding="utf-8") as f:
+                yuklenen = json.load(f)
+            with trade_log_lock:
+                trade_log = yuklenen
+            log.info(f"[KALICI] {len(yuklenen)} işlem diskten yüklendi ({TRADE_LOG_PATH})")
+        else:
+            log.info(f"[KALICI] {TRADE_LOG_PATH} bulunamadı — muhtemelen Volume bağlı değil, sıfırdan başlanıyor")
+    except Exception as e:
+        log.warning(f"[KALICI] Yükleme başarısız (kalıcılık olmadan devam ediliyor): {e}")
+
+def trade_log_kaydet_diske():
+    try:
+        os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
+        with trade_log_lock:
+            veriler = list(trade_log)
+        with open(TRADE_LOG_PATH, "w", encoding="utf-8") as f:
+            json.dump(veriler, f)
+    except Exception as e:
+        log.warning(f"[KALICI] Diske yazma başarısız (Volume bağlı olmayabilir): {e}")
+
 def kaydet_islem(sembol, yon, net, sure_dk, kaynak, sonuc_metni):
     with trade_log_lock:
         trade_log.append({
@@ -130,6 +169,7 @@ def kaydet_islem(sembol, yon, net, sure_dk, kaynak, sonuc_metni):
         })
         if len(trade_log) > MAX_TRADE_LOG:
             del trade_log[0]
+    trade_log_kaydet_diske()
 
 # ════════════════════════════════════════════
 # TELEGRAM BOT
@@ -323,6 +363,51 @@ def pozisyon_boyutu_hesapla(risk_mesafe, price):
 
     gercek_r_dolar = risk_mesafe * amount
     return amount, pos_size, gercek_r_dolar
+
+def trend_giris_onayi_bekle(symbol, yon_pump_dump, atr, bekle_sn=12):
+    """
+    Ani hareket + ADX teyidi geldiğinde, tam sıçramanın UCUNDAN girmek
+    yerine kısa bir soluklanma/geri çekilme bekler. Bu, "doğru yöndeyiz
+    ama tam yanlış anda giriyoruz" sorununu (canlı veride %13 kazanma
+    oranıyla kanıtlanmış) çözmeye çalışır — trend teyitli olsa bile,
+    mikro-giriş noktası hâlâ önemli.
+
+    ATR'e göre ölçekli bir geri çekilme eşiği kullanır (her coinin kendi
+    oynaklığına göre orantılı, sabit yüzde değil).
+
+    pump → zirveyi takip et, zirveden (0.3×ATR) kadar geri çekilirse onay.
+    dump → dibi takip et, dipten (0.3×ATR) kadar yukarı gelirse onay.
+
+    Döner: (onaylandi: bool, fiyat: float|None)
+    """
+    pullback_mesafe = 0.3 * atr
+    if pullback_mesafe <= 0:
+        return False, None
+
+    ekstrem = None
+    for _ in range(bekle_sn):
+        t = safe_api(exchange.fetch_ticker, symbol)
+        if not t:
+            time.sleep(1); continue
+        price = float(t["last"])
+
+        if ekstrem is None:
+            ekstrem = price
+        elif yon_pump_dump == "pump":
+            ekstrem = max(ekstrem, price)
+        else:
+            ekstrem = min(ekstrem, price)
+
+        if yon_pump_dump == "pump":
+            if (ekstrem - price) >= pullback_mesafe:
+                return True, price
+        else:
+            if (price - ekstrem) >= pullback_mesafe:
+                return True, price
+
+        time.sleep(1)
+
+    return False, None
 
 def paper_giris_dene(symbol, yon_pump_dump, adx, atr):
     """
@@ -541,7 +626,15 @@ def scanner_loop():
 
                 yon_metni = "LONG" if yon == "pump" else "SHORT"
                 emoji = "🚀" if yon == "pump" else "📉"
-                tg(f"{emoji} Ani {yon.upper()}: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}% | ADX:{adx:.1f} ✅ teyit\n[KAĞIT] {yon_metni} deneniyor...")
+
+                if SOLUKLANMA_BEKLE_AKTIF:
+                    tg(f"{emoji} Ani {yon.upper()}: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}% | ADX:{adx:.1f} ✅ teyit\n[KAĞIT] Soluklanma bekleniyor, sonra {yon_metni}...")
+                    onaylandi, giris_fiyat = trend_giris_onayi_bekle(sym, yon, atr)
+                    if not onaylandi:
+                        log.info(f"[SCANNER] {sym_kisa} soluklanma onayı gelmedi, atlandı")
+                        continue
+                else:
+                    tg(f"{emoji} Ani {yon.upper()}: {sym_kisa} | Hacim:{detay['vol']}x | 3dk:{detay['pct']:+.1f}% | ADX:{adx:.1f} ✅ teyit\n[KAĞIT] {yon_metni} deneniyor (anında giriş)...")
 
                 acildi = paper_giris_dene(sym, yon, adx, atr)
                 if acildi:
@@ -823,6 +916,7 @@ sig_mod.signal(sig_mod.SIGINT, shutdown)
 # ════════════════════════════════════════════
 if __name__ == "__main__":
     print("SADIK SCALP — KAĞIT (PAPER) MOD BAŞLIYOR...")
+    trade_log_yukle()
     threading.Thread(target=health_server, daemon=True).start()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=scanner_loop, daemon=True).start()
@@ -830,7 +924,7 @@ if __name__ == "__main__":
 
     tg(
         "📝 SADIK SCALP — KAĞIT (PAPER) MOD\n"
-        "🔖 Versiyon: v8 (GERÇEK PARA KULLANILMIYOR — tam simülasyon)\n\n"
+        "🔖 Versiyon: v9 (kalıcı işlem geçmişi/Volume AKTİF | soluklanma bekleme hazır ama KAPALI — v8 verisi bozulmasın diye)\n\n"
         "🧠 Strateji: ADX ile trend teyidi olmadan işlem AÇILMAZ (fade kaldırıldı).\n"
         f"   ADX ≥ {ADX_ESIK} → hareketin YÖNÜNDE gir. ADX < {ADX_ESIK} → sinyal atlanır.\n\n"
         f"💰 Pozisyon: RİSK BAZLI boyutlandırma (hedef risk: ${HEDEF_RISK_DOLAR:.2f} = marjinin %{int(RISK_PER_TRADE_PCT*100)}'si, {MIN_POS_SIZE:.0f}$-{MAX_POS_SIZE:.0f}$ arası)\n"
