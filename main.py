@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v1
+🔖 VERSİYON: v3 (min hacim 8M→2M, min oynaklık %3→%15)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DÜZELTİLEN GÜVENLİK AÇIKLARI (orijinal koddan):
   1. API şifresi artık ORTAM DEĞİŞKENİNDEN okunuyor, koda YAZILMIYOR.
@@ -68,8 +68,11 @@ MAX_POS_NOTIONAL  = (TOPLAM_SERMAYE / MAX_POS) * LEV * 1.2   # slot başına mak
 MAX_GUNLUK_ZARAR  = -8.0     # bu kadar (gerçek $) kaybedince gün için dur
 
 # ── Hantal coin filtresi ──
-MIN_VOLUME        = 20_000_000   # eskisi 5M idi — çok daha likit coinler
-MIN_OYNAKLIK_PCT  = 3.0          # son 24s içinde en az %3 hareket etmemişse "hantal" sayılır
+# NOT: Asıl "hantal" (durgun) coin eleyicisi OYNAKLIK şartı — hacim eşiği
+# sadece yeterli likidite/az kayma (slippage) için. Pozisyonlarımız zaten
+# küçük ($30-70 civarı) olduğu için çok yüksek bir hacim şartına gerek yok.
+MIN_VOLUME        = 2_000_000    # önceki 8M'den düşürüldü — likidite şartı gevşetildi
+MIN_OYNAKLIK_PCT  = 15.0         # önceki %3'ten yükseltildi — sadece güçlü hareket eden coinler
 TOP_COINS         = 80
 
 BUFFER_PCT = 0.0015
@@ -524,7 +527,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v1 (güvenlik açıkları düzeltildi)\n\n"
+        "🔖 VERSİYON: v3 (min hacim 8M→2M, min oynaklık %3→%15)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
