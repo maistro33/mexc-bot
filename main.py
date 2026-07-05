@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """
-FVG/SMC STRATEJİSİ — GEÇMİŞ VERİYLE BACKTEST
-🔖 VERSİYON: v3 (MAX_POS_BACKTEST=5 — v2'de 3 idi, 12→29 işleme çıkıp
-    R neredeyse 2 katına çıkmıştı, doygunluk noktası aranıyor)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Amaç: "Profesyonel FVG bot" stratejisinin (günlük+4h trend teyidi +
-likidite süpürmesi + 15m FVG girişi + R bazlı kademeli TP/başa baş)
-GERÇEK GEÇMİŞ VERİDE ne sıklıkta sinyal ürettiğini ve sonuçlarının ne
-olduğunu gösterir — günlerce canlı beklemek yerine dakikalar içinde.
+VOLATİLİTE SIKIŞMASI (SQUEEZE) KIRILIM STRATEJİSİ — BACKTEST
+🔖 VERSİYON: v1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Bu strateji, önceki scalp denemelerimizden (v8-v10) BİLİNÇLİ olarak farklı
+bir mantık kullanıyor. Önceki denemeler "ani hareketi gördüm, hemen (veya
+kısa bekleyip) gir" mantığındaydı — bu, hareketin ORTASINDA/SONUNDA giriş
+yapıp sürekli kötü fiyattan yakalanmamıza sebep oluyordu (canlı veride
+%13-20 kazanma oranıyla kanıtlandı).
 
-ÖNEMLİ: Bu script gerçek para KULLANMAZ, hiçbir emir açmaz. Sadece
-geçmiş OHLCV verisini indirip, aynı sinyal mantığını "olsaydı ne olurdu"
-şeklinde simüle eder (yani mum-mum ilerleyerek, o ana kadarki veriyle
-karar verip, GELECEĞİ görmeden test eder — bakış-öne (look-ahead) hatası
-olmaması için özenle yazılmıştır).
+BU STRATEJİ TERSİNİ YAPAR: Piyasa SIKIŞIP sessizleştiğinde (oynaklık
+tarihsel olarak düşükken) bekler, sonra o sıkışmadan hacimle teyitli
+şekilde çıkan İLK kırılımı yakalar — hareketin BAŞLANGICINI, ortasını
+değil. Bu, teknik analizde "volatilite daralması sonrası genişleme"
+olarak bilinen, iyi belgelenmiş bir kavramdır (Bollinger Bands sıkışması,
+NR7 gibi düşük-menzil paternleri).
 
-ÇALIŞTIRMA:
-  pip install ccxt pandas --break-system-packages   (gerekirse)
-  python3 fvg_backtest.py
+BİLEŞENLER:
+  1. 1 saatlik EMA50 trend filtresi — sadece üst trend yönünde kırılıma girilir
+  2. 15 dakikalık ATR sıkışması — ATR, son 100 mumun en düşük %20'lik
+     diliminde ise "sıkışma" kabul edilir
+  3. Donchian kanal kırılımı (son 20 mum) + hacim teyidi (ortalamanın 1.5x'i)
+  4. ATR bazlı SL + R-katı kademeli TP (1R/2R/3R, %40/%30/%30 bölünme) +
+     TP1 sonrası başa baş kaydırma
 
-Varsayılan olarak son ~120 günü, en yüksek hacimli ~30 coin üzerinde
-test eder (ayarlanabilir, aşağıdaki CONFIG bölümüne bak).
+ÖNEMLİ: Gerçek para KULLANMAZ, hiçbir emir açmaz. Sadece geçmiş veriyle
+"olsaydı ne olurdu" simülasyonu yapar. Bakış-öne (look-ahead) hatası
+olmaması için: her karar SADECE o ana kadarki kapanmış mumlarla verilir,
+işlem yönetimi de sinyal mumundan SONRAKİ mumdan başlar.
+
+ÇALIŞTIRMA: pip install ccxt pandas --break-system-packages
+            python3 scalp_squeeze_backtest.py
 """
 
 import ccxt
@@ -29,27 +39,31 @@ import time
 from datetime import datetime, timedelta, timezone
 
 # ════════════════════════════════════════════
-# CONFIG — istediğin gibi değiştirebilirsin
+# CONFIG
 # ════════════════════════════════════════════
-GECMIS_GUN     = 365     # kaç gün geriye gidilecek (1 yıl)
-TOP_COINS      = 100     # en yüksek hacimli kaç coin denenecek
-MAX_POS_BACKTEST = 5     # aynı anda kaç işleme izin verilir (v2'de 3 idi,
-                          # 12→29 işleme çıkıp R neredeyse 2 katına çıktı —
-                          # doygunluğa ulaşılıp ulaşılmadığını test ediyoruz)
-MIN_VOLUME     = 5_000_000
-BUFFER_PCT     = 0.0015
-LEV            = 10
-MARGIN         = 10
-TP_SPLIT       = [0.4, 0.3, 0.3]
+GECMIS_GUN        = 180     # kaç gün geriye gidilecek
+TOP_COINS         = 60
+MIN_VOLUME        = 5_000_000
+MAX_POS_BACKTEST  = 5        # aynı anda kaç işleme izin verilir
+
+EMA_PERIOD        = 50       # 1h trend filtresi
+ATR_PERIOD        = 14       # 15m ATR (sıkışma ölçümü + SL mesafesi)
+SQUEEZE_LOOKBACK  = 100      # ATR'nin percentile'ını hesaplarken kaç mum geriye bakılır
+SQUEEZE_PERCENTILE = 20      # bu percentile'ın altındaysa "sıkışma" kabul edilir
+DONCHIAN_PERIOD   = 20       # kırılım kanalı periyodu
+VOLUME_MULT       = 1.5      # kırılım mumunun hacmi, ortalamanın kaç katı olmalı
+ATR_SL_MULT       = 1.5      # SL mesafesi = bu × ATR
+
+R_KADEMELERI      = [1.0, 2.0, 3.0]
+TP_SPLIT          = [0.4, 0.3, 0.3]
 
 exchange = ccxt.bitget({"options": {"defaultType": "swap"}, "enableRateLimit": True})
 
 
 # ════════════════════════════════════════════
-# GEÇMİŞ VERİ ÇEKME (sayfalama ile — tek çağrı yetmez, uzun geçmiş için)
+# VERİ ÇEKME (FVG backtest'iyle aynı, kanıtlanmış)
 # ════════════════════════════════════════════
 def gecmis_veri_cek(symbol, timeframe, gun_sayisi):
-    """Bitget'ten `gun_sayisi` kadar geriye giden OHLCV verisini sayfalayarak çeker."""
     ms_baslangic = int((datetime.now(timezone.utc) - timedelta(days=gun_sayisi)).timestamp() * 1000)
     tum_mumlar = []
     since = ms_baslangic
@@ -92,72 +106,73 @@ def sembol_listesi_al(top_n, min_hacim):
 
 
 # ════════════════════════════════════════════
-# SİNYAL MANTIĞI (orijinal bottan BİREBİR alınmıştır — mum-mum ilerleyecek
-# şekilde uyarlanmıştır, bakış-öne hatası yok: her karar SADECE o ana
-# kadarki mumlarla veriliyor)
+# İNDİKATÖRLER
 # ════════════════════════════════════════════
-def yon_belirle(d_df, h4_df, i_d, i_h4):
-    """d_df/h4_df: günlük/4h DataFrame. i_d/i_h4: şu anki (dahil) son index."""
-    if i_d < 2 or i_h4 < 2:
+def calc_atr_series(df, period=14):
+    """Tüm seri boyunca ATR hesaplar (tek bir son değer değil — percentile
+    karşılaştırması için geçmiş ATR dizisine ihtiyacımız var)."""
+    high, low, close = df["h"], df["l"], df["c"]
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+
+# ════════════════════════════════════════════
+# SİNYAL MANTIĞI
+# ════════════════════════════════════════════
+def trend_filtresi(h1_df, simdiki_zaman, yon):
+    gecerli = h1_df[h1_df["t"] <= simdiki_zaman]
+    if len(gecerli) < EMA_PERIOD + 5:
+        return False
+    ema = gecerli["c"].ewm(span=EMA_PERIOD, adjust=False).mean().iloc[-1]
+    son_kapanis = gecerli["c"].iloc[-1]
+    if yon == "long":
+        return son_kapanis > ema
+    else:
+        return son_kapanis < ema
+
+
+def squeeze_kirilim_sinyali(m15_df, atr_series, i):
+    """
+    i: şu anki (dahil) kapanmış mumun index'i. Sadece i ve öncesi kullanılır.
+    Döner: "long" / "short" / None
+    """
+    if i < SQUEEZE_LOOKBACK + DONCHIAN_PERIOD + 5:
         return None
-    d_high = d_df["h"].iloc[i_d - 1]
-    d_high_onceki = d_df["h"].iloc[i_d - 2]
-    d_low = d_df["l"].iloc[i_d - 1]
-    d_low_onceki = d_df["l"].iloc[i_d - 2]
 
-    h_high = h4_df["h"].iloc[i_h4 - 1]
-    h_high_onceki = h4_df["h"].iloc[i_h4 - 2]
-    h_low = h4_df["l"].iloc[i_h4 - 1]
-    h_low_onceki = h4_df["l"].iloc[i_h4 - 2]
+    # ── Sıkışma kontrolü: kırılım mumundan HEMEN ÖNCEKİ ATR, geçmiş
+    # SQUEEZE_LOOKBACK mumun en düşük %SQUEEZE_PERCENTILE dilimindeyse ──
+    atr_onceki = atr_series.iloc[i - 1]
+    atr_gecmis_pencere = atr_series.iloc[i - 1 - SQUEEZE_LOOKBACK: i - 1]
+    if atr_gecmis_pencere.isna().any() or len(atr_gecmis_pencere) < SQUEEZE_LOOKBACK * 0.8:
+        return None
+    percentile_rank = (atr_gecmis_pencere < atr_onceki).mean() * 100
+    if percentile_rank > SQUEEZE_PERCENTILE:
+        return None  # sıkışma yok, piyasa zaten hareketliydi
 
-    if d_high > d_high_onceki and h_high > h_high_onceki:
+    # ── Donchian kırılımı: son DONCHIAN_PERIOD mumun (şu anki mum HARİÇ)
+    # en yükseği/en düşüğü kırılıyor mu? ──
+    onceki_high = m15_df["h"].iloc[i - DONCHIAN_PERIOD:i].max()
+    onceki_low = m15_df["l"].iloc[i - DONCHIAN_PERIOD:i].min()
+    kapanis = m15_df["c"].iloc[i]
+
+    # ── Hacim teyidi ──
+    hacim_simdi = m15_df["v"].iloc[i]
+    hacim_ort = m15_df["v"].iloc[i - DONCHIAN_PERIOD:i].mean()
+    if hacim_ort <= 0 or hacim_simdi < hacim_ort * VOLUME_MULT:
+        return None
+
+    if kapanis > onceki_high:
         return "long"
-    if d_low < d_low_onceki and h_low < h_low_onceki:
+    if kapanis < onceki_low:
         return "short"
     return None
 
 
-def likidite_supurmesi(h1_df, i_h1, direction):
-    if i_h1 < 30:
-        return False
-    pencere_low = h1_df["l"].iloc[i_h1 - 30:i_h1 - 1]
-    pencere_high = h1_df["h"].iloc[i_h1 - 30:i_h1 - 1]
-    son_low = h1_df["l"].iloc[i_h1 - 1]
-    son_high = h1_df["h"].iloc[i_h1 - 1]
-    if direction == "long":
-        return son_low < pencere_low.min()
-    else:
-        return son_high > pencere_high.max()
-
-
-def giris_modeli(m15_df, i_m15, direction):
-    if i_m15 < 60:
-        return None
-    o = m15_df["o"]; h = m15_df["h"]; l = m15_df["l"]; c = m15_df["c"]
-
-    idx = i_m15 - 1
-    body = abs(c.iloc[idx] - o.iloc[idx])
-    avg_body = sum(abs(c.iloc[idx - k] - o.iloc[idx - k]) for k in range(1, 10)) / 9
-    if body < avg_body * 1.5:
-        return None
-
-    if direction == "long" and h.iloc[idx - 2] < l.iloc[idx]:
-        entry = (h.iloc[idx - 2] + l.iloc[idx]) / 2
-        swing_low = l.iloc[idx - 14: idx + 1].min()
-        sl = swing_low - (swing_low * BUFFER_PCT)
-        return {"entry": entry, "sl": sl}
-
-    if direction == "short" and l.iloc[idx - 2] > h.iloc[idx]:
-        entry = (l.iloc[idx - 2] + h.iloc[idx]) / 2
-        swing_high = h.iloc[idx - 14: idx + 1].max()
-        sl = swing_high + (swing_high * BUFFER_PCT)
-        return {"entry": entry, "sl": sl}
-
-    return None
-
-
 # ════════════════════════════════════════════
-# İŞLEM SİMÜLASYONU (R bazlı, kademeli TP + başa baş)
+# İŞLEM SİMÜLASYONU (FVG backtest'iyle birebir aynı mantık — kanıtlanmış)
 # ════════════════════════════════════════════
 def islemi_simule_et(m15_df, giris_idx, direction, entry, sl):
     risk = abs(entry - sl)
@@ -187,7 +202,7 @@ def islemi_simule_et(m15_df, giris_idx, direction, entry, sl):
                 r_toplam += 1.0 * TP_SPLIT[0]
                 kalan -= TP_SPLIT[0]
                 tp1_oldu = True
-                aktif_sl = entry  # başa baş
+                aktif_sl = entry
 
         if tp1_oldu and not tp2_oldu:
             tp2_vuruldu = (h >= tp2) if direction == "long" else (l <= tp2)
@@ -206,39 +221,39 @@ def islemi_simule_et(m15_df, giris_idx, direction, entry, sl):
 
 
 # ════════════════════════════════════════════
-# ADIM 1: HER COIN İÇİN ADAY SİNYALLERİ TOPLA (henüz simüle etmeden)
+# ADIM 1: HER COIN İÇİN ADAY SİNYALLERİ BUL
 # ════════════════════════════════════════════
 def coin_sinyalleri_bul(symbol):
     print(f"[{symbol}] veri indiriliyor...")
-    d_df   = gecmis_veri_cek(symbol, "1d", GECMIS_GUN + 5)
-    h4_df  = gecmis_veri_cek(symbol, "4h", GECMIS_GUN + 5)
     h1_df  = gecmis_veri_cek(symbol, "1h", GECMIS_GUN + 5)
     m15_df = gecmis_veri_cek(symbol, "15m", GECMIS_GUN + 5)
 
-    if any(df is None or len(df) < 60 for df in [d_df, h4_df, h1_df, m15_df]):
+    if any(df is None or len(df) < 200 for df in [h1_df, m15_df]):
         print(f"[{symbol}] yetersiz veri, atlandı")
         return None, []
 
+    atr_series = calc_atr_series(m15_df, ATR_PERIOD)
+
     sinyaller = []
-    for i in range(60, len(m15_df)):
+    for i in range(SQUEEZE_LOOKBACK + DONCHIAN_PERIOD + 5, len(m15_df)):
+        yon = squeeze_kirilim_sinyali(m15_df, atr_series, i)
+        if not yon:
+            continue
+
         simdiki_zaman = m15_df["t"].iloc[i]
+        if not trend_filtresi(h1_df, simdiki_zaman, yon):
+            continue
 
-        i_d = d_df[d_df["t"] <= simdiki_zaman].shape[0]
-        i_h4 = h4_df[h4_df["t"] <= simdiki_zaman].shape[0]
-        i_h1 = h1_df[h1_df["t"] <= simdiki_zaman].shape[0]
-
-        direction = yon_belirle(d_df, h4_df, i_d, i_h4)
-        if not direction:
+        entry = m15_df["c"].iloc[i]
+        atr_simdi = atr_series.iloc[i]
+        risk_mesafe = ATR_SL_MULT * atr_simdi
+        if risk_mesafe <= 0:
             continue
-        if not likidite_supurmesi(h1_df, i_h1, direction):
-            continue
-        setup = giris_modeli(m15_df, i + 1, direction)
-        if not setup:
-            continue
+        sl = entry - risk_mesafe if yon == "long" else entry + risk_mesafe
 
         sinyaller.append({
-            "symbol": symbol, "i": i, "t": simdiki_zaman,
-            "direction": direction, "entry": setup["entry"], "sl": setup["sl"],
+            "symbol": symbol, "i": i + 1, "t": simdiki_zaman,  # yönetim i+1'den başlar (bakış-öne hatası olmasın)
+            "direction": yon, "entry": entry, "sl": sl,
         })
 
     print(f"[{symbol}] {len(sinyaller)} aday sinyal bulundu")
@@ -246,26 +261,17 @@ def coin_sinyalleri_bul(symbol):
 
 
 # ════════════════════════════════════════════
-# ADIM 2: TÜM SİNYALLERİ ZAMANA GÖRE SIRALA, TEK-POZİSYON (MAX_POS=1)
-# KISITINI PORTFÖY GENELİNDE GERÇEKÇİ ŞEKİLDE UYGULA
+# ADIM 2: PORTFÖY SİMÜLASYONU (MAX_POS kısıtı)
 # ════════════════════════════════════════════
 def portfoy_simulasyonu(tum_m15, tum_sinyaller, max_pos=1):
-    """
-    max_pos: aynı anda kaç işleme izin verilir (orijinal bot MAX_POS=1
-    kullanıyordu; burada bunu artırıp gerçekten bu kısıtın fırsat
-    kaçırdığını doğrulayabiliyoruz).
-    """
     tum_sinyaller.sort(key=lambda s: s["t"])
-
     islemler = []
-    acik_pozisyonlar = []  # her eleman: bitiş zamanı (timestamp, ms)
+    acik_pozisyonlar = []
 
     for sig in tum_sinyaller:
-        # Süresi dolmuş (kapanmış) pozisyonları listeden temizle
         acik_pozisyonlar = [bitis for bitis in acik_pozisyonlar if bitis > sig["t"]]
-
         if len(acik_pozisyonlar) >= max_pos:
-            continue  # slot dolu, bu sinyal kaçırılır
+            continue
 
         m15_df = tum_m15[sig["symbol"]]
         sonuc = islemi_simule_et(m15_df, sig["i"], sig["direction"], sig["entry"], sig["sl"])
@@ -279,18 +285,17 @@ def portfoy_simulasyonu(tum_m15, tum_sinyaller, max_pos=1):
         sonuc["direction"] = sig["direction"]
         sonuc["zaman"] = datetime.fromtimestamp(sig["t"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
         islemler.append(sonuc)
-
         acik_pozisyonlar.append(cikis_zaman)
 
     return islemler
 
 
-
-
-
+# ════════════════════════════════════════════
+# ANA
+# ════════════════════════════════════════════
 def main():
-    print("🔖 VERSİYON: v3 (MAX_POS_BACKTEST ayarlanabilir)\n")
-    print(f"═══ FVG/SMC BACKTEST — son {GECMIS_GUN} gün, en yüksek hacimli {TOP_COINS} coin, MAX_POS={MAX_POS_BACKTEST} ═══\n")
+    print("🔖 VERSİYON: v1\n")
+    print(f"═══ SQUEEZE KIRILIM BACKTEST — son {GECMIS_GUN} gün, en yüksek hacimli {TOP_COINS} coin, MAX_POS={MAX_POS_BACKTEST} ═══\n")
     semboller = sembol_listesi_al(TOP_COINS, MIN_VOLUME)
     print(f"{len(semboller)} coin bulundu: {', '.join(s.split('/')[0] for s in semboller[:10])}...\n")
 
@@ -327,11 +332,11 @@ def main():
     print(f"Ortalama kazanan R: {kazanan['r'].mean():+.3f}" if len(kazanan) else "Kazanan yok")
     print(f"Ortalama kaybeden R: {kaybeden['r'].mean():+.3f}" if len(kaybeden) else "Kaybeden yok")
     print(f"Ortalama işlem süresi: {df['sure_mum'].mean()*15:.0f} dakika")
-    print(f"Aya ortalama işlem: {len(df)/GECMIS_GUN*30:.2f}")
+    print(f"Günde ortalama işlem: {len(df)/GECMIS_GUN:.2f}")
     print("═" * 50)
 
-    df.to_csv("fvg_backtest_sonuclar.csv", index=False)
-    print("\nDetaylı sonuçlar 'fvg_backtest_sonuclar.csv' dosyasına kaydedildi.")
+    df.to_csv("squeeze_backtest_sonuclar.csv", index=False)
+    print("\nDetaylı sonuçlar 'squeeze_backtest_sonuclar.csv' dosyasına kaydedildi.")
 
 
 if __name__ == "__main__":
