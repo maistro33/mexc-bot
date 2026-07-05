@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v1 (4h/1h/15m/5m zaman dilimleri — backtest: 207 işlem,
+🔖 VERSİYON: v2 (yeni coin önceliği eklendi — 4h/1h/15m/5m zaman dilimleri, backtest: 207 işlem,
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -565,7 +565,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v1 (4h/1h/15m/5m — backtest: 207 işlem, ~%86 kazanma, +180R)\n\n"
+        "🔖 VERSİYON: v2 (yeni coin önceliği eklendi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
