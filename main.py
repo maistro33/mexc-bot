@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v3 (tarama log görünürlüğü eklendi — 4h/1h/15m/5m zaman dilimleri, backtest: 207 işlem,
+🔖 VERSİYON: v4 (oynaklık şartı %15→%2, taranan coin 80→100 — backtest koşullarına daha yakın)
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -74,8 +74,9 @@ MAX_GUNLUK_ZARAR  = -8.0     # bu kadar (gerçek $) kaybedince gün için dur
 # sadece yeterli likidite/az kayma (slippage) için. Pozisyonlarımız zaten
 # küçük ($30-70 civarı) olduğu için çok yüksek bir hacim şartına gerek yok.
 MIN_VOLUME        = 2_000_000    # önceki 8M'den düşürüldü — likidite şartı gevşetildi
-MIN_OYNAKLIK_PCT  = 15.0         # önceki %3'ten yükseltildi — sadece güçlü hareket eden coinler
-TOP_COINS         = 80
+MIN_OYNAKLIK_PCT  = 2.0          # 15'ten düşürüldü — backtest'te bu şart hiç yoktu,
+                                  # sadece tamamen ölü/hareketsiz coinleri elemek için hafif bir eşik
+TOP_COINS         = 100          # 80'den artırıldı — backtest'e daha yakın bir evren
 
 BUFFER_PCT = 0.0015
 TP_SPLIT   = [0.4, 0.3, 0.3]
@@ -569,7 +570,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v3 (tarama log görünürlüğü eklendi)\n\n"
+        "🔖 VERSİYON: v4 (daha fazla coin taranıyor)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
