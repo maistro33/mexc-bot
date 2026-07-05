@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 FVG/SMC STRATEJİSİ — GEÇMİŞ VERİYLE BACKTEST
-🔖 VERSİYON: v2 (MAX_POS_BACKTEST ayarlanabilir hale getirildi — v1'de
-    sabit MAX_POS=1 kullanılıyordu, 74 aday sinyalin 62'si kaçırılmıştı)
+🔖 VERSİYON: v3 (MAX_POS_BACKTEST=5 — v2'de 3 idi, 12→29 işleme çıkıp
+    R neredeyse 2 katına çıkmıştı, doygunluk noktası aranıyor)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Amaç: "Profesyonel FVG bot" stratejisinin (günlük+4h trend teyidi +
 likidite süpürmesi + 15m FVG girişi + R bazlı kademeli TP/başa baş)
@@ -33,9 +33,9 @@ from datetime import datetime, timedelta, timezone
 # ════════════════════════════════════════════
 GECMIS_GUN     = 365     # kaç gün geriye gidilecek (1 yıl)
 TOP_COINS      = 100     # en yüksek hacimli kaç coin denenecek
-MAX_POS_BACKTEST = 3     # aynı anda kaç işleme izin verilir (orijinal bot 1
-                          # kullanıyordu — burada artırıp fırsat kaçırma
-                          # etkisini test ediyoruz)
+MAX_POS_BACKTEST = 5     # aynı anda kaç işleme izin verilir (v2'de 3 idi,
+                          # 12→29 işleme çıkıp R neredeyse 2 katına çıktı —
+                          # doygunluğa ulaşılıp ulaşılmadığını test ediyoruz)
 MIN_VOLUME     = 5_000_000
 BUFFER_PCT     = 0.0015
 LEV            = 10
@@ -289,7 +289,7 @@ def portfoy_simulasyonu(tum_m15, tum_sinyaller, max_pos=1):
 
 
 def main():
-    print("🔖 VERSİYON: v2 (MAX_POS_BACKTEST ayarlanabilir)\n")
+    print("🔖 VERSİYON: v3 (MAX_POS_BACKTEST ayarlanabilir)\n")
     print(f"═══ FVG/SMC BACKTEST — son {GECMIS_GUN} gün, en yüksek hacimli {TOP_COINS} coin, MAX_POS={MAX_POS_BACKTEST} ═══\n")
     semboller = sembol_listesi_al(TOP_COINS, MIN_VOLUME)
     print(f"{len(semboller)} coin bulundu: {', '.join(s.split('/')[0] for s in semboller[:10])}...\n")
