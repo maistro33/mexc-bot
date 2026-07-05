@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v2 (yeni coin önceliği eklendi — 4h/1h/15m/5m zaman dilimleri, backtest: 207 işlem,
+🔖 VERSİYON: v3 (tarama log görünürlüğü eklendi — 4h/1h/15m/5m zaman dilimleri, backtest: 207 işlem,
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -474,6 +474,7 @@ def run():
                 continue
 
             symbols = get_symbols()
+            log.info(f"[SCAN] {len(symbols)} coin taranıyor...")
 
             for sym in symbols:
                 with state_lock:
@@ -483,10 +484,13 @@ def run():
                 direction = get_direction(sym)
                 if not direction:
                     continue
+                log.info(f"[ADAY] {sym} yön={direction} — likidite süpürmesi kontrol ediliyor...")
                 if not liquidity_sweep(sym, direction):
                     continue
+                log.info(f"[ADAY] {sym} likidite süpürmesi ✅ — FVG aranıyor...")
                 setup = entry_model(sym, direction)
                 if not setup:
+                    log.info(f"[ADAY] {sym} FVG bulunamadı, atlandı")
                     continue
 
                 amount, notional = pozisyon_boyutu_hesapla(setup["entry"], setup["sl"])
@@ -565,7 +569,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v2 (yeni coin önceliği eklendi)\n\n"
+        "🔖 VERSİYON: v3 (tarama log görünürlüğü eklendi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
