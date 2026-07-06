@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v4 (basit formatta da kanal-tarzı 6 kademeli TP eklendi)
+🔖 VERSİYON: v5 (/manuel önekine gerek yok — kısa mesaj otomatik işlenir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -129,6 +129,28 @@ if bot:
                 satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.8f} "
                                  f"SL:{d['sl']:.8f} TP_index:{d.get('tp_index',0)}/{len(d.get('tp_liste',[]))}")
             bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+
+    KISA_MESAJ_UST_SINIR = 30  # bu karakterden uzun mesajlar sohbet sayilir, islem denenmez
+
+    @bot.message_handler(func=lambda m: m.text and not m.text.startswith("/"))
+    def komutsuz_hizli_giris(msg):
+        """
+        YENİ: '/manuel' yazmadan, doğrudan 'Mon long ac' gibi KISA bir
+        mesaj göndererek de işlem açılabilsin (hız için). Güvenlik payı:
+        mesaj KISA_MESAJ_UST_SINIR karakterden uzunsa (muhtemelen sıradan
+        sohbet), otomatik işlem DENENMEZ — yanlışlıkla tetiklenmesin.
+        """
+        metin = msg.text.strip()
+        if len(metin) > KISA_MESAJ_UST_SINIR:
+            return  # uzun mesaj, muhtemelen sohbet — dokunma
+
+        sinyal = hizli_sinyal_ayristir(metin)
+        if not sinyal:
+            return  # "long"/"short" içermiyor, işlem denemesi değil
+
+        bot.send_message(msg.chat.id, f"⚡ Hızlı giriş algılandı: {sinyal['symbol']} {sinyal['direction'].upper()}")
+        sinyali_isle(sinyal)
 
 
 def telebot_polling_baslat():
@@ -540,7 +562,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v4 (kanal-tarzı 6 kademeli TP eklendi)\n\n"
+        "🔖 VERSİYON: v5 (/manuel gerekmiyor artik)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
