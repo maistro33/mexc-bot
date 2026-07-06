@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v6 (sabit marj: 10$ x 10x=100$ + gerçek bakiye kontrolü eklendi)
+🔖 VERSİYON: v8 (varsayılan kanal FuturesKripto olarak düzeltildi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -65,7 +65,7 @@ PASSPHRASE   = os.getenv("BITGET_PASS", "")
 TG_API_ID    = int(os.getenv("TG_API_ID", "0"))   # my.telegram.org'dan
 TG_API_HASH  = os.getenv("TG_API_HASH", "")       # my.telegram.org'dan
 TG_STRING_SESSION = os.getenv("STRING_SESSION", "") or os.getenv("TG_SESSION", "")
-KANAL_KULLANICI_ADI = os.getenv("KANAL_USERNAME", "Kripto_Botu")
+KANAL_KULLANICI_ADI = os.getenv("KANAL_USERNAME", "FuturesKripto")
 
 if not PASSPHRASE:
     raise RuntimeError("BITGET_PASS ortam değişkeni ayarlanmamış.")
@@ -355,6 +355,28 @@ def gercek_bakiye_yeterli_mi(gereken_marj):
     return serbest_usdt >= gereken_marj
 
 
+TP_OLCEK_CARPANI = 2.5  # kanalın ham oranları (0.1-0.8R) çok cimri — 2.5 katına
+                        # çıkarıp TP6'yı ~2R'ye getiriyoruz, başabaş oranı %72'den %51'e düşüyor
+
+def tp_olcekle(entry, sl, tp_liste, direction, carpan=TP_OLCEK_CARPANI):
+    """
+    Kanaldan gelen (ya da otomatik hesaplanan) TP'lerin oranını KORUYUP,
+    hepsini aynı çarpanla büyütür. Kanalın 0.1/0.2/.../0.8R yapısı çok
+    zayıf bir risk/ödül sağlıyordu (başabaş için %72 kazanma gerekiyordu);
+    bu fonksiyon aynı şekli koruyarak matematiği sağlıklı hale getirir.
+    """
+    risk_mesafe = abs(entry - sl)
+    if risk_mesafe <= 0 or not tp_liste:
+        return tp_liste
+    yeni_liste = []
+    for tp in tp_liste:
+        oran = abs(tp - entry) / risk_mesafe
+        yeni_oran = oran * carpan
+        yeni_tp = entry + yeni_oran * risk_mesafe if direction == "long" else entry - yeni_oran * risk_mesafe
+        yeni_liste.append(yeni_tp)
+    return yeni_liste
+
+
 # ════════════════════════════════════════════
 # GERÇEK İŞLEM AÇMA (sinyal geldiğinde çağrılır)
 # ════════════════════════════════════════════
@@ -383,8 +405,7 @@ def sinyali_isle(sinyal):
             return
         sl = entry_hedef * (1 - HIZLI_SL_PCT) if direction == "long" else entry_hedef * (1 + HIZLI_SL_PCT)
 
-        # ── YENİ: kanalın GERÇEK TP oranlarına göre 6 kademeli TP ──
-        # (MAGMA örneğinden geriye hesaplandı: 0.1R/0.2R/0.3R/0.4R/0.5R/0.8R)
+        # ── Kanalın GERÇEK TP oranlarına göre 6 kademeli TP (ham hâli) ──
         risk_mesafe = abs(entry_hedef - sl)
         KANAL_TP_ORANLARI = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8]
         if direction == "long":
@@ -395,7 +416,18 @@ def sinyali_isle(sinyal):
 
         tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}\n"
            f"SL (%{HIZLI_SL_PCT*100:.0f}): {sl:.8f}\n"
-           f"Otomatik TP (kanal oranlarıyla): {[round(x,8) for x in tp_liste_otomatik]}")
+           f"Otomatik TP (kanal oranlarıyla, ham): {[round(x,8) for x in tp_liste_otomatik]}")
+
+    # ── ORTAK NOKTA: hem gerçek kanal sinyali hem basit format buraya gelir.
+    # Kanalın ham TP oranları (0.1-0.8R) matematiksel olarak zayıftı
+    # (başabaş için %72 kazanma gerekiyordu) — aynı şekli koruyarak
+    # ölçekliyoruz (varsayılan 2.5x, TP6 ~0.8R'den ~2R'ye çıkıyor). ──
+    if sinyal.get("tp_liste"):
+        tp_ham = sinyal["tp_liste"]
+        sinyal["tp_liste"] = tp_olcekle(entry_hedef, sl, tp_ham, direction)
+        tg(f"📐 TP'ler {TP_OLCEK_CARPANI}x ölçeklendi:\n"
+           f"Ham: {[round(x,8) for x in tp_ham]}\n"
+           f"Ölçekli: {[round(x,8) for x in sinyal['tp_liste']]}")
 
     amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
     if not amount:
@@ -581,7 +613,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v6 (sabit marj 10 dolar + bakiye kontrolü)\n\n"
+        "🔖 VERSİYON: v8 (varsayilan kanal duzeltildi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
