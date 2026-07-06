@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v3 (basit "COIN YÖN" formatı eklendi — kanal formatı gerekmiyor)
+🔖 VERSİYON: v4 (basit formatta da kanal-tarzı 6 kademeli TP eklendi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -347,7 +347,20 @@ def sinyali_isle(sinyal):
             tg(f"⚠️ {sym} anlık fiyat alınamadı: {e}")
             return
         sl = entry_hedef * (1 - HIZLI_SL_PCT) if direction == "long" else entry_hedef * (1 + HIZLI_SL_PCT)
-        tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}, SL (%{HIZLI_SL_PCT*100:.0f}) hesaplandı: {sl:.8f}")
+
+        # ── YENİ: kanalın GERÇEK TP oranlarına göre 6 kademeli TP ──
+        # (MAGMA örneğinden geriye hesaplandı: 0.1R/0.2R/0.3R/0.4R/0.5R/0.8R)
+        risk_mesafe = abs(entry_hedef - sl)
+        KANAL_TP_ORANLARI = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8]
+        if direction == "long":
+            tp_liste_otomatik = [entry_hedef + oran * risk_mesafe for oran in KANAL_TP_ORANLARI]
+        else:
+            tp_liste_otomatik = [entry_hedef - oran * risk_mesafe for oran in KANAL_TP_ORANLARI]
+        sinyal["tp_liste"] = tp_liste_otomatik
+
+        tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}\n"
+           f"SL (%{HIZLI_SL_PCT*100:.0f}): {sl:.8f}\n"
+           f"Otomatik TP (kanal oranlarıyla): {[round(x,8) for x in tp_liste_otomatik]}")
 
     amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
     if not amount:
@@ -527,7 +540,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v3 (basit COIN YÖN formatı eklendi)\n\n"
+        "🔖 VERSİYON: v4 (kanal-tarzı 6 kademeli TP eklendi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
