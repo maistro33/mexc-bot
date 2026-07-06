@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v7 (kaldıraç 10x→5x + günlük sıfırlama düzeltmesi + TradFi dışlama)
+🔖 VERSİYON: v8 (KRİTİK: çıkış emirleri artık doğrulanıyor, oturum-içi sahipsiz pozisyon koruması, kaldıraç ayarı başarısız olursa işlem atlanıyor)
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -414,7 +414,22 @@ def manage():
                 with state_lock:
                     durum = trade_state.get(sym)
                 if not durum:
-                    continue  # acilista_pozisyonlari_dogrula bunu zaten ele almış olmalı
+                    # ── DÜZELTME: Bu, sadece restart'ta değil, ÇALIŞMA ZAMANINDA da
+                    # (örn. manuel işlem açılırsa) oluşabilir. Sessizce geçme —
+                    # aynı güvenlik mekanizmasını burada da uygula. ──
+                    entry_guvenlik = safe(p.get("entryPrice"))
+                    guvenlik_sl_pct = 0.02
+                    sl_guvenlik = entry_guvenlik * (1 - guvenlik_sl_pct) if direction == "long" else entry_guvenlik * (1 + guvenlik_sl_pct)
+                    with state_lock:
+                        trade_state[sym] = {
+                            "sl": sl_guvenlik, "tp1": False, "tp2": False,
+                            "direction": direction, "entry": entry_guvenlik,
+                            "kaynak": "kurtarilan_calisma_zamani",
+                        }
+                    durumu_diske_yaz()
+                    tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu (çalışma zamanında tespit edildi) — "
+                       f"geçici %2 güvenlik SL'i kondu: {sl_guvenlik:.8f}. Manuel kontrol et.")
+                    continue
 
                 t = exchange.fetch_ticker(sym)
                 if not t:
@@ -433,11 +448,20 @@ def manage():
                 # ── STOP ──
                 sl_vuruldu = (price <= sl) if direction == "long" else (price >= sl)
                 if sl_vuruldu:
+                    kapandi_mi = False
                     try:
                         exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                        qty, params={"reduceOnly": True})
+                        time.sleep(1)
+                        guncel = exchange.fetch_positions([sym])
+                        kapandi_mi = not any(safe(pp.get("contracts")) > 0 for pp in guncel)
                     except Exception as e:
                         log.error(f"[STOP] {sym}: {e}")
+
+                    if not kapandi_mi:
+                        tg(f"⚠️ {sym} STOP emri DOĞRULANAMADI — takip devam ediyor, tekrar denenecek")
+                        continue  # trade_state'te KALSIN, sonraki turda tekrar denenir
+
                     gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
                     gunluk_pnl_ekle(gross)
                     tg(f"❌ STOP {sym} | PnL≈{gross:+.2f}$")
@@ -450,11 +474,21 @@ def manage():
                 if not durum["tp1"] and ((direction == "long" and price >= tp1) or
                                            (direction == "short" and price <= tp1)):
                     part = qty * TP_SPLIT[0]
+                    basarili = False
                     try:
                         exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                        part, params={"reduceOnly": True})
+                        time.sleep(1)
+                        guncel = exchange.fetch_positions([sym])
+                        kalan_miktar = sum(safe(pp.get("contracts")) for pp in guncel)
+                        basarili = kalan_miktar < qty * 0.9  # belirgin şekilde azaldıysa başarılı say
                     except Exception as e:
                         log.error(f"[TP1] {sym}: {e}")
+
+                    if not basarili:
+                        tg(f"⚠️ {sym} TP1 kısmi kapanışı doğrulanamadı, tekrar denenecek")
+                        continue
+
                     with state_lock:
                         trade_state[sym]["tp1"] = True
                         trade_state[sym]["sl"] = entry  # başa baş
@@ -465,11 +499,21 @@ def manage():
                 elif durum["tp1"] and not durum["tp2"] and \
                         ((direction == "long" and price >= tp2) or (direction == "short" and price <= tp2)):
                     part = qty * TP_SPLIT[1]
+                    basarili = False
                     try:
                         exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                        part, params={"reduceOnly": True})
+                        time.sleep(1)
+                        guncel = exchange.fetch_positions([sym])
+                        kalan_miktar = sum(safe(pp.get("contracts")) for pp in guncel)
+                        basarili = kalan_miktar < qty * TP_SPLIT[2] * 1.5  # kalan yaklaşık son dilime yakınsa
                     except Exception as e:
                         log.error(f"[TP2] {sym}: {e}")
+
+                    if not basarili:
+                        tg(f"⚠️ {sym} TP2 kısmi kapanışı doğrulanamadı, tekrar denenecek")
+                        continue
+
                     with state_lock:
                         trade_state[sym]["tp2"] = True
                     durumu_diske_yaz()
@@ -478,11 +522,20 @@ def manage():
                 # ── TP3 (kapanış) ──
                 elif durum["tp2"] and ((direction == "long" and price >= tp3) or
                                          (direction == "short" and price <= tp3)):
+                    kapandi_mi = False
                     try:
                         exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                        qty, params={"reduceOnly": True})
+                        time.sleep(1)
+                        guncel = exchange.fetch_positions([sym])
+                        kapandi_mi = not any(safe(pp.get("contracts")) > 0 for pp in guncel)
                     except Exception as e:
                         log.error(f"[TP3] {sym}: {e}")
+
+                    if not kapandi_mi:
+                        tg(f"⚠️ {sym} TP3 kapanışı DOĞRULANAMADI — takip devam ediyor, tekrar denenecek")
+                        continue
+
                     gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
                     gunluk_pnl_ekle(gross)
                     tg(f"🏆 TP3 {sym} — pozisyon kapandı | PnL≈{gross:+.2f}$")
@@ -540,6 +593,8 @@ def run():
                     exchange.set_leverage(LEV, sym)
                 except Exception as e:
                     log.warning(f"[LEVERAGE] {sym}: {e}")
+                    tg(f"⚠️ {sym} kaldıraç ayarlanamadı ({LEV}x), güvenlik için bu işlem atlandı")
+                    continue
 
                 t = exchange.fetch_ticker(sym)
                 price = safe(t["last"])
@@ -609,7 +664,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v7 (kaldıraç 5x, günlük sıfırlama düzeltildi)\n\n"
+        "🔖 VERSİYON: v8 (çıkış emri doğrulaması eklendi — kritik güvenlik)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
