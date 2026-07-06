@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v8 (KRİTİK: çıkış emirleri artık doğrulanıyor, oturum-içi sahipsiz pozisyon koruması, kaldıraç ayarı başarısız olursa işlem atlanıyor)
+🔖 VERSİYON: v9 (TradFi listesi genişletildi + otomatik tespit eklendi — KORU da ETF çıktı)
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -209,14 +209,42 @@ def coin_yasi_gun_yaklasik(symbol):
 
 # ── TradFi (tokenize hisse/ETF/emtia) DIŞLAMA LİSTESİ ──
 # Bitget'te normal kripto coinlerin yanında, geleneksel borsa saatlerine
-# bağlı, "Overnight/Low liquidity" uyarılı tokenize ürünler de var (DRAM
-# gibi). Bunlar kripto stratejimizin test edilmediği, farklı bir varlık
-# sınıfı — hariç tutuyoruz.
+# bağlı, "Overnight/Low liquidity" uyarılı tokenize ürünler de var (DRAM,
+# KORU gibi — KORU bile Güney Kore'ye 3x kaldıraçlı bir ETF). Bunlar
+# kripto stratejimizin test edilmediği, farklı bir varlık sınıfı.
+#
+# NOT: Statik liste tek başına YETERSİZ — her seferinde yeni bir tanesini
+# (önce DRAM, sonra KORU) canlıda kaybederek öğreniyoruz. Bu yüzden AŞAĞIDA
+# borsa verisinden OTOMATİK tespit de deniyoruz (coin_tradfi_mi fonksiyonu).
 TRADFI_BLACKLIST = {
-    "DRAM", "MSTR", "XAU", "SOXL", "SPCX", "TSLA", "AAPL", "AMZN",
+    "DRAM", "MSTR", "XAU", "SOXL", "SOXS", "SPCX", "TSLA", "AAPL", "AMZN",
     "GOOGL", "META", "MSFT", "COIN", "UBER", "ARQQ", "NVDA", "QCOM",
-    "RGTI", "CRCL",  # CRCL (Circle) da tokenize hisse olabilir, temkinli dışlandı
+    "RGTI", "CRCL", "KORU",
+    # Bilinen kaldıraçlı/ülke ETF'leri (Direxion ve benzeri) — bu tarz
+    # ürünlerin borsalarda tokenize edilme ihtimaline karşı geniş tutuldu
+    "TQQQ", "SQQQ", "SPXL", "SPXS", "LABU", "LABD", "JNUG", "JDST",
+    "NUGT", "DUST", "FAS", "FAZ", "TNA", "TZA", "YINN", "YANG",
+    "TMF", "TMV", "UVXY", "SVXY", "GDXU", "GDXD",
 }
+
+
+def coin_tradfi_mi(sym, data):
+    """
+    Statik listenin YANINDA, borsa verisinden otomatik tespit dener.
+    Bitget'in ticker/market bilgisinde TradFi/hisse kategorisini işaret
+    eden bir alan varsa yakalamaya çalışır. Alan yoksa/tanınmıyorsa
+    sessizce False döner (statik liste zaten devrede, bu SADECE ek katman).
+    """
+    try:
+        market = exchange.market(sym)
+        info = market.get("info", {}) if market else {}
+        for anahtar in ("symbolType", "category", "productType", "instType"):
+            deger = str(info.get(anahtar, "")).lower()
+            if deger and any(k in deger for k in ("stock", "equity", "index", "etf")):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def get_symbols():
@@ -233,6 +261,8 @@ def get_symbols():
         sym_base = sym.split("/")[0].upper()
         if sym_base in TRADFI_BLACKLIST:
             continue  # ── tokenize hisse/ETF/emtia, kripto stratejimiz için değil ──
+        if coin_tradfi_mi(sym, data):
+            continue  # ── otomatik tespit: borsa verisinde TradFi işareti bulundu ──
         vol = safe(data.get("quoteVolume"))
         if vol < MIN_VOLUME:
             continue
@@ -664,7 +694,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v8 (çıkış emri doğrulaması eklendi — kritik güvenlik)\n\n"
+        "🔖 VERSİYON: v9 (TradFi otomatik tespit eklendi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
