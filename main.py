@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v1
+🔖 VERSİYON: v2 (/manuel komutu eklendi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -93,6 +93,48 @@ TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/signal_copy_state.json")
 # TELEGRAM BİLDİRİM (kendi bot token'ın — sinyal kanalıyla KARIŞTIRMA)
 # ════════════════════════════════════════════
 bot = telebot.TeleBot(TELE_TOKEN) if TELE_TOKEN else None
+
+
+if bot:
+    @bot.message_handler(commands=["manuel"])
+    def manuel_sinyal_komutu(msg):
+        """
+        Kanaldan gelmeyi beklemeden test/manuel giriş için:
+        /manuel yazıp ardından (yeni satırda) sinyal metnini yapıştır.
+        """
+        metin = msg.text.replace("/manuel", "", 1).strip()
+        if not metin:
+            bot.send_message(msg.chat.id, "Kullanım: /manuel yazıp altına sinyal metnini yapıştır.")
+            return
+        sinyal = sinyal_ayristir(metin)
+        if not sinyal:
+            bot.send_message(msg.chat.id, "⚠️ Metin sinyal olarak ayrıştırılamadı. Format farklı olabilir.")
+            return
+        bot.send_message(msg.chat.id, f"✅ Ayrıştırıldı: {sinyal}\nİşleniyor...")
+        sinyali_isle(sinyal)
+
+    @bot.message_handler(commands=["durum"])
+    def durum_komutu(msg):
+        with state_lock:
+            if not trade_state:
+                bot.send_message(msg.chat.id, "Açık pozisyon yok.")
+                return
+            satirlar = ["📋 AÇIK POZİSYONLAR\n"]
+            for sym, d in trade_state.items():
+                satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.8f} "
+                                 f"SL:{d['sl']:.8f} TP_index:{d.get('tp_index',0)}/{len(d.get('tp_liste',[]))}")
+            bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+
+def telebot_polling_baslat():
+    if not bot:
+        return
+    while True:
+        try:
+            bot.infinity_polling(timeout=30, long_polling_timeout=30)
+        except Exception as e:
+            log.error(f"[TELEBOT_POLL] {e}")
+            time.sleep(5)
 
 def tg(msg):
     if not bot:
@@ -447,10 +489,11 @@ if __name__ == "__main__":
 
     threading.Thread(target=manage, daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
+    threading.Thread(target=telebot_polling_baslat, daemon=True).start()
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v1\n\n"
+        "🔖 VERSİYON: v2 (/manuel komutu eklendi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
