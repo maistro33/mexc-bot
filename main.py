@@ -64,7 +64,7 @@ PASSPHRASE   = os.getenv("BITGET_PASS", "")
 
 TG_API_ID    = int(os.getenv("TG_API_ID", "0"))   # my.telegram.org'dan
 TG_API_HASH  = os.getenv("TG_API_HASH", "")       # my.telegram.org'dan
-TG_STRING_SESSION = os.getenv("STRING_SESSION", "")  # session_olustur.py çıktısı
+TG_STRING_SESSION = os.getenv("STRING_SESSION", "") or os.getenv("TG_SESSION", "")
 KANAL_KULLANICI_ADI = os.getenv("KANAL_USERNAME", "Kripto_Botu")
 
 if not PASSPHRASE:
