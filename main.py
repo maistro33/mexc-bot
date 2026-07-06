@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v2 (/manuel komutu eklendi)
+🔖 VERSİYON: v3 (basit "COIN YÖN" formatı eklendi — kanal formatı gerekmiyor)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -100,16 +100,21 @@ if bot:
     def manuel_sinyal_komutu(msg):
         """
         Kanaldan gelmeyi beklemeden test/manuel giriş için:
-        /manuel yazıp ardından (yeni satırda) sinyal metnini yapıştır.
+        /manuel yazıp ardından (yeni satırda) sinyal metnini yapıştır
+        (tam kanal formatı) YA DA sadece 'MAGMA LONG' gibi basit yaz.
         """
         metin = msg.text.replace("/manuel", "", 1).strip()
         if not metin:
-            bot.send_message(msg.chat.id, "Kullanım: /manuel yazıp altına sinyal metnini yapıştır.")
+            bot.send_message(msg.chat.id, "Kullanım: /manuel MAGMA LONG  (ya da tam sinyal metnini yapıştır)")
             return
+
         sinyal = sinyal_ayristir(metin)
         if not sinyal:
-            bot.send_message(msg.chat.id, "⚠️ Metin sinyal olarak ayrıştırılamadı. Format farklı olabilir.")
+            sinyal = hizli_sinyal_ayristir(metin)
+        if not sinyal:
+            bot.send_message(msg.chat.id, "⚠️ Metin hiçbir formatta ayrıştırılamadı.")
             return
+
         bot.send_message(msg.chat.id, f"✅ Ayrıştırıldı: {sinyal}\nİşleniyor...")
         sinyali_isle(sinyal)
 
@@ -250,6 +255,24 @@ def gunluk_reset_loop():
 # ════════════════════════════════════════════
 # SİNYAL AYRIŞTIRMA (BU KANALIN GERÇEK FORMATI FARKLIYSA GÜNCELLENMESİ GEREKİR)
 # ════════════════════════════════════════════
+HIZLI_SL_PCT = 0.02  # basit "coin yön" formatında, kanal SL vermediği için sabit %2 kullanılır
+
+def hizli_sinyal_ayristir(metin):
+    """
+    Basit format: 'MAGMA LONG', 'Magma long ac', 'btc short' gibi —
+    sadece coin adı + yön. Giriş/SL kanal vermediği için, giriş anlık
+    piyasa fiyatından alınır, SL sabit %2 ile hesaplanır.
+    """
+    m = re.search(r"\b([A-Za-z][A-Za-z0-9]{1,10})\b.*?\b(LONG|SHORT)\b", metin, re.IGNORECASE)
+    if not m:
+        return None
+    sembol = m.group(1).upper()
+    if sembol in ("LONG", "SHORT"):
+        return None
+    yon = "long" if m.group(2).upper() == "LONG" else "short"
+    return {"symbol": f"{sembol}/USDT:USDT", "direction": yon, "entry": None, "sl": None, "tp_liste": []}
+
+
 def sinyal_ayristir(metin):
     """
     Şu ana kadar gördüğümüz TEK örnek formata göre yazıldı:
@@ -314,6 +337,17 @@ def sinyali_isle(sinyal):
     direction = sinyal["direction"]
     entry_hedef = sinyal["entry"]
     sl = sinyal["sl"]
+
+    if entry_hedef is None or sl is None:
+        # ── Basit format: giriş = anlık fiyat, SL = sabit %2 ──
+        try:
+            t = exchange.fetch_ticker(sym)
+            entry_hedef = safe(t["last"])
+        except Exception as e:
+            tg(f"⚠️ {sym} anlık fiyat alınamadı: {e}")
+            return
+        sl = entry_hedef * (1 - HIZLI_SL_PCT) if direction == "long" else entry_hedef * (1 + HIZLI_SL_PCT)
+        tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}, SL (%{HIZLI_SL_PCT*100:.0f}) hesaplandı: {sl:.8f}")
 
     amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
     if not amount:
@@ -493,7 +527,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v2 (/manuel komutu eklendi)\n\n"
+        "🔖 VERSİYON: v3 (basit COIN YÖN formatı eklendi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
