@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v5 (/manuel önekine gerek yok — kısa mesaj otomatik işlenir)
+🔖 VERSİYON: v6 (sabit marj: 10$ x 10x=100$ + gerçek bakiye kontrolü eklendi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -79,11 +79,10 @@ exchange = ccxt.bitget({
 })
 
 TOPLAM_SERMAYE   = 35.0
-LEV              = 10      # ── kullanıcı talebiyle — kanalın kendi tavsiyesinin TERSİNE ──
+MARGIN_SABIT     = 10.0    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
+LEV              = 10
 MAX_POS          = 1       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
-HEDEF_RISK_DOLAR = 5.0     # tüm sermaye tek bota ayrıldığı için hedef risk yükseltildi
 MIN_POS_NOTIONAL = 30.0
-MAX_POS_NOTIONAL = TOPLAM_SERMAYE * LEV * 0.9   # sermayenin ~%90'ına kadar kullan
 
 MAX_GUNLUK_ZARAR = -10.0
 
@@ -328,18 +327,32 @@ def sinyal_ayristir(metin):
 # POZİSYON BOYUTU
 # ════════════════════════════════════════════
 def pozisyon_boyutu_hesapla(entry, sl):
-    risk_mesafe = abs(entry - sl)
-    if risk_mesafe <= 0:
+    """
+    SABİT MARJ modeli (kullanıcı talebiyle): notional = MARGIN_SABIT × LEV.
+    SL mesafesi artık boyutlandırmayı etkilemiyor — sadece SL fiyatının
+    kendisi (nereye konacağı) için kullanılıyor, miktar için değil.
+    """
+    if entry <= 0:
         return None, None
-    amount = HEDEF_RISK_DOLAR / risk_mesafe
-    notional = amount * entry
-    if notional > MAX_POS_NOTIONAL:
-        notional = MAX_POS_NOTIONAL
-        amount = notional / entry
-    elif notional < MIN_POS_NOTIONAL:
-        notional = MIN_POS_NOTIONAL
-        amount = notional / entry
+    notional = MARGIN_SABIT * LEV
+    amount = notional / entry
     return amount, notional
+
+
+def gercek_bakiye_yeterli_mi(gereken_marj):
+    """
+    YENİ: İşlem açmadan önce GERÇEK borsa bakiyesini kontrol eder — sabit
+    TOPLAM_SERMAYE varsayımı (35$) gerçek bakiyeyle uyuşmayabilir (örn.
+    önceki kayıplardan sonra daha düşük olabilir). "Bakiye yetersiz" hatasını
+    borsadan almak yerine, ÖNCEDEN kontrol edip net bir mesaj veririz.
+    """
+    try:
+        bakiye = exchange.fetch_balance()
+        serbest_usdt = safe(bakiye.get("USDT", {}).get("free", 0))
+    except Exception as e:
+        log.warning(f"[BAKIYE] Kontrol edilemedi: {e}")
+        return True  # kontrol edilemiyorsa engel olma, borsanın kendi kontrolüne güven
+    return serbest_usdt >= gereken_marj
 
 
 # ════════════════════════════════════════════
@@ -387,6 +400,12 @@ def sinyali_isle(sinyal):
     amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
     if not amount:
         tg(f"⚠️ {sym} pozisyon boyutu hesaplanamadı, atlandı")
+        return
+
+    gereken_marj = notional / LEV
+    if not gercek_bakiye_yeterli_mi(gereken_marj):
+        tg(f"⚠️ {sym} atlandı — gerçek bakiye yetersiz (gereken marj≈${gereken_marj:.2f}). "
+           f"Bakiyeni kontrol et.")
         return
 
     try:
@@ -562,9 +581,9 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v5 (/manuel gerekmiyor artik)\n\n"
+        "🔖 VERSİYON: v6 (sabit marj 10 dolar + bakiye kontrolü)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
-        f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
+        f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
         f"⛔ Günlük zarar limiti: ${MAX_GUNLUK_ZARAR}\n\n"
         "⚠️ Bu kanalın geçmiş performansı doğrulanmadı."
