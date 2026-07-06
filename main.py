@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FUTURESKRIPTO KANAL SİNYAL ANALİZİ — GEÇMİŞE DÖNÜK ÖRÜNTÜ ARAMA
-🔖 VERSİYON: v1
+🔖 VERSİYON: v2 (Binance yedek veri kaynağı eklendi — Bitget'te olmayan coinler)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Amaç: Kanalın DAHA ÖNCE gönderdiği sinyalleri (Telegram mesaj geçmişinden)
 çekip, her birinin GÖNDERİLDİĞİ ANDAKİ teknik durumu (trend, RSI, hacim,
@@ -41,6 +41,22 @@ if not TG_API_ID or not TG_API_HASH or not TG_STRING_SESSION:
     raise RuntimeError("TG_API_ID / TG_API_HASH / STRING_SESSION eksik.")
 
 exchange = ccxt.bitget({"options": {"defaultType": "swap"}, "enableRateLimit": True})
+exchange_binance = ccxt.binance({"options": {"defaultType": "future"}, "enableRateLimit": True})
+
+
+def veri_cek_yedekli(symbol, timeframe, since=None, limit=200):
+    """
+    Önce Bitget'ten dener; sembol orada yoksa (kanal Binance'e göre sinyal
+    veriyor, bazı coinler Bitget'te işlem görmüyor) Binance'ten dener.
+    """
+    try:
+        return exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit), "bitget"
+    except Exception:
+        pass
+    try:
+        return exchange_binance.fetch_ohlcv(symbol, timeframe, since=since, limit=limit), "binance"
+    except Exception as e:
+        return None, f"hata:{e}"
 
 
 # ════════════════════════════════════════════
@@ -86,9 +102,11 @@ def teknik_baglam_hesapla(symbol, sinyal_zamani_ms):
     try:
         for tf, anahtar in [("4h", "4h"), ("1h", "1h"), ("15m", "15m")]:
             since = sinyal_zamani_ms - (200 * 4 * 60 * 60 * 1000)  # bolca geçmiş veri
-            mumlar = exchange.fetch_ohlcv(symbol, tf, since=since, limit=200)
+            mumlar, kaynak = veri_cek_yedekli(symbol, tf, since=since, limit=200)
             if not mumlar or len(mumlar) < 20:
+                sonuc["hata"] = f"{symbol} icin veri bulunamadi (bitget+binance denendi)"
                 return sonuc
+            sonuc["veri_kaynagi"] = kaynak
             df = pd.DataFrame(mumlar, columns=["t", "o", "h", "l", "c", "v"])
             df = df[df["t"] <= sinyal_zamani_ms].reset_index(drop=True)  # sadece sinyal ÖNCESİ
             if len(df) < 20:
@@ -119,9 +137,9 @@ def teknik_baglam_hesapla(symbol, sinyal_zamani_ms):
 # ════════════════════════════════════════════
 def sinyal_sonucu_hesapla(symbol, direction, entry, sl, tp_liste, sinyal_zamani_ms):
     try:
-        mumlar = exchange.fetch_ohlcv(symbol, "15m", since=sinyal_zamani_ms, limit=500)
+        mumlar, kaynak = veri_cek_yedekli(symbol, "15m", since=sinyal_zamani_ms, limit=500)
         if not mumlar:
-            return "veri_yok"
+            return f"veri_yok ({kaynak})"
         df = pd.DataFrame(mumlar, columns=["t", "o", "h", "l", "c", "v"])
         ilk_tp = tp_liste[0] if tp_liste else None
 
@@ -143,7 +161,7 @@ def sinyal_sonucu_hesapla(symbol, direction, entry, sl, tp_liste, sinyal_zamani_
 # ANA
 # ════════════════════════════════════════════
 def main():
-    print("🔖 VERSİYON: v1\n")
+    print("🔖 VERSİYON: v2 (Binance yedek veri kaynagi eklendi)\n")
     print(f"═══ {KANAL} KANALI — GEÇMİŞ SİNYAL ANALİZİ ═══\n")
 
     client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
