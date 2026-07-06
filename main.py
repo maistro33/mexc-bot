@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA SÜRÜMÜ
-🔖 VERSİYON: v5 (MAX_POS 2→4 — daha fazla eşzamanlı fırsat değerlendiriliyor)
+🔖 VERSİYON: v7 (kaldıraç 10x→5x + günlük sıfırlama düzeltmesi + TradFi dışlama)
     ~%86 kazanma, +180R, iki piyasa rejiminde (2024-25 boğa + 2022 ayı)
     funding rate dahil doğrulandı. Orijinal yavaş FVG'nin yerini alıyor.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -62,7 +62,7 @@ exchange = ccxt.bitget({
 # ── Sermaye ve risk ──
 MAX_POS           = 4        # 2'den artırıldı — daha fazla eşzamanlı fırsat değerlendirilsin
                               # (sermaye otomatik olarak buna göre bölünür, aşağıdaki formül)
-LEV               = 10
+LEV               = 5         # 10'dan düşürüldü — daha az agresif
 TOPLAM_SERMAYE    = 35.0     # bilgi amaçlı — gerçek limit borsadan kontrol edilir
 HEDEF_RISK_DOLAR  = 2.5      # her işlemde hedeflenen dolar riski (~toplamın %7'si / slot)
 MIN_POS_NOTIONAL  = 30.0     # pozisyon en az bu kadar $ olsun (borsa asgari işlem büyüklüğü için)
@@ -207,6 +207,18 @@ def coin_yasi_gun_yaklasik(symbol):
     return len(veri) * 4 / 24
 
 
+# ── TradFi (tokenize hisse/ETF/emtia) DIŞLAMA LİSTESİ ──
+# Bitget'te normal kripto coinlerin yanında, geleneksel borsa saatlerine
+# bağlı, "Overnight/Low liquidity" uyarılı tokenize ürünler de var (DRAM
+# gibi). Bunlar kripto stratejimizin test edilmediği, farklı bir varlık
+# sınıfı — hariç tutuyoruz.
+TRADFI_BLACKLIST = {
+    "DRAM", "MSTR", "XAU", "SOXL", "SPCX", "TSLA", "AAPL", "AMZN",
+    "GOOGL", "META", "MSFT", "COIN", "UBER", "ARQQ", "NVDA", "QCOM",
+    "RGTI", "CRCL",  # CRCL (Circle) da tokenize hisse olabilir, temkinli dışlandı
+}
+
+
 def get_symbols():
     try:
         tickers = exchange.fetch_tickers()
@@ -218,6 +230,9 @@ def get_symbols():
     for sym, data in tickers.items():
         if ":USDT" not in sym:
             continue
+        sym_base = sym.split("/")[0].upper()
+        if sym_base in TRADFI_BLACKLIST:
+            continue  # ── tokenize hisse/ETF/emtia, kripto stratejimiz için değil ──
         vol = safe(data.get("quoteVolume"))
         if vol < MIN_VOLUME:
             continue
@@ -345,6 +360,28 @@ def gunluk_pnl_ekle(miktar):
     with gunluk_lock:
         gunluk_pnl += miktar
         return gunluk_pnl
+
+
+def gunluk_reset_loop():
+    """
+    KRİTİK DÜZELTME: bu fonksiyon olmadan, günlük zarar limiti bir kez
+    aşıldığında gunluk_pnl HİÇBİR ZAMAN sıfırlanmıyordu — bot süresiz
+    olarak yeni işlem açmayı durduruyordu (bir sonraki gün de dahil).
+    """
+    global gunluk_pnl
+    import datetime
+    while True:
+        try:
+            simdi = datetime.datetime.now(datetime.timezone.utc)
+            yarin = (simdi + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
+            time.sleep((yarin - simdi).total_seconds())
+            with gunluk_lock:
+                eski = gunluk_pnl
+                gunluk_pnl = 0.0
+            tg(f"🔄 Yeni gün! Dünkü gerçekleşen: {eski:+.2f}$ — günlük limit sıfırlandı.")
+        except Exception as e:
+            log.error(f"[RESET] {e}")
+            time.sleep(3600)
 
 
 def has_position():
@@ -568,10 +605,11 @@ if __name__ == "__main__":
 
     threading.Thread(target=manage, daemon=True).start()
     threading.Thread(target=run, daemon=True).start()
+    threading.Thread(target=gunluk_reset_loop, daemon=True).start()
 
     tg(
         "🚀 FVG/SMC BOT — HIZLI VARYANT — GERÇEK PARA\n"
-        "🔖 VERSİYON: v5 (MAX_POS 2→4)\n\n"
+        "🔖 VERSİYON: v7 (kaldıraç 5x, günlük sıfırlama düzeltildi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Max eşzamanlı: {MAX_POS} işlem\n"
         f"🎯 Hedef risk/işlem: ${HEDEF_RISK_DOLAR}\n"
         f"🔍 Filtre: min hacim ${MIN_VOLUME/1_000_000:.0f}M, min oynaklık %{MIN_OYNAKLIK_PCT}\n"
