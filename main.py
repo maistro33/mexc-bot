@@ -162,6 +162,15 @@ def teknik_baglam_hesapla(symbol, sinyal_zamani_ms):
             sonuc[f"{anahtar}_dusuk20_yakinlik_pct"] = round((son_kapanis - onceki_dusuk) / onceki_dusuk * 100, 2)
             sonuc[f"{anahtar}_hacim_orani"] = round(hacim_simdi / hacim_ort, 2) if hacim_ort > 0 else None
 
+            # ── YENİ: "zaten pump yapmış mı" testi — kullanıcının orijinal
+            # gözlemini doğrudan sayısal olarak ölçüyoruz ──
+            if len(df) >= 6:
+                fiyat_5mum_once = df["c"].iloc[-6]
+                sonuc[f"{anahtar}_son5mum_degisim_pct"] = round((son_kapanis - fiyat_5mum_once) / fiyat_5mum_once * 100, 2)
+            if len(df) >= 21:
+                fiyat_20mum_once = df["c"].iloc[-21]
+                sonuc[f"{anahtar}_son20mum_degisim_pct"] = round((son_kapanis - fiyat_20mum_once) / fiyat_20mum_once * 100, 2)
+
             # ── YENİ GÖSTERGELER ──
             if len(df) >= 35:
                 macd, macd_sinyal, macd_hist = calc_macd(df["c"])
@@ -236,7 +245,7 @@ def sinyal_sonucu_hesapla(symbol, direction, entry, sl, tp_liste, sinyal_zamani_
 # ANA
 # ════════════════════════════════════════════
 def main():
-    print("🔖 VERSİYON: v4 (MACD + Bollinger %B + EMA kesisimi + ATR percentile eklendi - genisletilmis strateji arama)\n")
+    print("🔖 VERSİYON: v5 (pump-degisim testi + karar agaci ayni calistirmada birlesti - tek dosya, tek calistirma)\n")
     print(f"═══ {KANAL} KANALI — GEÇMİŞ SİNYAL ANALİZİ ═══\n")
 
     client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
@@ -285,10 +294,57 @@ def main():
         for kolon in ["4h_trend", "1h_trend", "4h_rsi", "1h_rsi", "4h_hacim_orani",
                       "4h_macd_pozitif", "1h_macd_pozitif", "4h_boll_yuzdeB", "1h_boll_yuzdeB",
                       "4h_ema9_ustunde_ema21", "1h_ema9_ustunde_ema21",
-                      "4h_atr_percentile", "1h_atr_percentile"]:
+                      "4h_atr_percentile", "1h_atr_percentile",
+                      "4h_son5mum_degisim_pct", "1h_son5mum_degisim_pct",
+                      "4h_son20mum_degisim_pct", "1h_son20mum_degisim_pct"]:
             if kolon in alt_df.columns:
                 print(f"  {kolon}: {alt_df[kolon].value_counts().to_dict() if alt_df[kolon].dtype == object else round(alt_df[kolon].mean(), 2)}")
     print("═" * 50)
+
+    # ── EK ADIM: karar ağacıyla otomatik örüntü arama (AYNI ÇALIŞTIRMADA,
+    # CSV'ye ihtiyaç duymadan — Railway'de dosyalar kalıcı olmadığı için
+    # ayrı bir script/deploy gerektirmesin diye buraya birleştirildi) ──
+    print("\n\n" + "═" * 50)
+    print("KARAR AĞACI İLE OTOMATİK ÖRÜNTÜ ARAMA")
+    print("═" * 50)
+    try:
+        from sklearn.tree import DecisionTreeClassifier, export_text
+
+        df["hedef_tp6_ulasti"] = (df["en_uzak_tp"] >= 6).astype(int)
+        sayisal_kolonlar = [c for c in df.columns if any(
+            anahtar in c for anahtar in ["_rsi", "_hacim_orani", "_boll_yuzdeB", "_atr_percentile",
+                                           "_macd_hist", "_degisim_pct", "_yakinlik_pct"]
+        )]
+        print(f"Kullanılan göstergeler ({len(sayisal_kolonlar)}): {sayisal_kolonlar}\n")
+
+        X = df[sayisal_kolonlar].copy()
+        for kolon in X.columns:
+            X[kolon] = pd.to_numeric(X[kolon], errors="coerce")
+        X = X.fillna(X.median(numeric_only=True))
+        y = df["hedef_tp6_ulasti"]
+
+        if len(X) >= 10 and not X.isna().all().all():
+            agac = DecisionTreeClassifier(max_depth=3, min_samples_leaf=3, random_state=42)
+            agac.fit(X, y)
+
+            print(export_text(agac, feature_names=list(X.columns)))
+
+            print("\nGÖSTERGE ÖNEM SIRALAMASI:")
+            onem = sorted(zip(X.columns, agac.feature_importances_), key=lambda x: -x[1])
+            for isim, deger in onem:
+                if deger > 0:
+                    print(f"  {isim}: {deger:.3f}")
+
+            dogruluk = agac.score(X, y)
+            print(f"\n⚠️ Eğitim verisi üzerinde doğruluk: %{dogruluk*100:.1f}")
+            print("(GERÇEK bir doğrulama değil — aynı veriyle eğitilip test edildi, sadece")
+            print(" 'ağaç bir kural bulabildi mi' sorusuna cevap. Küçük örneklemle ezberleme")
+            print(" riski yüksek, çıkan kuralı temkinli değerlendir.)")
+        else:
+            print("Yeterli sayısal veri yok, karar ağacı analizi atlandı.")
+    except ImportError:
+        print("⚠️ scikit-learn kurulu değil — bu adımı atlıyoruz.")
+        print("İstersen requirements.txt'e 'scikit-learn' ekleyip tekrar dene.")
 
 
 if __name__ == "__main__":
