@@ -1,310 +1,52 @@
 #!/usr/bin/env python3
 """
-TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v8 (varsayılan kanal FuturesKripto olarak düzeltildi)
+FUTURESKRIPTO KANAL SİNYAL ANALİZİ — GEÇMİŞE DÖNÜK ÖRÜNTÜ ARAMA
+🔖 VERSİYON: v1
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
-sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
+Amaç: Kanalın DAHA ÖNCE gönderdiği sinyalleri (Telegram mesaj geçmişinden)
+çekip, her birinin GÖNDERİLDİĞİ ANDAKİ teknik durumu (trend, RSI, hacim,
+son fiyat hareketi) neydi diye geriye dönük hesaplar. Amaç: kanalın
+"gizli" mantığında tekrar eden bir teknik örüntü var mı görmek.
 
-⚠️ ÖNEMLİ DÜRÜSTLÜK NOTU: Bu kanalın geçmiş performansı hakkında HİÇBİR
-VERİMİZ YOK — backtest edilmedi, doğrulanmadı. Konuşmamızda daha önce
-gördüğümüz benzer bir kanal (net düşüş trendinin ortasında LONG önermiş,
-SL'e çarpmıştı) bu tür kaynakların güvenilirliği konusunda bir uyarıydı.
-Kanalın kendi mesajı bile "Kesinlikle yüksek kaldıraç kullanmayın" diyor
-— bu bot 10x ile çalışacak şekilde ayarlandı (kullanıcı talebiyle,
-kanalın kendi tavsiyesinin TERSİNE).
+BU BİR BACKTEST DEĞİL — sadece tanımlayıcı bir analiz. Sinyal başarılı
+mı başarısız mı olduğunu da hesaplayıp, "başarılı sinyallerin ortak
+özelliği neydi" diye karşılaştırabiliriz.
 
-GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
-  - API şifresi ortam değişkeninden okunur, koda yazılmaz
-  - Restart + çalışma-zamanı sahipsiz pozisyon koruması
-  - Çıkış emirleri gerçekten uygulandığı doğrulanmadan takipten çıkarılmaz
-  - Günlük zarar limiti + otomatik gece yarısı sıfırlama
-  - Risk bazlı pozisyon boyutlandırma
-
-SİNYAL FORMATI (şu ana kadar gördüğümüz TEK örneğe göre yazıldı — bu
-kanalın gerçek formatı FARKLIYSA, örnek bir mesaj paylaşman gerekecek,
-ayrıştırıcıyı ona göre güncelleriz):
-
-  📊 #BASUSDT.P
-  🏁 LONG - Giriş Fiyatı: 0.030974
-  🚫 Stop: 0.0294253 ya da sonraki sinyal
-  TP1: 0.03112887 ──
-  TP2: 0.031283740000000004 ──
-  ...
-
-ÇALIŞTIRMA: Bu bot Telethon (Telegram kullanıcı kütüphanesi) kullanır.
-İlk çalıştırmadan önce session_olustur.py'yi BİR KERE, kendi bilgisayarında
-çalıştırıp bir "session string" üretmen gerekiyor (ayrı dosya olarak
-veriyorum). Onu STRING_SESSION ortam değişkenine koyduktan sonra bu bot
-Railway'de sorunsuz çalışır.
+ÇALIŞTIRMA: pip install telethon ccxt pandas --break-system-packages
+            python3 futureskripto_analiz.py
+Gerekli ortam değişkenleri: TG_API_ID, TG_API_HASH, STRING_SESSION (ya
+da TG_SESSION) — signal_copy_bot ile AYNI kimlik bilgileri kullanılabilir.
 """
 
 import os
 import re
 import time
-import json
-import threading
-import logging
 import asyncio
 import ccxt
-import telebot
-from telethon import TelegramClient, events
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-log = logging.getLogger("SIGNAL_COPY")
+import pandas as pd
+from datetime import datetime, timezone
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
 
 # ════════════════════════════════════════════
 # CONFIG
 # ════════════════════════════════════════════
-TELE_TOKEN   = os.getenv("TELE_TOKEN", "")       # kendi bildirim botun (Telegram Bot API)
-CHAT_ID      = int(os.getenv("MY_CHAT_ID", "0"))
-API_KEY      = os.getenv("BITGET_API", "")
-API_SEC      = os.getenv("BITGET_SEC", "")
-PASSPHRASE   = os.getenv("BITGET_PASS", "")
-
-TG_API_ID    = int(os.getenv("TG_API_ID", "0"))   # my.telegram.org'dan
-TG_API_HASH  = os.getenv("TG_API_HASH", "")       # my.telegram.org'dan
+TG_API_ID = int(os.getenv("TG_API_ID", "0"))
+TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_STRING_SESSION = os.getenv("STRING_SESSION", "") or os.getenv("TG_SESSION", "")
-KANAL_KULLANICI_ADI = os.getenv("KANAL_USERNAME", "FuturesKripto")
+KANAL = os.getenv("KANAL_USERNAME", "FuturesKripto")
+KAC_MESAJ = 300  # geriye kaç mesaj taransın (sinyal olmayanlar da dahil, o yüzden yüksek tutuyoruz)
 
-if not PASSPHRASE:
-    raise RuntimeError("BITGET_PASS ortam değişkeni ayarlanmamış.")
 if not TG_API_ID or not TG_API_HASH or not TG_STRING_SESSION:
-    raise RuntimeError("TG_API_ID / TG_API_HASH / STRING_SESSION ortam değişkenleri "
-                        "eksik — önce session_olustur.py'yi çalıştırıp session string üretmen gerekiyor.")
+    raise RuntimeError("TG_API_ID / TG_API_HASH / STRING_SESSION eksik.")
 
-exchange = ccxt.bitget({
-    "apiKey": API_KEY, "secret": API_SEC, "password": PASSPHRASE,
-    "options": {"defaultType": "swap"}, "enableRateLimit": True, "timeout": 30000,
-})
-
-TOPLAM_SERMAYE   = 35.0
-MARGIN_SABIT     = 10.0    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
-LEV              = 10
-MAX_POS          = 1       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
-MIN_POS_NOTIONAL = 30.0
-
-MAX_GUNLUK_ZARAR = -10.0
-
-TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/signal_copy_state.json")
-
-# ════════════════════════════════════════════
-# TELEGRAM BİLDİRİM (kendi bot token'ın — sinyal kanalıyla KARIŞTIRMA)
-# ════════════════════════════════════════════
-bot = telebot.TeleBot(TELE_TOKEN) if TELE_TOKEN else None
-
-
-if bot:
-    @bot.message_handler(commands=["manuel"])
-    def manuel_sinyal_komutu(msg):
-        """
-        Kanaldan gelmeyi beklemeden test/manuel giriş için:
-        /manuel yazıp ardından (yeni satırda) sinyal metnini yapıştır
-        (tam kanal formatı) YA DA sadece 'MAGMA LONG' gibi basit yaz.
-        """
-        metin = msg.text.replace("/manuel", "", 1).strip()
-        if not metin:
-            bot.send_message(msg.chat.id, "Kullanım: /manuel MAGMA LONG  (ya da tam sinyal metnini yapıştır)")
-            return
-
-        sinyal = sinyal_ayristir(metin)
-        if not sinyal:
-            sinyal = hizli_sinyal_ayristir(metin)
-        if not sinyal:
-            bot.send_message(msg.chat.id, "⚠️ Metin hiçbir formatta ayrıştırılamadı.")
-            return
-
-        bot.send_message(msg.chat.id, f"✅ Ayrıştırıldı: {sinyal}\nİşleniyor...")
-        sinyali_isle(sinyal)
-
-    @bot.message_handler(commands=["durum"])
-    def durum_komutu(msg):
-        with state_lock:
-            if not trade_state:
-                bot.send_message(msg.chat.id, "Açık pozisyon yok.")
-                return
-            satirlar = ["📋 AÇIK POZİSYONLAR\n"]
-            for sym, d in trade_state.items():
-                satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.8f} "
-                                 f"SL:{d['sl']:.8f} TP_index:{d.get('tp_index',0)}/{len(d.get('tp_liste',[]))}")
-            bot.send_message(msg.chat.id, "\n".join(satirlar))
-
-
-    KISA_MESAJ_UST_SINIR = 30  # bu karakterden uzun mesajlar sohbet sayilir, islem denenmez
-
-    @bot.message_handler(func=lambda m: m.text and not m.text.startswith("/"))
-    def komutsuz_hizli_giris(msg):
-        """
-        YENİ: '/manuel' yazmadan, doğrudan 'Mon long ac' gibi KISA bir
-        mesaj göndererek de işlem açılabilsin (hız için). Güvenlik payı:
-        mesaj KISA_MESAJ_UST_SINIR karakterden uzunsa (muhtemelen sıradan
-        sohbet), otomatik işlem DENENMEZ — yanlışlıkla tetiklenmesin.
-        """
-        metin = msg.text.strip()
-        if len(metin) > KISA_MESAJ_UST_SINIR:
-            return  # uzun mesaj, muhtemelen sohbet — dokunma
-
-        sinyal = hizli_sinyal_ayristir(metin)
-        if not sinyal:
-            return  # "long"/"short" içermiyor, işlem denemesi değil
-
-        bot.send_message(msg.chat.id, f"⚡ Hızlı giriş algılandı: {sinyal['symbol']} {sinyal['direction'].upper()}")
-        sinyali_isle(sinyal)
-
-
-def telebot_polling_baslat():
-    if not bot:
-        return
-    while True:
-        try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=30)
-        except Exception as e:
-            log.error(f"[TELEBOT_POLL] {e}")
-            time.sleep(5)
-
-def tg(msg):
-    if not bot:
-        log.info(f"[TG-atlandi] {msg}")
-        return
-    try:
-        bot.send_message(CHAT_ID, str(msg)[:4096])
-    except Exception as e:
-        log.warning(f"[TG] {e}")
-
-
-def safe(x):
-    try:
-        return float(x)
-    except Exception:
-        return 0.0
+exchange = ccxt.bitget({"options": {"defaultType": "swap"}, "enableRateLimit": True})
 
 
 # ════════════════════════════════════════════
-# KALICI DURUM
+# SİNYAL AYRIŞTIRMA (signal_copy_bot ile AYNI mantık)
 # ════════════════════════════════════════════
-trade_state = {}
-state_lock = threading.Lock()
-
-def durumu_diske_yaz():
-    try:
-        os.makedirs(os.path.dirname(TRADE_STATE_PATH), exist_ok=True)
-        with state_lock:
-            veri = dict(trade_state)
-        with open(TRADE_STATE_PATH, "w") as f:
-            json.dump(veri, f)
-    except Exception as e:
-        log.warning(f"[KALICI] Diske yazma başarısız: {e}")
-
-
-def durumu_diskten_yukle():
-    global trade_state
-    try:
-        if os.path.exists(TRADE_STATE_PATH):
-            with open(TRADE_STATE_PATH) as f:
-                yuklenen = json.load(f)
-            with state_lock:
-                trade_state = yuklenen
-            log.info(f"[KALICI] {len(yuklenen)} kayıtlı işlem durumu yüklendi")
-    except Exception as e:
-        log.warning(f"[KALICI] Yükleme başarısız: {e}")
-
-
-def acilista_pozisyonlari_dogrula():
-    try:
-        pozisyonlar = exchange.fetch_positions()
-    except Exception as e:
-        tg(f"⚠️ Açılışta pozisyon kontrolü başarısız: {e}")
-        return
-
-    for p in pozisyonlar:
-        qty = safe(p.get("contracts"))
-        if qty <= 0:
-            continue
-        sym = p["symbol"]
-        entry = safe(p.get("entryPrice"))
-        side = p.get("side")
-
-        with state_lock:
-            kayitli = trade_state.get(sym)
-        if kayitli:
-            tg(f"♻️ {sym} pozisyonu kayıtlı durumla eşleşti.")
-            continue
-
-        direction = "long" if side == "long" else "short"
-        guvenlik_sl_pct = 0.03
-        sl = entry * (1 - guvenlik_sl_pct) if direction == "long" else entry * (1 + guvenlik_sl_pct)
-        with state_lock:
-            trade_state[sym] = {"sl": sl, "tp_liste": [], "tp_index": 0,
-                                 "direction": direction, "entry": entry, "kaynak": "kurtarilan"}
-        durumu_diske_yaz()
-        tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — geçici %3 güvenlik SL'i kondu: {sl:.8f}")
-
-
-# ════════════════════════════════════════════
-# GÜNLÜK ZARAR TAKİBİ
-# ════════════════════════════════════════════
-gunluk_pnl = 0.0
-gunluk_lock = threading.Lock()
-
-def gunluk_limit_asildi():
-    with gunluk_lock:
-        return gunluk_pnl <= MAX_GUNLUK_ZARAR
-
-def gunluk_pnl_ekle(miktar):
-    global gunluk_pnl
-    with gunluk_lock:
-        gunluk_pnl += miktar
-        return gunluk_pnl
-
-def gunluk_reset_loop():
-    global gunluk_pnl
-    import datetime
-    while True:
-        try:
-            simdi = datetime.datetime.now(datetime.timezone.utc)
-            yarin = (simdi + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
-            time.sleep((yarin - simdi).total_seconds())
-            with gunluk_lock:
-                eski = gunluk_pnl
-                gunluk_pnl = 0.0
-            tg(f"🔄 Yeni gün! Dünkü gerçekleşen: {eski:+.2f}$")
-        except Exception as e:
-            log.error(f"[RESET] {e}")
-            time.sleep(3600)
-
-
-# ════════════════════════════════════════════
-# SİNYAL AYRIŞTIRMA (BU KANALIN GERÇEK FORMATI FARKLIYSA GÜNCELLENMESİ GEREKİR)
-# ════════════════════════════════════════════
-HIZLI_SL_PCT = 0.02  # basit "coin yön" formatında, kanal SL vermediği için sabit %2 kullanılır
-
-def hizli_sinyal_ayristir(metin):
-    """
-    Basit format: 'MAGMA LONG', 'Magma long ac', 'btc short' gibi —
-    sadece coin adı + yön. Giriş/SL kanal vermediği için, giriş anlık
-    piyasa fiyatından alınır, SL sabit %2 ile hesaplanır.
-    """
-    m = re.search(r"\b([A-Za-z][A-Za-z0-9]{1,10})\b.*?\b(LONG|SHORT)\b", metin, re.IGNORECASE)
-    if not m:
-        return None
-    sembol = m.group(1).upper()
-    if sembol in ("LONG", "SHORT"):
-        return None
-    yon = "long" if m.group(2).upper() == "LONG" else "short"
-    return {"symbol": f"{sembol}/USDT:USDT", "direction": yon, "entry": None, "sl": None, "tp_liste": []}
-
-
 def sinyal_ayristir(metin):
-    """
-    Şu ana kadar gördüğümüz TEK örnek formata göre yazıldı:
-      📊 #BASUSDT.P
-      🏁 LONG - Giriş Fiyatı: 0.030974
-      🚫 Stop: 0.0294253 ...
-      TP1: 0.03112887
-      TP2: 0.031283740000000004
-      ...
-    Döner: {"symbol":..., "direction":..., "entry":..., "sl":..., "tp_liste":[...]} veya None
-    """
     sembol_m = re.search(r"#(\w+?)USDT", metin, re.IGNORECASE)
     yon_m = re.search(r"\b(LONG|SHORT)\b", metin, re.IGNORECASE)
     giris_m = re.search(r"Giri[şs].*?Fiyat[ıi]?\s*:?\s*([\d.]+)", metin, re.IGNORECASE)
@@ -315,6 +57,7 @@ def sinyal_ayristir(metin):
         return None
 
     return {
+        "symbol_base": sembol_m.group(1).upper(),
         "symbol": f"{sembol_m.group(1).upper()}/USDT:USDT",
         "direction": "long" if yon_m.group(1).upper() == "LONG" else "short",
         "entry": float(giris_m.group(1)),
@@ -324,301 +67,123 @@ def sinyal_ayristir(metin):
 
 
 # ════════════════════════════════════════════
-# POZİSYON BOYUTU
+# TEKNİK BAĞLAM HESAPLAMA (sinyal anındaki durum)
 # ════════════════════════════════════════════
-def pozisyon_boyutu_hesapla(entry, sl):
-    """
-    SABİT MARJ modeli (kullanıcı talebiyle): notional = MARGIN_SABIT × LEV.
-    SL mesafesi artık boyutlandırmayı etkilemiyor — sadece SL fiyatının
-    kendisi (nereye konacağı) için kullanılıyor, miktar için değil.
-    """
-    if entry <= 0:
-        return None, None
-    notional = MARGIN_SABIT * LEV
-    amount = notional / entry
-    return amount, notional
+def calc_rsi(closes, period=14):
+    diffs = closes.diff()
+    gains = diffs.clip(lower=0).rolling(period).mean()
+    losses = (-diffs.clip(upper=0)).rolling(period).mean()
+    rs = gains / losses.replace(0, 0.0001)
+    return 100 - 100 / (1 + rs)
 
 
-def gercek_bakiye_yeterli_mi(gereken_marj):
+def teknik_baglam_hesapla(symbol, sinyal_zamani_ms):
     """
-    YENİ: İşlem açmadan önce GERÇEK borsa bakiyesini kontrol eder — sabit
-    TOPLAM_SERMAYE varsayımı (35$) gerçek bakiyeyle uyuşmayabilir (örn.
-    önceki kayıplardan sonra daha düşük olabilir). "Bakiye yetersiz" hatasını
-    borsadan almak yerine, ÖNCEDEN kontrol edip net bir mesaj veririz.
+    Sinyal anındaki (ondan hemen ÖNCEKİ, bakış-öne hatası olmasın diye)
+    4h/1h trend durumu, RSI, hacim oranını hesaplar.
     """
+    sonuc = {"veri_var": False}
     try:
-        bakiye = exchange.fetch_balance()
-        serbest_usdt = safe(bakiye.get("USDT", {}).get("free", 0))
+        for tf, anahtar in [("4h", "4h"), ("1h", "1h"), ("15m", "15m")]:
+            since = sinyal_zamani_ms - (200 * 4 * 60 * 60 * 1000)  # bolca geçmiş veri
+            mumlar = exchange.fetch_ohlcv(symbol, tf, since=since, limit=200)
+            if not mumlar or len(mumlar) < 20:
+                return sonuc
+            df = pd.DataFrame(mumlar, columns=["t", "o", "h", "l", "c", "v"])
+            df = df[df["t"] <= sinyal_zamani_ms].reset_index(drop=True)  # sadece sinyal ÖNCESİ
+            if len(df) < 20:
+                return sonuc
+
+            son_kapanis = df["c"].iloc[-1]
+            onceki_yuksek = df["h"].iloc[-21:-1].max()
+            onceki_dusuk = df["l"].iloc[-21:-1].min()
+            rsi = calc_rsi(df["c"]).iloc[-1]
+            hacim_ort = df["v"].iloc[-21:-1].mean()
+            hacim_simdi = df["v"].iloc[-1]
+
+            sonuc[f"{anahtar}_trend"] = "yukselis" if df["h"].iloc[-1] > df["h"].iloc[-2] else (
+                "dusus" if df["l"].iloc[-1] < df["l"].iloc[-2] else "yatay")
+            sonuc[f"{anahtar}_rsi"] = round(rsi, 1)
+            sonuc[f"{anahtar}_yuksek20_yakinlik_pct"] = round((son_kapanis - onceki_yuksek) / onceki_yuksek * 100, 2)
+            sonuc[f"{anahtar}_dusuk20_yakinlik_pct"] = round((son_kapanis - onceki_dusuk) / onceki_dusuk * 100, 2)
+            sonuc[f"{anahtar}_hacim_orani"] = round(hacim_simdi / hacim_ort, 2) if hacim_ort > 0 else None
+
+        sonuc["veri_var"] = True
     except Exception as e:
-        log.warning(f"[BAKIYE] Kontrol edilemedi: {e}")
-        return True  # kontrol edilemiyorsa engel olma, borsanın kendi kontrolüne güven
-    return serbest_usdt >= gereken_marj
-
-
-TP_OLCEK_CARPANI = 2.5  # kanalın ham oranları (0.1-0.8R) çok cimri — 2.5 katına
-                        # çıkarıp TP6'yı ~2R'ye getiriyoruz, başabaş oranı %72'den %51'e düşüyor
-
-def tp_olcekle(entry, sl, tp_liste, direction, carpan=TP_OLCEK_CARPANI):
-    """
-    Kanaldan gelen (ya da otomatik hesaplanan) TP'lerin oranını KORUYUP,
-    hepsini aynı çarpanla büyütür. Kanalın 0.1/0.2/.../0.8R yapısı çok
-    zayıf bir risk/ödül sağlıyordu (başabaş için %72 kazanma gerekiyordu);
-    bu fonksiyon aynı şekli koruyarak matematiği sağlıklı hale getirir.
-    """
-    risk_mesafe = abs(entry - sl)
-    if risk_mesafe <= 0 or not tp_liste:
-        return tp_liste
-    yeni_liste = []
-    for tp in tp_liste:
-        oran = abs(tp - entry) / risk_mesafe
-        yeni_oran = oran * carpan
-        yeni_tp = entry + yeni_oran * risk_mesafe if direction == "long" else entry - yeni_oran * risk_mesafe
-        yeni_liste.append(yeni_tp)
-    return yeni_liste
+        sonuc["hata"] = str(e)
+    return sonuc
 
 
 # ════════════════════════════════════════════
-# GERÇEK İŞLEM AÇMA (sinyal geldiğinde çağrılır)
+# SONUÇ DEĞERLENDİRME (sinyal sonrasında TP'ye mi SL'e mi gitti)
 # ════════════════════════════════════════════
-def sinyali_isle(sinyal):
-    if gunluk_limit_asildi():
-        tg("⛔ Günlük zarar limiti aşıldı, bu sinyal atlandı.")
-        return
-
-    with state_lock:
-        if len(trade_state) >= MAX_POS:
-            tg(f"⏭️ Zaten açık pozisyon var (MAX_POS={MAX_POS}), sinyal atlandı: {sinyal['symbol']}")
-            return
-
-    sym = sinyal["symbol"]
-    direction = sinyal["direction"]
-    entry_hedef = sinyal["entry"]
-    sl = sinyal["sl"]
-
-    if entry_hedef is None or sl is None:
-        # ── Basit format: giriş = anlık fiyat, SL = sabit %2 ──
-        try:
-            t = exchange.fetch_ticker(sym)
-            entry_hedef = safe(t["last"])
-        except Exception as e:
-            tg(f"⚠️ {sym} anlık fiyat alınamadı: {e}")
-            return
-        sl = entry_hedef * (1 - HIZLI_SL_PCT) if direction == "long" else entry_hedef * (1 + HIZLI_SL_PCT)
-
-        # ── Kanalın GERÇEK TP oranlarına göre 6 kademeli TP (ham hâli) ──
-        risk_mesafe = abs(entry_hedef - sl)
-        KANAL_TP_ORANLARI = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8]
-        if direction == "long":
-            tp_liste_otomatik = [entry_hedef + oran * risk_mesafe for oran in KANAL_TP_ORANLARI]
-        else:
-            tp_liste_otomatik = [entry_hedef - oran * risk_mesafe for oran in KANAL_TP_ORANLARI]
-        sinyal["tp_liste"] = tp_liste_otomatik
-
-        tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}\n"
-           f"SL (%{HIZLI_SL_PCT*100:.0f}): {sl:.8f}\n"
-           f"Otomatik TP (kanal oranlarıyla, ham): {[round(x,8) for x in tp_liste_otomatik]}")
-
-    # ── ORTAK NOKTA: hem gerçek kanal sinyali hem basit format buraya gelir.
-    # Kanalın ham TP oranları (0.1-0.8R) matematiksel olarak zayıftı
-    # (başabaş için %72 kazanma gerekiyordu) — aynı şekli koruyarak
-    # ölçekliyoruz (varsayılan 2.5x, TP6 ~0.8R'den ~2R'ye çıkıyor). ──
-    if sinyal.get("tp_liste"):
-        tp_ham = sinyal["tp_liste"]
-        sinyal["tp_liste"] = tp_olcekle(entry_hedef, sl, tp_ham, direction)
-        tg(f"📐 TP'ler {TP_OLCEK_CARPANI}x ölçeklendi:\n"
-           f"Ham: {[round(x,8) for x in tp_ham]}\n"
-           f"Ölçekli: {[round(x,8) for x in sinyal['tp_liste']]}")
-
-    amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
-    if not amount:
-        tg(f"⚠️ {sym} pozisyon boyutu hesaplanamadı, atlandı")
-        return
-
-    gereken_marj = notional / LEV
-    if not gercek_bakiye_yeterli_mi(gereken_marj):
-        tg(f"⚠️ {sym} atlandı — gerçek bakiye yetersiz (gereken marj≈${gereken_marj:.2f}). "
-           f"Bakiyeni kontrol et.")
-        return
-
+def sinyal_sonucu_hesapla(symbol, direction, entry, sl, tp_liste, sinyal_zamani_ms):
     try:
-        exchange.set_leverage(LEV, sym)
+        mumlar = exchange.fetch_ohlcv(symbol, "15m", since=sinyal_zamani_ms, limit=500)
+        if not mumlar:
+            return "veri_yok"
+        df = pd.DataFrame(mumlar, columns=["t", "o", "h", "l", "c", "v"])
+        ilk_tp = tp_liste[0] if tp_liste else None
+
+        for _, row in df.iterrows():
+            sl_vuruldu = (row["l"] <= sl) if direction == "long" else (row["h"] >= sl)
+            tp_vuruldu = ilk_tp and ((row["h"] >= ilk_tp) if direction == "long" else (row["l"] <= ilk_tp))
+            if sl_vuruldu and tp_vuruldu:
+                return "belirsiz(ayni_mum)"
+            if sl_vuruldu:
+                return "SL"
+            if tp_vuruldu:
+                return "TP_basladi"
+        return "sonuclanmadi(veri_bitti)"
     except Exception as e:
-        tg(f"⚠️ {sym} kaldıraç ayarlanamadı: {e} — işlem atlandı")
-        return
-
-    try:
-        t = exchange.fetch_ticker(sym)
-        price = safe(t["last"])
-    except Exception as e:
-        tg(f"⚠️ {sym} fiyat alınamadı: {e}")
-        return
-
-    try:
-        qty = float(exchange.amount_to_precision(sym, amount))
-    except Exception as e:
-        tg(f"⚠️ {sym} miktar hassasiyeti alınamadı: {e}")
-        return
-    if qty <= 0:
-        return
-
-    side = "buy" if direction == "long" else "sell"
-    try:
-        exchange.create_market_order(sym, side, qty)
-    except Exception as e:
-        tg(f"⚠️ {sym} giriş emri başarısız: {e}")
-        return
-
-    with state_lock:
-        trade_state[sym] = {
-            "sl": sl, "tp_liste": sinyal["tp_liste"], "tp_index": 0,
-            "direction": direction, "entry": price, "qty": qty, "kaynak": "kanal_kopya",
-        }
-    durumu_diske_yaz()
-
-    tg(
-        f"📈 [KANAL KOPYA] {sym} {direction.upper()} AÇILDI\n"
-        f"Giriş≈{price:.8f} | SL:{sl:.8f}\n"
-        f"TP listesi: {sinyal['tp_liste']}\n"
-        f"Notional≈${notional:.2f}"
-    )
+        return f"hata:{e}"
 
 
 # ════════════════════════════════════════════
-# POZİSYON YÖNETİMİ (SL / TP kademeleri — emir doğrulamalı)
+# ANA
 # ════════════════════════════════════════════
-def manage():
-    while True:
-        try:
-            positions = exchange.fetch_positions()
-            for p in positions:
-                qty = safe(p.get("contracts"))
-                if qty <= 0:
-                    continue
-                sym = p["symbol"]
-                entry = safe(p["entryPrice"])
-                direction = "long" if p["side"] == "long" else "short"
+def main():
+    print("🔖 VERSİYON: v1\n")
+    print(f"═══ {KANAL} KANALI — GEÇMİŞ SİNYAL ANALİZİ ═══\n")
 
-                with state_lock:
-                    durum = trade_state.get(sym)
-                if not durum:
-                    entry_guvenlik = entry
-                    guvenlik_sl_pct = 0.03
-                    sl_guvenlik = entry_guvenlik * (1 - guvenlik_sl_pct) if direction == "long" else entry_guvenlik * (1 + guvenlik_sl_pct)
-                    with state_lock:
-                        trade_state[sym] = {"sl": sl_guvenlik, "tp_liste": [], "tp_index": 0,
-                                             "direction": direction, "entry": entry_guvenlik, "kaynak": "kurtarilan_calisma_zamani"}
-                    durumu_diske_yaz()
-                    tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — geçici %3 güvenlik SL'i kondu")
-                    continue
+    client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
+    client.start()
 
-                t = exchange.fetch_ticker(sym)
-                price = safe(t["last"])
-                sl = durum["sl"]
+    sinyaller = []
+    print(f"Son {KAC_MESAJ} mesaj taranıyor...")
+    for mesaj in client.iter_messages(KANAL, limit=KAC_MESAJ):
+        if not mesaj.text:
+            continue
+        sinyal = sinyal_ayristir(mesaj.text)
+        if sinyal:
+            sinyal["zaman_ms"] = int(mesaj.date.timestamp() * 1000)
+            sinyal["zaman_str"] = mesaj.date.strftime("%Y-%m-%d %H:%M")
+            sinyaller.append(sinyal)
 
-                sl_vuruldu = (price <= sl) if direction == "long" else (price >= sl)
-                if sl_vuruldu:
-                    kapandi_mi = False
-                    try:
-                        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
-                                                       qty, params={"reduceOnly": True})
-                        time.sleep(1)
-                        guncel = exchange.fetch_positions([sym])
-                        kapandi_mi = not any(safe(pp.get("contracts")) > 0 for pp in guncel)
-                    except Exception as e:
-                        log.error(f"[STOP] {sym}: {e}")
+    print(f"\nToplam {len(sinyaller)} sinyal bulundu. Her biri için teknik bağlam + sonuç hesaplanıyor...\n")
 
-                    if not kapandi_mi:
-                        tg(f"⚠️ {sym} STOP emri doğrulanamadı, tekrar denenecek")
-                        continue
+    satirlar = []
+    for i, s in enumerate(sinyaller):
+        print(f"[{i+1}/{len(sinyaller)}] {s['symbol']} {s['direction'].upper()} ({s['zaman_str']})")
+        baglam = teknik_baglam_hesapla(s["symbol"], s["zaman_ms"])
+        sonuc = sinyal_sonucu_hesapla(s["symbol"], s["direction"], s["entry"], s["sl"], s["tp_liste"], s["zaman_ms"])
+        satir = {**s, **baglam, "sonuc": sonuc}
+        satirlar.append(satir)
+        time.sleep(exchange.rateLimit / 1000)
 
-                    gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
-                    gunluk_pnl_ekle(gross)
-                    tg(f"❌ STOP {sym} | PnL≈{gross:+.2f}$")
-                    with state_lock:
-                        trade_state.pop(sym, None)
-                    durumu_diske_yaz()
-                    continue
+    df = pd.DataFrame(satirlar)
+    df.to_csv("futureskripto_analiz.csv", index=False)
+    print("\n'futureskripto_analiz.csv' dosyasına kaydedildi.")
 
-                tp_liste = durum.get("tp_liste", [])
-                tp_index = durum.get("tp_index", 0)
-                if tp_index < len(tp_liste):
-                    hedef = tp_liste[tp_index]
-                    tp_vuruldu = (price >= hedef) if direction == "long" else (price <= hedef)
-                    if tp_vuruldu:
-                        son_tp = (tp_index == len(tp_liste) - 1)
-                        kapatilacak = qty if son_tp else qty / max(len(tp_liste) - tp_index, 1)
-                        basarili = False
-                        try:
-                            exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
-                                                           kapatilacak, params={"reduceOnly": True})
-                            time.sleep(1)
-                            basarili = True
-                        except Exception as e:
-                            log.error(f"[TP{tp_index+1}] {sym}: {e}")
-
-                        if basarili:
-                            with state_lock:
-                                trade_state[sym]["tp_index"] = tp_index + 1
-                                if tp_index == 0:
-                                    trade_state[sym]["sl"] = entry  # ilk TP sonrası başa baş
-                            durumu_diske_yaz()
-                            tg(f"💰 TP{tp_index+1} {sym} vuruldu")
-                            if son_tp:
-                                with state_lock:
-                                    trade_state.pop(sym, None)
-                                durumu_diske_yaz()
-
-            time.sleep(5)
-        except Exception as e:
-            log.error(f"[MANAGE] {e}")
-            time.sleep(5)
+    print("\n" + "═" * 50)
+    print("ÖZET (TP_basladi vs SL karşılaştırması):")
+    for grup, alt_df in df.groupby("sonuc"):
+        print(f"\n--- {grup} ({len(alt_df)} sinyal) ---")
+        for kolon in ["4h_trend", "1h_trend", "4h_rsi", "1h_rsi", "4h_hacim_orani"]:
+            if kolon in alt_df.columns:
+                print(f"  {kolon}: {alt_df[kolon].value_counts().to_dict() if alt_df[kolon].dtype == object else round(alt_df[kolon].mean(), 2)}")
+    print("═" * 50)
 
 
-# ════════════════════════════════════════════
-# TELEGRAM KANAL DİNLEME (Telethon)
-# ════════════════════════════════════════════
-from telethon.sessions import StringSession
-telethon_client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
-
-
-@telethon_client.on(events.NewMessage(chats=KANAL_KULLANICI_ADI))
-async def yeni_mesaj_geldi(event):
-    metin = event.raw_text
-    log.info(f"[KANAL] Yeni mesaj alındı: {metin[:80]}...")
-    sinyal = sinyal_ayristir(metin)
-    if not sinyal:
-        log.info("[KANAL] Mesaj sinyal olarak ayrıştırılamadı, atlandı")
-        return
-    tg(f"📡 Kanal sinyali algılandı: {sinyal['symbol']} {sinyal['direction'].upper()}")
-    sinyali_isle(sinyal)
-
-
-def telethon_baslat():
-    telethon_client.start()
-    log.info("[TELETHON] Kanal dinleme başladı")
-    telethon_client.run_until_disconnected()
-
-
-# ════════════════════════════════════════════
-# BAŞLANGIÇ
-# ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v1) BAŞLIYOR...")
-    durumu_diskten_yukle()
-    acilista_pozisyonlari_dogrula()
-
-    threading.Thread(target=manage, daemon=True).start()
-    threading.Thread(target=gunluk_reset_loop, daemon=True).start()
-    threading.Thread(target=telebot_polling_baslat, daemon=True).start()
-
-    tg(
-        "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v8 (varsayilan kanal duzeltildi)\n\n"
-        f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
-        f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
-        f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
-        f"⛔ Günlük zarar limiti: ${MAX_GUNLUK_ZARAR}\n\n"
-        "⚠️ Bu kanalın geçmiş performansı doğrulanmadı."
-    )
-
-    telethon_baslat()
+    main()
