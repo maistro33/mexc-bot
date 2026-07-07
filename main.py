@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.1 (agirlikli TP dilimleri + genis trailing payi + breakeven bildirimi + hizli ac/kapat komutlari + teyit bekleme kuyrugu)
+🔖 VERSİYON: v16.2 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -37,6 +37,13 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
      değişkeniyle ayarlanabilir) boyunca arka planda tekrar tekrar
      kontrol ediliyor. Teyit bu süre içinde gelirse sinyal o ANDAKİ
      güncel fiyattan açılıyor; süre dolarsa tamamen düşürülüyor.
+  7. YENİ (v16.2): KADEMELİ SL YÜKSELTME (ratchet) — eskiden SL sadece
+     TP1'de girişe (breakeven) çekiliyordu, sonraki TP'lerde sabit
+     kalıyordu. Şimdi HER TP'de SL bir önceki TP seviyesine çekiliyor
+     (TP2 vurulunca SL→TP1 fiyatı, TP3 vurulunca SL→TP2 fiyatı, vb.)
+     — SL asla geriye alınmıyor, sadece iyileşiyor. Bu kural, kod
+     deploy edildiği anda HALİHAZIRDA AÇIK olan işlemlere de hemen
+     uygulanıyor (acik_pozisyonlara_kademeli_sl_uygula fonksiyonu).
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -105,7 +112,7 @@ exchange = ccxt.bitget({
 TOPLAM_SERMAYE   = 35.0
 MARGIN_SABIT     = 10.0    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
 LEV              = 10
-MAX_POS          = 2       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
+MAX_POS          = 1       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
 MIN_POS_NOTIONAL = 30.0
 
 MAX_GUNLUK_ZARAR = -10.0
@@ -396,6 +403,58 @@ def acilista_pozisyonlari_dogrula():
                                  "direction": direction, "entry": entry, "kaynak": "kurtarilan"}
         durumu_diske_yaz()
         tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — geçici %3 güvenlik SL'i kondu: {sl:.8f}")
+
+
+def acik_pozisyonlara_kademeli_sl_uygula():
+    """
+    v16.2: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
+    ZATEN AÇIK olan işlemler de yeni kademeli SL (ratchet) mantığından
+    faydalansın diye — eski sürümde açılmış ve bazı TP'leri çoktan vurmuş
+    bir işlem, yeni kurala göre SL'in NEREDE OLMASI GEREKTİĞİNİ hesaplar
+    ve mevcut SL'den daha iyiyse HEMEN uygular (bir sonraki TP'yi beklemeden).
+    Böylece "koddaki iyileştirme sadece yeni işlemlerde değil, açık
+    işlemlerde de devreye girsin" isteği karşılanmış olur.
+    """
+    with state_lock:
+        semboller = list(trade_state.keys())
+
+    for sym in semboller:
+        with state_lock:
+            durum = trade_state.get(sym)
+        if not durum:
+            continue
+
+        tp_index = durum.get("tp_index", 0)
+        tp_liste = durum.get("tp_liste", [])
+        entry = durum.get("entry")
+        direction = durum.get("direction")
+        mevcut_sl = durum.get("sl")
+
+        if tp_index == 0 or not tp_liste or entry is None or mevcut_sl is None or direction is None:
+            continue  # henüz hiç TP vurulmamış — yeni kuralın etkileyeceği bir şey yok
+
+        # ── tp_index burada "şimdiye kadar KAÇ TP VURULDU" sayısıdır (T).
+        # T==1 (sadece TP1 vuruldu) → SL girişe (breakeven) çekilmeli.
+        # T>=2 (TP2, TP3, ... vuruldu) → SL, BİR ÖNCEKİ TP'nin fiyatına
+        # çekilmeli: tp_liste[T-2] (0-index). Örn. T=2 (TP1+TP2 vuruldu)
+        # → tp_liste[0] = TP1 fiyatı. Bu, manage() içindeki canlı mantıkla
+        # BİREBİR aynı formül — sadece burada "sonradan yakalama" yapılıyor. ──
+        if tp_index == 1:
+            onerilen_sl = entry
+        else:
+            hedef_index = tp_index - 2
+            if hedef_index < 0 or hedef_index >= len(tp_liste):
+                continue
+            onerilen_sl = tp_liste[hedef_index]
+
+        sl_iyilesir_mi = (direction == "long" and onerilen_sl > mevcut_sl) or \
+                          (direction == "short" and onerilen_sl < mevcut_sl)
+        if sl_iyilesir_mi:
+            with state_lock:
+                trade_state[sym]["sl"] = onerilen_sl
+            durumu_diske_yaz()
+            tg(f"🔄 {sym} — bot güncellendi, yeni kademeli SL kuralı UYGULANDI: "
+               f"{mevcut_sl:.8f} → {onerilen_sl:.8f} (TP{tp_index} zaten vurulmuş durumdaydı)")
 
 
 # ════════════════════════════════════════════
@@ -1014,11 +1073,17 @@ def manage():
                         onceki_gerceklesen = trade_state[sym].get("gerceklesen_pnl", 0)
                     toplam_pnl_stop = gross + onceki_gerceklesen
                     gunluk_pnl_ekle(gross)
-                    # ── STOP mesajı: girişte mi (breakeven) yoksa asıl SL'de mi vuruldu, ayırt et ──
+                    # ── v16.2: STOP'un GERÇEK ZARAR mı, BREAKEVEN mi, yoksa KADEMELİ
+                    # SL YÜKSELTMESİ (kâr kilitleme) sonucu mu olduğunu ayırt et ──
                     breakeven_mi = abs(sl - entry) / entry < 0.0015  # ~%0.15 tolerans (komisyon/slippage payı)
+                    sl_kardaydi_mi = (direction == "long" and sl > entry) or (direction == "short" and sl < entry)
                     if breakeven_mi and onceki_gerceklesen > 0:
                         tg(f"🟡 STOP (girişte/breakeven) {sym} | bu dilim≈{gross:+.2f}$ | "
                            f"TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$ (önceki TP'lerden kilitlenen kâr korundu)")
+                    elif sl_kardaydi_mi:
+                        tg(f"🟢 STOP (kâr kilitleme seviyesinde) {sym} | bu dilim≈{gross:+.2f}$ | "
+                           f"TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$ (kademeli SL yükseltmesi sayesinde "
+                           f"ek kâr korunmuş oldu)")
                     else:
                         tg(f"❌ STOP {sym} | TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$")
                     with state_lock:
@@ -1063,11 +1128,23 @@ def manage():
                             gross_dilim = (price - entry) * kapatilacak if direction == "long" else (entry - price) * kapatilacak
                             gunluk_pnl_ekle(gross_dilim)
 
+                            # ── v16.2: KADEMELİ SL YÜKSELTME (ratchet) ──
+                            # Eskiden SL sadece TP1'de girişe (breakeven) çekiliyordu, sonraki
+                            # TP'lerde sabit kalıyordu. Şimdi HER TP'de SL bir önceki TP
+                            # seviyesine çekiliyor — TP2 vurulunca SL, TP1 fiyatına; TP3
+                            # vurulunca SL, TP2 fiyatına... Böylece fiyat geri dönerse bile
+                            # önceki TP'lerin kârı da korunmuş oluyor, sadece "başa baş" değil.
+                            # SL asla GERİYE (daha riskli yöne) alınmaz — sadece iyileşirse uygulanır.
+                            yeni_sl = entry if tp_index == 0 else tp_liste[tp_index - 1]
+                            mevcut_sl = trade_state[sym]["sl"]
+                            sl_iyilesti = (direction == "long" and yeni_sl > mevcut_sl) or \
+                                          (direction == "short" and yeni_sl < mevcut_sl)
+
                             with state_lock:
                                 trade_state[sym]["tp_index"] = tp_index + 1
                                 trade_state[sym]["gerceklesen_pnl"] = trade_state[sym].get("gerceklesen_pnl", 0) + gross_dilim
-                                if tp_index == 0:
-                                    trade_state[sym]["sl"] = entry  # ilk TP sonrası başa baş
+                                if sl_iyilesti:
+                                    trade_state[sym]["sl"] = yeni_sl
                                 if son_tp:
                                     trade_state[sym]["trailing_aktif"] = True
                                     trade_state[sym]["trailing_zirve"] = price
@@ -1080,11 +1157,20 @@ def manage():
                                 mesaj += " | 📈 Kalan büyük dilim TRAILING moduna geçti"
                             tg(mesaj)
 
-                            # ── YENİ (v16): SL girişe (breakeven) çekildiğinde AYRI bildirim ──
-                            if tp_index == 0:
-                                tg(f"🔒 {sym} STOP artık GİRİŞ fiyatında (breakeven) — "
-                                   f"şu ana kadar kilitlenen kâr≈{kilitlenen_kar:+.2f}$, "
-                                   f"bu noktadan sonra işlem en kötü ihtimalle başa baş kapanır")
+                            # ── SL güncelleme bildirimi (breakeven ilk TP'de, sonrakilerde kâr kilitleme) ──
+                            if sl_iyilesti:
+                                kalan_qty_sonrasi = max(qty - kapatilacak, 0)
+                                if tp_index == 0:
+                                    tg(f"🔒 {sym} STOP artık GİRİŞ fiyatında (breakeven) — "
+                                       f"şu ana kadar kilitlenen kâr≈{kilitlenen_kar:+.2f}$, "
+                                       f"bu noktadan sonra işlem en kötü ihtimalle başa baş kapanır")
+                                else:
+                                    ek_kar = (yeni_sl - entry) * kalan_qty_sonrasi if direction == "long" \
+                                              else (entry - yeni_sl) * kalan_qty_sonrasi
+                                    tg(f"🔐 {sym} STOP TP{tp_index} seviyesine ({yeni_sl:.8f}) yükseltildi — "
+                                       f"kalan pozisyon artık en kötü ihtimalle bu STOP'ta kapanırsa "
+                                       f"ek≈{ek_kar:+.2f}$ daha kilitlenmiş olacak (zaten kesinleşen "
+                                       f"{kilitlenen_kar:+.2f}$'ın üstüne)")
 
                 # ── TRAILING STOP (son TP sonrası kalan dilim için) ──
                 elif durum.get("trailing_aktif"):
@@ -1296,10 +1382,11 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.1) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.2) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     acilista_pozisyonlari_dogrula()
+    acik_pozisyonlara_kademeli_sl_uygula()
 
     threading.Thread(target=manage, daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
@@ -1309,7 +1396,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.1 (agirlikli TP + genis trailing + breakeven bildirimi + hizli ac/kapat + teyit bekleme)\n\n"
+        "🔖 VERSİYON: v16.2 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
