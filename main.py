@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v10 (deneysel Bollinger+MACD gözlemi eklendi — henüz filtre değil, veri biriktirme)
+🔖 VERSİYON: v13 (genis SL artik atlanmiyor, kendi SL'imize sikistiriliyor)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -87,6 +87,8 @@ MIN_POS_NOTIONAL = 30.0
 MAX_GUNLUK_ZARAR = -10.0
 
 TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/signal_copy_state.json")
+TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/signal_copy_log.json")
+PORT = int(os.getenv("PORT", "8080"))
 
 # ════════════════════════════════════════════
 # TELEGRAM BİLDİRİM (kendi bot token'ın — sinyal kanalıyla KARIŞTIRMA)
@@ -273,6 +275,37 @@ def durumu_diskten_yukle():
         log.warning(f"[KALICI] Yükleme başarısız: {e}")
 
 
+# ════════════════════════════════════════════
+# TRADE LOG (kapanan işlemlerin kalıcı kaydı — panel için)
+# ════════════════════════════════════════════
+trade_log = []
+log_lock = threading.Lock()
+
+def trade_log_kaydet(kayit):
+    with log_lock:
+        trade_log.append(kayit)
+        veri = list(trade_log)
+    try:
+        os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
+        with open(TRADE_LOG_PATH, "w") as f:
+            json.dump(veri, f)
+    except Exception as e:
+        log.warning(f"[LOG] Diske yazma başarısız: {e}")
+
+
+def trade_log_yukle():
+    global trade_log
+    try:
+        if os.path.exists(TRADE_LOG_PATH):
+            with open(TRADE_LOG_PATH) as f:
+                yuklenen = json.load(f)
+            with log_lock:
+                trade_log = yuklenen
+            log.info(f"[LOG] {len(yuklenen)} geçmiş işlem yüklendi")
+    except Exception as e:
+        log.warning(f"[LOG] Yükleme başarısız: {e}")
+
+
 def acilista_pozisyonlari_dogrula():
     try:
         pozisyonlar = exchange.fetch_positions()
@@ -341,6 +374,8 @@ def gunluk_reset_loop():
 # SİNYAL AYRIŞTIRMA (BU KANALIN GERÇEK FORMATI FARKLIYSA GÜNCELLENMESİ GEREKİR)
 # ════════════════════════════════════════════
 HIZLI_SL_PCT = 0.02  # basit "coin yön" formatında, kanal SL vermediği için sabit %2 kullanılır
+MAX_SL_PCT = 0.03    # YENİ: kanalın verdiği SL bile bu yüzdeyi aşarsa işlem ATLANIR —
+                     # sabit $100 notional ile geniş SL = marjın büyük kısmını riske atmak demek
 
 def hizli_sinyal_ayristir(metin):
     """
@@ -419,8 +454,15 @@ def gercek_bakiye_yeterli_mi(gereken_marj):
     return serbest_usdt >= gereken_marj
 
 
-TP_OLCEK_CARPANI = 2.5  # kanalın ham oranları (0.1-0.8R) çok cimri — 2.5 katına
-                        # çıkarıp TP6'yı ~2R'ye getiriyoruz, başabaş oranı %72'den %51'e düşüyor
+TP_OLCEK_CARPANI = 1.5  # 2.5'ten düşürüldü — TP'ler daha YAKIN olsun, kâr erken kilitlensin
+                        # (TP6 artık ~1.2R, önceki 2.0R'den daha ulaşılabilir)
+
+# ── TRAILING STOP (son TP sonrası) ──
+# Son TP'ye ulaşınca pozisyonun TAMAMI kapanmıyor artık — bir kısmı
+# (TRAILING_REZERV_DILIM / (TP_sayisi+TRAILING_REZERV_DILIM)) trailing'e
+# ayrılıyor, uzun süren hareketlerde ekstra kâr yakalamak için.
+TRAILING_REZERV_DILIM = 1        # kaç "sanal seviye" kadar pay trailing'e ayrılsın
+TRAILING_GERI_CEKILME_PCT = 0.015  # zirveden %1.5 geri çekilirse trailing kapatır
 
 def tp_olcekle(entry, sl, tp_liste, direction, carpan=TP_OLCEK_CARPANI):
     """
@@ -565,8 +607,14 @@ def manuel_pozisyon_kapat(sym):
         gunluk_pnl_ekle(gross)
 
         with state_lock:
+            onceki_gerceklesen = trade_state.get(sym, {}).get("gerceklesen_pnl", 0)
             trade_state.pop(sym, None)
         durumu_diske_yaz()
+        trade_log_kaydet({
+            "symbol": sym, "direction": direction, "entry": entry,
+            "exit": price, "pnl": gross + onceki_gerceklesen, "sonuc": "MANUEL_KAPATMA",
+            "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+        })
         return True, f"✅ {sym} manuel olarak kapatıldı | PnL≈{gross:+.2f}$"
     except Exception as e:
         return False, f"⚠️ {sym} kapatma sırasında hata: {e}"
@@ -619,6 +667,15 @@ def sinyali_isle(sinyal):
         tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}\n"
            f"SL (%{HIZLI_SL_PCT*100:.0f}): {sl:.8f}\n"
            f"Otomatik TP (kanal oranlarıyla, ham): {[round(x,8) for x in tp_liste_otomatik]}")
+
+    # ── DEĞİŞTİ: kanalın SL'i çok genişse artık ATLAMIYORUZ — kendi
+    # SL'imizi (MAX_SL_PCT mesafesinde) koyup işleme devam ediyoruz ──
+    sl_pct = abs(entry_hedef - sl) / entry_hedef
+    if sl_pct > MAX_SL_PCT:
+        sl_eski = sl
+        sl = entry_hedef * (1 - MAX_SL_PCT) if direction == "long" else entry_hedef * (1 + MAX_SL_PCT)
+        tg(f"ℹ️ {sym} kanalın SL'i çok genişti (%{sl_pct*100:.2f}) — kendi SL'imize "
+           f"sıkıştırıldı: {sl_eski:.8f} → {sl:.8f} (%{MAX_SL_PCT*100:.1f})")
 
     # ── ORTAK NOKTA: hem gerçek kanal sinyali hem basit format buraya gelir.
     # Kanalın ham TP oranları (0.1-0.8R) matematiksel olarak zayıftı
@@ -734,21 +791,36 @@ def manage():
                         continue
 
                     gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
+                    with state_lock:
+                        onceki_gerceklesen = trade_state[sym].get("gerceklesen_pnl", 0)
+                    toplam_pnl_stop = gross + onceki_gerceklesen
                     gunluk_pnl_ekle(gross)
                     tg(f"❌ STOP {sym} | PnL≈{gross:+.2f}$")
                     with state_lock:
                         trade_state.pop(sym, None)
                     durumu_diske_yaz()
+                    trade_log_kaydet({
+                        "symbol": sym, "direction": direction, "entry": entry,
+                        "exit": price, "pnl": toplam_pnl_stop, "sonuc": "STOP",
+                        "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                    })
                     continue
 
                 tp_liste = durum.get("tp_liste", [])
                 tp_index = durum.get("tp_index", 0)
+
+                # ── TP KADEMELERI (artık son TP'de bir dilim TRAILING'e ayrılıyor) ──
                 if tp_index < len(tp_liste):
                     hedef = tp_liste[tp_index]
                     tp_vuruldu = (price >= hedef) if direction == "long" else (price <= hedef)
                     if tp_vuruldu:
                         son_tp = (tp_index == len(tp_liste) - 1)
-                        kapatilacak = qty if son_tp else qty / max(len(tp_liste) - tp_index, 1)
+                        # ── DEĞİŞTİ: TRAILING_REZERV_DILIM kadar "sanal" ekstra
+                        # seviye varmış gibi bölüyoruz — son TP'de pozisyonun
+                        # TAMAMI değil, bir kısmı kapanıyor, kalanı trailing'e
+                        # devrediliyor. ──
+                        sanal_kalan_seviye = (len(tp_liste) - tp_index) + TRAILING_REZERV_DILIM
+                        kapatilacak = qty / max(sanal_kalan_seviye, 1)
                         basarili = False
                         try:
                             exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
@@ -759,16 +831,66 @@ def manage():
                             log.error(f"[TP{tp_index+1}] {sym}: {e}")
 
                         if basarili:
+                            gross_dilim = (price - entry) * kapatilacak if direction == "long" else (entry - price) * kapatilacak
+                            gunluk_pnl_ekle(gross_dilim)
+
                             with state_lock:
                                 trade_state[sym]["tp_index"] = tp_index + 1
                                 if tp_index == 0:
                                     trade_state[sym]["sl"] = entry  # ilk TP sonrası başa baş
+                                trade_state[sym]["gerceklesen_pnl"] = trade_state[sym].get("gerceklesen_pnl", 0) + gross_dilim
+                                if son_tp:
+                                    # ── YENİ: son TP'den sonra TRAILING moduna geç ──
+                                    trade_state[sym]["trailing_aktif"] = True
+                                    trade_state[sym]["trailing_zirve"] = price
                             durumu_diske_yaz()
-                            tg(f"💰 TP{tp_index+1} {sym} vuruldu")
-                            if son_tp:
-                                with state_lock:
-                                    trade_state.pop(sym, None)
-                                durumu_diske_yaz()
+                            tg(f"💰 TP{tp_index+1} {sym} vuruldu | dilim PnL≈{gross_dilim:+.2f}$" +
+                               (" | 📈 Kalan dilim TRAILING moduna geçti" if son_tp else ""))
+
+                # ── TRAILING STOP (son TP sonrası kalan dilim için) ──
+                elif durum.get("trailing_aktif"):
+                    zirve = durum.get("trailing_zirve", entry)
+                    if direction == "long":
+                        yeni_zirve = max(zirve, price)
+                        geri_cekilme_tetiklendi = price <= yeni_zirve * (1 - TRAILING_GERI_CEKILME_PCT)
+                    else:
+                        yeni_zirve = min(zirve, price)
+                        geri_cekilme_tetiklendi = price >= yeni_zirve * (1 + TRAILING_GERI_CEKILME_PCT)
+
+                    if yeni_zirve != zirve:
+                        with state_lock:
+                            trade_state[sym]["trailing_zirve"] = yeni_zirve
+                        durumu_diske_yaz()
+
+                    if geri_cekilme_tetiklendi:
+                        kapandi_mi = False
+                        try:
+                            exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                                                           qty, params={"reduceOnly": True})
+                            time.sleep(1)
+                            guncel = exchange.fetch_positions([sym])
+                            kapandi_mi = not any(safe(pp.get("contracts")) > 0 for pp in guncel)
+                        except Exception as e:
+                            log.error(f"[TRAILING] {sym}: {e}")
+
+                        if not kapandi_mi:
+                            tg(f"⚠️ {sym} trailing kapanışı doğrulanamadı, tekrar denenecek")
+                            continue
+
+                        gross_dilim = (price - entry) * qty if direction == "long" else (entry - price) * qty
+                        gunluk_pnl_ekle(gross_dilim)
+
+                        with state_lock:
+                            toplam_pnl = trade_state[sym].get("gerceklesen_pnl", 0) + gross_dilim
+                            trade_state.pop(sym, None)
+                        durumu_diske_yaz()
+                        tg(f"📉 TRAILING kapandı {sym} | son dilim PnL≈{gross_dilim:+.2f}$ | "
+                           f"TOPLAM işlem PnL≈{toplam_pnl:+.2f}$")
+                        trade_log_kaydet({
+                            "symbol": sym, "direction": direction, "entry": entry,
+                            "exit": price, "pnl": toplam_pnl, "sonuc": "TRAILING_KAPANDI",
+                            "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                        })
 
             time.sleep(5)
         except Exception as e:
@@ -795,6 +917,136 @@ async def yeni_mesaj_geldi(event):
     sinyali_isle(sinyal)
 
 
+# ════════════════════════════════════════════
+# WEB PANEL (tarayıcıdan performans görüntüleme)
+# ════════════════════════════════════════════
+def panel_html_olustur():
+    with log_lock:
+        gecmis = list(trade_log)
+
+    toplam = len(gecmis)
+    if toplam == 0:
+        icerik_ozet = "<p style='color:#888'>Henüz kapanan işlem yok.</p>"
+        grafik_svg = ""
+        liste_html = ""
+    else:
+        kazanan = [t for t in gecmis if t["pnl"] > 0]
+        kaybeden = [t for t in gecmis if t["pnl"] <= 0]
+        net_toplam = sum(t["pnl"] for t in gecmis)
+        kazanma_orani = len(kazanan) / toplam * 100
+        ort_kazanan = sum(t["pnl"] for t in kazanan) / len(kazanan) if kazanan else 0
+        ort_kaybeden = sum(t["pnl"] for t in kaybeden) / len(kaybeden) if kaybeden else 0
+        basabas_oran = abs(ort_kaybeden) / (abs(ort_kaybeden) + ort_kazanan) * 100 if (ort_kazanan + abs(ort_kaybeden)) > 0 else 0
+
+        renk_net = "#00e08a" if net_toplam >= 0 else "#ff4d6d"
+
+        icerik_ozet = f"""
+        <div class="grid">
+          <div class="kart"><div class="etiket">NET TOPLAM</div>
+            <div class="deger" style="color:{renk_net}">{net_toplam:+.2f}$</div></div>
+          <div class="kart"><div class="etiket">KAZANMA ORANI</div>
+            <div class="deger">%{kazanma_orani:.1f}</div></div>
+          <div class="kart"><div class="etiket">KAZANAN ({len(kazanan)})</div>
+            <div class="deger" style="color:#00e08a">ort {ort_kazanan:+.2f}$</div></div>
+          <div class="kart"><div class="etiket">KAYBEDEN ({len(kaybeden)})</div>
+            <div class="deger" style="color:#ff4d6d">ort {ort_kaybeden:+.2f}$</div></div>
+        </div>
+        <div class="kart" style="margin-top:12px">
+          <span class="etiket">Başa baş için gereken kazanma oranı</span>
+          <span class="deger" style="float:right;color:#ff4d6d">%{basabas_oran:.1f}</span>
+        </div>
+        """
+
+        # ── Basit SVG kümülatif PnL çizgisi (dış kütüphane yok) ──
+        kumulatif = []
+        toplam_su_an = 0
+        for t in gecmis:
+            toplam_su_an += t["pnl"]
+            kumulatif.append(toplam_su_an)
+        genislik, yukseklik = 700, 200
+        if len(kumulatif) > 1:
+            min_v, max_v = min(kumulatif), max(kumulatif)
+            aralik = (max_v - min_v) or 1
+            noktalar = []
+            for i, v in enumerate(kumulatif):
+                x = i / (len(kumulatif) - 1) * genislik
+                y = yukseklik - ((v - min_v) / aralik * yukseklik)
+                noktalar.append(f"{x:.1f},{y:.1f}")
+            svg_puan = " ".join(noktalar)
+            grafik_svg = f"""
+            <div class="kart" style="margin-top:12px">
+              <div class="etiket">KÜMÜLATİF NET PNL</div>
+              <svg viewBox="0 0 {genislik} {yukseklik}" style="width:100%;height:180px">
+                <polyline fill="none" stroke="#4da3ff" stroke-width="2" points="{svg_puan}" />
+              </svg>
+            </div>
+            """
+        else:
+            grafik_svg = ""
+
+        satirlar = []
+        for t in reversed(gecmis[-100:]):
+            renk = "#00e08a" if t["pnl"] > 0 else "#ff4d6d"
+            satirlar.append(f"""
+            <div class="islem-satir">
+              <div><b>{t['symbol'].split('/')[0]}</b>
+                <span class="rozet">{t['direction'].upper()}</span>
+                <span class="rozet" style="background:#333">{t.get('sonuc','?')}</span></div>
+              <div style="color:{renk}">{t['pnl']:+.2f}$</div>
+            </div>
+            <div style="color:#888;font-size:12px">{t.get('zaman','')}</div>
+            """)
+        liste_html = "".join(satirlar)
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sinyal Kopya Botu — Panel</title>
+<style>
+body {{ background:#0d0d12; color:#eee; font-family:-apple-system,sans-serif; padding:16px; margin:0; }}
+.baslik {{ color:#888; font-size:13px; letter-spacing:2px; text-transform:uppercase; }}
+h1 {{ margin:4px 0 16px 0; font-size:28px; }}
+.rozet-mod {{ background:#3a2a00; color:#ffb300; padding:8px 14px; border-radius:8px; display:inline-block; margin-bottom:16px; font-weight:600; }}
+.grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+.kart {{ background:#16161f; border-radius:12px; padding:16px; }}
+.etiket {{ color:#888; font-size:12px; letter-spacing:1px; text-transform:uppercase; }}
+.deger {{ font-size:28px; font-weight:700; margin-top:6px; }}
+.islem-satir {{ display:flex; justify-content:space-between; padding:10px 0 2px 0; border-top:1px solid #222; font-size:15px; }}
+.rozet {{ background:#222; padding:2px 8px; border-radius:6px; font-size:11px; margin-left:6px; }}
+</style></head>
+<body>
+  <div class="baslik">SİNYAL KOPYA BOTU</div>
+  <h1>Performans Paneli</h1>
+  <div class="rozet-mod">🔴 GERÇEK PARA — @{KANAL_KULLANICI_ADI} kanalından kopyalanıyor</div>
+  <p style="color:#888">{len(trade_log)} kapanan işlem · sayfa her yenilendiğinde güncellenir</p>
+  {icerik_ozet}
+  {grafik_svg}
+  <h3 style="margin-top:24px;color:#888">İŞLEM GEÇMİŞİ (yeniden eskiye, son 100)</h3>
+  {liste_html}
+</body></html>"""
+
+
+def panel_sunucu_baslat():
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path in ("/panel", "/panel/"):
+                icerik = panel_html_olustur().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(icerik)
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass  # http.server'in kendi loglarini bastiriyoruz, gurultu olmasin
+
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+
+
 def telethon_baslat():
     telethon_client.start()
     log.info("[TELETHON] Kanal dinleme başladı")
@@ -807,15 +1059,17 @@ def telethon_baslat():
 if __name__ == "__main__":
     print("TELEGRAM SİNYAL KOPYALAMA BOTU (v1) BAŞLIYOR...")
     durumu_diskten_yukle()
+    trade_log_yukle()
     acilista_pozisyonlari_dogrula()
 
     threading.Thread(target=manage, daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
+    threading.Thread(target=panel_sunucu_baslat, daemon=True).start()
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v10 (deneysel Bollinger+MACD gozlemi eklendi)\n\n"
+        "🔖 VERSİYON: v13 (genis SL artik sikistiriliyor, atlanmiyor)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
