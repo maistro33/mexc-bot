@@ -81,7 +81,7 @@ exchange = ccxt.bitget({
 TOPLAM_SERMAYE   = 35.0
 MARGIN_SABIT     = 10.0    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
 LEV              = 10
-MAX_POS          = 2       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
+MAX_POS          = 1       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
 MIN_POS_NOTIONAL = 30.0
 
 MAX_GUNLUK_ZARAR = -10.0
@@ -128,6 +128,62 @@ if bot:
                 satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.8f} "
                                  f"SL:{d['sl']:.8f} TP_index:{d.get('tp_index',0)}/{len(d.get('tp_liste',[]))}")
             bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+    @bot.message_handler(commands=["ac"])
+    def ac_komutu(msg):
+        """
+        YENİ: Net bir açma komutu. Kullanım: /ac MAGMA LONG  (ya da SHORT)
+        (Not: '/manuel' ve komutsuz kısa mesaj — örn. 'Magma long' — hâlâ
+        çalışmaya devam ediyor, bu sadece daha net bir alternatif.)
+        """
+        metin = msg.text.replace("/ac", "", 1).strip()
+        if not metin:
+            bot.send_message(msg.chat.id, "Kullanım: /ac MAGMA LONG")
+            return
+        sinyal = sinyal_ayristir(metin) or hizli_sinyal_ayristir(metin)
+        if not sinyal:
+            bot.send_message(msg.chat.id, "⚠️ Anlaşılamadı. Örnek: /ac MAGMA LONG")
+            return
+        bot.send_message(msg.chat.id, f"⚡ Açılıyor: {sinyal['symbol']} {sinyal['direction'].upper()}")
+        sinyali_isle(sinyal)
+
+    @bot.message_handler(commands=["kapat"])
+    def kapat_komutu(msg):
+        """
+        YENİ: Manuel kapatma komutu — daha önce hiç yoktu, bu yüzden
+        "kapat" yazınca hiçbir şey olmuyordu. Kullanım:
+          /kapat          -> açık TEK pozisyon varsa onu kapatır
+          /kapat EDGE     -> EDGE (ya da başka coin) pozisyonunu kapatır
+        """
+        parca = msg.text.replace("/kapat", "", 1).strip().upper()
+
+        with state_lock:
+            acik_semboller = list(trade_state.keys())
+
+        if not acik_semboller:
+            bot.send_message(msg.chat.id, "Açık pozisyon yok, kapatılacak bir şey bulunamadı.")
+            return
+
+        hedef_sym = None
+        if parca:
+            for sym in acik_semboller:
+                if parca in sym.upper():
+                    hedef_sym = sym
+                    break
+            if not hedef_sym:
+                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen açık pozisyon bulunamadı. "
+                                                f"Açık olanlar: {acik_semboller}")
+                return
+        else:
+            if len(acik_semboller) > 1:
+                bot.send_message(msg.chat.id, f"Birden fazla açık pozisyon var, hangisini kastettiğini belirt: "
+                                                f"{acik_semboller}\nÖrn: /kapat {acik_semboller[0].split('/')[0]}")
+                return
+            hedef_sym = acik_semboller[0]
+
+        bot.send_message(msg.chat.id, f"⏳ {hedef_sym} kapatılıyor...")
+        basari, mesaj = manuel_pozisyon_kapat(hedef_sym)
+        bot.send_message(msg.chat.id, mesaj)
 
 
     KISA_MESAJ_UST_SINIR = 30  # bu karakterden uzun mesajlar sohbet sayilir, islem denenmez
@@ -473,6 +529,47 @@ def trend_teyidi_yeterli_mi(sym, direction):
         return True, "teyit sağlandı"
     except Exception as e:
         return True, f"kontrol hatası ({e}), geçildi"
+
+
+def manuel_pozisyon_kapat(sym):
+    """
+    YENİ: Gerçekten borsadan pozisyonu kapatır (reduceOnly market emri),
+    STOP/TP3'te kullandığımız AYNI doğrulama mantığıyla — emrin gerçekten
+    uygulandığını kontrol etmeden trade_state'ten silmiyoruz.
+    """
+    try:
+        pozisyonlar = exchange.fetch_positions([sym])
+        gercek_pos = next((p for p in pozisyonlar if safe(p.get("contracts")) > 0), None)
+        if not gercek_pos:
+            with state_lock:
+                trade_state.pop(sym, None)
+            durumu_diske_yaz()
+            return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi."
+
+        qty = safe(gercek_pos.get("contracts"))
+        direction = "long" if gercek_pos.get("side") == "long" else "short"
+        entry = safe(gercek_pos.get("entryPrice"))
+
+        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                                       qty, params={"reduceOnly": True})
+        time.sleep(1)
+        guncel = exchange.fetch_positions([sym])
+        kapandi_mi = not any(safe(pp.get("contracts")) > 0 for pp in guncel)
+
+        if not kapandi_mi:
+            return False, f"⚠️ {sym} kapatma emri gönderildi ama doğrulanamadı — /kapat ile tekrar dene."
+
+        t = exchange.fetch_ticker(sym)
+        price = safe(t["last"])
+        gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
+        gunluk_pnl_ekle(gross)
+
+        with state_lock:
+            trade_state.pop(sym, None)
+        durumu_diske_yaz()
+        return True, f"✅ {sym} manuel olarak kapatıldı | PnL≈{gross:+.2f}$"
+    except Exception as e:
+        return False, f"⚠️ {sym} kapatma sırasında hata: {e}"
 
 
 def sinyali_isle(sinyal):
