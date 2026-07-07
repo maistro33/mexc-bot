@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.2 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
+🔖 VERSİYON: v16.3 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -44,6 +44,14 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
      — SL asla geriye alınmıyor, sadece iyileşiyor. Bu kural, kod
      deploy edildiği anda HALİHAZIRDA AÇIK olan işlemlere de hemen
      uygulanıyor (acik_pozisyonlara_kademeli_sl_uygula fonksiyonu).
+  8. YENİ (v16.3): TELEGRAM ÜZERİNDEN KALICI YEDEK — Railway gibi
+     platformlarda /data klasörü Volume eklenmediyse KALICI DEĞİLDİR,
+     her redeploy'da sıfırlanır (AGLD işleminde yaşandığı gibi: TP
+     listesi kayboldu, sadece %3 güvenlik SL'i kaldı). Artık trade_state
+     ve bekleyen_sinyaller, Telegram'da SABİTLENMİŞ bir mesaja JSON
+     olarak yazılıyor — bot her yeniden başladığında oradan geri
+     yükleniyor. Railway ayarlarına dokunmaya gerek YOK, tamamen kod içi
+     bir çözüm.
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -328,6 +336,7 @@ def durumu_diske_yaz():
             json.dump(veri, f)
     except Exception as e:
         log.warning(f"[KALICI] Diske yazma başarısız: {e}")
+    durumu_telegrama_yedekle()  # v16.3: diskin yanında Telegram'a da yedekle
 
 
 def durumu_diskten_yukle():
@@ -341,6 +350,101 @@ def durumu_diskten_yukle():
             log.info(f"[KALICI] {len(yuklenen)} kayıtlı işlem durumu yüklendi")
     except Exception as e:
         log.warning(f"[KALICI] Yükleme başarısız: {e}")
+
+
+# ════════════════════════════════════════════
+# TELEGRAM ÜZERİNDEN KALICI YEDEK (v16.3)
+# ════════════════════════════════════════════
+# Railway gibi platformlarda /data klasörü KALICI DEĞİLDİR — Volume
+# eklenmediyse her redeploy'da (kod güncellemesi, yeniden başlatma) diskteki
+# her şey sıfırlanır. Bu, açık bir işlemin TP listesini/tp_index'ini/kademeli
+# SL seviyesini kaybetmesine yol açar (AGLD'de yaşadığımız gibi).
+#
+# Bu fonksiyonlar, Railway ayarlarına HİÇ dokunmadan, tamamen kod içi bir
+# çözüm sunuyor: kritik durumu (trade_state + bekleyen_sinyaller) Telegram'da
+# SABİTLENMİŞ (pinned) bir mesaja JSON olarak yazıyoruz. Telegram'ın kendisi
+# kalıcı depolama görevi görüyor — bot her yeniden başladığında o mesajdan
+# okuyup geri yüklüyor.
+STATE_PIN_ETIKETI = "🗄️ BOT_DURUM_YEDEK (dokunma — otomatik güncellenir)"
+_pin_message_id = None
+_pin_lock = threading.Lock()
+
+
+def durumu_telegrama_yedekle():
+    global _pin_message_id
+    if not bot or not CHAT_ID:
+        return
+    try:
+        with state_lock:
+            veri_state = dict(trade_state)
+        try:
+            with bekleyen_lock:
+                veri_bekleyen = {
+                    sym: {"sinyal": k["sinyal"], "gozlem_str": k["gozlem_str"],
+                          "eklenme_zamani": k["eklenme_zamani"]}
+                    for sym, k in bekleyen_sinyaller.items()
+                }
+        except NameError:
+            veri_bekleyen = {}  # bekleyen_sinyaller henüz tanımlanmadıysa (ilk yükleme anı)
+
+        icerik = json.dumps({"trade_state": veri_state, "bekleyen_sinyaller": veri_bekleyen})
+        metin = f"{STATE_PIN_ETIKETI}\n{icerik}"
+        if len(metin) > 4000:
+            log.warning("[TG_YEDEK] Durum verisi çok büyük (>4000 karakter), Telegram'a yazılamadı")
+            return
+
+        with _pin_lock:
+            if _pin_message_id:
+                try:
+                    bot.edit_message_text(metin, CHAT_ID, _pin_message_id)
+                    return
+                except Exception:
+                    pass  # mesaj silinmiş olabilir — aşağıda yeniden oluşturulacak
+
+            gonderilen = bot.send_message(CHAT_ID, metin)
+            _pin_message_id = gonderilen.message_id
+            try:
+                bot.pin_chat_message(CHAT_ID, _pin_message_id, disable_notification=True)
+            except Exception as e:
+                log.warning(f"[TG_YEDEK] Sabitleme başarısız (yine de çalışmaya devam eder): {e}")
+    except Exception as e:
+        log.warning(f"[TG_YEDEK] Telegram'a yazma başarısız: {e}")
+
+
+def durumu_telegramdan_yukle():
+    """
+    Başlangıçta, sabitlenmiş mesajdan trade_state ve bekleyen_sinyaller'i
+    geri yükler. acilista_pozisyonlari_dogrula() ÇAĞRILMADAN ÖNCE çalışmalı
+    — böylece o fonksiyon açık bir pozisyonu "kayıtsız" sanıp üzerine genel
+    %3 güvenlik SL'i koymaz, gerçek TP/SL/tp_index bilgisi korunur.
+    """
+    global trade_state, _pin_message_id
+    if not bot or not CHAT_ID:
+        return
+    try:
+        chat = bot.get_chat(CHAT_ID)
+        pinned = getattr(chat, "pinned_message", None)
+        if not pinned or not pinned.text or STATE_PIN_ETIKETI not in pinned.text:
+            log.info("[TG_YEDEK] Sabitlenmiş durum mesajı bulunamadı, boş başlanıyor")
+            return
+        _pin_message_id = pinned.message_id
+        json_kismi = pinned.text.split("\n", 1)[1]
+        veri = json.loads(json_kismi)
+
+        yuklenen_state = veri.get("trade_state", {})
+        with state_lock:
+            trade_state.update(yuklenen_state)
+
+        yuklenen_bekleyen = veri.get("bekleyen_sinyaller", {})
+        with bekleyen_lock:
+            for sym, kayit in yuklenen_bekleyen.items():
+                bekleyen_sinyaller[sym] = kayit
+
+        if yuklenen_state or yuklenen_bekleyen:
+            tg(f"♻️ Telegram yedeğinden geri yüklendi: {len(yuklenen_state)} açık işlem, "
+               f"{len(yuklenen_bekleyen)} bekleyen sinyal")
+    except Exception as e:
+        log.warning(f"[TG_YEDEK] Telegram'dan yükleme başarısız: {e}")
 
 
 # ════════════════════════════════════════════
@@ -407,7 +511,7 @@ def acilista_pozisyonlari_dogrula():
 
 def acik_pozisyonlara_kademeli_sl_uygula():
     """
-    v16.2: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
+    v16.3: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
     ZATEN AÇIK olan işlemler de yeni kademeli SL (ratchet) mantığından
     faydalansın diye — eski sürümde açılmış ve bazı TP'leri çoktan vurmuş
     bir işlem, yeni kurala göre SL'in NEREDE OLMASI GEREKTİĞİNİ hesaplar
@@ -784,6 +888,7 @@ def sinyali_isle(sinyal):
             bekleyen_sinyaller[sym] = {
                 "sinyal": sinyal, "gozlem_str": gozlem_str, "eklenme_zamani": time.time(),
             }
+        durumu_telegrama_yedekle()  # v16.3: kuyruk da kaybolmasın diye yedekle
         if zaten_bekliyor:
             tg(f"⏭️ {sym} {direction.upper()} hâlâ teyitsiz ({teyit_mesaj}) — bekleme süresi yenilendi"
                f"{gozlem_str}")
@@ -869,6 +974,7 @@ def teyit_bekleme_loop():
                 if gecen_dk > TEYIT_BEKLEME_DAKIKA:
                     with bekleyen_lock:
                         bekleyen_sinyaller.pop(sym, None)
+                    durumu_telegrama_yedekle()
                     tg(f"🗑️ {sym} {kayit['sinyal']['direction'].upper()} — {TEYIT_BEKLEME_DAKIKA} dk "
                        f"içinde teyit gelmedi, sinyal tamamen düşürüldü")
                     continue
@@ -886,6 +992,7 @@ def teyit_bekleme_loop():
                 if teyit_ok:
                     with bekleyen_lock:
                         bekleyen_sinyaller.pop(sym, None)
+                    durumu_telegrama_yedekle()
                     guncel_sinyal = _sinyali_guncel_fiyata_yenile(kayit["sinyal"])
                     if guncel_sinyal is None:
                         continue  # fiyat alınamadı, hata mesajı zaten gönderildi
@@ -1073,7 +1180,7 @@ def manage():
                         onceki_gerceklesen = trade_state[sym].get("gerceklesen_pnl", 0)
                     toplam_pnl_stop = gross + onceki_gerceklesen
                     gunluk_pnl_ekle(gross)
-                    # ── v16.2: STOP'un GERÇEK ZARAR mı, BREAKEVEN mi, yoksa KADEMELİ
+                    # ── v16.3: STOP'un GERÇEK ZARAR mı, BREAKEVEN mi, yoksa KADEMELİ
                     # SL YÜKSELTMESİ (kâr kilitleme) sonucu mu olduğunu ayırt et ──
                     breakeven_mi = abs(sl - entry) / entry < 0.0015  # ~%0.15 tolerans (komisyon/slippage payı)
                     sl_kardaydi_mi = (direction == "long" and sl > entry) or (direction == "short" and sl < entry)
@@ -1128,7 +1235,7 @@ def manage():
                             gross_dilim = (price - entry) * kapatilacak if direction == "long" else (entry - price) * kapatilacak
                             gunluk_pnl_ekle(gross_dilim)
 
-                            # ── v16.2: KADEMELİ SL YÜKSELTME (ratchet) ──
+                            # ── v16.3: KADEMELİ SL YÜKSELTME (ratchet) ──
                             # Eskiden SL sadece TP1'de girişe (breakeven) çekiliyordu, sonraki
                             # TP'lerde sabit kalıyordu. Şimdi HER TP'de SL bir önceki TP
                             # seviyesine çekiliyor — TP2 vurulunca SL, TP1 fiyatına; TP3
@@ -1382,9 +1489,10 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.2) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.3) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
+    durumu_telegramdan_yukle()  # v16.3: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
     acilista_pozisyonlari_dogrula()
     acik_pozisyonlara_kademeli_sl_uygula()
 
@@ -1396,7 +1504,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.2 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
+        "🔖 VERSİYON: v16.3 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
