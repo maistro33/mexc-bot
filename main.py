@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.3 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
+🔖 VERSİYON: v16.4 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -52,6 +52,19 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
      olarak yazılıyor — bot her yeniden başladığında oradan geri
      yükleniyor. Railway ayarlarına dokunmaya gerek YOK, tamamen kod içi
      bir çözüm.
+  9. YENİ (v16.4) — İKİ AYRI DÜZELTME:
+     a) GERÇEK DOLUŞ FİYATI: PnL hesapları artık piyasa emri gönderilmeden
+        ÖNCE çekilen tahmini (ticker) fiyat yerine, emrin borsadaki GERÇEK
+        ortalama doluş fiyatını ve komisyonunu kullanıyor. Önceki haliyle
+        bot "-0.01$" derken gerçek borsa sonucu "-0.25$" çıkabiliyordu
+        (UAI örneği) — bu fark artık ölçülüyor, günlük zarar limiti de
+        buna göre daha doğru işliyor (gercek_dolus_bilgisi_al fonksiyonu).
+     b) TP1 SONRASI NEFES PAYI: SL, TP1'den sonra artık TAM girişe değil,
+        girişin %0.4 kadar altına (long) çekiliyor — anlık bir gürültüyle
+        (komisyon/slippage kadar bir dokunuşla) işlem hemen kapanmasın,
+        TP2'ye doğru devam edebilsin diye (TP1_BREAKEVEN_TAMPON_PCT).
+        Bedeli: SL bu bölgede vurulursa artık tam sıfır değil, ufak ve
+        kontrollü bir risk (~%0.4) üstlenilmiş oluyor.
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -313,6 +326,43 @@ def safe(x):
         return 0.0
 
 
+def gercek_dolus_bilgisi_al(emir, sym, tahmini_fiyat):
+    """
+    v16.4 DÜZELTME: PnL hesapları eskiden `exchange.fetch_ticker()` ile
+    ÖNCEDEN çekilen tahmini fiyatı kullanıyordu — ama piyasa emrinin
+    GERÇEK doluş fiyatı (özellikle STOP/hızlı hareket eden coinlerde)
+    bundan belirgin farklı olabiliyor (UAI örneğinde botun -0.01$ dediği
+    işlem gerçekte -0.25$ ile kapanmıştı — ~%2.5 slippage + komisyon hiç
+    hesaba katılmamıştı). Bu fonksiyon, emrin borsadaki GERÇEK ortalama
+    doluş fiyatını ve komisyonunu almaya çalışır; alamazsa tahmini fiyata
+    geri döner (hesap yine çalışır, sadece daha az kesin olur).
+    """
+    fiyat = safe(emir.get("average")) or safe(emir.get("price"))
+    komisyon = 0.0
+    try:
+        fee = emir.get("fee")
+        if fee:
+            komisyon = safe(fee.get("cost"))
+    except Exception:
+        pass
+
+    if not fiyat:
+        try:
+            time.sleep(0.5)
+            detay = exchange.fetch_order(emir.get("id"), sym)
+            fiyat = safe(detay.get("average")) or safe(detay.get("price"))
+            fee = detay.get("fee")
+            if fee:
+                komisyon = safe(fee.get("cost"))
+        except Exception as e:
+            log.warning(f"[DOLUS] {sym} emir detayı alınamadı, tahmini fiyata dönülüyor: {e}")
+
+    if not fiyat:
+        fiyat = tahmini_fiyat  # son çare: ticker tahmini
+
+    return fiyat, komisyon
+
+
 def get_candles(sym, tf, limit=100):
     try:
         return exchange.fetch_ohlcv(sym, tf, limit=limit)
@@ -336,7 +386,7 @@ def durumu_diske_yaz():
             json.dump(veri, f)
     except Exception as e:
         log.warning(f"[KALICI] Diske yazma başarısız: {e}")
-    durumu_telegrama_yedekle()  # v16.3: diskin yanında Telegram'a da yedekle
+    durumu_telegrama_yedekle()  # v16.4: diskin yanında Telegram'a da yedekle
 
 
 def durumu_diskten_yukle():
@@ -353,7 +403,7 @@ def durumu_diskten_yukle():
 
 
 # ════════════════════════════════════════════
-# TELEGRAM ÜZERİNDEN KALICI YEDEK (v16.3)
+# TELEGRAM ÜZERİNDEN KALICI YEDEK (v16.4)
 # ════════════════════════════════════════════
 # Railway gibi platformlarda /data klasörü KALICI DEĞİLDİR — Volume
 # eklenmediyse her redeploy'da (kod güncellemesi, yeniden başlatma) diskteki
@@ -511,7 +561,7 @@ def acilista_pozisyonlari_dogrula():
 
 def acik_pozisyonlara_kademeli_sl_uygula():
     """
-    v16.3: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
+    v16.4: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
     ZATEN AÇIK olan işlemler de yeni kademeli SL (ratchet) mantığından
     faydalansın diye — eski sürümde açılmış ve bazı TP'leri çoktan vurmuş
     bir işlem, yeni kurala göre SL'in NEREDE OLMASI GEREKTİĞİNİ hesaplar
@@ -538,13 +588,14 @@ def acik_pozisyonlara_kademeli_sl_uygula():
             continue  # henüz hiç TP vurulmamış — yeni kuralın etkileyeceği bir şey yok
 
         # ── tp_index burada "şimdiye kadar KAÇ TP VURULDU" sayısıdır (T).
-        # T==1 (sadece TP1 vuruldu) → SL girişe (breakeven) çekilmeli.
-        # T>=2 (TP2, TP3, ... vuruldu) → SL, BİR ÖNCEKİ TP'nin fiyatına
-        # çekilmeli: tp_liste[T-2] (0-index). Örn. T=2 (TP1+TP2 vuruldu)
-        # → tp_liste[0] = TP1 fiyatı. Bu, manage() içindeki canlı mantıkla
-        # BİREBİR aynı formül — sadece burada "sonradan yakalama" yapılıyor. ──
+        # T==1 (sadece TP1 vuruldu) → SL, girişin biraz altına/üstüne (v16.4
+        # tampon payı) çekilmeli — TAM breakeven değil. T>=2 (TP2, TP3, ...
+        # vuruldu) → SL, BİR ÖNCEKİ TP'nin fiyatına çekilmeli: tp_liste[T-2]
+        # (0-index). Bu, manage() içindeki canlı mantıkla BİREBİR aynı
+        # formül — sadece burada "sonradan yakalama" yapılıyor. ──
         if tp_index == 1:
-            onerilen_sl = entry
+            onerilen_sl = entry * (1 - TP1_BREAKEVEN_TAMPON_PCT) if direction == "long" \
+                          else entry * (1 + TP1_BREAKEVEN_TAMPON_PCT)
         else:
             hedef_index = tp_index - 2
             if hedef_index < 0 or hedef_index >= len(tp_liste):
@@ -692,6 +743,16 @@ TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa
 # büyük bir dilim tepeye yakın fiyattan çıkabiliyor.
 TP_DILIM_ORANLARI = [0.10, 0.15, 0.15, 0.15, 0.15, 0.10]  # toplam 0.80, kalan 0.20 trailing'e
 
+# ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.4 İNCE AYAR) ──
+# Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
+# gürültüyle (komisyon/slippage dahil neredeyse anlık) girişe dokunsa
+# işlem hemen kapanıyordu (EPIC, UAI örneklerinde 23 saniyede kapanan
+# işlemler gibi). Şimdi TP1 sonrası SL, girişin biraz ALTINA (long için)
+# konuyor — küçük bir geri çekilmede işlem kapanmıyor, TP2'ye doğru nefes
+# alma şansı buluyor. Bedeli: SL bu bölgede vurulursa artık tam sıfır
+# değil, ufak ve KONTROLLÜ bir risk (aşağıdaki yüzde kadar) üstleniliyor.
+TP1_BREAKEVEN_TAMPON_PCT = 0.004  # %0.4 — küçük ve kontrollü bir nefes payı
+
 # ── TRAILING STOP (son TP sonrası) ──
 TRAILING_GERI_CEKILME_PCT = 0.025  # v16: 1.5%'ten yükseltildi — trend'e nefes
                                     # payı verildi, büyük hareketlerde (M/USDT
@@ -825,7 +886,7 @@ def manuel_pozisyon_kapat(sym):
         direction = "long" if gercek_pos.get("side") == "long" else "short"
         entry = safe(gercek_pos.get("entryPrice"))
 
-        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+        kapatma_emri = exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                        qty, params={"reduceOnly": True})
         time.sleep(1)
         guncel = exchange.fetch_positions([sym])
@@ -835,8 +896,10 @@ def manuel_pozisyon_kapat(sym):
             return False, f"⚠️ {sym} kapatma emri gönderildi ama doğrulanamadı — tekrar dene."
 
         t = exchange.fetch_ticker(sym)
-        price = safe(t["last"])
+        tahmini_fiyat = safe(t["last"])
+        price, komisyon = gercek_dolus_bilgisi_al(kapatma_emri, sym, tahmini_fiyat)
         gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
+        gross -= komisyon
         gunluk_pnl_ekle(gross)
 
         with state_lock:
@@ -888,7 +951,7 @@ def sinyali_isle(sinyal):
             bekleyen_sinyaller[sym] = {
                 "sinyal": sinyal, "gozlem_str": gozlem_str, "eklenme_zamani": time.time(),
             }
-        durumu_telegrama_yedekle()  # v16.3: kuyruk da kaybolmasın diye yedekle
+        durumu_telegrama_yedekle()  # v16.4: kuyruk da kaybolmasın diye yedekle
         if zaten_bekliyor:
             tg(f"⏭️ {sym} {direction.upper()} hâlâ teyitsiz ({teyit_mesaj}) — bekleme süresi yenilendi"
                f"{gozlem_str}")
@@ -1162,8 +1225,9 @@ def manage():
                 sl_vuruldu = (price <= sl) if direction == "long" else (price >= sl)
                 if sl_vuruldu:
                     kapandi_mi = False
+                    kapatma_emri = None
                     try:
-                        exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                        kapatma_emri = exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                        qty, params={"reduceOnly": True})
                         time.sleep(1)
                         guncel = exchange.fetch_positions([sym])
@@ -1175,19 +1239,31 @@ def manage():
                         tg(f"⚠️ {sym} STOP emri doğrulanamadı, tekrar denenecek")
                         continue
 
-                    gross = (price - entry) * qty if direction == "long" else (entry - price) * qty
+                    gercek_fiyat, komisyon = gercek_dolus_bilgisi_al(kapatma_emri or {}, sym, price)
+                    gross = (gercek_fiyat - entry) * qty if direction == "long" else (entry - gercek_fiyat) * qty
+                    gross -= komisyon
                     with state_lock:
                         onceki_gerceklesen = trade_state[sym].get("gerceklesen_pnl", 0)
                     toplam_pnl_stop = gross + onceki_gerceklesen
                     gunluk_pnl_ekle(gross)
-                    # ── v16.3: STOP'un GERÇEK ZARAR mı, BREAKEVEN mi, yoksa KADEMELİ
-                    # SL YÜKSELTMESİ (kâr kilitleme) sonucu mu olduğunu ayırt et ──
-                    breakeven_mi = abs(sl - entry) / entry < 0.0015  # ~%0.15 tolerans (komisyon/slippage payı)
-                    sl_kardaydi_mi = (direction == "long" and sl > entry) or (direction == "short" and sl < entry)
-                    if breakeven_mi and onceki_gerceklesen > 0:
-                        tg(f"🟡 STOP (girişte/breakeven) {sym} | bu dilim≈{gross:+.2f}$ | "
-                           f"TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$ (önceki TP'lerden kilitlenen kâr korundu)")
-                    elif sl_kardaydi_mi:
+                    # ── v16.4: STOP'un GERÇEK ZARAR mı, TP1 TAMPON BÖLGESİNDE mi (küçük
+                    # kontrollü risk), yoksa KADEMELİ SL YÜKSELTMESİ (kâr kilitleme)
+                    # sonucu mu olduğunu ayırt et. "Riskli taraf" fark yüzdesi: SL,
+                    # girişin ne kadar aleyhte tarafında (pozitifse aleyhte). ──
+                    fark_pct = (entry - sl) / entry if direction == "long" else (sl - entry) / entry
+                    tampon_sinir = TP1_BREAKEVEN_TAMPON_PCT + 0.0015  # tampon payı + küçük tolerans
+                    if fark_pct <= 0:
+                        kategori = "kar_kilitli"
+                    elif fark_pct <= tampon_sinir:
+                        kategori = "tampon"
+                    else:
+                        kategori = "zarar"
+
+                    if kategori == "tampon" and onceki_gerceklesen > 0:
+                        tg(f"🟡 STOP (TP1 tampon bölgesinde) {sym} | bu dilim≈{gross:+.2f}$ | "
+                           f"TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$ (önceki TP'lerden kilitlenen kâr "
+                           f"büyük ölçüde korundu, sadece küçük kontrollü risk payı kullanıldı)")
+                    elif kategori == "kar_kilitli":
                         tg(f"🟢 STOP (kâr kilitleme seviyesinde) {sym} | bu dilim≈{gross:+.2f}$ | "
                            f"TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$ (kademeli SL yükseltmesi sayesinde "
                            f"ek kâr korunmuş oldu)")
@@ -1198,7 +1274,7 @@ def manage():
                     durumu_diske_yaz()
                     trade_log_kaydet({
                         "symbol": sym, "direction": direction, "entry": entry,
-                        "exit": price, "pnl": toplam_pnl_stop, "sonuc": "STOP",
+                        "exit": gercek_fiyat, "pnl": toplam_pnl_stop, "sonuc": "STOP",
                         "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                     })
                     continue
@@ -1223,8 +1299,9 @@ def manage():
                         oran = _tp_dilim_orani(tp_index, len(tp_liste))
                         kapatilacak = min(orijinal_qty * oran, qty)  # elde olandan fazlasını isteme
                         basarili = False
+                        kapatma_emri = None
                         try:
-                            exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                            kapatma_emri = exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                            kapatilacak, params={"reduceOnly": True})
                             time.sleep(1)
                             basarili = True
@@ -1232,17 +1309,26 @@ def manage():
                             log.error(f"[TP{tp_index+1}] {sym}: {e}")
 
                         if basarili:
-                            gross_dilim = (price - entry) * kapatilacak if direction == "long" else (entry - price) * kapatilacak
+                            gercek_fiyat, komisyon = gercek_dolus_bilgisi_al(kapatma_emri or {}, sym, price)
+                            gross_dilim = (gercek_fiyat - entry) * kapatilacak if direction == "long" else (entry - gercek_fiyat) * kapatilacak
+                            gross_dilim -= komisyon
                             gunluk_pnl_ekle(gross_dilim)
 
-                            # ── v16.3: KADEMELİ SL YÜKSELTME (ratchet) ──
+                            # ── v16.4: KADEMELİ SL YÜKSELTME (ratchet) ──
                             # Eskiden SL sadece TP1'de girişe (breakeven) çekiliyordu, sonraki
                             # TP'lerde sabit kalıyordu. Şimdi HER TP'de SL bir önceki TP
                             # seviyesine çekiliyor — TP2 vurulunca SL, TP1 fiyatına; TP3
                             # vurulunca SL, TP2 fiyatına... Böylece fiyat geri dönerse bile
                             # önceki TP'lerin kârı da korunmuş oluyor, sadece "başa baş" değil.
                             # SL asla GERİYE (daha riskli yöne) alınmaz — sadece iyileşirse uygulanır.
-                            yeni_sl = entry if tp_index == 0 else tp_liste[tp_index - 1]
+                            # v16.4: TP1 sonrası artık TAM girişe değil, küçük bir tampon payı
+                            # kadar altına (long) / üstüne (short) çekiliyor — anlık gürültüyle
+                            # hemen kapanmasın diye.
+                            if tp_index == 0:
+                                yeni_sl = entry * (1 - TP1_BREAKEVEN_TAMPON_PCT) if direction == "long" \
+                                          else entry * (1 + TP1_BREAKEVEN_TAMPON_PCT)
+                            else:
+                                yeni_sl = tp_liste[tp_index - 1]
                             mevcut_sl = trade_state[sym]["sl"]
                             sl_iyilesti = (direction == "long" and yeni_sl > mevcut_sl) or \
                                           (direction == "short" and yeni_sl < mevcut_sl)
@@ -1264,13 +1350,16 @@ def manage():
                                 mesaj += " | 📈 Kalan büyük dilim TRAILING moduna geçti"
                             tg(mesaj)
 
-                            # ── SL güncelleme bildirimi (breakeven ilk TP'de, sonrakilerde kâr kilitleme) ──
+                            # ── SL güncelleme bildirimi (breakeven+tampon ilk TP'de, sonrakilerde kâr kilitleme) ──
                             if sl_iyilesti:
                                 kalan_qty_sonrasi = max(qty - kapatilacak, 0)
                                 if tp_index == 0:
-                                    tg(f"🔒 {sym} STOP artık GİRİŞ fiyatında (breakeven) — "
-                                       f"şu ana kadar kilitlenen kâr≈{kilitlenen_kar:+.2f}$, "
-                                       f"bu noktadan sonra işlem en kötü ihtimalle başa baş kapanır")
+                                    maks_ek_risk = abs(entry - yeni_sl) * kalan_qty_sonrasi
+                                    tg(f"🔒 {sym} STOP artık giriş civarında (%{TP1_BREAKEVEN_TAMPON_PCT*100:.1f} "
+                                       f"tampon payıyla, {yeni_sl:.8f}) — şu ana kadar kilitlenen kâr≈"
+                                       f"{kilitlenen_kar:+.2f}$. Küçük bir geri çekilmede işlem hemen "
+                                       f"kapanmaz, TP2'ye doğru devam edebilir; en kötü ihtimalle bu "
+                                       f"STOP'ta ek≈-{maks_ek_risk:.2f}$ kontrollü risk oluşur")
                                 else:
                                     ek_kar = (yeni_sl - entry) * kalan_qty_sonrasi if direction == "long" \
                                               else (entry - yeni_sl) * kalan_qty_sonrasi
@@ -1296,8 +1385,9 @@ def manage():
 
                     if geri_cekilme_tetiklendi:
                         kapandi_mi = False
+                        kapatma_emri = None
                         try:
-                            exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
+                            kapatma_emri = exchange.create_market_order(sym, "sell" if direction == "long" else "buy",
                                                            qty, params={"reduceOnly": True})
                             time.sleep(1)
                             guncel = exchange.fetch_positions([sym])
@@ -1309,7 +1399,9 @@ def manage():
                             tg(f"⚠️ {sym} trailing kapanışı doğrulanamadı, tekrar denenecek")
                             continue
 
-                        gross_dilim = (price - entry) * qty if direction == "long" else (entry - price) * qty
+                        gercek_fiyat, komisyon = gercek_dolus_bilgisi_al(kapatma_emri or {}, sym, price)
+                        gross_dilim = (gercek_fiyat - entry) * qty if direction == "long" else (entry - gercek_fiyat) * qty
+                        gross_dilim -= komisyon
                         gunluk_pnl_ekle(gross_dilim)
 
                         with state_lock:
@@ -1320,7 +1412,7 @@ def manage():
                            f"TOPLAM işlem PnL≈{toplam_pnl:+.2f}$")
                         trade_log_kaydet({
                             "symbol": sym, "direction": direction, "entry": entry,
-                            "exit": price, "pnl": toplam_pnl, "sonuc": "TRAILING_KAPANDI",
+                            "exit": gercek_fiyat, "pnl": toplam_pnl, "sonuc": "TRAILING_KAPANDI",
                             "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                         })
 
@@ -1489,10 +1581,10 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.3) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.4) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
-    durumu_telegramdan_yukle()  # v16.3: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
+    durumu_telegramdan_yukle()  # v16.4: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
     acilista_pozisyonlari_dogrula()
     acik_pozisyonlara_kademeli_sl_uygula()
 
@@ -1504,7 +1596,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.3 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
+        "🔖 VERSİYON: v16.4 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
