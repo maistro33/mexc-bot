@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.8 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
+🔖 VERSİYON: v16.9 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -87,6 +87,16 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
          gönderiyordu — borsadaki gerçek emir de sonradan dolunca AYNI
          dilim İKİ KEZ kapanabiliyordu (TP1'den hemen sonra pozisyonun
          beklenenden hızlı tükenmesinin olası sebebi).
+  12. YENİ (v16.9) — 3-BİLEŞENLİ TREND TEYİDİ: Eski teyit kuralı sadece
+      son 2 tane 4h/1h mumun tepe/dip kıyaslamasına bakıyordu — bu kısa
+      vadeli gürültüye çok açıktı. İki gerçek örnekte bu netleşti: TRIA
+      (genel trend sert düşüşteydi, filtre doğru reddetti) ve BEAT (genel
+      trend yine düşüşteydi ama filtre 2 mumluk kıpırdanmayla yanlışlıkla
+      onay verdi, SL'e gitti). Yeni kural üç bileşene bakıyor — LONG için
+      üçü de sağlanmalı: (1) fiyat 4h MA20'nin üstünde, (2) son 5 tane 4h
+      mumun en az 3'ü yükselişte kapanmış, (3) 1h RSI > 40. SHORT için
+      tersi uygulanır. Amaç: kısa vadeli gürültüye karşı daha dayanıklı,
+      büyük resme bakan bir teyit (trend_teyidi_yeterli_mi fonksiyonu).
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -840,6 +850,30 @@ def calc_bollinger_yuzdeB(kapaniş_listesi, period=20, std_mult=2.0):
     return float(yuzdeB.iloc[-1]) if not pd.isna(yuzdeB.iloc[-1]) else None
 
 
+def calc_sma(kapaniş_listesi, period=20):
+    """Basit hareketli ortalama (v16.9 — MA20 teyit kuralı için)."""
+    import pandas as pd
+    s = pd.Series(kapaniş_listesi)
+    orta = s.rolling(period).mean()
+    son = orta.iloc[-1]
+    return float(son) if not pd.isna(son) else None
+
+
+def calc_rsi(kapaniş_listesi, period=14):
+    """Standart RSI (v16.9 — MA20 teyit kuralı için, 3. bileşen)."""
+    import pandas as pd
+    s = pd.Series(kapaniş_listesi)
+    fark = s.diff()
+    kazanc = fark.clip(lower=0)
+    kayip = -fark.clip(upper=0)
+    ort_kazanc = kazanc.rolling(period).mean()
+    ort_kayip = kayip.rolling(period).mean()
+    rs = ort_kazanc / ort_kayip.replace(0, 0.0001)
+    rsi = 100 - (100 / (1 + rs))
+    son = rsi.iloc[-1]
+    return float(son) if not pd.isna(son) else None
+
+
 def deneysel_gozlem_hesapla(sym):
     """
     DENEYSEL (henüz filtre DEĞİL, sadece gözlem): karar ağacı analizinde
@@ -865,41 +899,82 @@ def deneysel_gozlem_hesapla(sym):
 
 def trend_teyidi_yeterli_mi(sym, direction):
     """
-    FuturesKripto kanalının 49 geçmiş sinyalinin analizinden çıkan bulgu —
-    kanal LONG önerdiğinde, sinyal anında 4h'de zaten YÜKSELİŞ teyitliyse
-    ve 1h'de DÜŞÜŞTE değilse başarı oranı belirgin yüksek (TP grubunda
-    %79.5 4h-yükseliş, SL grubunda sadece %44.4). Bu şart sağlanmıyorsa
-    sinyali atlıyoruz.
+    v16.9 — ÜÇ BİLEŞENLİ TEYİT (eski 2-mum kıyaslamasının yerine geçti).
 
-    NOT: Bu, kanalın gerçek stratejisini çözdüğümüz anlamına gelmiyor —
-    sadece görece zayıf görünen bir alt kümeyi eleyen bir koruma filtresi.
-    Örneklem (49) küçük, kesin bir garanti değil.
+    ESKİ KURAL (v16-v16.8) sadece son 2 tane 4h/1h mumun tepe/dip
+    kıyaslamasına bakıyordu (h4_high[-1] > h4_high[-2] gibi). Bu, ÇOK KISA
+    vadeli gürültüye açıktı — iki somut gerçek örnekte yanlış karar verdi:
+      - TRIA/USDT: genel trend SERT DÜŞÜŞTEYDİ (sonunda öyle de çıktı,
+        sıçrama geri çöktü) ama filtre "4h yükseliş teyitli değil" deyip
+        DOĞRU ret vermişti — bu örnekte filtre aslında haklıydı.
+      - BEAT/USDT: genel trend yine SERT DÜŞÜŞTEYDİ (art arda alçalan
+        4h tepeler) ama son 2 mumdaki ufak bir kıpırdanma yüzünden filtre
+        "teyit sağlandı" deyip LONG açtı — SL'e doğru gitti. Burada filtre
+        YANLIŞ onay vermişti, çünkü sadece 2 muma bakıp büyük resmi (haftalık
+        düşüş) kaçırdı.
+
+    YENİ KURAL — büyük resme bakan, kısa vadeli gürültüye karşı daha
+    dayanıklı 3 bileşen; LONG için ÜÇÜ DE sağlanmalı:
+      1) FİYAT 4h MA20'NİN ÜSTÜNDE (genel trend konumu — tek mum değil,
+         20 mumluk ortalamaya göre nerede olduğumuz)
+      2) SON 5 TANE 4h MUMUN EN AZ 3'Ü YÜKSELİŞTE KAPANMIŞ (kapanış >
+         açılış) — kısa vadeli eğilim, tek mumun gürültüsüne takılmasın
+      3) 1h RSI > 40 — momentum zayıf değil (49 sinyal analizinde TP
+         grubunda ort. 47.6, SL grubunda ort. 38.1 çıkmıştı)
+    SHORT için üçü de ters çevrilmiş hâliyle uygulanır (MA20 altında,
+    5 mumun en az 3'ü düşüşte kapanmış, 1h RSI < 60).
+
+    NOT: Bu hâlâ kanalın gerçek stratejisini çözdüğümüz anlamına gelmiyor,
+    sadece göreceli zayıf görünen durumları eleyen bir koruma filtresi.
+    Temel dayandığı örneklem (49 sinyal) küçük, kesin bir garanti değil.
     """
     try:
-        h4 = get_candles(sym, "4h", 10)
-        h1 = get_candles(sym, "1h", 10)
-        if not h4 or not h1 or len(h4) < 3 or len(h1) < 3:
+        h4 = get_candles(sym, "4h", 30)
+        h1 = get_candles(sym, "1h", 30)
+        if not h4 or not h1 or len(h4) < 21 or len(h1) < 15:
             return True, "veri yetersiz, filtre uygulanamadı — geçildi"
 
-        h4_high = [c[2] for c in h4]; h4_low = [c[3] for c in h4]
-        h1_high = [c[2] for c in h1]; h1_low = [c[3] for c in h1]
+        h4_kapanis = [c[4] for c in h4]
+        h4_acilis = [c[1] for c in h4]
+        h1_kapanis = [c[4] for c in h1]
+
+        fiyat = h4_kapanis[-1]
+        ma20 = calc_sma(h4_kapanis, period=20)
+        rsi_1h = calc_rsi(h1_kapanis, period=14)
+        if ma20 is None or rsi_1h is None:
+            return True, "gösterge hesaplanamadı, filtre uygulanamadı — geçildi"
+
+        # ── son 5 mumun kaçı yükselişte/düşüşte kapanmış ──
+        son_5_acilis = h4_acilis[-5:]
+        son_5_kapanis = h4_kapanis[-5:]
+        yukselis_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k > a)
+        dusus_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k < a)
 
         if direction == "long":
-            h4_yukselis = h4_high[-1] > h4_high[-2]
-            h1_dusus = h1_low[-1] < h1_low[-2]
-            if not h4_yukselis:
-                return False, "4h yükseliş teyitli değil"
-            if h1_dusus:
-                return False, "1h düşüşte"
-        else:
-            h4_dusus = h4_low[-1] < h4_low[-2]
-            h1_yukselis = h1_high[-1] > h1_high[-2]
-            if not h4_dusus:
-                return False, "4h düşüş teyitli değil"
-            if h1_yukselis:
-                return False, "1h yükselişte"
+            ma20_ustunde = fiyat > ma20
+            mum_egilimi_yeterli = yukselis_sayisi >= 3
+            rsi_yeterli = rsi_1h > 40
 
-        return True, "teyit sağlandı"
+            if not ma20_ustunde:
+                return False, f"4h fiyat MA20'nin altında ({fiyat:.8f} < {ma20:.8f})"
+            if not mum_egilimi_yeterli:
+                return False, f"son 5 mumun sadece {yukselis_sayisi}'i yükselişte kapandı (min 3 gerekli)"
+            if not rsi_yeterli:
+                return False, f"1h RSI zayıf ({rsi_1h:.1f} <= 40)"
+        else:
+            ma20_altinda = fiyat < ma20
+            mum_egilimi_yeterli = dusus_sayisi >= 3
+            rsi_yeterli = rsi_1h < 60
+
+            if not ma20_altinda:
+                return False, f"4h fiyat MA20'nin üstünde ({fiyat:.8f} > {ma20:.8f})"
+            if not mum_egilimi_yeterli:
+                return False, f"son 5 mumun sadece {dusus_sayisi}'i düşüşte kapandı (min 3 gerekli)"
+            if not rsi_yeterli:
+                return False, f"1h RSI zayıf ({rsi_1h:.1f} >= 60)"
+
+        return True, (f"teyit sağlandı (MA20:{ma20:.8f}, mum:{yukselis_sayisi if direction=='long' else dusus_sayisi}/5, "
+                       f"1h_RSI:{rsi_1h:.1f})")
     except Exception as e:
         return True, f"kontrol hatası ({e}), geçildi"
 
@@ -1773,7 +1848,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.8 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
+        "🔖 VERSİYON: v16.9 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
