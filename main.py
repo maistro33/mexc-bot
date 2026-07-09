@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.6 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
+🔖 VERSİYON: v16.7 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -72,7 +72,7 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
       reduceOnly LİMİT emri açılış anında borsaya gönderiliyor — borsanın
       kendi eşleştirme motoru fiyata değen her anı yakalar. Emir
       konulamazsa o seviye eski (fiyat karşılaştırma) yönteme döner.
-  11. YENİ (v16.6) — İKİ KRİTİK DÜZELTME (gerçek para kaybına yol açmış
+  11. YENİ (v16.7) — İKİ KRİTİK DÜZELTME (gerçek para kaybına yol açmış
       hatalar, LAB işleminde tespit edildi):
       a) YARIŞ DURUMU: trade_state artık pozisyon açılır açılmaz HEMEN
          yazılıyor — eskiden TP limit emirleri (6 borsa API çağrısı, 1-3+
@@ -350,7 +350,7 @@ def safe(x):
 
 def gercek_dolus_bilgisi_al(emir, sym, tahmini_fiyat):
     """
-    v16.6 DÜZELTME: PnL hesapları eskiden `exchange.fetch_ticker()` ile
+    v16.7 DÜZELTME: PnL hesapları eskiden `exchange.fetch_ticker()` ile
     ÖNCEDEN çekilen tahmini fiyatı kullanıyordu — ama piyasa emrinin
     GERÇEK doluş fiyatı (özellikle STOP/hızlı hareket eden coinlerde)
     bundan belirgin farklı olabiliyor (UAI örneğinde botun -0.01$ dediği
@@ -408,7 +408,7 @@ def durumu_diske_yaz():
             json.dump(veri, f)
     except Exception as e:
         log.warning(f"[KALICI] Diske yazma başarısız: {e}")
-    durumu_telegrama_yedekle()  # v16.6: diskin yanında Telegram'a da yedekle
+    durumu_telegrama_yedekle()  # v16.7: diskin yanında Telegram'a da yedekle
 
 
 def durumu_diskten_yukle():
@@ -425,7 +425,7 @@ def durumu_diskten_yukle():
 
 
 # ════════════════════════════════════════════
-# TELEGRAM ÜZERİNDEN KALICI YEDEK (v16.6)
+# TELEGRAM ÜZERİNDEN KALICI YEDEK (v16.7)
 # ════════════════════════════════════════════
 # Railway gibi platformlarda /data klasörü KALICI DEĞİLDİR — Volume
 # eklenmediyse her redeploy'da (kod güncellemesi, yeniden başlatma) diskteki
@@ -583,7 +583,7 @@ def acilista_pozisyonlari_dogrula():
 
 def acik_pozisyonlara_kademeli_sl_uygula():
     """
-    v16.6: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
+    v16.7: Bot yeniden başlatıldığında (yeni kod deploy edildiğinde), o an
     ZATEN AÇIK olan işlemler de yeni kademeli SL (ratchet) mantığından
     faydalansın diye — eski sürümde açılmış ve bazı TP'leri çoktan vurmuş
     bir işlem, yeni kurala göre SL'in NEREDE OLMASI GEREKTİĞİNİ hesaplar
@@ -610,7 +610,7 @@ def acik_pozisyonlara_kademeli_sl_uygula():
             continue  # henüz hiç TP vurulmamış — yeni kuralın etkileyeceği bir şey yok
 
         # ── tp_index burada "şimdiye kadar KAÇ TP VURULDU" sayısıdır (T).
-        # T==1 (sadece TP1 vuruldu) → SL, girişin biraz altına/üstüne (v16.6
+        # T==1 (sadece TP1 vuruldu) → SL, girişin biraz altına/üstüne (v16.7
         # tampon payı) çekilmeli — TAM breakeven değil. T>=2 (TP2, TP3, ...
         # vuruldu) → SL, BİR ÖNCEKİ TP'nin fiyatına çekilmeli: tp_liste[T-2]
         # (0-index). Bu, manage() içindeki canlı mantıkla BİREBİR aynı
@@ -765,7 +765,7 @@ TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa
 # büyük bir dilim tepeye yakın fiyattan çıkabiliyor.
 TP_DILIM_ORANLARI = [0.10, 0.15, 0.15, 0.15, 0.15, 0.10]  # toplam 0.80, kalan 0.20 trailing'e
 
-# ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.6 İNCE AYAR) ──
+# ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.7 İNCE AYAR) ──
 # Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
 # gürültüyle (komisyon/slippage dahil neredeyse anlık) girişe dokunsa
 # işlem hemen kapanıyordu (EPIC, UAI örneklerinde 23 saniyede kapanan
@@ -773,7 +773,10 @@ TP_DILIM_ORANLARI = [0.10, 0.15, 0.15, 0.15, 0.15, 0.10]  # toplam 0.80, kalan 0
 # konuyor — küçük bir geri çekilmede işlem kapanmıyor, TP2'ye doğru nefes
 # alma şansı buluyor. Bedeli: SL bu bölgede vurulursa artık tam sıfır
 # değil, ufak ve KONTROLLÜ bir risk (aşağıdaki yüzde kadar) üstleniliyor.
-TP1_BREAKEVEN_TAMPON_PCT = 0.004  # %0.4 — küçük ve kontrollü bir nefes payı
+TP1_BREAKEVEN_TAMPON_PCT = 0.0015  # v16.7: %0.4'ten %0.15'e küçültüldü — 09 Temmuz
+                        # verisinde 6 işlemde TP1-tampon kaynaklı küçük zarar oluştu
+                        # (~-2.93$ toplam). Nefes payı korunuyor (EPIC/UAI'deki anlık
+                        # kapanma sorunu geri gelmesin diye) ama zarar riski küçültüldü.
 
 # ── TRAILING STOP (son TP sonrası) ──
 TRAILING_GERI_CEKILME_PCT = 0.025  # v16: 1.5%'ten yükseltildi — trend'e nefes
@@ -977,7 +980,7 @@ def sinyali_isle(sinyal):
             bekleyen_sinyaller[sym] = {
                 "sinyal": sinyal, "gozlem_str": gozlem_str, "eklenme_zamani": time.time(),
             }
-        durumu_telegrama_yedekle()  # v16.6: kuyruk da kaybolmasın diye yedekle
+        durumu_telegrama_yedekle()  # v16.7: kuyruk da kaybolmasın diye yedekle
         if zaten_bekliyor:
             tg(f"⏭️ {sym} {direction.upper()} hâlâ teyitsiz ({teyit_mesaj}) — bekleme süresi yenilendi"
                f"{gozlem_str}")
@@ -1187,8 +1190,8 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
         tg(f"⚠️ {sym} giriş emri başarısız: {e}")
         return
 
-    # ── v16.6 KRİTİK DÜZELTME: trade_state artık TP limit emirlerini
-    # KOYMADAN ÖNCE yazılıyor. Eskiden (v16.6) TP emirleri önce koyuluyordu
+    # ── v16.7 KRİTİK DÜZELTME: trade_state artık TP limit emirlerini
+    # KOYMADAN ÖNCE yazılıyor. Eskiden (v16.7) TP emirleri önce koyuluyordu
     # (6 ayrı borsa API çağrısı, 1-3+ saniye sürebiliyor) — bu süre boyunca
     # pozisyon borsada AÇIKTI ama trade_state'te HENÜZ YOKTU. Eğer manage()
     # döngüsü arka planda tam bu pencerede pozisyonu tarasaydı, "kayıtlı
@@ -1205,7 +1208,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
         }
     durumu_diske_yaz()
 
-    # ── v16.6: TP'LER ARTIK GERÇEK LİMİT EMRİ OLARAK BORSAYA KONUYOR ──
+    # ── v16.7: TP'LER ARTIK GERÇEK LİMİT EMRİ OLARAK BORSAYA KONUYOR ──
     # Eskiden bot her 5 saniyede bir anlık fiyatı TP hedefiyle karşılaştırıyordu
     # — fiyat iki kontrol arasında hızlıca TP'ye değip geri çekilirse (kısa bir
     # fitil), bot o anı KAÇIRABİLİYORDU (VELVET örneğinde olduğu gibi). Şimdi
@@ -1234,7 +1237,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
 
 def tp_limit_emirlerini_koy(sym, direction, tp_liste, orijinal_qty):
     """
-    v16.6: Her TP seviyesi için borsaya gerçek reduceOnly LİMİT emri koyar.
+    v16.7: Her TP seviyesi için borsaya gerçek reduceOnly LİMİT emri koyar.
     Döner: [{"id": emir_id_veya_None, "fiyat":..., "miktar":...}, ...] —
     tp_liste ile aynı sırada, aynı uzunlukta.
     """
@@ -1262,7 +1265,7 @@ def tp_limit_emirlerini_koy(sym, direction, tp_liste, orijinal_qty):
 
 def tp_emirlerini_iptal_et(sym, tp_emirleri, tp_index):
     """
-    v16.6: SL/trailing/manuel kapatmadan ÖNCE, henüz vurulmamış TP limit
+    v16.7: SL/trailing/manuel kapatmadan ÖNCE, henüz vurulmamış TP limit
     emirlerini iptal eder — böylece pozisyon kapandıktan sonra borsada
     "yetim" reduceOnly emirler kalıp kafa karıştırmaz veya hataya yol açmaz.
     """
@@ -1325,7 +1328,7 @@ def manage():
                 if sl_vuruldu:
                     kapandi_mi = False
                     kapatma_emri = None
-                    # ── v16.6: pozisyonu kapatmadan ÖNCE, henüz vurulmamış TP limit
+                    # ── v16.7: pozisyonu kapatmadan ÖNCE, henüz vurulmamış TP limit
                     # emirlerini iptal et — yoksa pozisyon kapandıktan sonra borsada
                     # "yetim" reduceOnly emirler kalır. ──
                     tp_emirlerini_iptal_et(sym, durum.get("tp_emirleri", []), durum.get("tp_index", 0))
@@ -1349,7 +1352,7 @@ def manage():
                         onceki_gerceklesen = trade_state[sym].get("gerceklesen_pnl", 0)
                     toplam_pnl_stop = gross + onceki_gerceklesen
                     gunluk_pnl_ekle(gross)
-                    # ── v16.6: STOP'un GERÇEK ZARAR mı, TP1 TAMPON BÖLGESİNDE mi (küçük
+                    # ── v16.7: STOP'un GERÇEK ZARAR mı, TP1 TAMPON BÖLGESİNDE mi (küçük
                     # kontrollü risk), yoksa KADEMELİ SL YÜKSELTMESİ (kâr kilitleme)
                     # sonucu mu olduğunu ayırt et. "Riskli taraf" fark yüzdesi: SL,
                     # girişin ne kadar aleyhte tarafında (pozitifse aleyhte). ──
@@ -1386,7 +1389,7 @@ def manage():
                 tp_index = durum.get("tp_index", 0)
                 tp_emirleri = durum.get("tp_emirleri", [])
 
-                # ── TP KADEMELERI (v16.6: önce GERÇEK limit emrinin durumuna bakılır —
+                # ── TP KADEMELERI (v16.7: önce GERÇEK limit emrinin durumuna bakılır —
                 # borsanın kendi eşleştirme motoru fiyata değen her anı yakalar, bizim
                 # 5 saniyelik döngümüzün o an bakıp bakmadığından bağımsız. Emir yoksa
                 # veya kontrol edilemezse, eski fiyat-karşılaştırma yöntemine (fallback)
@@ -1421,7 +1424,7 @@ def manage():
                             log.warning(f"[TP_KONTROL] {sym} TP{tp_index+1} emri kontrol edilemedi, "
                                         f"fiyat karşılaştırmasına dönülüyor: {e}")
 
-                    # ── v16.6 KRİTİK DÜZELTME: ÇİFTE KAPANMA ÖNLEME ──
+                    # ── v16.7 KRİTİK DÜZELTME: ÇİFTE KAPANMA ÖNLEME ──
                     # Eskiden: emir_id varsa ama "dolmuş" görünmüyorsa (durum='open'),
                     # kod yine de fiyat karşılaştırmasına DÜŞÜYORDU — fiyat hedefe
                     # ulaşmış ama emrin durumu henüz güncellenmemişse, biz KENDİ
@@ -1475,14 +1478,14 @@ def manage():
                             gross_dilim -= komisyon
                             gunluk_pnl_ekle(gross_dilim)
 
-                            # ── v16.6: KADEMELİ SL YÜKSELTME (ratchet) ──
+                            # ── v16.7: KADEMELİ SL YÜKSELTME (ratchet) ──
                             # Eskiden SL sadece TP1'de girişe (breakeven) çekiliyordu, sonraki
                             # TP'lerde sabit kalıyordu. Şimdi HER TP'de SL bir önceki TP
                             # seviyesine çekiliyor — TP2 vurulunca SL, TP1 fiyatına; TP3
                             # vurulunca SL, TP2 fiyatına... Böylece fiyat geri dönerse bile
                             # önceki TP'lerin kârı da korunmuş oluyor, sadece "başa baş" değil.
                             # SL asla GERİYE (daha riskli yöne) alınmaz — sadece iyileşirse uygulanır.
-                            # v16.6: TP1 sonrası artık TAM girişe değil, küçük bir tampon payı
+                            # v16.7: TP1 sonrası artık TAM girişe değil, küçük bir tampon payı
                             # kadar altına (long) / üstüne (short) çekiliyor — anlık gürültüyle
                             # hemen kapanmasın diye.
                             if tp_index == 0:
@@ -1743,10 +1746,10 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.6) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.7) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
-    durumu_telegramdan_yukle()  # v16.6: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
+    durumu_telegramdan_yukle()  # v16.7: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
     acilista_pozisyonlari_dogrula()
     acik_pozisyonlara_kademeli_sl_uygula()
 
@@ -1758,7 +1761,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.6 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
+        "🔖 VERSİYON: v16.7 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
