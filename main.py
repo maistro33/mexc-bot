@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.9 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi)
+🔖 VERSİYON: v16.10 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -97,6 +97,18 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
       mumun en az 3'ü yükselişte kapanmış, (3) 1h RSI > 40. SHORT için
       tersi uygulanır. Amaç: kısa vadeli gürültüye karşı daha dayanıklı,
       büyük resme bakan bir teyit (trend_teyidi_yeterli_mi fonksiyonu).
+  13. YENİ (v16.10) — 3 SABİT TP + ERKEN GENİŞ TRAİLİNG: TP6'ya nadiren
+      ulaşıldığı (kullanıcı gözlemi) için trailing pratikte neredeyse hiç
+      devreye girmiyordu — MORPHO gibi TP4'te dönen işlemlerde kalan
+      pozisyon hep sabit TP4-6 hedeflerini beklerken SL'e geri dönüyordu.
+      Şimdi sadece TP1-TP2-TP3 sabit hedef (garanti kâr, kademeli SL
+      yükseltmesiyle); TP3 vurulunca kalan BÜYÜK pay (%55) hemen trailing
+      moduna geçiyor. Trailing'in erken başlaması nedeniyle geri çekilme
+      payı da %2.5'ten %3.5'e genişletildi (henüz olgunlaşmamış bir
+      hareketten erken çıkılmasın diye). Ayrıca trailing sırasında stop
+      her belirgin şekilde (≥%1) yukarı çekildiğinde artık ayrı bir
+      bildirim gönderiliyor (eskiden sessizce güncelleniyordu, sadece
+      kapanışta haber veriliyordu).
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -765,15 +777,21 @@ def gercek_bakiye_yeterli_mi(gereken_marj):
 TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa yayılıyor,
                         # TP1 artık piyasa gürültüsüyle değil gerçek hareketle tetiklensin
 
-# ── TP DİLİM AĞIRLIKLARI (v16 YENİ) ──
-# Eskiden her TP'de EŞİT pay kapanıyordu (qty / kalan_seviye_sayisi). Bu,
-# güçlü trend'lerde (örn. M/USDT +%10.9 hareket, ama ortalama çıkış sadece
-# +%6.16 yakaladı) kârın büyük kısmını erken, düşük fiyatlarda realize
-# ediyordu. Şimdi ilk ve son TP'lerde KÜÇÜK pay, ortadakilerde normal pay
-# kapanıyor; TOPLAM %75 — kalan %25 (eskiden ~%14.3) trailing'e ayrılıyor.
-# Böylece hem erken güvenlik kâr alınıyor hem de trend devam ederse daha
-# büyük bir dilim tepeye yakın fiyattan çıkabiliyor.
-TP_DILIM_ORANLARI = [0.10, 0.15, 0.15, 0.15, 0.15, 0.10]  # toplam 0.80, kalan 0.20 trailing'e
+# ── TP DİLİM AĞIRLIKLARI (v16.10 — 3 SABİT TP + GENİŞ TRAİLİNG) ──
+# Eskiden 6 TP vardı, trailing SADECE TP6 (son TP) vurulunca devreye
+# giriyordu — ama TP6'ya nadiren ulaşılıyor (kullanıcı gözlemi: "1-2 defa
+# geldi"). Bu, trailing mekanizmasının pratikte neredeyse hiç çalışmaması
+# demekti; MORPHO gibi TP4'te dönen işlemlerde kalan pozisyon hep sabit
+# hedefleri beklerken SL'e (kademeli yükseltilmiş de olsa) geri dönüyordu.
+# ŞİMDİ: sadece İLK 3 TP sabit hedef olarak kullanılıyor (garanti kâr —
+# TP1/TP2/TP3 vurulunca dilim kapanır, SL kademeli yükselir). TP3
+# vurulduğunda kalan BÜYÜK pay (%55) artık TP4/TP5/TP6'yı beklemeden
+# HEMEN trailing moduna geçiyor — böylece büyük hareketler çok daha sık
+# yakalanabiliyor, sadece nadir görülen TP6'ya bağlı kalınmıyor.
+# (Kanaldan/otomatik hesaplamadan gelen TP4-6 değerleri artık pozisyon
+# yönetiminde kullanılmıyor, sadece TP1-3 hedef alınıyor — bkz. asil_islemi_ac.)
+TP_DILIM_ORANLARI = [0.15, 0.15, 0.15]  # toplam 0.45, kalan 0.55 trailing'e
+TP_SAYISI_KULLANILAN = 3  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
 
 # ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.8 İNCE AYAR) ──
 # Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
@@ -788,10 +806,19 @@ TP1_BREAKEVEN_TAMPON_PCT = 0.0015  # v16.8: %0.4'ten %0.15'e küçültüldü —
                         # (~-2.93$ toplam). Nefes payı korunuyor (EPIC/UAI'deki anlık
                         # kapanma sorunu geri gelmesin diye) ama zarar riski küçültüldü.
 
-# ── TRAILING STOP (son TP sonrası) ──
-TRAILING_GERI_CEKILME_PCT = 0.025  # v16: 1.5%'ten yükseltildi — trend'e nefes
-                                    # payı verildi, büyük hareketlerde (M/USDT
-                                    # gibi) trailing çok erken kapanmasın diye
+# ── TRAILING STOP (TP3 sonrası — v16.10'da TP6'dan TP3'e çekildi) ──
+TRAILING_GERI_CEKILME_PCT = 0.035  # v16.10: %2.5'ten %3.5'e yükseltildi — trailing
+                                    # artık çok daha ERKEN (TP3'te) başladığı için,
+                                    # henüz olgunlaşmamış bir hareketten erken/gürültüyle
+                                    # çıkmasın diye nefes payı genişletildi ("kaçırmayalım,
+                                    # hemen kapanmasın" — kullanıcı talebi)
+
+# ── TRAILING SIRASINDA STOP YÜKSELME BİLDİRİMİ (v16.10 YENİ) ──
+# Trailing aktifken, fiyat her yeni zirve yaptığında efektif stop seviyesi
+# de yükseliyor (zirve × (1-pay)) — ama bunu HER 5 saniyelik kontrolde
+# bildirmek spam olur. Bu yüzden sadece zirve, bir önceki BİLDİRİLEN
+# zirveden en az bu yüzde kadar ilerlediğinde yeni bir mesaj gönderiliyor.
+TRAILING_BILDIRIM_ESIK_PCT = 0.01  # zirve en az %1 ilerlemeden yeni bildirim yok
 
 # ── TP1'İ AYRICA GENİŞLETME (v16.8) ──
 # VANRY/THE gibi örneklerde TP1 çok yakın olduğu için ya çok küçük kâr
@@ -1233,10 +1260,18 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
     # ölçekliyoruz (v16: 2.0x, TP6 ~0.8R'den ~1.6R'ye çıkıyor). ──
     if sinyal.get("tp_liste"):
         tp_ham = sinyal["tp_liste"]
-        sinyal["tp_liste"] = tp_olcekle(entry_hedef, sl, tp_ham, direction)
-        tg(f"📐 TP'ler {TP_OLCEK_CARPANI}x ölçeklendi:\n"
+        tp_olcekli_tam = tp_olcekle(entry_hedef, sl, tp_ham, direction)
+        # ── v16.10: sadece İLK 3 TP sabit hedef olarak kullanılıyor —
+        # TP3'ten sonra kalan pozisyon TP4-6'yı beklemeden trailing'e
+        # geçiyor (bkz. TP_DILIM_ORANLARI notu). Ham/ölçekli TP4-6 hâlâ
+        # Telegram mesajında bilgi amaçlı gösteriliyor ama pozisyon
+        # yönetiminde (limit emirleri, tp_index takibi) kullanılmıyor.
+        sinyal["tp_liste"] = tp_olcekli_tam[:TP_SAYISI_KULLANILAN]
+        tg(f"📐 TP'ler {TP_OLCEK_CARPANI}x ölçeklendi (ilk {TP_SAYISI_KULLANILAN}'ü sabit hedef, "
+           f"sonrası trailing'e bırakıldı):\n"
            f"Ham: {[round(x,8) for x in tp_ham]}\n"
-           f"Ölçekli: {[round(x,8) for x in sinyal['tp_liste']]}")
+           f"Ölçekli (tam): {[round(x,8) for x in tp_olcekli_tam]}\n"
+           f"Kullanılan (TP1-{TP_SAYISI_KULLANILAN}): {[round(x,8) for x in sinyal['tp_liste']]}")
 
     amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
     if not amount:
@@ -1592,6 +1627,7 @@ def manage():
                                 if son_tp:
                                     trade_state[sym]["trailing_aktif"] = True
                                     trade_state[sym]["trailing_zirve"] = price
+                                    trade_state[sym]["trailing_son_bildirim_zirve"] = price
                                 kilitlenen_kar = trade_state[sym]["gerceklesen_pnl"]
                             durumu_diske_yaz()
 
@@ -1619,7 +1655,7 @@ def manage():
                                        f"ek≈{ek_kar:+.2f}$ daha kilitlenmiş olacak (zaten kesinleşen "
                                        f"{kilitlenen_kar:+.2f}$'ın üstüne)")
 
-                # ── TRAILING STOP (son TP sonrası kalan dilim için) ──
+                # ── TRAILING STOP (TP3 sonrası kalan büyük dilim için — v16.10) ──
                 elif durum.get("trailing_aktif"):
                     zirve = durum.get("trailing_zirve", entry)
                     if direction == "long":
@@ -1633,6 +1669,25 @@ def manage():
                         with state_lock:
                             trade_state[sym]["trailing_zirve"] = yeni_zirve
                         durumu_diske_yaz()
+
+                        # ── v16.10 YENİ: Stop her belirgin şekilde yukarı çekildiğinde
+                        # (zirve son bildirilen seviyeden en az TRAILING_BILDIRIM_ESIK_PCT
+                        # kadar ilerlediyse) bildirim gönder — her 5sn'lik ufak kıpırdanmada
+                        # değil, sadece anlamlı bir ilerlemede (spam olmasın diye). ──
+                        son_bildirim_zirve = durum.get("trailing_son_bildirim_zirve", entry)
+                        if direction == "long":
+                            ilerleme_pct = (yeni_zirve - son_bildirim_zirve) / son_bildirim_zirve if son_bildirim_zirve else 0
+                            efektif_stop = yeni_zirve * (1 - TRAILING_GERI_CEKILME_PCT)
+                        else:
+                            ilerleme_pct = (son_bildirim_zirve - yeni_zirve) / son_bildirim_zirve if son_bildirim_zirve else 0
+                            efektif_stop = yeni_zirve * (1 + TRAILING_GERI_CEKILME_PCT)
+
+                        if ilerleme_pct >= TRAILING_BILDIRIM_ESIK_PCT:
+                            with state_lock:
+                                trade_state[sym]["trailing_son_bildirim_zirve"] = yeni_zirve
+                            durumu_diske_yaz()
+                            tg(f"📈 {sym} TRAILING STOP yükseldi — yeni zirve:{yeni_zirve:.8f}, "
+                               f"efektif stop≈{efektif_stop:.8f} (%{TRAILING_GERI_CEKILME_PCT*100:.1f} pay ile)")
 
                     if geri_cekilme_tetiklendi:
                         kapandi_mi = False
@@ -1848,7 +1903,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.9 (agirlikli TP + genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi)\n\n"
+        "🔖 VERSİYON: v16.10 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
