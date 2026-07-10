@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.12 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal)
+🔖 VERSİYON: v16.13 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + volatilite bazli scalp SLTP)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -136,6 +136,18 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
          kanaldan gelenler de açılsın, teyitli". İkinci kanaldan gelen
          sinyaller BİRİNCİ kanalla AYNI teyit akışından (4h/1h
          trend_teyidi_yeterli_mi) geçiyor, hiçbir ayrıcalığı yok.
+  16. YENİ (v16.13) — SCALP SL/TP ARTIK VOLATİLİTE BAZLI (kullanıcı
+      gözlemi: "TP1 çok erken geliyor"): Öz tarama sinyalleri eskiden
+      entry/sl=None ile gönderilip botun SABİT %2 SL varsayımına
+      (basit format) düşüyordu — TP1 de bunun üzerinden ~%0.6 gibi ÇOK
+      DAR bir mesafeye kuruluyordu, scalp'in kısa vadeli gürültüsünde
+      saniyeler içinde tetikleniyordu. Şimdi SL, coin'in GERÇEK ÖLÇÜLEN
+      3m volatilitesine göre hesaplanıyor (volatilite×1.5, min %0.4, maks
+      MAX_SL_PCT); TP'ler de R-katları olarak (0.6R/1.2R/2.0R) NİHAİ
+      şekilde hesaplanıp asil_islemi_ac'e gönderiliyor — kanalın
+      tp_olcekle mantığından (2x + TP1 ekstra 1.5x) BİLEREK muaf
+      tutuluyor, yoksa TP1 bu sefer ~1.8R gibi TERSİNE aşırı geniş
+      olurdu.
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -1232,10 +1244,51 @@ def oz_tarama_loop():
                 if yon is None or yon == onceki_yon:
                     continue
 
-                sinyal = {"symbol": sym, "direction": yon, "entry": None, "sl": None,
-                          "tp_liste": [], "kaynak_etiket": "oz_tarama"}
+                # ── v16.13 DÜZELTME: "TP1 çok erken geliyor" — eskiden öz
+                # tarama sinyalleri entry/sl=None ile gönderilip botun
+                # SABİT %2 SL varsayımına (HIZLI_SL_PCT) düşüyordu, TP1 de
+                # bunun üzerinden ~%0.6 gibi ÇOK DAR bir mesafeye kuruluyordu
+                # — bu kanal sinyalleri (4h/1h) için makul olsa da, scalp'in
+                # kısa vadeli gürültüsünde saniyeler/dakikalar içinde
+                # tetikleniyordu (asıl hareket gelişmeden erken çıkılıyordu).
+                # Şimdi SL, coin'in GERÇEK ÖLÇÜLEN 3m volatilitesine göre
+                # hesaplanıyor — durgun bir coin dar SL alır, hareketli bir
+                # coin daha geniş SL alır, TP'ler de buna ORANTILI kalır
+                # (R-katları şeklinde, sabit yüzde değil).
+                try:
+                    ticker = exchange.fetch_ticker(sym)
+                    entry_fiyat = safe(ticker.get("last"))
+                except Exception as e:
+                    log.warning(f"[OZ_TARAMA] {sym} fiyat alınamadı: {e}")
+                    continue
+                if entry_fiyat <= 0:
+                    continue
+
+                volatilite_pct = oz_tarama_volatilite_hesapla(sym)
+                if volatilite_pct is None:
+                    continue
+                # SL mesafesi = ölçülen volatilitenin ~1.5 katı, ama en az
+                # %0.4 ve en çok MAX_SL_PCT (%3) ile sınırlı — hem çok dar
+                # (gürültüyle anında vurulan) hem çok geniş (aşırı risk) SL
+                # engellenmiş oluyor.
+                sl_pct = max(0.004, min(volatilite_pct / 100 * 1.5, MAX_SL_PCT))
+                sl_fiyat = entry_fiyat * (1 - sl_pct) if yon == "long" else entry_fiyat * (1 + sl_pct)
+                risk = abs(entry_fiyat - sl_fiyat)
+                # TP'ler R-katları: 0.6R / 1.2R / 2.0R — kanal sinyallerindeki
+                # tp_olcekle'nin TEKRAR ölçeklemesini istemiyoruz (bkz.
+                # asil_islemi_ac'teki "oz_tarama zaten final" kontrolü),
+                # bu yüzden burada NİHAİ fiyatları doğrudan veriyoruz.
+                oranlar = [0.6, 1.2, 2.0]
+                if yon == "long":
+                    tp_liste = [entry_fiyat + o * risk for o in oranlar]
+                else:
+                    tp_liste = [entry_fiyat - o * risk for o in oranlar]
+
+                sinyal = {"symbol": sym, "direction": yon, "entry": entry_fiyat, "sl": sl_fiyat,
+                          "tp_liste": tp_liste, "kaynak_etiket": "oz_tarama"}
                 tg(f"🤖 [ÖZ TARAMA/SCALP] {sym} {yon.upper()} adayı bulundu (taze teyit, "
-                   f"{OZ_TARAMA_ANA_TF}/{OZ_TARAMA_MOMENTUM_TF}) — açılıyor...")
+                   f"{OZ_TARAMA_ANA_TF}/{OZ_TARAMA_MOMENTUM_TF}, volatilite:%{volatilite_pct:.2f}, "
+                   f"SL mesafesi:%{sl_pct*100:.2f}) — açılıyor...")
                 sinyali_isle(sinyal)
 
                 with state_lock:
@@ -1511,8 +1564,13 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
     # ── ORTAK NOKTA: hem gerçek kanal sinyali hem basit format buraya gelir.
     # Kanalın ham TP oranları (0.1-0.8R) matematiksel olarak zayıftı
     # (başabaş için %72 kazanma gerekiyordu) — aynı şekli koruyarak
-    # ölçekliyoruz (v16: 2.0x, TP6 ~0.8R'den ~1.6R'ye çıkıyor). ──
-    if sinyal.get("tp_liste"):
+    # ölçekliyoruz (v16: 2.0x, TP6 ~0.8R'den ~1.6R'ye çıkıyor).
+    # v16.13: ÖZ TARAMA (scalp) sinyalleri BURAYA GİRMİYOR — onlar zaten
+    # oz_tarama_loop() içinde NİHAİ R-katlarıyla (0.6R/1.2R/2.0R) hesaplanmış
+    # geliyor. Bunları da kanal mantığıyla TEKRAR ölçeklersek (2.0x + TP1
+    # ekstra 1.5x) TP1 hedefi ~1.8R gibi aşırı GENİŞ bir mesafeye çıkardı —
+    # tam ters yönde bir hataya (TP1 hiç gelmeyen bir pozisyon) yol açardı. ──
+    if sinyal.get("tp_liste") and sinyal.get("kaynak_etiket") != "oz_tarama":
         tp_ham = sinyal["tp_liste"]
         tp_olcekli_tam = tp_olcekle(entry_hedef, sl, tp_ham, direction)
         # ── v16.10: sadece İLK 3 TP sabit hedef olarak kullanılıyor —
@@ -1526,6 +1584,10 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
            f"Ham: {[round(x,8) for x in tp_ham]}\n"
            f"Ölçekli (tam): {[round(x,8) for x in tp_olcekli_tam]}\n"
            f"Kullanılan (TP1-{TP_SAYISI_KULLANILAN}): {[round(x,8) for x in sinyal['tp_liste']]}")
+    elif sinyal.get("tp_liste") and sinyal.get("kaynak_etiket") == "oz_tarama":
+        sinyal["tp_liste"] = sinyal["tp_liste"][:TP_SAYISI_KULLANILAN]
+        tg(f"📐 Scalp TP'leri (R-katları, ölçeklenmeden kullanılıyor): "
+           f"{[round(x,8) for x in sinyal['tp_liste']]}")
 
     amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
     if not amount:
@@ -2144,7 +2206,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.12) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.13) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2160,8 +2222,9 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.12 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + "
-        "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal)\n\n"
+        "🔖 VERSİYON: v16.13 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + "
+        "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + "
+        "volatilite bazli scalp SLTP)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal(lar): {', '.join('@'+k for k in KANAL_LISTESI)}\n"
