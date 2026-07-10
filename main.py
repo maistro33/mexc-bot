@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.13 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + volatilite bazli scalp SLTP)
+🔖 VERSİYON: v16.14 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + volatilite bazli scalp SLTP)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -148,6 +148,12 @@ hareketin sadece %6.16'sının yakalanması gözlemlendi):
       tp_olcekle mantığından (2x + TP1 ekstra 1.5x) BİLEREK muaf
       tutuluyor, yoksa TP1 bu sefer ~1.8R gibi TERSİNE aşırı geniş
       olurdu.
+  17. YENİ (v16.14) — TP SAYISI 3'TEN 4'E ÇIKARILDI: Kullanıcı talebiyle
+      TP1-TP2-TP3-TP4 artık sabit hedef (her biri pozisyonun %15'i,
+      toplam %60 — kalan %40 trailing'e), TP4 vurulunca trailing devreye
+      giriyor (TP3'ten sonra değil). Scalp (öz tarama) tarafındaki R-katı
+      listesi de buna uyacak şekilde 4 elemana çıkarıldı: 0.5R/1.0R/1.6R/
+      2.4R.
 
 GÜVENLİK (önceki botlardan taşınan, kanıtlanmış mekanizmalar):
   - API şifresi ortam değişkeninden okunur, koda yazılmaz
@@ -841,8 +847,8 @@ TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa
 # yakalanabiliyor, sadece nadir görülen TP6'ya bağlı kalınmıyor.
 # (Kanaldan/otomatik hesaplamadan gelen TP4-6 değerleri artık pozisyon
 # yönetiminde kullanılmıyor, sadece TP1-3 hedef alınıyor — bkz. asil_islemi_ac.)
-TP_DILIM_ORANLARI = [0.15, 0.15, 0.15]  # toplam 0.45, kalan 0.55 trailing'e
-TP_SAYISI_KULLANILAN = 3  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
+TP_DILIM_ORANLARI = [0.15, 0.15, 0.15, 0.15]  # toplam 0.60, kalan 0.40 trailing'e
+TP_SAYISI_KULLANILAN = 4  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
 
 # ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.8 İNCE AYAR) ──
 # Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
@@ -1274,11 +1280,13 @@ def oz_tarama_loop():
                 sl_pct = max(0.004, min(volatilite_pct / 100 * 1.5, MAX_SL_PCT))
                 sl_fiyat = entry_fiyat * (1 - sl_pct) if yon == "long" else entry_fiyat * (1 + sl_pct)
                 risk = abs(entry_fiyat - sl_fiyat)
-                # TP'ler R-katları: 0.6R / 1.2R / 2.0R — kanal sinyallerindeki
-                # tp_olcekle'nin TEKRAR ölçeklemesini istemiyoruz (bkz.
-                # asil_islemi_ac'teki "oz_tarama zaten final" kontrolü),
-                # bu yüzden burada NİHAİ fiyatları doğrudan veriyoruz.
-                oranlar = [0.6, 1.2, 2.0]
+                # TP'ler R-katları: 0.5R / 1.0R / 1.6R / 2.4R (v16.14: TP4
+                # eklendi, kanal tarafındaki TP1-4 yapısıyla tutarlı olsun
+                # diye) — kanal sinyallerindeki tp_olcekle'nin TEKRAR
+                # ölçeklemesini istemiyoruz (bkz. asil_islemi_ac'teki
+                # "oz_tarama zaten final" kontrolü), bu yüzden burada NİHAİ
+                # fiyatları doğrudan veriyoruz.
+                oranlar = [0.5, 1.0, 1.6, 2.4]
                 if yon == "long":
                     tp_liste = [entry_fiyat + o * risk for o in oranlar]
                 else:
@@ -2206,7 +2214,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.13) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.14) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2222,7 +2230,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.13 (3 sabit TP + erken genis trailing + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.14 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + "
         "volatilite bazli scalp SLTP)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
