@@ -618,7 +618,15 @@ def trend_teyidi_yeterli_mi(sym, direction):
 # ════════════════════════════════════════════
 OZ_TARAMA_AKTIF = os.getenv("OZ_TARAMA_AKTIF", "true").lower() == "true"
 OZ_TARAMA_ARALIK_DK = int(os.getenv("OZ_TARAMA_ARALIK_DK", "20"))
-OZ_TARAMA_MIN_HACIM_USDT = float(os.getenv("OZ_TARAMA_MIN_HACIM_USDT", "5000000"))
+# v16.15: BTC/ETH/SOL gibi buyuk, "hantal" coinler kullanicinin ISTEMEDIGI
+# turdendi - oz tarama bunlari hacim siralamasinda her zaman en uste
+# aldigi icin surekli onlar taranıyordu. Kullanici hareketli/yeni/"scalp"
+# coinleri istiyor - bunlar buyuk coinlerden cok daha kucuk hacimli olur.
+# Sabit bir MIN yerine bir HACIM BANDI (araligi) kullanarak hem cok
+# likit-devasa coinleri (BTC/ETH/SOL, yuzlerce milyon-milyar $ hacim)
+# hem de asiri dusuk likiditeli/riskli coinleri disarida birakiyoruz.
+OZ_TARAMA_MIN_HACIM_USDT = float(os.getenv("OZ_TARAMA_MIN_HACIM_USDT", "1000000"))
+OZ_TARAMA_MAX_HACIM_USDT = float(os.getenv("OZ_TARAMA_MAX_HACIM_USDT", "5000000"))
 OZ_TARAMA_WATCHLIST_BOYUTU = int(os.getenv("OZ_TARAMA_WATCHLIST_BOYUTU", "25"))
 
 oz_tarama_gecmis = {}
@@ -636,7 +644,11 @@ def oz_tarama_watchlist_getir():
         if not sym.endswith("/USDT:USDT"):
             continue
         hacim = safe(t.get("quoteVolume"))
-        if hacim >= OZ_TARAMA_MIN_HACIM_USDT:
+        # v16.15: artik sabit bir MIN degil, bir BANT (araligi) kontrolu -
+        # hem BTC/ETH/SOL gibi devasa hacimli buyuk coinler hem de asiri
+        # dusuk likiditeli coinler disarida kaliyor, sadece orta banttaki
+        # ("hareketli/yeni/scalp") coinler taraniyor.
+        if OZ_TARAMA_MIN_HACIM_USDT <= hacim <= OZ_TARAMA_MAX_HACIM_USDT:
             adaylar.append((sym, hacim))
     adaylar.sort(key=lambda x: x[1], reverse=True)
     ham_liste = [sym for sym, _ in adaylar[:OZ_TARAMA_WATCHLIST_BOYUTU * 2]]  # v16.14: RWA elemeden once biraz genis al
@@ -677,9 +689,9 @@ def oz_tarama_loop():
     if not OZ_TARAMA_AKTIF:
         log.info("[OZ_TARAMA] Devre disi (OZ_TARAMA_AKTIF=false)")
         return
-    tg(f"Oz tarama AKTIF - her {OZ_TARAMA_ARALIK_DK} dk'da bir en likit "
-       f"{OZ_TARAMA_WATCHLIST_BOYUTU} coin taranacak (min 24h hacim: "
-       f"${OZ_TARAMA_MIN_HACIM_USDT:,.0f})")
+    tg(f"Oz tarama AKTIF - her {OZ_TARAMA_ARALIK_DK} dk'da bir hacim bandindaki "
+       f"(${OZ_TARAMA_MIN_HACIM_USDT:,.0f} - ${OZ_TARAMA_MAX_HACIM_USDT:,.0f}) "
+       f"en fazla {OZ_TARAMA_WATCHLIST_BOYUTU} coin taranacak (buyuk coinler haric)")
     while True:
         try:
             time.sleep(OZ_TARAMA_ARALIK_DK * 60)
@@ -1556,7 +1568,7 @@ def panel_sunucu_baslat():
 # BASLANGIC
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SINYAL KOPYALAMA BOTU (v16.14) BASLIYOR...")
+    print("TELEGRAM SINYAL KOPYALAMA BOTU (v16.15) BASLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()
@@ -1575,13 +1587,14 @@ if __name__ == "__main__":
 
     tg(
         "TELEGRAM SINYAL KOPYALAMA BOTU\n"
-        "VERSIYON: v16.14 (risk-bazli pozisyon + likidite kontrolu + guvenli komut ayristirma)\n\n"
+        "VERSIYON: v16.15 (hareketli/scalp coin hacim bandi + RWA filtresi + risk-bazli pozisyon + likidite kontrolu)\n\n"
         f"Gercek bakiye: {bakiye_str} | Kaldirac: {LEV}x\n"
         f"Islem basi risk: bakiyenin %{RISK_YUZDESI*100:.0f}'i (tavan: bakiyenin {MAKS_KALDIRAC_CARPANI}x'i notional)\n"
         f"Asgari 24s hacim (islem acma sarti): ${MIN_HACIM_USDT_ISLEM_ACMA:,.0f}\n"
         f"Dinlenen kanal: @{KANAL_KULLANICI_ADI}\n"
         f"Oz tarama: {'AKTIF' if OZ_TARAMA_AKTIF else 'KAPALI'} "
-        f"(her {OZ_TARAMA_ARALIK_DK} dk, en likit {OZ_TARAMA_WATCHLIST_BOYUTU} coin, "
+        f"(her {OZ_TARAMA_ARALIK_DK} dk, hacim bandi ${OZ_TARAMA_MIN_HACIM_USDT:,.0f}-${OZ_TARAMA_MAX_HACIM_USDT:,.0f}, "
+        f"en fazla {OZ_TARAMA_WATCHLIST_BOYUTU} coin, buyuk coinler haric, RWA/ETF haric, "
         f"ayni MAX_POS={MAX_POS} havuzunu paylasir)\n"
         f"Gunluk zarar limiti: ${MAX_GUNLUK_ZARAR}\n"
         f"Teyit bekleme suresi: {TEYIT_BEKLEME_DAKIKA} dk\n\n"
