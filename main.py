@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA + AUTO TRADER BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.10-AUTO
+🔖 VERSİYON: v16.10-AUTO (load_marks() düzeltmesi)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu gibi) dinler,
 gelen sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile açar.
@@ -864,11 +864,11 @@ def manuel_pozisyon_kapat(sym):
         "symbol": sym,
         "direction": direction,
         "entry": giriş_fiyat,
-        " kapatılma_fiyat ": dolus_fiyat,
-        " miktar ": qty,
-        " pnl_usdt ": pnl_usdt,
-        " komisyon ": komisyon,
-        " zaman": time.time()
+        "kapanış_fiyat": dolus_fiyat,
+        "miktar": qty,
+        "pnl_usdt": pnl_usdt,
+        "komisyon": komisyon,
+        "zaman": time.time()
     }
     trade_log_kaydet(kayit)
 
@@ -996,14 +996,16 @@ def sinyali_isle(sinyal):
 
 
 # ════════════════════════════════════════════
-# ANA BAŞLATMA
+# ANA BAŞLATMA (load_marks() hatası düzeltmesi)
 # ════════════════════════════════════════════
 def main():
     trade_log_yukle()
     durumu_diskten_yukle()
     durumu_telegramdan_yukle()
 
-    exchange.load_marks()
+    # Bitget/ccxt versiyonunda load_marks() olmayabilir, direkt atla
+    # exchange.load_marks()
+
     acilista_pozisyonlari_dogrula()
     acik_pozisyonlara_kademeli_sl_uygula()
 
