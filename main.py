@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-VERSİYON: v16.12 (risk-bazli pozisyon boyutu + likidite kontrolu + guvenli
+VERSİYON: v16.14 (risk-bazli pozisyon boyutu + likidite kontrolu + guvenli
 komut ayristirma + 3 sabit TP + erken genis trailing + teyit bekleme +
 kademeli SL yukseltme + 3-bilesenli trend teyidi + oz tarama)
 
-v16.12 DEGISIKLIKLERI (v16.11'e gore, guvenlik/risk odakli):
+v16.14 DEGISIKLIKLERI (v16.11'e gore, guvenlik/risk odakli):
   1. KRITIK GUVENLIK DUZELTMESI - YANLIS POZITIF: Komutsuz kisa mesaj
      ayristiricisinda "ac" kelimesi v16'da opsiyoneldi. Test edildi:
      "btc long term hodl" gibi siradan sohbet cumleleri bile "coin+LONG"
@@ -14,12 +14,22 @@ v16.12 DEGISIKLIKLERI (v16.11'e gore, guvenlik/risk odakli):
   2. RISK BAZLI POZISYON BOYUTU: Sabit $10 marj x 10x yerine, SL
      mesafesine ters orantili, gercek zamanli bakiyeden hesaplanan boyut.
   3. LIKIDITE KONTROLU TUM KAYNAKLARA GENISLETILDI (kanal/manuel/oz-tarama).
+  4. RWA (TOKENIZE HISSE/ETF) FILTRESI: Bitget, kripto disinda tokenize
+     hisse/ETF urunlerini (orn. KORU = Direxion South Korea ETF, SPCX =
+     SpaceX) ayni ".../USDT:USDT" formatinda listeliyor - oz tarama bunu
+     kripto sanip acabiliyordu. Gercek bir ornekte (KORU) SL vurulduktan
+     dakikalar icinde fiyat sert dustu sonra sicradi (whipsaw) - kripto-
+     odakli gostergeler bu urunlerde ayni guvenilirlikte olmayabilir.
+     Bitget API'sindeki "isRwa" alani kullanilarak TUM kaynaklarda
+     (kanal/manuel/oz-tarama) bu urunlerin ISLEM ACILMASI engellendi.
+     NOT: sadece yeni islem acmayi etkiler, acik pozisyonlarin TP/SL
+     takibine dokunmaz.
 
 Bu kanalin gecmis performansi hakkinda hicbir veri yok - dogrulanmadi.
 Bu kod hicbir kar garantisi vermez.
 """
 import os, re, time, json, threading, logging
-import ccxt, telebot
+import ccxt, telebot, requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -339,7 +349,7 @@ KISA_MESAJ_UST_SINIR = 30
 def hizli_sinyal_ayristir(metin):
     """
     Basit format: 'MAGMA LONG AC', 'edge short ac' gibi. "ac" kelimesi
-    v16.12'de komut_metni_ayikla icinde ZORUNLU kilindi (bkz. asagida).
+    v16.14'de komut_metni_ayikla icinde ZORUNLU kilindi (bkz. asagida).
     """
     m = re.search(r"\b([A-Za-z][A-Za-z0-9]{1,10})\b.*?\b(LONG|SHORT)\b", metin, re.IGNORECASE)
     if not m:
@@ -369,7 +379,7 @@ def sinyal_ayristir(metin):
 
 
 # ════════════════════════════════════════════
-# v16.12 - RISK BAZLI POZISYON BOYUTU (trader mantigi)
+# v16.14 - RISK BAZLI POZISYON BOYUTU (trader mantigi)
 # ════════════════════════════════════════════
 RISK_YUZDESI = float(os.getenv("RISK_YUZDESI", "0.05"))  # kullanici talebiyle: %5
 MAKS_KALDIRAC_CARPANI = float(os.getenv("MAKS_KALDIRAC_CARPANI", "3.0"))
@@ -419,11 +429,57 @@ def gercek_bakiye_al():
 
 
 # ════════════════════════════════════════════
-# v16.12 - LIKIDITE KONTROLU (artik TUM kaynaklara uygulaniyor)
+# v16.14 - RWA (TOKENIZE HISSE/ETF) FILTRESI
+# ════════════════════════════════════════════
+# Bitget, kripto disinda tokenize edilmis hisse/ETF urunlerini de (orn.
+# KORU = Direxion Daily MSCI South Korea ETF, SPCX = SpaceX) ayni
+# ".../USDT:USDT" perpetual formatinda listeliyor - oz tarama ve kanal
+# sinyalleri bunlari sikca kripto ile karistirabiliyor. Gercek bir
+# ornekte (KORU) SL vurulduktan dakikalar icinde fiyat once %5+ dustu
+# sonra sert geri sicradi (whipsaw) - bu tur urunler farkli bir
+# volatilite/likidite paternine sahip olabiliyor ve MA20+RSI gibi
+# kripto-odakli gostergeler bunlarda ayni guvenilirlikte olmayabilir.
+# Bitget'in kendi API'si her sozlesme icin "isRwa" alanini veriyor -
+# bunu kullanarak TUM kaynaklarda (kanal/manuel/oz-tarama) bu urunlerin
+# ISLEM ACILMASINI engelliyoruz. NOT: bu filtre sadece YENI islem acmayi
+# etkiler - zaten ACIK olan pozisyonlarin TP/SL takibine (manage()) hic
+# dokunmaz, onlar sembol turunden bagimsiz normal sekilde yonetilir.
+_rwa_sembol_cache = {"veri": None, "zaman": 0}
+RWA_CACHE_SURESI_SN = 3600  # sozlesme listesi sik degismez, 1 saat cache yeterli
+
+def _rwa_sembol_listesi_getir():
+    simdi = time.time()
+    if _rwa_sembol_cache["veri"] is not None and (simdi - _rwa_sembol_cache["zaman"]) < RWA_CACHE_SURESI_SN:
+        return _rwa_sembol_cache["veri"]
+    try:
+        r = requests.get("https://api.bitget.com/api/v2/mix/market/contracts",
+                          params={"productType": "USDT-FUTURES"}, timeout=15)
+        data = r.json().get("data", [])
+        rwa_set = {c["symbol"] for c in data if c.get("isRwa") == "YES"}
+        _rwa_sembol_cache["veri"] = rwa_set
+        _rwa_sembol_cache["zaman"] = simdi
+        return rwa_set
+    except Exception as e:
+        log.warning(f"[RWA_FILTRE] Sozlesme listesi alinamadi: {e}")
+        return _rwa_sembol_cache["veri"] or set()
+
+
+def rwa_mi(sym):
+    """sym formati 'KORU/USDT:USDT' -> Bitget formati 'KORUUSDT' karsilastirilir."""
+    coin = sym.split("/")[0]
+    bitget_sym = f"{coin}USDT"
+    return bitget_sym in _rwa_sembol_listesi_getir()
+
+
+# ════════════════════════════════════════════
+# v16.14 - LIKIDITE KONTROLU (artik TUM kaynaklara uygulaniyor)
 # ════════════════════════════════════════════
 MIN_HACIM_USDT_ISLEM_ACMA = float(os.getenv("MIN_HACIM_USDT_ISLEM_ACMA", "3000000"))
 
 def likidite_yeterli_mi(sym):
+    # v16.14: RWA/tokenize hisse-ETF urunleri kripto degil - erken reddedilir.
+    if rwa_mi(sym):
+        return False, "RWA/tokenize hisse-ETF urunu (kripto degil) - islem acilmiyor"
     try:
         t = exchange.fetch_ticker(sym)
         hacim = safe(t.get("quoteVolume"))
@@ -583,7 +639,10 @@ def oz_tarama_watchlist_getir():
         if hacim >= OZ_TARAMA_MIN_HACIM_USDT:
             adaylar.append((sym, hacim))
     adaylar.sort(key=lambda x: x[1], reverse=True)
-    return [sym for sym, _ in adaylar[:OZ_TARAMA_WATCHLIST_BOYUTU]]
+    ham_liste = [sym for sym, _ in adaylar[:OZ_TARAMA_WATCHLIST_BOYUTU * 2]]  # v16.14: RWA elemeden once biraz genis al
+    # v16.14: RWA/tokenize hisse-ETF urunlerini watchlist'ten en basta cikar
+    temiz_liste = [sym for sym in ham_liste if not rwa_mi(sym)]
+    return temiz_liste[:OZ_TARAMA_WATCHLIST_BOYUTU]
 
 
 def oz_tarama_aday_degerlendir(sym):
@@ -715,7 +774,7 @@ def sinyali_isle(sinyal):
     sym = sinyal["symbol"]
     direction = sinyal["direction"]
 
-    # v16.12: LIKIDITE KONTROLU tum kaynaklar icin en basta yapiliyor.
+    # v16.14: LIKIDITE KONTROLU tum kaynaklar icin en basta yapiliyor.
     likit_ok, likit_mesaj = likidite_yeterli_mi(sym)
     if not likit_ok:
         tg(f"{sym} {direction.upper()} atlandi - {likit_mesaj}")
@@ -857,7 +916,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
            f"Ham: {[round(x,8) for x in tp_ham]}\n"
            f"Kullanilan: {[round(x,8) for x in sinyal['tp_liste']]}")
 
-    # v16.12: RISK BAZLI POZISYON BOYUTU - gercek zamanli bakiye ile
+    # v16.14: RISK BAZLI POZISYON BOYUTU - gercek zamanli bakiye ile
     gercek_bakiye = gercek_bakiye_al()
     amount, notional, boyut_mesaji = pozisyon_boyutu_hesapla(entry_hedef, sl, gercek_bakiye)
     if not amount:
@@ -1296,7 +1355,7 @@ if bot:
 
     def komut_metni_ayikla(metin):
         """
-        v16.12 GUVENLIK DUZELTMESI: "ac" kelimesi YENIDEN ZORUNLU.
+        v16.14 GUVENLIK DUZELTMESI: "ac" kelimesi YENIDEN ZORUNLU.
         v16'da bu kelime opsiyonel yapilmisti - ama test edildi ve
         dogrulandi: "btc long term hodl" gibi TAMAMEN SIRADAN sohbet
         cumleleri de "coin+LONG" kalibina uydugu icin GERCEK 10x
@@ -1321,7 +1380,7 @@ if bot:
     @bot.message_handler(func=lambda m: m.text and not m.text.startswith("/"))
     def komutsuz_hizli_giris(msg):
         """
-        "edge long ac"  -> EDGE LONG acar ("ac" ZORUNLU - v16.12)
+        "edge long ac"  -> EDGE LONG acar ("ac" ZORUNLU - v16.14)
         "edge kapat"    -> EDGE pozisyonunu kapatir
         "kapat"         -> tek acik pozisyon varsa onu kapatir
         """
@@ -1497,7 +1556,7 @@ def panel_sunucu_baslat():
 # BASLANGIC
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SINYAL KOPYALAMA BOTU (v16.12) BASLIYOR...")
+    print("TELEGRAM SINYAL KOPYALAMA BOTU (v16.14) BASLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()
@@ -1516,7 +1575,7 @@ if __name__ == "__main__":
 
     tg(
         "TELEGRAM SINYAL KOPYALAMA BOTU\n"
-        "VERSIYON: v16.12 (risk-bazli pozisyon + likidite kontrolu + guvenli komut ayristirma)\n\n"
+        "VERSIYON: v16.14 (risk-bazli pozisyon + likidite kontrolu + guvenli komut ayristirma)\n\n"
         f"Gercek bakiye: {bakiye_str} | Kaldirac: {LEV}x\n"
         f"Islem basi risk: bakiyenin %{RISK_YUZDESI*100:.0f}'i (tavan: bakiyenin {MAKS_KALDIRAC_CARPANI}x'i notional)\n"
         f"Asgari 24s hacim (islem acma sarti): ${MIN_HACIM_USDT_ISLEM_ACMA:,.0f}\n"
