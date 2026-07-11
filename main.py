@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.31 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.32 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -402,7 +402,7 @@ if bot:
     @bot.callback_query_handler(func=lambda call: call.data.startswith("anigir|") or call.data.startswith("anipas|"))
     def ani_hareket_buton_yaniti(call):
         """
-        v16.31: "Ani Hareket" bildirimindeki ✅ Gir / ❌ Pas butonlarına
+        v16.32: "Ani Hareket" bildirimindeki ✅ Gir / ❌ Pas butonlarına
         basılınca çalışır. "Gir" -> normal basit-format akışıyla (SL/TP
         otomatik hesaplanarak) pozisyon açılır. "Pas" -> sadece mesaj
         güncellenir, hiçbir şey açılmaz.
@@ -493,6 +493,20 @@ def gercek_dolus_bilgisi_al(emir, sym, tahmini_fiyat):
     hesaba katılmamıştı). Bu fonksiyon, emrin borsadaki GERÇEK ortalama
     doluş fiyatını ve komisyonunu almaya çalışır; alamazsa tahmini fiyata
     geri döner (hesap yine çalışır, sadece daha az kesin olur).
+
+    v16.32 DÜZELTME: LABUSDT örneğinde bu fonksiyon YİNE tahmini fiyata
+    (bu durumda SL tetikleme fiyatına) düşmüştü — borsa kaydı gerçek
+    kapanışın +0.80$ olduğunu gösterirken bot +0.12$ hesaplamıştı, aradaki
+    fark tam da "gerçek fiyat yerine tahmini/tetikleme fiyatı kullanıldı"
+    farkıydı. Kök sebep: `emir` (create_market_order'ın DÖNÜŞ değeri) genelde
+    piyasa emri gönderildiği ANDA dönüyor, borsa henüz doluşu işlememiş
+    olabiliyor — "average"/"price" alanları o an boş/yanlış geliyor.
+    fetch_order da bazen (özellikle Bitget'te market emirlerinde) hemen
+    ardından sorgulanınca güncel veri döndürmeyebiliyor. Şimdi ÜÇÜNCÜ bir
+    yöntem eklendi: fetch_my_trades ile sembolün EN SON gerçekleşen
+    işlemi(leri) çekilip GERÇEK ortalama doluş fiyatı hesaplanıyor — bu,
+    borsanın "trade" kaydı olduğu için en güvenilir kaynak. Ayrıca
+    fetch_order öncesi bekleme 0.5sn'den 1.5sn'ye çıkarıldı.
     """
     fiyat = safe(emir.get("average")) or safe(emir.get("price"))
     komisyon = 0.0
@@ -505,16 +519,36 @@ def gercek_dolus_bilgisi_al(emir, sym, tahmini_fiyat):
 
     if not fiyat:
         try:
-            time.sleep(0.5)
+            time.sleep(1.5)
             detay = exchange.fetch_order(emir.get("id"), sym)
             fiyat = safe(detay.get("average")) or safe(detay.get("price"))
             fee = detay.get("fee")
             if fee:
                 komisyon = safe(fee.get("cost"))
         except Exception as e:
-            log.warning(f"[DOLUS] {sym} emir detayı alınamadı, tahmini fiyata dönülüyor: {e}")
+            log.warning(f"[DOLUS] {sym} fetch_order başarısız: {e}")
 
     if not fiyat:
+        try:
+            islemler = exchange.fetch_my_trades(sym, limit=5)
+            emir_id = emir.get("id")
+            eslesen = [t for t in islemler if t.get("order") == emir_id] if emir_id else []
+            hedef_islemler = eslesen or islemler[-3:]  # id eşleşmezse en son birkaç işlemi kullan
+            if hedef_islemler:
+                toplam_deger = sum(safe(t.get("price")) * safe(t.get("amount")) for t in hedef_islemler)
+                toplam_miktar = sum(safe(t.get("amount")) for t in hedef_islemler)
+                if toplam_miktar > 0:
+                    fiyat = toplam_deger / toplam_miktar
+                    toplam_komisyon = sum(safe((t.get("fee") or {}).get("cost")) for t in hedef_islemler)
+                    if toplam_komisyon > 0:
+                        komisyon = toplam_komisyon
+                    log.info(f"[DOLUS] {sym} fiyat fetch_my_trades ile bulundu: {fiyat}")
+        except Exception as e:
+            log.warning(f"[DOLUS] {sym} fetch_my_trades başarısız: {e}")
+
+    if not fiyat:
+        log.warning(f"[DOLUS] {sym} borsadan gerçek fiyat hiçbir yöntemle alınamadı, "
+                    f"tahmini fiyata ({tahmini_fiyat}) dönülüyor — PnL raporu bu işlem için kesin olmayabilir")
         fiyat = tahmini_fiyat  # son çare: ticker tahmini
 
     return fiyat, komisyon
@@ -813,7 +847,7 @@ def acik_pozisyonlara_kademeli_sl_uygula():
 
 
 # ════════════════════════════════════════════
-# ANİ HAREKET TESPİTİ (v16.31) — "pump/dump yakalayıp Gir/Pas butonuyla sor"
+# ANİ HAREKET TESPİTİ (v16.32) — "pump/dump yakalayıp Gir/Pas butonuyla sor"
 # ════════════════════════════════════════════
 # Kullanıcı talebiyle: bot arka planda likit coinleri tarar, ani fiyat
 # sıçraması VEYA hacim patlaması yakalarsa, trend_teyidi_yeterli_mi()
@@ -824,7 +858,7 @@ ANI_HAREKET_TARAMA_AKTIF = os.getenv("ANI_HAREKET_TARAMA_AKTIF", "true").lower()
 ANI_HAREKET_WATCHLIST_BOYUTU = int(os.getenv("ANI_HAREKET_WATCHLIST_BOYUTU", "40"))
 ANI_HAREKET_FIYAT_PCT = float(os.getenv("ANI_HAREKET_FIYAT_PCT", "3.0"))       # % , 15dk penceresinde
 ANI_HAREKET_HACIM_CARPANI = float(os.getenv("ANI_HAREKET_HACIM_CARPANI", "3.0"))  # ortalamanın kaç katı
-ANI_HAREKET_TARAMA_ARALIK_SN = int(os.getenv("ANI_HAREKET_TARAMA_ARALIK_SN", "45"))  # v16.31: 90->45, daha hızlı yakalasın
+ANI_HAREKET_TARAMA_ARALIK_SN = int(os.getenv("ANI_HAREKET_TARAMA_ARALIK_SN", "45"))  # v16.32: 90->45, daha hızlı yakalasın
 ANI_HAREKET_COOLDOWN_DAKIKA = int(os.getenv("ANI_HAREKET_COOLDOWN_DAKIKA", "30"))  # aynı coin için tekrar uyarma araligi
 
 ani_hareket_son_uyari = {}   # {symbol: son_uyari_zamani}
@@ -834,7 +868,7 @@ ani_hareket_bekleyen = {}    # {callback_id_kisa: {"symbol":..., "direction":...
 
 def ani_hareket_tespit_et(sym):
     """
-    v16.31: CANLI ticker fiyatı (en güncel, mum kapanışını beklemez) ile
+    v16.32: CANLI ticker fiyatı (en güncel, mum kapanışını beklemez) ile
     15 dk önceki fiyat kıyaslanır — bu, "mum kapanana kadar bekleyip geç
     haber verme" gecikmesini ortadan kaldırır. Ayrıca son 2 tane 1m mumun
     HÂLÂ aynı yönde olup olmadığı kontrol edilir — hareket zaten tükenip
@@ -1064,7 +1098,7 @@ def hizli_sinyal_ayristir(metin):
     olmasa da çalışır. Giriş/SL kanal vermediği için, giriş anlık piyasa
     fiyatından alınır, SL sabit %2 ile hesaplanır.
 
-    v16.31: Bazı coinlerin GERÇEK temel sembolü tek harf/kısa (TUSDT ->
+    v16.32: Bazı coinlerin GERÇEK temel sembolü tek harf/kısa (TUSDT ->
     taban "T", BUSDT -> taban "B", USUSDT -> taban "US" vb.) — kullanıcı
     ekrandaki tam ismi ("tusdt") yazınca eskiden buna bir "USDT" DAHA
     ekleniyordu ("TUSDT/USDT:USDT" gibi geçersiz bir sembol oluşuyordu,
@@ -1322,7 +1356,7 @@ def deneysel_gozlem_hesapla(sym):
 def trend_teyidi_yeterli_mi(sym, direction):
     """
     v16.9 — ÜÇ BİLEŞENLİ TEYİT (eski 2-mum kıyaslamasının yerine geçti).
-    v16.31 — DÖRDÜNCÜ BİLEŞEN eklendi: 1h MUM YÖNÜ. EVAAUSDT örneğinde
+    v16.32 — DÖRDÜNCÜ BİLEŞEN eklendi: 1h MUM YÖNÜ. EVAAUSDT örneğinde
     açık bir çelişki yaşandı — 4h MA20 hâlâ derin negatifti (büyük bir
     çöküşün ortalamayı aşağı çekmesinden, GÜNCEL yönü yansıtmıyordu) ve
     1h RSI (42.4) henüz "60 altı" sınırını geçmemişti (RSI GECİKMELİ bir
@@ -1384,7 +1418,7 @@ def trend_teyidi_yeterli_mi(sym, direction):
         yukselis_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k > a)
         dusus_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k < a)
 
-        # ── v16.31: son 5 TANE 1h MUMUN yönü (RSI'ın gecikmesini yakalar) ──
+        # ── v16.32: son 5 TANE 1h MUMUN yönü (RSI'ın gecikmesini yakalar) ──
         son_5_acilis_1h = h1_acilis[-5:]
         son_5_kapanis_1h = h1_kapanis[-5:]
         yukselis_1h = sum(1 for a, k in zip(son_5_acilis_1h, son_5_kapanis_1h) if k > a)
@@ -2659,7 +2693,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.31) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.32) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2673,11 +2707,11 @@ if __name__ == "__main__":
     threading.Thread(target=panel_sunucu_baslat, daemon=True).start()
     threading.Thread(target=teyit_bekleme_loop, daemon=True).start()
     threading.Thread(target=oz_tarama_loop, daemon=True).start()  # v16.11: bot kendi coin de bulur
-    threading.Thread(target=ani_hareket_tarama_loop, daemon=True).start()  # v16.31: pump/dump + Gir/Pas butonu
+    threading.Thread(target=ani_hareket_tarama_loop, daemon=True).start()  # v16.32: pump/dump + Gir/Pas butonu
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.31 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.32 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
