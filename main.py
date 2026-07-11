@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.26 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + VOLATILITE SL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
+🔖 VERSİYON: v16.27 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -713,6 +713,57 @@ def acik_pozisyonlara_kademeli_sl_uygula():
                f"{mevcut_sl:.8f} → {onerilen_sl:.8f} (TP{tp_index} zaten vurulmuş durumdaydı)")
 
 
+def acik_pozisyonlarin_dar_sl_duzelt():
+    """
+    v16.27: acik_pozisyonlara_kademeli_sl_uygula() sadece EN AZ 1 TP
+    vurulmuş pozisyonları düzeltiyor (tp_index>0 şartı var) — henüz HİÇ
+    TP vurmamış (tp_index==0) pozisyonlara dokunmuyordu. Ama tam bu
+    kategoride gerçek bir hata vardı: v16.25-v16.26 arası açılan "basit
+    format" manuel işlemler, YANLIŞLIKLA 3dk'lık ultra-kısa scalp
+    volatilite ölçümüyle SL hesaplıyordu (WLDUSDT örneği: SL sadece
+    %0.40 — neredeyse anında gürültüyle vurulacak kadar dar).
+    Bu fonksiyon, henüz TP'si vurulmamış açık pozisyonlar için SL'i
+    GÜNCEL 1H volatiliteyle YENİDEN hesaplar; yeni hesap MEVCUTTAN DAHA
+    GENİŞ (daha güvenli, gürültüye dayanıklı) çıkarsa SL'i ona GENİŞLETİR.
+    Daraltma YAPMAZ (mevcut SL zaten yeterince genişse dokunulmaz) —
+    tek yönlü, sadece "tehlikeli derecede dar" durumu düzeltir.
+    """
+    with state_lock:
+        semboller = list(trade_state.keys())
+
+    for sym in semboller:
+        with state_lock:
+            durum = trade_state.get(sym)
+        if not durum:
+            continue
+
+        tp_index = durum.get("tp_index", 0)
+        entry = durum.get("entry")
+        direction = durum.get("direction")
+        mevcut_sl = durum.get("sl")
+
+        if tp_index != 0 or entry is None or direction is None or mevcut_sl is None:
+            continue  # zaten TP vurulmuşsa yukarıdaki kademeli fonksiyon ilgileniyor
+
+        mevcut_sl_pct = abs(entry - mevcut_sl) / entry
+        if mevcut_sl_pct >= 0.012:
+            continue  # zaten makul genişlikte (yeni tabanımızla aynı/üstü), dokunma
+
+        volatilite_pct = manuel_volatilite_hesapla(sym, tf="1h", mum_sayisi=20)
+        if volatilite_pct is None:
+            continue
+        yeni_sl_pct = max(0.012, min(volatilite_pct / 100 * 2.0, MAX_SL_PCT))
+        if yeni_sl_pct <= mevcut_sl_pct:
+            continue  # yeni hesap da darsa (olmamalı ama) eski SL'i koru
+
+        yeni_sl = entry * (1 - yeni_sl_pct) if direction == "long" else entry * (1 + yeni_sl_pct)
+        with state_lock:
+            trade_state[sym]["sl"] = yeni_sl
+        durumu_diske_yaz()
+        tg(f"🛠️ {sym} — eski hatalı DAR SL düzeltildi: {mevcut_sl:.8f} (%{mevcut_sl_pct*100:.2f}) "
+           f"→ {yeni_sl:.8f} (%{yeni_sl_pct*100:.2f}, 1H volatilite bazlı)")
+
+
 # ════════════════════════════════════════════
 # GÜNLÜK ZARAR TAKİBİ
 # ════════════════════════════════════════════
@@ -1134,9 +1185,37 @@ def oz_tarama_volatilite_hesapla(sym, mum_sayisi=20):
     Son N adet OZ_TARAMA_ANA_TF (3m) mumunun ortalama (high-low)/close
     oranını yüzde olarak döner — "bu coin şu an ne kadar hareketli"
     ölçüsü. Yüksek değer = yüksek volatilite = scalp için daha çok fırsat.
+    SADECE oz_tarama_loop() (1-5dk'lık ultra-kısa scalp) içinde kullanılır.
     """
     try:
         mumlar = get_candles(sym, OZ_TARAMA_ANA_TF, mum_sayisi)
+        if not mumlar or len(mumlar) < 5:
+            return None
+        oranlar = []
+        for c in mumlar:
+            _, o, h, l, kapanis, _ = c
+            if kapanis > 0:
+                oranlar.append((h - l) / kapanis)
+        if not oranlar:
+            return None
+        return (sum(oranlar) / len(oranlar)) * 100  # yüzde
+    except Exception:
+        return None
+
+
+def manuel_volatilite_hesapla(sym, tf="1h", mum_sayisi=20):
+    """
+    v16.27: Manuel ("basit format") komutlar İÇİN AYRI volatilite ölçümü.
+    Eskiden manuel komutlar da oz_tarama_volatilite_hesapla() (3dk bazlı)
+    kullanıyordu — bu, 1-5dk'lık ultra-kısa scalp için tasarlanmıştı ve
+    manuel işlemlerde (WLDUSDT örneği: ham volatilite=%0.27) gerçekçi
+    olmayan, aşırı dar SL'lere (%0.40 tabana takılan) yol açıyordu.
+    Şimdi manuel komutlar 1 SAATLİK mumların ortalama (high-low)/close
+    oranını kullanıyor — daha büyük zaman dilimi, daha gerçekçi/geniş bir
+    SL mesafesi üretir, gürültüyle anında vurulma riski büyük ölçüde azalır.
+    """
+    try:
+        mumlar = get_candles(sym, tf, mum_sayisi)
         if not mumlar or len(mumlar) < 5:
             return None
         oranlar = []
@@ -1569,13 +1648,18 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
 
     if entry_hedef is None or sl is None:
         # ── Basit format: giriş = anlık fiyat, SL = GERÇEK VOLATİLİTEYE
-        # GÖRE hesaplanır (v16.25) ──
-        # Eskiden SL sabit %2 kullanılıyordu (HIZLI_SL_PCT) — coin'in o an
-        # ne kadar hareketli olduğuna bakılmaksızın hep aynı mesafe. Şimdi
-        # oz_tarama_volatilite_hesapla() ile aynı ölçüm (son 20×3dk mumun
-        # ortalama (high-low)/close'u) kullanılıyor: durgun bir coin'de SL
-        # daha dar, hareketli bir coin'de daha geniş olur — gürültüyle
-        # anında vurulma ya da gereksiz geniş risk ikisi de azalır.
+        # GÖRE hesaplanır (v16.27) ──
+        # v16.25'te SL sabit %2'den volatilite bazlıya geçirilmişti ama
+        # YANLIŞLIKLA oz_tarama'nın 3dk'lık ultra-kısa scalp ölçümünü
+        # (oz_tarama_volatilite_hesapla) kullanıyordu. WLDUSDT örneğinde
+        # bu, ham volatilite=%0.27 gibi çok küçük bir değer verip SL'i
+        # tabana (%0.40) sıkıştırdı — gürültüyle anında vurulacak kadar
+        # dar. Şimdi manuel_volatilite_hesapla() (1 SAATLİK mumlar, 20
+        # periyot) kullanılıyor — daha büyük zaman dilimi, daha gerçekçi
+        # ve daha geniş bir SL mesafesi üretir. Taban da %0.4'ten %1.2'ye,
+        # çarpan da 1.5'ten 2.0'a yükseltildi (1H ölçüm zaten 3dk'dan
+        # doğal olarak daha büyük çıkar ama yine de fazladan güvenlik payı
+        # eklendi — MAX_SL_PCT (%3) hâlâ üst sınır olarak duruyor).
         try:
             t = exchange.fetch_ticker(sym)
             entry_hedef = safe(t["last"])
@@ -1583,13 +1667,13 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
             tg(f"⚠️ {sym} anlık fiyat alınamadı: {e}")
             return
 
-        volatilite_pct = oz_tarama_volatilite_hesapla(sym)
+        volatilite_pct = manuel_volatilite_hesapla(sym, tf="1h", mum_sayisi=20)
         if volatilite_pct is not None:
-            sl_pct_hesap = max(0.004, min(volatilite_pct / 100 * 1.5, MAX_SL_PCT))
-            sl_kaynagi = f"volatilite bazlı, ham volatilite=%{volatilite_pct:.2f}"
+            sl_pct_hesap = max(0.012, min(volatilite_pct / 100 * 2.0, MAX_SL_PCT))
+            sl_kaynagi = f"1H volatilite bazlı, ham volatilite=%{volatilite_pct:.2f}"
         else:
             sl_pct_hesap = HIZLI_SL_PCT
-            sl_kaynagi = "volatilite alınamadı, sabit yedek değer kullanıldı"
+            sl_kaynagi = "1H volatilite alınamadı, sabit yedek değer kullanıldı"
         sl = entry_hedef * (1 - sl_pct_hesap) if direction == "long" else entry_hedef * (1 + sl_pct_hesap)
 
         # ── Kanalın GERÇEK TP oranlarına göre 6 kademeli TP (ham hâli) ──
@@ -2286,12 +2370,13 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.26) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.27) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
     acilista_pozisyonlari_dogrula()
     acik_pozisyonlara_kademeli_sl_uygula()
+    acik_pozisyonlarin_dar_sl_duzelt()
 
     threading.Thread(target=manage, daemon=True).start()
     threading.Thread(target=gunluk_reset_loop, daemon=True).start()
@@ -2302,7 +2387,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.26 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + VOLATILITE SL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.27 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal + manuel direkt acilir)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
