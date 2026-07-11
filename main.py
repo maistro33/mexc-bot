@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.16 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
+🔖 VERSİYON: v16.19 (3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -834,17 +834,15 @@ def gercek_bakiye_yeterli_mi(gereken_marj):
 TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa yayılıyor,
                         # TP1 artık piyasa gürültüsüyle değil gerçek hareketle tetiklensin
 
-# ── TP DİLİM AĞIRLIKLARI (v16.18 — SADECE TP1 SABİT + ERKEN TRAİLİNG) ──
-# Kullanıcı talebiyle: "işlem trailing'e kadar gitsin" — TP2/TP3'ü ayrı
-# sabit hedef olarak beklemek yerine, TP1 vurulur vurulmaz (küçük bir
-# güvenlik dilimi + SL breakeven'a çekilir) kalan BÜYÜK pozisyon HEMEN
-# trailing moduna geçiyor. Artık TP2/TP3 hedefleri pozisyon yönetiminde
-# HİÇ kullanılmıyor (kanaldan gelseler bile) — sadece TP1 hedef alınıyor.
-# Trend güçlüyse trailing bunu TP2/TP3'ten çok daha ileri taşıyabilir;
-# trend zayıfsa zaten TRAILING_GERI_CEKILME_PCT payı içinde erken kapanır.
-TP_DILIM_ORANLARI = [0.20]  # TP1'de pozisyonun %20'si kapanır (anlamlı ilk kâr +
-                             # SL breakeven'a çekilir), kalan %80 DİREKT trailing'e
-TP_SAYISI_KULLANILAN = 1  # kanaldan/otomatikten gelen TP listesi artık sadece TP1'e kırpılır
+# ── TP DİLİM AĞIRLIKLARI (v16.19 — "VUR KAÇ": 3 TP'DE TAM KAPANIŞ) ──
+# Kullanıcı talebiyle trailing sistemi devre dışı bırakıldı, eski çoklu-TP
+# mantığına dönüldü. TP1/TP2/TP3 vuruldukça pozisyon kademeli kapanır ve
+# TP3'te pozisyonun TAMAMI kapanmış olur (0.35+0.35+0.30 = 1.00) —
+# trailing'e bırakılan pay YOK. Her TP'de kâr kilitlenir, SL bir sonraki
+# TP seviyesine çekilir (TP1'de breakeven, TP2 vurulunca SL→TP1, TP3
+# vurulunca zaten pozisyon kalmadığı için SL'in bir önemi kalmıyor).
+TP_DILIM_ORANLARI = [0.35, 0.35, 0.30]
+TP_SAYISI_KULLANILAN = 3  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
 
 # ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.8 İNCE AYAR) ──
 # Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
@@ -2218,7 +2216,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.16) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.19) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2234,7 +2232,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.16 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.19 (3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal + manuel direkt acilir)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
