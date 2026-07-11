@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.28 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir)
+🔖 VERSİYON: v16.29 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -974,10 +974,12 @@ TP1_EK_GENISLETME_CARPANI = 1.0  # v16.21: SCALP MODU — 1.5'ten 1.0'a indirild
                         # artık TP1'e ekstra genişletme YOK). Scalp'te TP1'in HIZLI
                         # gelmesi isteniyor, geç gelip daha büyük kâr bırakması değil.
 
-MIN_TP1_HAREKET_PCT = 0.0157  # v16.22: TP1 EN AZ bu yüzde kadar fiyat hareketinde
-                        # olacak (kanal/otomatik ne kadar dar verirse versin taban
-                        # buraya çekilir). $100 notional, %35 TP1 dilimiyle ≈ $0.55
-                        # kâr hedefler — "hemen al-çık ama boşuna değil, birikir büyür".
+MIN_TP1_HAREKET_PCT = 0.009  # v16.29: %1.57'den %0.9'a düşürüldü — kullanıcı
+                        # gerçek hızlı scalp yapıyor, WLD/UNI örneklerinde TP1'in
+                        # %1.5-1.6 uzakta olması (saatler sürebilir) scalp'e göre
+                        # çok yavaştı. Yeni dilim yapısında (TP1=%30) bu ≈ $0.27
+                        # kâr hedefler — hem hızlı vurulur hem cüzi ($0.10-0.20
+                        # gibi) kalmaz, ikisi arasında denge.
 
 def tp_olcekle(entry, sl, tp_liste, direction, carpan=TP_OLCEK_CARPANI):
     """
@@ -2413,7 +2415,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.28) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.29) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2430,7 +2432,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.28 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.29 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
