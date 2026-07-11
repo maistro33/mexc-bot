@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.24 (SADECE MANUEL + 4 TP + TP1 TABAN + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
+🔖 VERSİYON: v16.26 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + VOLATILITE SL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -1415,14 +1415,14 @@ def sinyali_isle(sinyal):
     # zaten oz_tarama_aday_degerlendir() içinde geçmiş oluyor — bu yüzden
     # burada AYRICA kanalın 4h/1h teyidinden (trend_teyidi_yeterli_mi) VE
     # 180 dk'lık kuyruktan geçirilmiyor.
-    # v16.16 YENİ: MANUEL komutlar da aynı şekilde direkt açılıyor artık —
-    # kullanıcı talebiyle: "btc long ac dediğim an açması lazım, tekrar
-    # teyit edip hayır demesin". Manuel komutta zaten kullanıcının KENDİ
-    # analizi/kararı var (gerekirse Claude'dan aldığı ham gösterge verisiyle)
-    # — botun bunu ayrıca 4h/1h ile sorgulayıp reddetmesi gereksiz bir engel.
-    # SADECE kanal sinyalleri hâlâ 4h/1h teyidinden ve kuyruktan geçiyor —
-    # kanalın kendi coin seçimini doğrulamak hâlâ değerli olduğu için. ──
-    if sinyal.get("kaynak_etiket") in ("oz_tarama", "manuel"):
+    # v16.26: MANUEL komutlar ARTIK TEKRAR teyitten geçiyor — kullanıcı
+    # talebi değişti ("yaz teyitli olsun"): SKLUSDT örneğinde bot, kısa
+    # vadeli bir tepe noktasına denk gelen anda piyasa fiyatından körlemesine
+    # girmişti (giriş = tam yerel tepe, hemen ardından geri çekildi). v16.16'da
+    # "manuel komut anında açsın" diye BİLEREK muaf tutulmuştu, o karar artık
+    # geçersiz — manuel komutlar da kanal sinyalleriyle AYNI teyit sürecinden
+    # (trend_teyidi_yeterli_mi + bekleyen_sinyaller kuyruğu) geçiyor. ──
+    if sinyal.get("kaynak_etiket") == "oz_tarama":
         gozlem = deneysel_gozlem_hesapla(sym)
         gozlem_str = f" | 📊 Deneysel: {gozlem}" if gozlem else ""
         asil_islemi_ac(sinyal, gozlem_str)
@@ -1568,14 +1568,29 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
     sl = sinyal["sl"]
 
     if entry_hedef is None or sl is None:
-        # ── Basit format: giriş = anlık fiyat, SL = sabit %2 ──
+        # ── Basit format: giriş = anlık fiyat, SL = GERÇEK VOLATİLİTEYE
+        # GÖRE hesaplanır (v16.25) ──
+        # Eskiden SL sabit %2 kullanılıyordu (HIZLI_SL_PCT) — coin'in o an
+        # ne kadar hareketli olduğuna bakılmaksızın hep aynı mesafe. Şimdi
+        # oz_tarama_volatilite_hesapla() ile aynı ölçüm (son 20×3dk mumun
+        # ortalama (high-low)/close'u) kullanılıyor: durgun bir coin'de SL
+        # daha dar, hareketli bir coin'de daha geniş olur — gürültüyle
+        # anında vurulma ya da gereksiz geniş risk ikisi de azalır.
         try:
             t = exchange.fetch_ticker(sym)
             entry_hedef = safe(t["last"])
         except Exception as e:
             tg(f"⚠️ {sym} anlık fiyat alınamadı: {e}")
             return
-        sl = entry_hedef * (1 - HIZLI_SL_PCT) if direction == "long" else entry_hedef * (1 + HIZLI_SL_PCT)
+
+        volatilite_pct = oz_tarama_volatilite_hesapla(sym)
+        if volatilite_pct is not None:
+            sl_pct_hesap = max(0.004, min(volatilite_pct / 100 * 1.5, MAX_SL_PCT))
+            sl_kaynagi = f"volatilite bazlı, ham volatilite=%{volatilite_pct:.2f}"
+        else:
+            sl_pct_hesap = HIZLI_SL_PCT
+            sl_kaynagi = "volatilite alınamadı, sabit yedek değer kullanıldı"
+        sl = entry_hedef * (1 - sl_pct_hesap) if direction == "long" else entry_hedef * (1 + sl_pct_hesap)
 
         # ── Kanalın GERÇEK TP oranlarına göre 6 kademeli TP (ham hâli) ──
         risk_mesafe = abs(entry_hedef - sl)
@@ -1587,7 +1602,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
         sinyal["tp_liste"] = tp_liste_otomatik
 
         tg(f"ℹ️ {sym} basit format — giriş≈{entry_hedef:.8f}\n"
-           f"SL (%{HIZLI_SL_PCT*100:.0f}): {sl:.8f}\n"
+           f"SL (%{sl_pct_hesap*100:.2f}, {sl_kaynagi}): {sl:.8f}\n"
            f"Otomatik TP (kanal oranlarıyla, ham): {[round(x,8) for x in tp_liste_otomatik]}")
 
     # ── kanalın SL'i çok genişse ATLAMIYORUZ — kendi SL'imizi
@@ -2271,7 +2286,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.24) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.26) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2287,7 +2302,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.24 (SADECE MANUEL + 4 TP + TP1 TABAN + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.26 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + VOLATILITE SL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal + manuel direkt acilir)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
