@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.19 (3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
+🔖 VERSİYON: v16.20 (SADECE MANUEL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -2063,8 +2063,19 @@ from telethon.sessions import StringSession
 telethon_client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
 
 
+SADECE_MANUEL = os.getenv("SADECE_MANUEL", "true").lower() == "true"  # v16.20: kullanıcı
+# talebiyle ("sadece manuel kalsın") — TRUE iken kanal(lar)dan gelen hiçbir
+# sinyal işleme alınmaz, pozisyonlar SADECE 'edge long'/'edge short' manuel
+# komutlarıyla açılır. Telethon event filtresine dokunulmadı (chats=[] gibi
+# belirsiz/riskli bir davranışa yol açmasın diye) — bunun yerine mesaj
+# geldiğinde en başta bu bayrağa bakılıp direkt çıkılıyor.
+
+
 @telethon_client.on(events.NewMessage(chats=KANAL_LISTESI))
 async def yeni_mesaj_geldi(event):
+    if SADECE_MANUEL:
+        log.info("[KANAL] SADECE_MANUEL aktif — kanal mesajı görmezden gelindi")
+        return
     metin = event.raw_text
     kanal_kaynagi = getattr(event.chat, "username", None) or "bilinmeyen"
     log.info(f"[KANAL:{kanal_kaynagi}] Yeni mesaj alındı: {metin[:80]}...")
@@ -2216,7 +2227,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.19) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.20) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2232,12 +2243,13 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.19 (3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.20 (SADECE MANUEL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal + manuel direkt acilir)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
-        f"📡 Dinlenen kanal(lar): {', '.join('@'+k for k in KANAL_LISTESI)}\n"
+        f"📡 Dinlenen kanal(lar): {', '.join('@'+k for k in KANAL_LISTESI)} "
+        f"{'⛔ (SADECE_MANUEL aktif — kanal sinyalleri İŞLENMİYOR)' if SADECE_MANUEL else ''}\n"
         f"🤖 Öz tarama: {'AKTİF' if OZ_TARAMA_AKTIF else 'KAPALI'} "
         f"(her {OZ_TARAMA_ARALIK_DK} dk, en likit {OZ_TARAMA_WATCHLIST_BOYUTU} coin, "
         f"aynı MAX_POS={MAX_POS} havuzunu paylaşır)\n"
