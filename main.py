@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.29 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir)
+🔖 VERSİYON: v16.30 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -1102,6 +1102,15 @@ def deneysel_gozlem_hesapla(sym):
 def trend_teyidi_yeterli_mi(sym, direction):
     """
     v16.9 — ÜÇ BİLEŞENLİ TEYİT (eski 2-mum kıyaslamasının yerine geçti).
+    v16.30 — DÖRDÜNCÜ BİLEŞEN eklendi: 1h MUM YÖNÜ. EVAAUSDT örneğinde
+    açık bir çelişki yaşandı — 4h MA20 hâlâ derin negatifti (büyük bir
+    çöküşün ortalamayı aşağı çekmesinden, GÜNCEL yönü yansıtmıyordu) ve
+    1h RSI (42.4) henüz "60 altı" sınırını geçmemişti (RSI GECİKMELİ bir
+    gösterge) — ama son 5 TANE 1h MUMUN 5'İ DE YEŞİLDİ, fiyat 6 saatte
+    %6.5 yükselmişti. Sadece RSI eşiğine bakan eski kural bunu "teyit
+    sağlandı" deyip SHORT açtı — pozisyon anında aleyhte gitti. Şimdi
+    1h mum yönü de (son 5 mumun en az 3'ü aynı yönde) ayrı bir şart —
+    RSI henüz eşiği geçmemiş olsa bile MUM YÖNÜ ters ise reddediliyor.
 
     ESKİ KURAL (v16-v16.8) sadece son 2 tane 4h/1h mumun tepe/dip
     kıyaslamasına bakıyordu (h4_high[-1] > h4_high[-2] gibi). Bu, ÇOK KISA
@@ -1116,15 +1125,17 @@ def trend_teyidi_yeterli_mi(sym, direction):
         düşüş) kaçırdı.
 
     YENİ KURAL — büyük resme bakan, kısa vadeli gürültüye karşı daha
-    dayanıklı 3 bileşen; LONG için ÜÇÜ DE sağlanmalı:
+    dayanıklı 4 bileşen; LONG için DÖRDÜ DE sağlanmalı:
       1) FİYAT 4h MA20'NİN ÜSTÜNDE (genel trend konumu — tek mum değil,
          20 mumluk ortalamaya göre nerede olduğumuz)
       2) SON 5 TANE 4h MUMUN EN AZ 3'Ü YÜKSELİŞTE KAPANMIŞ (kapanış >
          açılış) — kısa vadeli eğilim, tek mumun gürültüsüne takılmasın
       3) 1h RSI > 40 — momentum zayıf değil (49 sinyal analizinde TP
          grubunda ort. 47.6, SL grubunda ort. 38.1 çıkmıştı)
-    SHORT için üçü de ters çevrilmiş hâliyle uygulanır (MA20 altında,
-    5 mumun en az 3'ü düşüşte kapanmış, 1h RSI < 60).
+      4) SON 5 TANE 1h MUMUN EN AZ 3'Ü YÜKSELİŞTE KAPANMIŞ — RSI'ın
+         gecikmesini yakalayan, en GÜNCEL yön göstergesi.
+    SHORT için dördü de ters çevrilmiş hâliyle uygulanır (MA20 altında,
+    4h 5 mumun en az 3'ü düşüşte, 1h RSI < 60, 1h 5 mumun en az 3'ü düşüşte).
 
     NOT: Bu hâlâ kanalın gerçek stratejisini çözdüğümüz anlamına gelmiyor,
     sadece göreceli zayıf görünen durumları eleyen bir koruma filtresi.
@@ -1139,6 +1150,7 @@ def trend_teyidi_yeterli_mi(sym, direction):
         h4_kapanis = [c[4] for c in h4]
         h4_acilis = [c[1] for c in h4]
         h1_kapanis = [c[4] for c in h1]
+        h1_acilis = [c[1] for c in h1]
 
         fiyat = h4_kapanis[-1]
         ma20 = calc_sma(h4_kapanis, period=20)
@@ -1146,37 +1158,49 @@ def trend_teyidi_yeterli_mi(sym, direction):
         if ma20 is None or rsi_1h is None:
             return True, "gösterge hesaplanamadı, filtre uygulanamadı — geçildi"
 
-        # ── son 5 mumun kaçı yükselişte/düşüşte kapanmış ──
+        # ── son 5 mumun kaçı yükselişte/düşüşte kapanmış (4h) ──
         son_5_acilis = h4_acilis[-5:]
         son_5_kapanis = h4_kapanis[-5:]
         yukselis_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k > a)
         dusus_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k < a)
 
+        # ── v16.30: son 5 TANE 1h MUMUN yönü (RSI'ın gecikmesini yakalar) ──
+        son_5_acilis_1h = h1_acilis[-5:]
+        son_5_kapanis_1h = h1_kapanis[-5:]
+        yukselis_1h = sum(1 for a, k in zip(son_5_acilis_1h, son_5_kapanis_1h) if k > a)
+        dusus_1h = sum(1 for a, k in zip(son_5_acilis_1h, son_5_kapanis_1h) if k < a)
+
         if direction == "long":
             ma20_ustunde = fiyat > ma20
             mum_egilimi_yeterli = yukselis_sayisi >= 3
             rsi_yeterli = rsi_1h > 40
+            mum_1h_yeterli = yukselis_1h >= 3
 
             if not ma20_ustunde:
                 return False, f"4h fiyat MA20'nin altında ({fiyat:.8f} < {ma20:.8f})"
             if not mum_egilimi_yeterli:
-                return False, f"son 5 mumun sadece {yukselis_sayisi}'i yükselişte kapandı (min 3 gerekli)"
+                return False, f"4h son 5 mumun sadece {yukselis_sayisi}'i yükselişte kapandı (min 3 gerekli)"
             if not rsi_yeterli:
                 return False, f"1h RSI zayıf ({rsi_1h:.1f} <= 40)"
+            if not mum_1h_yeterli:
+                return False, f"1h son 5 mumun sadece {yukselis_1h}'i yükselişte kapandı (min 3 gerekli, ters yön riski)"
         else:
             ma20_altinda = fiyat < ma20
             mum_egilimi_yeterli = dusus_sayisi >= 3
             rsi_yeterli = rsi_1h < 60
+            mum_1h_yeterli = dusus_1h >= 3
 
             if not ma20_altinda:
                 return False, f"4h fiyat MA20'nin üstünde ({fiyat:.8f} > {ma20:.8f})"
             if not mum_egilimi_yeterli:
-                return False, f"son 5 mumun sadece {dusus_sayisi}'i düşüşte kapandı (min 3 gerekli)"
+                return False, f"4h son 5 mumun sadece {dusus_sayisi}'i düşüşte kapandı (min 3 gerekli)"
             if not rsi_yeterli:
                 return False, f"1h RSI zayıf ({rsi_1h:.1f} >= 60)"
+            if not mum_1h_yeterli:
+                return False, f"1h son 5 mumun sadece {dusus_1h}'i düşüşte kapandı (min 3 gerekli, ters yön riski — EVAA'da yaşanan tam bu durumdu)"
 
-        return True, (f"teyit sağlandı (MA20:{ma20:.8f}, mum:{yukselis_sayisi if direction=='long' else dusus_sayisi}/5, "
-                       f"1h_RSI:{rsi_1h:.1f})")
+        return True, (f"teyit sağlandı (MA20:{ma20:.8f}, 4h mum:{yukselis_sayisi if direction=='long' else dusus_sayisi}/5, "
+                       f"1h_RSI:{rsi_1h:.1f}, 1h mum:{yukselis_1h if direction=='long' else dusus_1h}/5)")
     except Exception as e:
         return True, f"kontrol hatası ({e}), geçildi"
 
@@ -2415,7 +2439,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.29) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.30) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2432,8 +2456,8 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.29 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
-        "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
+        "🔖 VERSİYON: v16.30 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
