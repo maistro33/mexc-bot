@@ -834,21 +834,17 @@ def gercek_bakiye_yeterli_mi(gereken_marj):
 TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa yayılıyor,
                         # TP1 artık piyasa gürültüsüyle değil gerçek hareketle tetiklensin
 
-# ── TP DİLİM AĞIRLIKLARI (v16.10 — 3 SABİT TP + GENİŞ TRAİLİNG) ──
-# Eskiden 6 TP vardı, trailing SADECE TP6 (son TP) vurulunca devreye
-# giriyordu — ama TP6'ya nadiren ulaşılıyor (kullanıcı gözlemi: "1-2 defa
-# geldi"). Bu, trailing mekanizmasının pratikte neredeyse hiç çalışmaması
-# demekti; MORPHO gibi TP4'te dönen işlemlerde kalan pozisyon hep sabit
-# hedefleri beklerken SL'e (kademeli yükseltilmiş de olsa) geri dönüyordu.
-# ŞİMDİ: sadece İLK 3 TP sabit hedef olarak kullanılıyor (garanti kâr —
-# TP1/TP2/TP3 vurulunca dilim kapanır, SL kademeli yükselir). TP3
-# vurulduğunda kalan BÜYÜK pay (%55) artık TP4/TP5/TP6'yı beklemeden
-# HEMEN trailing moduna geçiyor — böylece büyük hareketler çok daha sık
-# yakalanabiliyor, sadece nadir görülen TP6'ya bağlı kalınmıyor.
-# (Kanaldan/otomatik hesaplamadan gelen TP4-6 değerleri artık pozisyon
-# yönetiminde kullanılmıyor, sadece TP1-3 hedef alınıyor — bkz. asil_islemi_ac.)
-TP_DILIM_ORANLARI = [0.15, 0.15, 0.15, 0.15]  # toplam 0.60, kalan 0.40 trailing'e
-TP_SAYISI_KULLANILAN = 4  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
+# ── TP DİLİM AĞIRLIKLARI (v16.18 — SADECE TP1 SABİT + ERKEN TRAİLİNG) ──
+# Kullanıcı talebiyle: "işlem trailing'e kadar gitsin" — TP2/TP3'ü ayrı
+# sabit hedef olarak beklemek yerine, TP1 vurulur vurulmaz (küçük bir
+# güvenlik dilimi + SL breakeven'a çekilir) kalan BÜYÜK pozisyon HEMEN
+# trailing moduna geçiyor. Artık TP2/TP3 hedefleri pozisyon yönetiminde
+# HİÇ kullanılmıyor (kanaldan gelseler bile) — sadece TP1 hedef alınıyor.
+# Trend güçlüyse trailing bunu TP2/TP3'ten çok daha ileri taşıyabilir;
+# trend zayıfsa zaten TRAILING_GERI_CEKILME_PCT payı içinde erken kapanır.
+TP_DILIM_ORANLARI = [0.20]  # TP1'de pozisyonun %20'si kapanır (anlamlı ilk kâr +
+                             # SL breakeven'a çekilir), kalan %80 DİREKT trailing'e
+TP_SAYISI_KULLANILAN = 1  # kanaldan/otomatikten gelen TP listesi artık sadece TP1'e kırpılır
 
 # ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.8 İNCE AYAR) ──
 # Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
