@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.27 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
+🔖 VERSİYON: v16.28 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -651,13 +651,56 @@ def acilista_pozisyonlari_dogrula():
             continue
 
         direction = "long" if side == "long" else "short"
-        guvenlik_sl_pct = 0.03
+
+        # v16.28: Eskiden kurtarılan (state'i kaybolmuş) pozisyonlara SADECE
+        # genel %3 SL konuyordu, tp_liste=[] (TAMAMEN BOŞ) bırakılıyordu —
+        # yani bu pozisyon için hiçbir TP HİÇ atılmıyordu, sonsuza kadar
+        # sadece SL bekliyordu (UNIUSDT'de gerçekleşen durum). Şimdi SL de,
+        # TP listesi de normal manuel akışla AYNI mantıkla (1H volatilite +
+        # TP1 tabanı + monotonik sıralama + KANAL_TP_ORANLARI şekli) hesaplanıyor.
+        volatilite_pct = manuel_volatilite_hesapla(sym, tf="1h", mum_sayisi=20)
+        if volatilite_pct is not None:
+            guvenlik_sl_pct = max(0.012, min(volatilite_pct / 100 * 2.0, MAX_SL_PCT))
+        else:
+            guvenlik_sl_pct = 0.03
         sl = entry * (1 - guvenlik_sl_pct) if direction == "long" else entry * (1 + guvenlik_sl_pct)
+
+        risk_mesafe = abs(entry - sl)
+        KANAL_TP_ORANLARI = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8]
+        if direction == "long":
+            tp_ham = [entry + o * risk_mesafe for o in KANAL_TP_ORANLARI]
+        else:
+            tp_ham = [entry - o * risk_mesafe for o in KANAL_TP_ORANLARI]
+        tp_olcekli = tp_olcekle(entry, sl, tp_ham, direction)
+        tp_liste = tp_olcekli[:TP_SAYISI_KULLANILAN]
+
         with state_lock:
-            trade_state[sym] = {"sl": sl, "tp_liste": [], "tp_index": 0,
+            trade_state[sym] = {"sl": sl, "tp_liste": tp_liste, "tp_index": 0,
                                  "direction": direction, "entry": entry, "kaynak": "kurtarilan"}
         durumu_diske_yaz()
-        tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — geçici %3 güvenlik SL'i kondu: {sl:.8f}")
+        tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — kurtarıldı.\n"
+           f"SL (%{guvenlik_sl_pct*100:.2f}): {sl:.8f}\n"
+           f"TP listesi (otomatik hesaplandı, TP1-{TP_SAYISI_KULLANILAN}): {[round(x,8) for x in tp_liste]}\n"
+           f"⚠️ Not: 'qty'/'orijinal_qty' bilgisi henüz eksik — TP limit emirleri bir sonraki "
+           f"manage() döngüsünde borsadan gerçek miktar okunarak tamamlanacak.")
+
+        # v16.28: TP limit emirlerinin borsaya konabilmesi için qty/orijinal_qty
+        # da gerekiyor — kurtarma anında borsadan okunan gerçek miktarı da yazalım,
+        # SONRA gerçek limit emirlerini borsaya koyalım (sadece trade_state'e
+        # yazmak yetmez — manage() döngüsü TP tetiklenmesini gerçek emir ID'si
+        # üzerinden takip ediyor, boş tp_emirleri ile hiçbir TP algılanmaz).
+        with state_lock:
+            trade_state[sym]["qty"] = qty
+            trade_state[sym]["orijinal_qty"] = qty
+        durumu_diske_yaz()
+
+        tp_emirleri = tp_limit_emirlerini_koy(sym, direction, tp_liste, qty)
+        with state_lock:
+            trade_state[sym]["tp_emirleri"] = tp_emirleri
+        durumu_diske_yaz()
+        kacan = sum(1 for e in tp_emirleri if e.get("id") is None)
+        if kacan:
+            tg(f"⚠️ {sym} kurtarma: {kacan} TP emri borsaya konamadı, sadece fiyat takibiyle izlenecek")
 
 
 def acik_pozisyonlara_kademeli_sl_uygula():
@@ -2370,7 +2413,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.27) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.28) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2387,9 +2430,9 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.27 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.28 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
-        "coklu kanal + manuel direkt acilir)\n\n"
+        "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal(lar): {', '.join('@'+k for k in KANAL_LISTESI)} "
