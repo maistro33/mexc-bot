@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.14 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + volatilite bazli scalp SLTP)
+🔖 VERSİYON: v16.15 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -1090,7 +1090,12 @@ def trend_teyidi_yeterli_mi(sym, direction):
 #  - Tarama periyodu ÇOK KISA (varsayılan 2 dk) — scalp fırsatları 3m'lik
 #    mumlarla oluşup kayboluyor, 20 dk'da bir bakmak "geç kalmasın"
 #    isteğine aykırı olurdu.
-OZ_TARAMA_AKTIF = os.getenv("OZ_TARAMA_AKTIF", "true").lower() == "true"
+OZ_TARAMA_AKTIF = os.getenv("OZ_TARAMA_AKTIF", "false").lower() == "true"  # v16.15: kullanıcı
+                # talebiyle VARSAYILAN KAPALI — son birkaç günde (özellikle scalp modunun
+                # devreye girdiği 09-10 Temmuz'da) sermaye 67$'dan 38.89$'a düşmüştü, kesin
+                # tek sebep olduğu kanıtlanmadı ama zamanlama örtüşüyordu. Kanal sinyalleri
+                # ve manuel emirler ETKİLENMİYOR, normal çalışmaya devam ediyor. Tekrar açmak
+                # için Railway'de OZ_TARAMA_AKTIF=true ortam değişkenini eklemen yeterli.
 OZ_TARAMA_ARALIK_DK = float(os.getenv("OZ_TARAMA_ARALIK_DK", "2"))  # scalp: sık tarama
 OZ_TARAMA_MIN_HACIM_USDT = float(os.getenv("OZ_TARAMA_MIN_HACIM_USDT", "5000000"))  # 24h min hacim (likidite güvenliği)
 OZ_TARAMA_WATCHLIST_BOYUTU = int(os.getenv("OZ_TARAMA_WATCHLIST_BOYUTU", "20"))  # en volatil N coin (likit havuzdan)
@@ -2214,7 +2219,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.14) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.15) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2230,9 +2235,9 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.14 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + "
-        "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama + coklu kanal + "
-        "volatilite bazli scalp SLTP)\n\n"
+        "🔖 VERSİYON: v16.15 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + "
+        "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
+        "coklu kanal)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal(lar): {', '.join('@'+k for k in KANAL_LISTESI)}\n"
