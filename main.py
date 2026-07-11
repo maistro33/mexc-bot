@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.20 (SADECE MANUEL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
+🔖 VERSİYON: v16.24 (SADECE MANUEL + 4 TP + TP1 TABAN + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -831,18 +831,17 @@ def gercek_bakiye_yeterli_mi(gereken_marj):
     return serbest_usdt >= gereken_marj
 
 
-TP_OLCEK_CARPANI = 2.0  # v16: 1.5'ten yükseltildi — TP'ler biraz daha uzağa yayılıyor,
-                        # TP1 artık piyasa gürültüsüyle değil gerçek hareketle tetiklensin
+TP_OLCEK_CARPANI = 1.0  # v16.22: 0.5 çok sıkıydı (TP1 neredeyse hiç kâr bırakmıyordu),
+                        # 1.0'a çıkarıldı — kanalın/otomatiğin verdiği orijinal mesafeyi
+                        # koruyor. Asıl güvence aşağıdaki MIN_TP1_HAREKET_PCT tabanı.
 
-# ── TP DİLİM AĞIRLIKLARI (v16.19 — "VUR KAÇ": 3 TP'DE TAM KAPANIŞ) ──
-# Kullanıcı talebiyle trailing sistemi devre dışı bırakıldı, eski çoklu-TP
-# mantığına dönüldü. TP1/TP2/TP3 vuruldukça pozisyon kademeli kapanır ve
-# TP3'te pozisyonun TAMAMI kapanmış olur (0.35+0.35+0.30 = 1.00) —
-# trailing'e bırakılan pay YOK. Her TP'de kâr kilitlenir, SL bir sonraki
-# TP seviyesine çekilir (TP1'de breakeven, TP2 vurulunca SL→TP1, TP3
-# vurulunca zaten pozisyon kalmadığı için SL'in bir önemi kalmıyor).
-TP_DILIM_ORANLARI = [0.35, 0.35, 0.30]
-TP_SAYISI_KULLANILAN = 3  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
+# ── TP DİLİM AĞIRLIKLARI (v16.24 — 4 TP'DE TAM KAPANIŞ) ──
+# Kullanıcı talebiyle TP4 eklendi. TP1/TP2/TP3/TP4 vuruldukça pozisyon
+# kademeli kapanır, TP4'te pozisyonun TAMAMI kapanmış olur
+# (0.30+0.25+0.25+0.20 = 1.00) — trailing'e bırakılan pay YOK. Her TP'de
+# kâr kilitlenir, SL bir sonraki TP seviyesine çekilir.
+TP_DILIM_ORANLARI = [0.30, 0.25, 0.25, 0.20]
+TP_SAYISI_KULLANILAN = 4  # kanaldan/otomatikten gelen TP listesi bu uzunluğa kırpılır
 
 # ── TP1 SONRASI BREAKEVEN NEFES PAYI (v16.8 İNCE AYAR) ──
 # Eskiden TP1 vurulunca SL TAM girişe çekiliyordu — fiyat en ufak bir
@@ -877,7 +876,14 @@ TRAILING_BILDIRIM_ESIK_PCT = 0.01  # zirve en az %1 ilerlemeden yeni bildirim yo
 # Bu, SADECE TP1'in hedef mesafesini (diğer TP'lere dokunmadan) ekstra
 # büyütüyor — TP1 biraz daha geç gelir ama geldiğinde daha anlamlı bir
 # kâr bırakır, gürültüyle tetiklenme ihtimali azalır.
-TP1_EK_GENISLETME_CARPANI = 1.5  # TP1, normal 2.0x ölçeklemenin ÜSTÜNE ek %50 daha uzağa
+TP1_EK_GENISLETME_CARPANI = 1.0  # v16.21: SCALP MODU — 1.5'ten 1.0'a indirildi (yani
+                        # artık TP1'e ekstra genişletme YOK). Scalp'te TP1'in HIZLI
+                        # gelmesi isteniyor, geç gelip daha büyük kâr bırakması değil.
+
+MIN_TP1_HAREKET_PCT = 0.0157  # v16.22: TP1 EN AZ bu yüzde kadar fiyat hareketinde
+                        # olacak (kanal/otomatik ne kadar dar verirse versin taban
+                        # buraya çekilir). $100 notional, %35 TP1 dilimiyle ≈ $0.55
+                        # kâr hedefler — "hemen al-çık ama boşuna değil, birikir büyür".
 
 def tp_olcekle(entry, sl, tp_liste, direction, carpan=TP_OLCEK_CARPANI):
     """
@@ -887,16 +893,38 @@ def tp_olcekle(entry, sl, tp_liste, direction, carpan=TP_OLCEK_CARPANI):
     bu fonksiyon aynı şekli koruyarak matematiği sağlıklı hale getirir.
     v16.8: TP1 (ilk seviye) ayrıca TP1_EK_GENISLETME_CARPANI ile büyütülüyor
     — diğer TP'ler etkilenmiyor, sadece TP1 biraz daha uzağa taşınıyor.
+    v16.22: MIN_TP1_HAREKET_PCT TABANI eklendi — bazı kanal sinyalleri
+    (örn. PARTIUSDT: risk %5 iken TP1 sadece 0.10R = %0.5 hareket) o kadar
+    dar TP1 veriyor ki $100 notional'da %35 dilimle bile kâr $0.10-0.20
+    civarında kalıp "birikmiyor". Artık TP1, oran×çarpan ne çıkarsa çıksın,
+    EN AZ bu yüzdelik fiyat hareketinde olacak şekilde tabana çekiliyor —
+    hedef: TP1 dilim (%35) kabaca $0.50-0.60 civarı kâr bıraksın.
     """
     risk_mesafe = abs(entry - sl)
     if risk_mesafe <= 0 or not tp_liste:
         return tp_liste
-    yeni_liste = []
+    yeni_oranlar = []
     for i, tp in enumerate(tp_liste):
         oran = abs(tp - entry) / risk_mesafe
         yeni_oran = oran * carpan
         if i == 0:
             yeni_oran *= TP1_EK_GENISLETME_CARPANI
+            min_oran = (MIN_TP1_HAREKET_PCT * entry) / risk_mesafe
+            yeni_oran = max(yeni_oran, min_oran)
+        yeni_oranlar.append(yeni_oran)
+
+    # v16.23: TP1'e taban uygulanınca TP2/TP3 geride kalıp sıralamayı
+    # bozabiliyordu (örn. TP1=0.31R'a çekildi ama TP2 ham hâliyle 0.20R'da
+    # kaldı — TP2, TP1'İN ÖNÜNDE/ALTINDA kalırdı). Her TP, kendinden
+    # ÖNCEKİNDEN en az %20 daha uzakta olacak şekilde zorlanıyor —
+    # sıralama (TP1<TP2<TP3) HER ZAMAN korunuyor.
+    for i in range(1, len(yeni_oranlar)):
+        min_gerekli = yeni_oranlar[i-1] * 1.2
+        if yeni_oranlar[i] < min_gerekli:
+            yeni_oranlar[i] = min_gerekli
+
+    yeni_liste = []
+    for yeni_oran in yeni_oranlar:
         yeni_tp = entry + yeni_oran * risk_mesafe if direction == "long" else entry - yeni_oran * risk_mesafe
         yeni_liste.append(yeni_tp)
     return yeni_liste
@@ -1633,10 +1661,21 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
 
     side = "buy" if direction == "long" else "sell"
     try:
-        exchange.create_market_order(sym, side, qty)
+        acilis_emri = exchange.create_market_order(sym, side, qty)
     except Exception as e:
         tg(f"⚠️ {sym} giriş emri başarısız: {e}")
         return
+
+    # v16.21: açılış komisyonu da yakalanıp trade_state'e kaydediliyor —
+    # eskiden sadece KAPANIŞ komisyonları toplam PnL'den düşülüyordu,
+    # açılış komisyonu hiç sayılmıyordu (bu yüzden bot'un attığı "TOPLAM
+    # işlem PnL" mesajı gerçek borsa sonucundan sistematik olarak daha
+    # iyimser çıkıyordu — kullanıcı örneği: bot -0.09$ dedi, borsa -0.1457$
+    # gösterdi, fark tam da bu kayıp açılış komisyonuydu).
+    try:
+        _, acilis_komisyon = gercek_dolus_bilgisi_al(acilis_emri or {}, sym, price)
+    except Exception:
+        acilis_komisyon = 0.0
 
     # ── v16.8 KRİTİK DÜZELTME: trade_state artık TP limit emirlerini
     # KOYMADAN ÖNCE yazılıyor. Eskiden (v16.8) TP emirleri önce koyuluyordu
@@ -1654,6 +1693,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
             "direction": direction, "entry": price, "qty": qty,
             "kaynak": sinyal.get("kaynak_etiket", "kanal_kopya"),
             "orijinal_qty": qty, "tp_emirleri": [],
+            "acilis_komisyon": acilis_komisyon,
         }
     durumu_diske_yaz()
 
@@ -1799,8 +1839,12 @@ def manage():
                     gross -= komisyon
                     with state_lock:
                         onceki_gerceklesen = trade_state[sym].get("gerceklesen_pnl", 0)
-                    toplam_pnl_stop = gross + onceki_gerceklesen
-                    gunluk_pnl_ekle(gross)
+                        acilis_komisyon = trade_state[sym].get("acilis_komisyon", 0)
+                    # v16.21: açılış komisyonu SADECE burada, işlemin son kapanışında
+                    # bir kere düşülüyor (TP dilimlerinde değil) — yoksa birden fazla
+                    # dilimde tekrar tekrar düşülüp toplam PnL yanlış olurdu.
+                    toplam_pnl_stop = gross + onceki_gerceklesen - acilis_komisyon
+                    gunluk_pnl_ekle(gross - acilis_komisyon)
                     # ── v16.8: STOP'un GERÇEK ZARAR mı, TP1 TAMPON BÖLGESİNDE mi (küçük
                     # kontrollü risk), yoksa KADEMELİ SL YÜKSELTMESİ (kâr kilitleme)
                     # sonucu mu olduğunu ayırt et. "Riskli taraf" fark yüzdesi: SL,
@@ -2227,7 +2271,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.20) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.24) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2243,7 +2287,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.20 (SADECE MANUEL + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.24 (SADECE MANUEL + 4 TP + TP1 TABAN + 3 sabit TP - VUR KAÇ %35/%35/%30 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal + manuel direkt acilir)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
