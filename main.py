@@ -859,12 +859,12 @@ TP1_BREAKEVEN_TAMPON_PCT = 0.0015  # v16.8: %0.4'ten %0.15'e küçültüldü —
                         # (~-2.93$ toplam). Nefes payı korunuyor (EPIC/UAI'deki anlık
                         # kapanma sorunu geri gelmesin diye) ama zarar riski küçültüldü.
 
-# ── TRAILING STOP (TP3 sonrası — v16.10'da TP6'dan TP3'e çekildi) ──
-TRAILING_GERI_CEKILME_PCT = 0.035  # v16.10: %2.5'ten %3.5'e yükseltildi — trailing
-                                    # artık çok daha ERKEN (TP3'te) başladığı için,
-                                    # henüz olgunlaşmamış bir hareketten erken/gürültüyle
-                                    # çıkmasın diye nefes payı genişletildi ("kaçırmayalım,
-                                    # hemen kapanmasın" — kullanıcı talebi)
+# ── TRAILING STOP (v16.18: TP1 sonrası hemen başlıyor) ──
+TRAILING_GERI_CEKILME_PCT = 0.025  # v16.18: %3.5'ten %2.5'e sıkılaştırıldı — kullanıcı
+                                    # talebiyle ("kârı geri vermeyelim"). %3.5 çok gevşekti,
+                                    # zirveden büyük bir kâr payını geri veriyordu. %2.5,
+                                    # normal 1H piyasa gürültüsüne (~%1.5-2) hâlâ dayanıklı
+                                    # ama kârın daha büyük kısmını kilitliyor.
 
 # ── TRAILING SIRASINDA STOP YÜKSELME BİLDİRİMİ (v16.10 YENİ) ──
 # Trailing aktifken, fiyat her yeni zirve yaptığında efektif stop seviyesi
