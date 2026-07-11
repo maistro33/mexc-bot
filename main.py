@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.15 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal)
+🔖 VERSİYON: v16.16 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar teyitsiz direkt acilir)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -1392,12 +1392,15 @@ def sinyali_isle(sinyal):
     # ── v16.12: ÖZ TARAMA (scalp) kaynaklı sinyaller kendi 3m/1m teyidini
     # zaten oz_tarama_aday_degerlendir() içinde geçmiş oluyor — bu yüzden
     # burada AYRICA kanalın 4h/1h teyidinden (trend_teyidi_yeterli_mi) VE
-    # 180 dk'lık kuyruktan geçirilmiyor. Scalp'te 3m mumla teyitli bir
-    # coin'i 4h/1h uyuşmuyor diye kuyrukta bekletmek "geç kalmasın" isteğiyle
-    # çelişirdi — kendi zaman dilimindeki teyidi yeterli sayılıyor, direkt
-    # açılıyor. Kanal sinyalleri ve manuel emirler eskisi gibi 4h/1h'den
-    # geçmeye devam ediyor. ──
-    if sinyal.get("kaynak_etiket") == "oz_tarama":
+    # 180 dk'lık kuyruktan geçirilmiyor.
+    # v16.16 YENİ: MANUEL komutlar da aynı şekilde direkt açılıyor artık —
+    # kullanıcı talebiyle: "btc long ac dediğim an açması lazım, tekrar
+    # teyit edip hayır demesin". Manuel komutta zaten kullanıcının KENDİ
+    # analizi/kararı var (gerekirse Claude'dan aldığı ham gösterge verisiyle)
+    # — botun bunu ayrıca 4h/1h ile sorgulayıp reddetmesi gereksiz bir engel.
+    # SADECE kanal sinyalleri hâlâ 4h/1h teyidinden ve kuyruktan geçiyor —
+    # kanalın kendi coin seçimini doğrulamak hâlâ değerli olduğu için. ──
+    if sinyal.get("kaynak_etiket") in ("oz_tarama", "manuel"):
         gozlem = deneysel_gozlem_hesapla(sym)
         gozlem_str = f" | 📊 Deneysel: {gozlem}" if gozlem else ""
         asil_islemi_ac(sinyal, gozlem_str)
@@ -2219,7 +2222,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.15) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.16) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2235,9 +2238,9 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.15 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.16 (4 sabit TP + trailing + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 3-bilesenli trend teyidi + scalp oz tarama[VARSAYILAN KAPALI] + "
-        "coklu kanal)\n\n"
+        "coklu kanal + manuel direkt acilir)\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
         f"🎯 Marj/işlem: ${MARGIN_SABIT} (sabit) × {LEV}x = ${MARGIN_SABIT*LEV} notional\n"
         f"📡 Dinlenen kanal(lar): {', '.join('@'+k for k in KANAL_LISTESI)}\n"
