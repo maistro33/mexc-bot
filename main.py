@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.37 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.39 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -186,7 +186,6 @@ import time
 import json
 import threading
 import logging
-import asyncio
 import ccxt
 import telebot
 from telethon import TelegramClient, events
@@ -434,7 +433,7 @@ if bot:
             bot.answer_callback_query(call.id, "Geçildi")
             try:
                 bot.edit_message_text(
-                    call.message.text + f"\n\n❌ Geçildi (kullanıcı tarafından).",
+                    call.message.text + "\n\n❌ Geçildi (kullanıcı tarafından).",
                     call.message.chat.id, call.message.message_id
                 )
             except Exception:
@@ -664,7 +663,7 @@ STATE_PIN_ETIKETI = "🗄️ BOT_DURUM_YEDEK (dokunma — otomatik güncellenir)
 _pin_message_id = None
 _pin_lock = threading.Lock()
 _pin_son_guncelleme = 0.0
-PIN_MIN_ARALIK_SN = 10  # v16.37: art arda gelen SL/TP/hard-stop güncellemeleri
+PIN_MIN_ARALIK_SN = 10  # v16.39: art arda gelen SL/TP/hard-stop güncellemeleri
                          # her biri ayrı ayrı Telegram'daki durum mesajını
                          # düzenliyordu — kullanıcıya "sürekli geliyor" gibi
                          # hissettiren, gereksiz sık düzenleme spam'ine sebep
@@ -1064,18 +1063,20 @@ def ani_hareket_tarama_loop():
                 if not sym.endswith("/USDT:USDT"):
                     continue
                 vol = safe(t.get("quoteVolume"))
-                if vol < 8_000_000:
+                if vol < 3_000_000:  # v16.39: likidite tabanı düşürüldü (2.5M-8M arası
+                    continue          # gerçek yükselenler de kaçmasın diye)
+                # v16.39: EN ÖNEMLİ DEĞİŞİKLİK — kullanıcı geri bildirimi: "şu an
+                # 24 saatlik olanlar gelsin" — eskiden HACME göre sıralanıyordu,
+                # bu da PEPE/ZEC gibi yüksek hacimli ama aslında %5-8 gibi ufak
+                # hareketli "hantal" coinlerin öne çıkmasına sebep oluyordu.
+                # Şimdi Bitget'in "top gainers/losers" ekranındaki gibi 24s
+                # MUTLAK YÜZDE DEĞİŞİME göre sıralanıyor — gerçek en çok
+                # hareket eden coinler önce geliyor, hacim sadece bir taban
+                # (likidite garantisi), sıralama kriteri değil.
+                degisim_pct = safe(t.get("percentage"))
+                if abs(degisim_pct) < 5:
                     continue
-                # v16.35: sadece hacme bakmak BTC/ETH/PEPE gibi "hantal" (düşük
-                # volatiliteli) major coinleri de watchlist'e sokuyordu —
-                # kullanıcı bunları özellikle istemiyor. Şimdi 24s (yüksek-düşük)/
-                # düşük oranı da kontrol ediliyor, düşük volatiliteli olanlar elenir.
-                yuksek = safe(t.get("high"))
-                dusuk = safe(t.get("low"))
-                volat_pct = ((yuksek - dusuk) / dusuk * 100) if dusuk > 0 else 0
-                if volat_pct < 5:
-                    continue
-                rows.append((vol, sym))
+                rows.append((abs(degisim_pct), sym))
             rows.sort(reverse=True)
             watchlist = [s for _, s in rows[:ANI_HAREKET_WATCHLIST_BOYUTU]]
 
@@ -2916,7 +2917,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.37) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.39) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2934,7 +2935,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.37 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.39 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
