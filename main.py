@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.36 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.37 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -663,12 +663,21 @@ def durumu_diskten_yukle():
 STATE_PIN_ETIKETI = "🗄️ BOT_DURUM_YEDEK (dokunma — otomatik güncellenir)"
 _pin_message_id = None
 _pin_lock = threading.Lock()
+_pin_son_guncelleme = 0.0
+PIN_MIN_ARALIK_SN = 10  # v16.37: art arda gelen SL/TP/hard-stop güncellemeleri
+                         # her biri ayrı ayrı Telegram'daki durum mesajını
+                         # düzenliyordu — kullanıcıya "sürekli geliyor" gibi
+                         # hissettiren, gereksiz sık düzenleme spam'ine sebep
+                         # oluyordu. Şimdi en fazla 10 saniyede bir senkronize
+                         # ediliyor (diske yazma bundan ETKİLENMEZ, hep anında).
 
 
-def durumu_telegrama_yedekle():
-    global _pin_message_id
+def durumu_telegrama_yedekle(zorla=False):
+    global _pin_message_id, _pin_son_guncelleme
     if not bot or not CHAT_ID:
         return
+    if not zorla and (time.time() - _pin_son_guncelleme) < PIN_MIN_ARALIK_SN:
+        return  # çok sık — bir sonraki durumu_diske_yaz() çağrısı zaten yakında gelecek
     try:
         with state_lock:
             veri_state = dict(trade_state)
@@ -692,12 +701,14 @@ def durumu_telegrama_yedekle():
             if _pin_message_id:
                 try:
                     bot.edit_message_text(metin, CHAT_ID, _pin_message_id)
+                    _pin_son_guncelleme = time.time()
                     return
                 except Exception:
                     pass  # mesaj silinmiş olabilir — aşağıda yeniden oluşturulacak
 
             gonderilen = bot.send_message(CHAT_ID, metin)
             _pin_message_id = gonderilen.message_id
+            _pin_son_guncelleme = time.time()
             try:
                 bot.pin_chat_message(CHAT_ID, _pin_message_id, disable_notification=True)
             except Exception as e:
@@ -2905,7 +2916,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.36) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.37) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2923,7 +2934,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.36 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.37 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
