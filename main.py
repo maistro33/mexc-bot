@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.35 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.36 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -981,6 +981,9 @@ def tepe_dip_donusu_tespit_et(sym):
     except Exception as e:
         log.warning(f"[TEPE_DIP] {sym}: {e}")
         return None
+
+
+def ani_hareket_tespit_et(sym):
     """
     v16.35: CANLI ticker fiyatı (en güncel, mum kapanışını beklemez) ile
     15 dk önceki fiyat kıyaslanır — bu, "mum kapanana kadar bekleyip geç
@@ -2902,7 +2905,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.35) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.36) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2920,7 +2923,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.35 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.36 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
