@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.39 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.40 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -561,6 +561,34 @@ def get_candles(sym, tf, limit=100):
         return None
 
 
+# v16.40: AÇILIŞ-KURTARMA YARIŞ DURUMU DÜZELTMESİ.
+# Gerçek örnek — VELVETUSDT ve SXTUSDT'de TEKRAR TEKRAR yaşandı: bir pozisyon
+# asil_islemi_ac() ile açılırken (market emri gönderilip TP/SL hesaplanırken),
+# TAM O SIRADA manage() döngüsü (ayrı thread) borsada bu sembolü GÖRÜP ama
+# henüz trade_state'e YAZILMADIĞI için "kayıtlı durum yoktu" sanıp KENDİ AYRI
+# SL/TP setini kurmaya çalışıyordu. İki ayrı süreç AYNI pozisyon miktarı için
+# TP limit emri koymaya çalışınca borsa "reduceOnly miktar yetersiz" gibi
+# hatalar verip emirlerin çoğu/hepsi başarısız oluyordu.
+# Çözüm: bir sembol açılmaya BAŞLADIĞI anda bu sete eklenir, açılış TAMAMEN
+# bitene (TP+hard stop konana) kadar manage()'in kurtarma bloğu o sembolü
+# atlar.
+islem_aciliyor = {}  # {symbol: baslama_zamani} — v16.40
+islem_aciliyor_lock = threading.Lock()
+ISLEM_ACILIYOR_TIMEOUT_SN = 30  # bu süreden eskiyse (örn. beklenmedik bir hata
+                                 # yüzünden kilit temizlenmemişse) artık geçersiz sayılır
+
+
+def islem_aciliyor_mu(sym):
+    with islem_aciliyor_lock:
+        baslangic = islem_aciliyor.get(sym)
+        if baslangic is None:
+            return False
+        if time.time() - baslangic > ISLEM_ACILIYOR_TIMEOUT_SN:
+            islem_aciliyor.pop(sym, None)  # eski/unutulmuş kilit — temizle
+            return False
+        return True
+
+
 # ════════════════════════════════════════════
 # GERÇEK BORSA STOP EMRİ (v16.35) — "ani çöküş" koruması
 # ════════════════════════════════════════════
@@ -663,7 +691,7 @@ STATE_PIN_ETIKETI = "🗄️ BOT_DURUM_YEDEK (dokunma — otomatik güncellenir)
 _pin_message_id = None
 _pin_lock = threading.Lock()
 _pin_son_guncelleme = 0.0
-PIN_MIN_ARALIK_SN = 10  # v16.39: art arda gelen SL/TP/hard-stop güncellemeleri
+PIN_MIN_ARALIK_SN = 10  # v16.40: art arda gelen SL/TP/hard-stop güncellemeleri
                          # her biri ayrı ayrı Telegram'daki durum mesajını
                          # düzenliyordu — kullanıcıya "sürekli geliyor" gibi
                          # hissettiren, gereksiz sık düzenleme spam'ine sebep
@@ -993,6 +1021,54 @@ def tepe_dip_donusu_tespit_et(sym):
         return None
 
 
+def ani_hareket_1_2saat_tespit_et(sym):
+    """
+    v16.40 — kullanıcı geri bildirimi: "son 1 saatte 2 saatte yükselen/düşeni
+    de yakalasın". Mevcut ani_hareket_tespit_et() SADECE 15 dakikalık pencereye
+    bakıyordu — daha YAVAŞ, uzun süreye yayılan (1-2 saatte %8-15 gibi) ama
+    yine de güçlü hareketleri kaçırıyordu. Bu fonksiyon 15m mumlarla 1 ve 2
+    saatlik pencerede fiyat değişimini ölçer, eşiği geçen + hâlâ devam eden
+    (son 2 mum ters dönmemiş) hareketleri yakalar.
+    """
+    try:
+        m15 = get_candles(sym, "15m", 12)
+        if not m15 or len(m15) < 9:
+            return None
+        closes = [c[4] for c in m15]
+        opens = [c[1] for c in m15]
+
+        try:
+            t = exchange.fetch_ticker(sym)
+            fiyat_simdi = safe(t.get("last"))
+        except Exception:
+            fiyat_simdi = 0.0
+        if not fiyat_simdi or fiyat_simdi <= 0:
+            fiyat_simdi = closes[-1]
+
+        fiyat_1s_once = closes[-5]   # 4 mum x 15dk = 1 saat önce
+        fiyat_2s_once = closes[-9]   # 8 mum x 15dk = 2 saat önce
+        degisim_1s = (fiyat_simdi - fiyat_1s_once) / fiyat_1s_once * 100 if fiyat_1s_once else 0
+        degisim_2s = (fiyat_simdi - fiyat_2s_once) / fiyat_2s_once * 100 if fiyat_2s_once else 0
+
+        # 1 saatte >=%6 YA DA 2 saatte >=%9 hareket
+        if abs(degisim_1s) < 6 and abs(degisim_2s) < 9:
+            return None
+
+        yon = "long" if (degisim_1s if abs(degisim_1s) >= 6 else degisim_2s) > 0 else "short"
+
+        # hâlâ devam ediyor mu — son 2 tane 15m mum ters dönmüş olmasın
+        son2 = list(zip(opens[-2:], closes[-2:]))
+        if yon == "long" and all(c < o for o, c in son2):
+            return None
+        if yon == "short" and all(c > o for o, c in son2):
+            return None
+
+        return {"symbol": sym, "direction": yon, "degisim_1s": degisim_1s, "degisim_2s": degisim_2s}
+    except Exception as e:
+        log.warning(f"[1_2SAAT] {sym}: {e}")
+        return None
+
+
 def ani_hareket_tespit_et(sym):
     """
     v16.35: CANLI ticker fiyatı (en güncel, mum kapanışını beklemez) ile
@@ -1063,9 +1139,9 @@ def ani_hareket_tarama_loop():
                 if not sym.endswith("/USDT:USDT"):
                     continue
                 vol = safe(t.get("quoteVolume"))
-                if vol < 3_000_000:  # v16.39: likidite tabanı düşürüldü (2.5M-8M arası
+                if vol < 3_000_000:  # v16.40: likidite tabanı düşürüldü (2.5M-8M arası
                     continue          # gerçek yükselenler de kaçmasın diye)
-                # v16.39: EN ÖNEMLİ DEĞİŞİKLİK — kullanıcı geri bildirimi: "şu an
+                # v16.40: EN ÖNEMLİ DEĞİŞİKLİK — kullanıcı geri bildirimi: "şu an
                 # 24 saatlik olanlar gelsin" — eskiden HACME göre sıralanıyordu,
                 # bu da PEPE/ZEC gibi yüksek hacimli ama aslında %5-8 gibi ufak
                 # hareketli "hantal" coinlerin öne çıkmasına sebep oluyordu.
@@ -1094,25 +1170,25 @@ def ani_hareket_tarama_loop():
                 sebep_str = ""
                 teyit_notu = ""
 
-                # ── YOL 1: momentum devam ediyor (fiyat/hacim sıçraması + 4H/1H teyidi) ──
+                # ── YOL 1: ANLIK momentum (15dk fiyat/hacim sıçraması) — v16.40:
+                # ağır 4H/1H teyidi KALDIRILDI (kullanıcı geri bildirimi: "geç
+                # giriyor, yanlış yerden giriyor" — büyük zaman dilimi teyidi
+                # beklemek, fiyat çoktan hareket etmiş olduğunda sinyal veriyordu).
+                # Artık ani_hareket_tespit_et()'in kendi "hâlâ devam ediyor mu"
+                # kontrolü (son 2 mum ters dönmemiş) tek koruma — daha hızlı ama
+                # daha az filtrelenmiş, bu bilinçli bir hız/güvenlik ödünleşimi.
                 tespit = ani_hareket_tespit_et(sym)
                 if tespit:
-                    teyit_ok, teyit_mesaj = trend_teyidi_yeterli_mi(sym, tespit["direction"])
-                    if teyit_ok:
-                        yon = tespit["direction"]
-                        sebep = []
-                        if tespit["fiyat_tetiklendi"]:
-                            sebep.append(f"15dk'da %{tespit['fiyat_degisim_pct']:+.2f} fiyat hareketi")
-                        if tespit["hacim_tetiklendi"]:
-                            sebep.append(f"hacim ortalamanın {tespit['hacim_carpani']:.1f}x üstünde")
-                        sebep_str = " + ".join(sebep)
-                        teyit_notu = f"Teyit: {teyit_mesaj}"
+                    yon = tespit["direction"]
+                    sebep = []
+                    if tespit["fiyat_tetiklendi"]:
+                        sebep.append(f"15dk'da %{tespit['fiyat_degisim_pct']:+.2f} fiyat hareketi")
+                    if tespit["hacim_tetiklendi"]:
+                        sebep.append(f"hacim ortalamanın {tespit['hacim_carpani']:.1f}x üstünde")
+                    sebep_str = "ANLIK: " + " + ".join(sebep)
+                    teyit_notu = "Teyit: HIZLI mod (büyük zaman dilimi beklenmedi)"
 
                 # ── YOL 2: tepe/dip dönüşü (v16.35) — 4H/1H BEKLEMEZ, daha hızlı ──
-                # Kullanıcı geri bildirimi: YOL 1'in 4H/1H teyidi istemesi, coin TAM
-                # dönüş anındayken geç kalmaya sebep oluyordu (büyük trend henüz
-                # dönmemiş olur). Bu yol RSI aşırı ucu + kısa vadeli mum yön
-                # değişimini kullanır, büyük zaman dilimini beklemez.
                 if yon is None:
                     td = tepe_dip_donusu_tespit_et(sym)
                     if td:
@@ -1120,6 +1196,18 @@ def ani_hareket_tarama_loop():
                         tip_str = "TEPEDEN DÖNÜŞ" if td["tip"] == "tepe_donusu" else "DİPTEN DÖNÜŞ"
                         sebep_str = f"{tip_str} — 15m RSI:{td['rsi']:.1f}, son mumlar yön değiştiriyor"
                         teyit_notu = "Teyit: HIZLI mod (4H/1H beklenmedi, sadece RSI+mum yönü) — daha riskli, dikkatli olun"
+
+                # ── YOL 3: 1-2 saatlik hareket (v16.40 YENİ) ──
+                # Kullanıcı: "son 1 saatte 2 saatte yükseleni de yakalasın".
+                # 15dk'lık ani hareketten daha yavaş ama daha büyük/anlamlı
+                # (1 saatte %6+, 2 saatte %9+) hareketleri yakalar.
+                if yon is None:
+                    saat_tespit = ani_hareket_1_2saat_tespit_et(sym)
+                    if saat_tespit:
+                        yon = saat_tespit["direction"]
+                        sebep_str = (f"1-2 SAATLİK: 1s:%{saat_tespit['degisim_1s']:+.2f} "
+                                     f"2s:%{saat_tespit['degisim_2s']:+.2f}")
+                        teyit_notu = "Teyit: HIZLI mod (büyük zaman dilimi beklenmedi)"
 
                 if yon is None:
                     continue
@@ -2247,10 +2335,14 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
         return
 
     side = "buy" if direction == "long" else "sell"
+    with islem_aciliyor_lock:
+        islem_aciliyor[sym] = time.time()  # v16.40: manage()'in kurtarma bloğu bu sembolü açılış bitene kadar atlasın
     try:
         acilis_emri = exchange.create_market_order(sym, side, qty)
     except Exception as e:
         tg(f"⚠️ {sym} giriş emri başarısız: {e}")
+        with islem_aciliyor_lock:
+            islem_aciliyor.pop(sym, None)
         return
 
     # v16.21: açılış komisyonu da yakalanıp trade_state'e kaydediliyor —
@@ -2313,6 +2405,9 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
             trade_state[sym]["hard_stop_id"] = hard_stop_id
     durumu_diske_yaz()
     hard_stop_uyari = "" if hard_stop_id else "\n⚠️ Borsa stop emri konamadı — sadece soft-SL izlemesi aktif"
+
+    with islem_aciliyor_lock:
+        islem_aciliyor.pop(sym, None)  # v16.40: açılış tamamen bitti, manage() artık normal takip edebilir
 
     tg(
         f"📈 [KANAL KOPYA] {sym} {direction.upper()} AÇILDI\n"
@@ -2396,6 +2491,15 @@ def manage():
 
                 with state_lock:
                     durum = trade_state.get(sym)
+                if not durum and islem_aciliyor_mu(sym):
+                    # v16.40: Bu sembol TAM ŞU ANDA asil_islemi_ac() tarafından
+                    # açılıyor (market emri gitti, TP/SL hesaplanıyor) — kurtarma
+                    # bloğu bunu "kayıtsız" sanıp KENDİ AYRI SL/TP setini kurmaya
+                    # ÇALIŞMASIN (VELVETUSDT/SXTUSDT'de yaşanan yarış durumu:
+                    # iki ayrı süreç aynı miktar için TP emri koymaya çalışıp
+                    # emirlerin çoğu "reduceOnly miktar yetersiz" hatasıyla
+                    # başarısız oluyordu). Bu turu atla, açılış kendi işini bitirsin.
+                    continue
                 if not durum:
                     # v16.35: Bu, acilista_pozisyonlari_dogrula()'dan AYRI, manage()
                     # döngüsünün kendi içinde çalışan İKİNCİ bir kurtarma noktası —
@@ -2917,7 +3021,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.39) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.40) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2935,7 +3039,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.39 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.40 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
