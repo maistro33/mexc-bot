@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.32 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.34 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar artik teyitli acilir + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -402,7 +402,7 @@ if bot:
     @bot.callback_query_handler(func=lambda call: call.data.startswith("anigir|") or call.data.startswith("anipas|"))
     def ani_hareket_buton_yaniti(call):
         """
-        v16.32: "Ani Hareket" bildirimindeki ✅ Gir / ❌ Pas butonlarına
+        v16.34: "Ani Hareket" bildirimindeki ✅ Gir / ❌ Pas butonlarına
         basılınca çalışır. "Gir" -> normal basit-format akışıyla (SL/TP
         otomatik hesaplanarak) pozisyon açılır. "Pas" -> sadece mesaj
         güncellenir, hiçbir şey açılmaz.
@@ -494,7 +494,7 @@ def gercek_dolus_bilgisi_al(emir, sym, tahmini_fiyat):
     doluş fiyatını ve komisyonunu almaya çalışır; alamazsa tahmini fiyata
     geri döner (hesap yine çalışır, sadece daha az kesin olur).
 
-    v16.32 DÜZELTME: LABUSDT örneğinde bu fonksiyon YİNE tahmini fiyata
+    v16.34 DÜZELTME: LABUSDT örneğinde bu fonksiyon YİNE tahmini fiyata
     (bu durumda SL tetikleme fiyatına) düşmüştü — borsa kaydı gerçek
     kapanışın +0.80$ olduğunu gösterirken bot +0.12$ hesaplamıştı, aradaki
     fark tam da "gerçek fiyat yerine tahmini/tetikleme fiyatı kullanıldı"
@@ -560,6 +560,60 @@ def get_candles(sym, tf, limit=100):
     except Exception as e:
         log.warning(f"[VERI] {sym} {tf}: {e}")
         return None
+
+
+# ════════════════════════════════════════════
+# GERÇEK BORSA STOP EMRİ (v16.34) — "ani çöküş" koruması
+# ════════════════════════════════════════════
+# ESKİ DURUM: SL sadece bot'un kendi fiyat kontrol döngüsünde (birkaç
+# saniyede bir) izleniyordu — eşik geçilince market emriyle kapatılıyordu.
+# Bu, ANİ/SERT hareketlerde (flash crash) ciddi kaymaya (slippage) açıktı:
+# gerçek örnek — SL %3 hedeflenirken piyasa aniden çöktüğünde işlem
+# %6.36 zararla kapandı, çünkü fiyat bot'un iki kontrolü arasında
+# SL seviyesini çoktan geçip gitmişti.
+# YENİ: Pozisyon açılırken/SL her güncellendiğinde, borsaya GERÇEK bir
+# reduceOnly STOP-MARKET emri de konuyor. Bu emir BORSANIN KENDİ motoru
+# tarafından anlık tetiklenir — bot'un kontrol turunu beklemez, ağ
+# gecikmesinden etkilenmez. Bot'un kendi soft-SL izlemesi de PARALEL
+# olarak devam ediyor (iki katmanlı güvenlik) — hard stop başarısız
+# olursa (borsa hatası, geçici kesinti vb.) soft izleme yine de çalışır.
+def hard_stop_yerlestir(sym, direction, sl_fiyat, qty):
+    """Borsaya reduceOnly stop-market emri koyar, emir id'sini döner (başarısızsa None)."""
+    try:
+        kapama_yon = "sell" if direction == "long" else "buy"
+        miktar = float(exchange.amount_to_precision(sym, qty))
+        fiyat_hassas = float(exchange.price_to_precision(sym, sl_fiyat)) \
+            if hasattr(exchange, "price_to_precision") else sl_fiyat
+        emir = exchange.create_order(
+            sym, "market", kapama_yon, miktar, None,
+            {"reduceOnly": True, "stopLossPrice": fiyat_hassas}
+        )
+        return emir.get("id")
+    except Exception as e:
+        log.warning(f"[HARD_STOP] {sym} borsa stop emri konamadı (soft-SL izlemesi devam ediyor): {e}")
+        return None
+
+
+def hard_stop_iptal_et(sym, emir_id):
+    if not emir_id:
+        return
+    try:
+        exchange.cancel_order(emir_id, sym)
+    except Exception as e:
+        log.warning(f"[HARD_STOP] {sym} eski stop emri iptal edilemedi (muhtemelen zaten tetiklenmiş/kapanmış): {e}")
+
+
+def hard_stop_guncelle(sym, direction, yeni_sl, qty):
+    """Varsa eski hard-stop emrini iptal edip yeni SL fiyatında yenisini koyar, trade_state'i günceller."""
+    with state_lock:
+        eski_id = trade_state.get(sym, {}).get("hard_stop_id")
+    hard_stop_iptal_et(sym, eski_id)
+    yeni_id = hard_stop_yerlestir(sym, direction, yeni_sl, qty)
+    with state_lock:
+        if sym in trade_state:
+            trade_state[sym]["hard_stop_id"] = yeni_id
+    durumu_diske_yaz()
+    return yeni_id
 
 
 # ════════════════════════════════════════════
@@ -789,6 +843,11 @@ def acilista_pozisyonlari_dogrula():
             trade_state[sym]["tp_emirleri"] = tp_emirleri
         durumu_diske_yaz()
         kacan = sum(1 for e in tp_emirleri if e.get("id") is None)
+        # v16.34: kurtarılan pozisyona da borsa seviyesinde hard stop koy
+        hard_stop_id = hard_stop_yerlestir(sym, direction, sl, qty)
+        with state_lock:
+            trade_state[sym]["hard_stop_id"] = hard_stop_id
+        durumu_diske_yaz()
         if kacan:
             tg(f"⚠️ {sym} kurtarma: {kacan} TP emri borsaya konamadı, sadece fiyat takibiyle izlenecek")
 
@@ -842,12 +901,17 @@ def acik_pozisyonlara_kademeli_sl_uygula():
             with state_lock:
                 trade_state[sym]["sl"] = onerilen_sl
             durumu_diske_yaz()
+            # v16.34: SL iyileştiğinde borsadaki hard stop emri de güncellensin —
+            # eski emir iptal edilip yeni (daha iyi) SL fiyatında yenisi konuyor.
+            kalan_qty = durum.get("qty") or durum.get("orijinal_qty")
+            if kalan_qty:
+                hard_stop_guncelle(sym, direction, onerilen_sl, kalan_qty)
             tg(f"🔄 {sym} — bot güncellendi, yeni kademeli SL kuralı UYGULANDI: "
                f"{mevcut_sl:.8f} → {onerilen_sl:.8f} (TP{tp_index} zaten vurulmuş durumdaydı)")
 
 
 # ════════════════════════════════════════════
-# ANİ HAREKET TESPİTİ (v16.32) — "pump/dump yakalayıp Gir/Pas butonuyla sor"
+# ANİ HAREKET TESPİTİ (v16.34) — "pump/dump yakalayıp Gir/Pas butonuyla sor"
 # ════════════════════════════════════════════
 # Kullanıcı talebiyle: bot arka planda likit coinleri tarar, ani fiyat
 # sıçraması VEYA hacim patlaması yakalarsa, trend_teyidi_yeterli_mi()
@@ -858,7 +922,7 @@ ANI_HAREKET_TARAMA_AKTIF = os.getenv("ANI_HAREKET_TARAMA_AKTIF", "true").lower()
 ANI_HAREKET_WATCHLIST_BOYUTU = int(os.getenv("ANI_HAREKET_WATCHLIST_BOYUTU", "40"))
 ANI_HAREKET_FIYAT_PCT = float(os.getenv("ANI_HAREKET_FIYAT_PCT", "3.0"))       # % , 15dk penceresinde
 ANI_HAREKET_HACIM_CARPANI = float(os.getenv("ANI_HAREKET_HACIM_CARPANI", "3.0"))  # ortalamanın kaç katı
-ANI_HAREKET_TARAMA_ARALIK_SN = int(os.getenv("ANI_HAREKET_TARAMA_ARALIK_SN", "45"))  # v16.32: 90->45, daha hızlı yakalasın
+ANI_HAREKET_TARAMA_ARALIK_SN = int(os.getenv("ANI_HAREKET_TARAMA_ARALIK_SN", "45"))  # v16.34: 90->45, daha hızlı yakalasın
 ANI_HAREKET_COOLDOWN_DAKIKA = int(os.getenv("ANI_HAREKET_COOLDOWN_DAKIKA", "30"))  # aynı coin için tekrar uyarma araligi
 
 ani_hareket_son_uyari = {}   # {symbol: son_uyari_zamani}
@@ -868,7 +932,7 @@ ani_hareket_bekleyen = {}    # {callback_id_kisa: {"symbol":..., "direction":...
 
 def ani_hareket_tespit_et(sym):
     """
-    v16.32: CANLI ticker fiyatı (en güncel, mum kapanışını beklemez) ile
+    v16.34: CANLI ticker fiyatı (en güncel, mum kapanışını beklemez) ile
     15 dk önceki fiyat kıyaslanır — bu, "mum kapanana kadar bekleyip geç
     haber verme" gecikmesini ortadan kaldırır. Ayrıca son 2 tane 1m mumun
     HÂLÂ aynı yönde olup olmadığı kontrol edilir — hareket zaten tükenip
@@ -936,7 +1000,16 @@ def ani_hareket_tarama_loop():
                 if not sym.endswith("/USDT:USDT"):
                     continue
                 vol = safe(t.get("quoteVolume"))
-                if vol is None or vol < 8_000_000:
+                if vol < 8_000_000:
+                    continue
+                # v16.34: sadece hacme bakmak BTC/ETH/PEPE gibi "hantal" (düşük
+                # volatiliteli) major coinleri de watchlist'e sokuyordu —
+                # kullanıcı bunları özellikle istemiyor. Şimdi 24s (yüksek-düşük)/
+                # düşük oranı da kontrol ediliyor, düşük volatiliteli olanlar elenir.
+                yuksek = safe(t.get("high"))
+                dusuk = safe(t.get("low"))
+                volat_pct = ((yuksek - dusuk) / dusuk * 100) if dusuk > 0 else 0
+                if volat_pct < 5:
                     continue
                 rows.append((vol, sym))
             rows.sort(reverse=True)
@@ -1047,6 +1120,10 @@ def acik_pozisyonlarin_dar_sl_duzelt():
         with state_lock:
             trade_state[sym]["sl"] = yeni_sl
         durumu_diske_yaz()
+        # v16.34: dar SL genişletilince borsadaki hard stop de güncellensin
+        kalan_qty = durum.get("qty") or durum.get("orijinal_qty")
+        if kalan_qty:
+            hard_stop_guncelle(sym, direction, yeni_sl, kalan_qty)
         tg(f"🛠️ {sym} — eski hatalı DAR SL düzeltildi: {mevcut_sl:.8f} (%{mevcut_sl_pct*100:.2f}) "
            f"→ {yeni_sl:.8f} (%{yeni_sl_pct*100:.2f}, 1H volatilite bazlı)")
 
@@ -1098,7 +1175,7 @@ def hizli_sinyal_ayristir(metin):
     olmasa da çalışır. Giriş/SL kanal vermediği için, giriş anlık piyasa
     fiyatından alınır, SL sabit %2 ile hesaplanır.
 
-    v16.32: Bazı coinlerin GERÇEK temel sembolü tek harf/kısa (TUSDT ->
+    v16.34: Bazı coinlerin GERÇEK temel sembolü tek harf/kısa (TUSDT ->
     taban "T", BUSDT -> taban "B", USUSDT -> taban "US" vb.) — kullanıcı
     ekrandaki tam ismi ("tusdt") yazınca eskiden buna bir "USDT" DAHA
     ekleniyordu ("TUSDT/USDT:USDT" gibi geçersiz bir sembol oluşuyordu,
@@ -1356,7 +1433,7 @@ def deneysel_gozlem_hesapla(sym):
 def trend_teyidi_yeterli_mi(sym, direction):
     """
     v16.9 — ÜÇ BİLEŞENLİ TEYİT (eski 2-mum kıyaslamasının yerine geçti).
-    v16.32 — DÖRDÜNCÜ BİLEŞEN eklendi: 1h MUM YÖNÜ. EVAAUSDT örneğinde
+    v16.34 — DÖRDÜNCÜ BİLEŞEN eklendi: 1h MUM YÖNÜ. EVAAUSDT örneğinde
     açık bir çelişki yaşandı — 4h MA20 hâlâ derin negatifti (büyük bir
     çöküşün ortalamayı aşağı çekmesinden, GÜNCEL yönü yansıtmıyordu) ve
     1h RSI (42.4) henüz "60 altı" sınırını geçmemişti (RSI GECİKMELİ bir
@@ -1418,7 +1495,7 @@ def trend_teyidi_yeterli_mi(sym, direction):
         yukselis_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k > a)
         dusus_sayisi = sum(1 for a, k in zip(son_5_acilis, son_5_kapanis) if k < a)
 
-        # ── v16.32: son 5 TANE 1h MUMUN yönü (RSI'ın gecikmesini yakalar) ──
+        # ── v16.34: son 5 TANE 1h MUMUN yönü (RSI'ın gecikmesini yakalar) ──
         son_5_acilis_1h = h1_acilis[-5:]
         son_5_kapanis_1h = h1_kapanis[-5:]
         yukselis_1h = sum(1 for a, k in zip(son_5_acilis_1h, son_5_kapanis_1h) if k > a)
@@ -1747,7 +1824,9 @@ def manuel_pozisyon_kapat(sym):
         gercek_pos = next((p for p in pozisyonlar if safe(p.get("contracts")) > 0), None)
         if not gercek_pos:
             with state_lock:
+                eski_hard_stop = trade_state.get(sym, {}).get("hard_stop_id")
                 trade_state.pop(sym, None)
+            hard_stop_iptal_et(sym, eski_hard_stop)  # v16.34: yetim kalmasın
             durumu_diske_yaz()
             return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi."
 
@@ -1777,7 +1856,9 @@ def manuel_pozisyon_kapat(sym):
 
         with state_lock:
             onceki_gerceklesen = trade_state.get(sym, {}).get("gerceklesen_pnl", 0)
+            eski_hard_stop = trade_state.get(sym, {}).get("hard_stop_id")
             trade_state.pop(sym, None)
+        hard_stop_iptal_et(sym, eski_hard_stop)  # v16.34
         durumu_diske_yaz()
         trade_log_kaydet({
             "symbol": sym, "direction": direction, "entry": entry,
@@ -2138,11 +2219,22 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
     ek_uyari = (f"\n⚠️ {kacan_emir_sayisi} TP seviyesi için limit emri konulamadı — "
                 f"o seviyeler eski (fiyat kontrol) yöntemiyle takip edilecek") if kacan_emir_sayisi else ""
 
+    # v16.34: Açılışta borsaya GERÇEK bir hard stop-market emri de konuyor —
+    # bot'un kendi soft-SL izlemesine ek, ikinci bir güvenlik katmanı (ani
+    # çöküşlerde bot'un kontrol turunu beklemeden borsanın kendi motoru
+    # tetikler). Konamazsa sessizce geçilir, soft-SL izleme yine çalışır.
+    hard_stop_id = hard_stop_yerlestir(sym, direction, sl, qty)
+    with state_lock:
+        if sym in trade_state:
+            trade_state[sym]["hard_stop_id"] = hard_stop_id
+    durumu_diske_yaz()
+    hard_stop_uyari = "" if hard_stop_id else "\n⚠️ Borsa stop emri konamadı — sadece soft-SL izlemesi aktif"
+
     tg(
         f"📈 [KANAL KOPYA] {sym} {direction.upper()} AÇILDI\n"
         f"Giriş≈{price:.8f} | SL:{sl:.8f}\n"
         f"TP listesi: {sinyal['tp_liste']}\n"
-        f"Notional≈${notional:.2f}{gozlem_str}{ek_uyari}"
+        f"Notional≈${notional:.2f}{gozlem_str}{ek_uyari}{hard_stop_uyari}"
     )
 
 
@@ -2221,14 +2313,53 @@ def manage():
                 with state_lock:
                     durum = trade_state.get(sym)
                 if not durum:
+                    # v16.34: Bu, acilista_pozisyonlari_dogrula()'dan AYRI, manage()
+                    # döngüsünün kendi içinde çalışan İKİNCİ bir kurtarma noktası —
+                    # v16.28'de SADECE başlangıçtaki kurtarmayı düzeltmiştim, bunu
+                    # gözden kaçırmışım (SXTUSDT örneğinde ortaya çıktı: hâlâ eski
+                    # "sadece %3 SL, TP YOK" davranışını sergiliyordu). Şimdi burası
+                    # da aynı düzeltmeyi kullanıyor: 1H volatilite bazlı SL + gerçek
+                    # TP listesi hesaplanıp borsaya limit emri olarak konuyor.
                     entry_guvenlik = entry
-                    guvenlik_sl_pct = 0.03
-                    sl_guvenlik = entry_guvenlik * (1 - guvenlik_sl_pct) if direction == "long" else entry_guvenlik * (1 + guvenlik_sl_pct)
+                    volatilite_pct = manuel_volatilite_hesapla(sym, tf="1h", mum_sayisi=20)
+                    if volatilite_pct is not None:
+                        guvenlik_sl_pct = max(0.012, min(volatilite_pct / 100 * 2.0, MAX_SL_PCT))
+                    else:
+                        guvenlik_sl_pct = 0.03
+                    sl_guvenlik = entry_guvenlik * (1 - guvenlik_sl_pct) if direction == "long" \
+                        else entry_guvenlik * (1 + guvenlik_sl_pct)
+
+                    risk_mesafe = abs(entry_guvenlik - sl_guvenlik)
+                    KANAL_TP_ORANLARI_KURTARMA = [0.1, 0.2, 0.3, 0.4, 0.5, 0.8]
+                    if direction == "long":
+                        tp_ham = [entry_guvenlik + o * risk_mesafe for o in KANAL_TP_ORANLARI_KURTARMA]
+                    else:
+                        tp_ham = [entry_guvenlik - o * risk_mesafe for o in KANAL_TP_ORANLARI_KURTARMA]
+                    tp_olcekli = tp_olcekle(entry_guvenlik, sl_guvenlik, tp_ham, direction)
+                    tp_liste_kurtarma = tp_olcekli[:TP_SAYISI_KULLANILAN]
+
                     with state_lock:
-                        trade_state[sym] = {"sl": sl_guvenlik, "tp_liste": [], "tp_index": 0,
-                                             "direction": direction, "entry": entry_guvenlik, "kaynak": "kurtarilan_calisma_zamani"}
+                        trade_state[sym] = {"sl": sl_guvenlik, "tp_liste": tp_liste_kurtarma, "tp_index": 0,
+                                             "direction": direction, "entry": entry_guvenlik,
+                                             "kaynak": "kurtarilan_calisma_zamani",
+                                             "qty": qty, "orijinal_qty": qty, "tp_emirleri": []}
                     durumu_diske_yaz()
-                    tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — geçici %3 güvenlik SL'i kondu")
+
+                    tp_emirleri_kurtarma = tp_limit_emirlerini_koy(sym, direction, tp_liste_kurtarma, qty)
+                    with state_lock:
+                        trade_state[sym]["tp_emirleri"] = tp_emirleri_kurtarma
+                    durumu_diske_yaz()
+
+                    # v16.34: çalışma zamanında kurtarılan pozisyona da hard stop koy
+                    hard_stop_id_kurtarma = hard_stop_yerlestir(sym, direction, sl_guvenlik, qty)
+                    with state_lock:
+                        trade_state[sym]["hard_stop_id"] = hard_stop_id_kurtarma
+                    durumu_diske_yaz()
+
+                    tg(f"🚨 UYARI: {sym} için kayıtlı durum yoktu — kurtarıldı (çalışma zamanı).\n"
+                       f"SL (%{guvenlik_sl_pct*100:.2f}, 1H volatilite bazlı): {sl_guvenlik:.8f}\n"
+                       f"TP listesi (otomatik hesaplandı, TP1-{TP_SAYISI_KULLANILAN}): "
+                       f"{[round(x,8) for x in tp_liste_kurtarma]}")
                     continue
 
                 t = exchange.fetch_ticker(sym)
@@ -2291,7 +2422,9 @@ def manage():
                     else:
                         tg(f"❌ STOP {sym} | TOPLAM işlem PnL≈{toplam_pnl_stop:+.2f}$")
                     with state_lock:
+                        eski_hard_stop = trade_state.get(sym, {}).get("hard_stop_id")
                         trade_state.pop(sym, None)
+                    hard_stop_iptal_et(sym, eski_hard_stop)  # v16.34: kendi tetiklenmişse iptal zaten no-op olur
                     durumu_diske_yaz()
                     trade_log_kaydet({
                         "symbol": sym, "direction": direction, "entry": entry,
@@ -2433,6 +2566,11 @@ def manage():
                             # ── SL güncelleme bildirimi (breakeven+tampon ilk TP'de, sonrakilerde kâr kilitleme) ──
                             if sl_iyilesti:
                                 kalan_qty_sonrasi = max(qty - kapatilacak, 0)
+                                # v16.34: TP sonrası SL iyileşince borsadaki hard stop de
+                                # güncellensin — hem yeni (daha iyi) fiyata hem KALAN
+                                # (küçülmüş) miktara göre yeniden konuyor.
+                                if kalan_qty_sonrasi > 0:
+                                    hard_stop_guncelle(sym, direction, yeni_sl, kalan_qty_sonrasi)
                                 if tp_index == 0:
                                     maks_ek_risk = abs(entry - yeni_sl) * kalan_qty_sonrasi
                                     tg(f"🔒 {sym} STOP artık giriş civarında (%{TP1_BREAKEVEN_TAMPON_PCT*100:.2f} "
@@ -2506,7 +2644,9 @@ def manage():
 
                         with state_lock:
                             toplam_pnl = trade_state[sym].get("gerceklesen_pnl", 0) + gross_dilim
+                            eski_hard_stop = trade_state[sym].get("hard_stop_id")
                             trade_state.pop(sym, None)
+                        hard_stop_iptal_et(sym, eski_hard_stop)  # v16.34
                         durumu_diske_yaz()
                         tg(f"📉 TRAILING kapandı {sym} | son dilim PnL≈{gross_dilim:+.2f}$ | "
                            f"TOPLAM işlem PnL≈{toplam_pnl:+.2f}$")
@@ -2693,7 +2833,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.32) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.34) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -2707,11 +2847,11 @@ if __name__ == "__main__":
     threading.Thread(target=panel_sunucu_baslat, daemon=True).start()
     threading.Thread(target=teyit_bekleme_loop, daemon=True).start()
     threading.Thread(target=oz_tarama_loop, daemon=True).start()  # v16.11: bot kendi coin de bulur
-    threading.Thread(target=ani_hareket_tarama_loop, daemon=True).start()  # v16.32: pump/dump + Gir/Pas butonu
+    threading.Thread(target=ani_hareket_tarama_loop, daemon=True).start()  # v16.34: pump/dump + Gir/Pas butonu
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.32 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.34 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
