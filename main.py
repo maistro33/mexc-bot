@@ -228,8 +228,8 @@ exchange = ccxt.bitget({
 })
 
 TOPLAM_SERMAYE   = 35.0
-MARGIN_SABIT     = 10.0    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
-LEV              = 10
+MARGIN_SABIT     = 5  # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
+LEV              = 20
 MAX_POS          = 2       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
 MIN_POS_NOTIONAL = 30.0
 
