@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TELEGRAM SİNYAL KOPYALAMA BOTU — GERÇEK PARA
-🔖 VERSİYON: v16.55 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar tekrar anında acilir (teyitsiz) + ANI HAREKET tespiti (Gir/Pas butonu))
+🔖 VERSİYON: v16.56 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + coklu kanal + manuel komutlar tekrar anında acilir (teyitsiz) + ANI HAREKET tespiti (Gir/Pas butonu))
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Belirtilen Telegram kanalını (https://t.me/Kripto_Botu) dinler, gelen
 sinyalleri ayrıştırır, Bitget'te GERÇEK PARA ile birebir açar.
@@ -228,9 +228,9 @@ exchange = ccxt.bitget({
 })
 
 TOPLAM_SERMAYE   = 35.0
-MARGIN_SABIT     = 2    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
-LEV              = 20
-MAX_POS          = 1       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
+MARGIN_SABIT     = 10.0    # ── kullanıcı talebiyle: sabit marj, risk bazlı değil ──
+LEV              = 10
+MAX_POS          = 2       # kanal genelde tek sinyal veriyor, aynı anda 1 işlem
 MIN_POS_NOTIONAL = 30.0
 
 MAX_GUNLUK_ZARAR = -10.0
@@ -561,7 +561,7 @@ def get_candles(sym, tf, limit=100):
         return None
 
 
-# v16.55: AÇILIŞ-KURTARMA YARIŞ DURUMU DÜZELTMESİ.
+# v16.56: AÇILIŞ-KURTARMA YARIŞ DURUMU DÜZELTMESİ.
 # Gerçek örnek — VELVETUSDT ve SXTUSDT'de TEKRAR TEKRAR yaşandı: bir pozisyon
 # asil_islemi_ac() ile açılırken (market emri gönderilip TP/SL hesaplanırken),
 # TAM O SIRADA manage() döngüsü (ayrı thread) borsada bu sembolü GÖRÜP ama
@@ -572,7 +572,7 @@ def get_candles(sym, tf, limit=100):
 # Çözüm: bir sembol açılmaya BAŞLADIĞI anda bu sete eklenir, açılış TAMAMEN
 # bitene (TP+hard stop konana) kadar manage()'in kurtarma bloğu o sembolü
 # atlar.
-islem_aciliyor = {}  # {symbol: baslama_zamani} — v16.55
+islem_aciliyor = {}  # {symbol: baslama_zamani} — v16.56
 islem_aciliyor_lock = threading.Lock()
 ISLEM_ACILIYOR_TIMEOUT_SN = 30  # bu süreden eskiyse (örn. beklenmedik bir hata
                                  # yüzünden kilit temizlenmemişse) artık geçersiz sayılır
@@ -691,7 +691,7 @@ STATE_PIN_ETIKETI = "🗄️ BOT_DURUM_YEDEK (dokunma — otomatik güncellenir)
 _pin_message_id = None
 _pin_lock = threading.Lock()
 _pin_son_guncelleme = 0.0
-PIN_MIN_ARALIK_SN = 10  # v16.55: art arda gelen SL/TP/hard-stop güncellemeleri
+PIN_MIN_ARALIK_SN = 10  # v16.56: art arda gelen SL/TP/hard-stop güncellemeleri
                          # her biri ayrı ayrı Telegram'daki durum mesajını
                          # düzenliyordu — kullanıcıya "sürekli geliyor" gibi
                          # hissettiren, gereksiz sık düzenleme spam'ine sebep
@@ -957,10 +957,10 @@ def acik_pozisyonlara_kademeli_sl_uygula():
 # butonlu bir bildirim atar. OTOMATİK AÇMAZ (SADECE_MANUEL felsefesiyle
 # tutarlı) — kullanıcı butona basmadan hiçbir pozisyon açılmaz.
 ANI_HAREKET_TARAMA_AKTIF = os.getenv("ANI_HAREKET_TARAMA_AKTIF", "true").lower() == "true"
-ANI_HAREKET_WATCHLIST_BOYUTU = int(os.getenv("ANI_HAREKET_WATCHLIST_BOYUTU", "30"))  # v16.55: 60->30, tur süresi kısalsın
+ANI_HAREKET_WATCHLIST_BOYUTU = int(os.getenv("ANI_HAREKET_WATCHLIST_BOYUTU", "30"))  # v16.56: 60->30, tur süresi kısalsın
 ANI_HAREKET_FIYAT_PCT = float(os.getenv("ANI_HAREKET_FIYAT_PCT", "3.0"))       # % , 15dk penceresinde
 ANI_HAREKET_HACIM_CARPANI = float(os.getenv("ANI_HAREKET_HACIM_CARPANI", "3.0"))  # ortalamanın kaç katı
-ANI_HAREKET_TARAMA_ARALIK_SN = int(os.getenv("ANI_HAREKET_TARAMA_ARALIK_SN", "20"))  # v16.55: 45->20, daha hızlı yakalasın
+ANI_HAREKET_TARAMA_ARALIK_SN = int(os.getenv("ANI_HAREKET_TARAMA_ARALIK_SN", "20"))  # v16.56: 45->20, daha hızlı yakalasın
 ANI_HAREKET_COOLDOWN_DAKIKA = int(os.getenv("ANI_HAREKET_COOLDOWN_DAKIKA", "30"))  # aynı coin için tekrar uyarma araligi
 
 ani_hareket_son_uyari = {}   # {symbol: son_uyari_zamani}
@@ -1023,7 +1023,7 @@ def tepe_dip_donusu_tespit_et(sym):
 
 def ani_hareket_1_2saat_tespit_et(sym):
     """
-    v16.55 — kullanıcı geri bildirimi: "son 1 saatte 2 saatte yükselen/düşeni
+    v16.56 — kullanıcı geri bildirimi: "son 1 saatte 2 saatte yükselen/düşeni
     de yakalasın". Mevcut ani_hareket_tespit_et() SADECE 15 dakikalık pencereye
     bakıyordu — daha YAVAŞ, uzun süreye yayılan (1-2 saatte %8-15 gibi) ama
     yine de güçlü hareketleri kaçırıyordu. Bu fonksiyon 15m mumlarla 1 ve 2
@@ -1056,7 +1056,7 @@ def ani_hareket_1_2saat_tespit_et(sym):
 
         yon = "long" if (degisim_1s if abs(degisim_1s) >= 6 else degisim_2s) > 0 else "short"
 
-        # v16.55: eşik %0.3'ten %0.6'ya çıkarıldı — kullanıcı gözlemi: %0.3
+        # v16.56: eşik %0.3'ten %0.6'ya çıkarıldı — kullanıcı gözlemi: %0.3
         # yeterince koruyucu değildi, hâlâ tepeye yakın girişler oluyordu.
         # LONG için son mumların zirvesinden en az %0.6 geri çekilmiş olmalı.
         highs = [c[2] for c in m15]
@@ -1119,7 +1119,7 @@ def ani_hareket_tespit_et(sym):
 
         yon_tahmini = "long" if fiyat_degisim_pct > 0 else "short"
 
-        # v16.55: eşik %0.3'ten %0.6'ya çıkarıldı — kullanıcı gözlemi: %0.3
+        # v16.56: eşik %0.3'ten %0.6'ya çıkarıldı — kullanıcı gözlemi: %0.3
         # yeterince koruyucu değildi, hâlâ tepeye yakın girişler oluyordu
         # (MUUUSDT örneği: pump'ın en tepesinde girildi, hemen ardından
         # geri çekildi). Şimdi LONG için, fiyatın son mumların en
@@ -1154,7 +1154,7 @@ def ani_hareket_tarama_loop():
         log.info("[ANI_HAREKET] devre dışı (ANI_HAREKET_TARAMA_AKTIF=false)")
         return
 
-    # v16.55: RWA (tokenize edilmiş hisse/ETF, örn. MUUUSDT = Direxion MU Bull
+    # v16.56: RWA (tokenize edilmiş hisse/ETF, örn. MUUUSDT = Direxion MU Bull
     # 2x ETF) LİSTESİ — kullanıcı gerçek örneği: bot MUUUSDT'yi (kripto değil,
     # ABD borsa saatleriyle sınırlı bir hisse ürünü) LONG olarak yakalayıp açtı,
     # "Market closed" durumuna girince pozisyon KAPATILAMAZ hâle geldi. Bitget
@@ -1181,11 +1181,11 @@ def ani_hareket_tarama_loop():
                 if not sym.endswith("/USDT:USDT"):
                     continue
                 if sym in rwa_semboller:
-                    continue  # v16.55: tokenize hisse/ETF — kripto gibi 7/24 işlem görmüyor, atla
+                    continue  # v16.56: tokenize hisse/ETF — kripto gibi 7/24 işlem görmüyor, atla
                 vol = safe(t.get("quoteVolume"))
-                if vol < 3_000_000:  # v16.55: likidite tabanı düşürüldü (2.5M-8M arası
+                if vol < 3_000_000:  # v16.56: likidite tabanı düşürüldü (2.5M-8M arası
                     continue          # gerçek yükselenler de kaçmasın diye)
-                # v16.55: EN ÖNEMLİ DEĞİŞİKLİK — kullanıcı geri bildirimi: "şu an
+                # v16.56: EN ÖNEMLİ DEĞİŞİKLİK — kullanıcı geri bildirimi: "şu an
                 # 24 saatlik olanlar gelsin" — eskiden HACME göre sıralanıyordu,
                 # bu da PEPE/ZEC gibi yüksek hacimli ama aslında %5-8 gibi ufak
                 # hareketli "hantal" coinlerin öne çıkmasına sebep oluyordu.
@@ -1214,7 +1214,7 @@ def ani_hareket_tarama_loop():
                 sebep_str = ""
                 teyit_notu = ""
 
-                # v16.55: Kullanıcı kararı — hız yerine GÜVENİLİRLİK tercih edildi.
+                # v16.56: Kullanıcı kararı — hız yerine GÜVENİLİRLİK tercih edildi.
                 # Üç yolun HEPSİNE tekrar 4H/1H teyidi (trend_teyidi_yeterli_mi)
                 # eklendi. Bu, sinyal sıklığını azaltır ama isabet oranını artırır
                 # — bilinçli bir ödünleşim, geri alınmadı/unutulmadı.
@@ -1258,11 +1258,11 @@ def ani_hareket_tarama_loop():
                 if yon is None:
                     continue
 
-                # v16.55: kullanıcı kararı DEĞİŞTİ — "otomatik işlem açmayı
+                # v16.56: kullanıcı kararı DEĞİŞTİ — "otomatik işlem açmayı
                 # kapat hem botun hem diğer kanaldan gelen sinyallerin, sadece
                 # bot en kaliteli sinyal varsa göndersin, sadece ben açacam
                 # manuel, sinyallerde gene gir ve pas olsun". Artık:
-                #   1) SADECE LONG (v16.55'ten kalan karar hâlâ geçerli)
+                #   1) SADECE LONG (v16.56'ten kalan karar hâlâ geçerli)
                 #   2) SADECE GÜÇ SKORU >= 85 (ÇOK GÜÇLÜ) ise bildirim gider
                 #   3) Otomatik AÇILMIYOR — Gir/Pas butonlu bildirim gönderilir
                 if yon != "long":
@@ -1457,15 +1457,40 @@ def sinyal_ayristir(metin):
 # ════════════════════════════════════════════
 # POZİSYON BOYUTU
 # ════════════════════════════════════════════
-def pozisyon_boyutu_hesapla(entry, sl):
+def efektif_kaldirac_al(sym):
+    """
+    v16.56: Her coin'in borsadaki MAKSİMUM izin verilen kaldıracı farklı
+    olabiliyor (bazıları 20x, bazıları sadece 10x destekliyor). Eskiden
+    sabit LEV (örn. 20) her coin için körlemesine deneniyordu — coin
+    10x'i aşamıyorsa set_leverage() BAŞARISIZ oluyordu ("işlem atlandı")
+    YA DA borsa sessizce daha düşük bir kaldıraç uyguluyordu ama miktar
+    hesabı hâlâ istenen (20x) kaldıraca göre yapıldığı için "bakiye
+    yetersiz" hatası çıkıyordu (RIVER/USDT örneği). Şimdi coin'in gerçek
+    maksimum kaldıracı borsadan sorgulanıp, LEV ile bunun KÜÇÜK OLANI
+    kullanılıyor — "borsanın kaldıracı ne ise onunla açsın".
+    """
+    try:
+        piyasa = exchange.market(sym)
+        bilgi = piyasa.get("info", {}) or {}
+        maks_kaldirac = int(float(bilgi.get("maxLever", LEV)))
+        return min(LEV, maks_kaldirac) if maks_kaldirac > 0 else LEV
+    except Exception as e:
+        log.warning(f"[KALDIRAÇ] {sym} maksimum kaldıraç alınamadı, varsayılan {LEV}x deneniyor: {e}")
+        return LEV
+
+
+def pozisyon_boyutu_hesapla(entry, sl, lev=None):
     """
     SABİT MARJ modeli (kullanıcı talebiyle): notional = MARGIN_SABIT × LEV.
     SL mesafesi artık boyutlandırmayı etkilemiyor — sadece SL fiyatının
     kendisi (nereye konacağı) için kullanılıyor, miktar için değil.
+    v16.56: `lev` parametresi eklendi — verilmezse global LEV kullanılır,
+    verilirse (efektif_kaldirac_al'dan gelen, coin'e özel) o kullanılır.
     """
     if entry <= 0:
         return None, None
-    notional = MARGIN_SABIT * LEV
+    kullanilacak_lev = lev if lev else LEV
+    notional = MARGIN_SABIT * kullanilacak_lev
     amount = notional / entry
     return amount, notional
 
@@ -1490,7 +1515,7 @@ TP_OLCEK_CARPANI = 1.0  # v16.22: 0.5 çok sıkıydı (TP1 neredeyse hiç kâr b
                         # 1.0'a çıkarıldı — kanalın/otomatiğin verdiği orijinal mesafeyi
                         # koruyor. Asıl güvence aşağıdaki MIN_TP1_HAREKET_PCT tabanı.
 
-# ── TP DİLİM AĞIRLIKLARI (v16.55 — 5 TP'DE TAM KAPANIŞ) ──
+# ── TP DİLİM AĞIRLIKLARI (v16.56 — 5 TP'DE TAM KAPANIŞ) ──
 # 3 TP'den 5 TP'ye çıkarıldı — kullanıcı talebi. MIN_TP1_R_ORANI=0.65 ile
 # birlikte kademeli büyüyen hedefler: TP1=0.65R, TP2=0.78R, TP3=0.94R,
 # TP4=1.12R, TP5=1.35R gibi (1.2x katsayıyla artan). 5 TP'de TAMAMI kapanır
@@ -1536,7 +1561,7 @@ TP1_EK_GENISLETME_CARPANI = 1.0  # v16.21: SCALP MODU — 1.5'ten 1.0'a indirild
                         # artık TP1'e ekstra genişletme YOK). Scalp'te TP1'in HIZLI
                         # gelmesi isteniyor, geç gelip daha büyük kâr bırakması değil.
 
-MIN_TP1_R_ORANI = 0.65  # v16.55: 0.40'tan 0.65'e yükseltildi. Gerçek 10 işlemlik
+MIN_TP1_R_ORANI = 0.65  # v16.56: 0.40'tan 0.65'e yükseltildi. Gerçek 10 işlemlik
                         # veriyle net bir sorun görüldü: kazananlar ort. %10.3 ROI
                         # bırakıyordu, kaybedenler (tam SL'e giden, TP1'e hiç
                         # uğramayan işlemler) sabit ~%31 ROI kaybettiriyordu (SL
@@ -1666,7 +1691,7 @@ def deneysel_gozlem_hesapla(sym):
 
 def sinyal_guc_skoru(rsi_1h, mum_4h_sayisi, mum_1h_sayisi, direction):
     """
-    v16.55 — kullanıcı talebi: "sinyale yüzde koysan, çok güçlüyse bilelim".
+    v16.56 — kullanıcı talebi: "sinyale yüzde koysan, çok güçlüyse bilelim".
     3 bileşenden 0-100 arası bir güç skoru üretir:
       - RSI kalitesi (40 puan): 40-80/20-60 aralığının TAM ORTASINA (60/40)
         ne kadar yakınsa o kadar yüksek puan — uçlara (40 veya 80 sınırına)
@@ -1773,7 +1798,7 @@ def trend_teyidi_yeterli_mi(sym, direction):
         if direction == "long":
             ma20_ustunde = fiyat > ma20
             mum_egilimi_yeterli = yukselis_sayisi >= 3
-            rsi_yeterli = 40 < rsi_1h < 80  # v16.55: ÜST SINIR eklendi — RSI 92.9
+            rsi_yeterli = 40 < rsi_1h < 80  # v16.56: ÜST SINIR eklendi — RSI 92.9
                           # gibi aşırı uç değerlerde LONG'a onay veriliyordu (1000XEC
                           # örneği), bu tam da "tepeyi kovalamak" demek. 80 üstü artık
                           # reddediliyor, ne kadar yukarı gitse de.
@@ -1790,7 +1815,7 @@ def trend_teyidi_yeterli_mi(sym, direction):
         else:
             ma20_altinda = fiyat < ma20
             mum_egilimi_yeterli = dusus_sayisi >= 3
-            rsi_yeterli = 20 < rsi_1h < 60  # v16.55: ALT SINIR eklendi — aynı mantık
+            rsi_yeterli = 20 < rsi_1h < 60  # v16.56: ALT SINIR eklendi — aynı mantık
                           # SHORT için: RSI 5 gibi aşırı satımda dibi kovalamayı önler
             mum_1h_yeterli = dusus_1h >= 3
 
@@ -2174,19 +2199,19 @@ def sinyali_isle(sinyal):
     # zaten oz_tarama_aday_degerlendir() içinde geçmiş oluyor — bu yüzden
     # burada AYRICA kanalın 4h/1h teyidinden (trend_teyidi_yeterli_mi) VE
     # 180 dk'lık kuyruktan geçirilmiyor.
-    # v16.55: MANUEL komutlar TEKRAR anında açılır oldu — kullanıcı talebi
+    # v16.56: MANUEL komutlar TEKRAR anında açılır oldu — kullanıcı talebi
     # tekrar değişti: "işlem aç dedigimde teyitten açmıyor, coin uçuyor".
     # Mantık: manuel komut, kullanıcının KENDİ kararı/teyidi demek — bot'un
     # ayrıca 4H/1H ile onu sorgulayıp geciktirmesi, tam da şikayet edilen
     # "iş işten geçiyor" durumuna sebep oluyordu. Kanal sinyalleri ve
     # ani_hareket_tarama_loop() hâlâ trend_teyidi_yeterli_mi'den geçiyor —
     # SADECE kullanıcının bilerek yazdığı manuel komutlar muaf.
-    # v16.55: kullanıcı talebi — kanal sinyalleri de artık MANUEL gibi
+    # v16.56: kullanıcı talebi — kanal sinyalleri de artık MANUEL gibi
     # teyitsiz/anında açılıyor ("kanalın sinyalleri ile aynı anda girsin,
     # teyit etmesin" — kanalın kendi sinyalleri gözlemsel olarak bot'un
     # kendi ani-hareket tespitinden çok daha hızlı/kaliteliydi, TP'lerin
     # 1 dakikada vurulduğu görüldü). "kanal_kopya" artık bu listede.
-    # v16.55: kullanıcı kararı DEĞİŞTİ — "otomatik işlem açmayı kapat hem
+    # v16.56: kullanıcı kararı DEĞİŞTİ — "otomatik işlem açmayı kapat hem
     # botun hem diğer kanaldan gelen sinyallerin, sadece bot en kaliteli
     # sinyal varsa göndersin, sadece ben açacam manuel". Kanal sinyalleri
     # ("kanal_kopya") artık ANINDA AÇILMIYOR — Gir/Pas butonlu bildirime
@@ -2203,7 +2228,7 @@ def sinyali_isle(sinyal):
     gozlem = deneysel_gozlem_hesapla(sym)
     gozlem_str = f" | 📊 Deneysel: {gozlem}" if gozlem else ""
 
-    # v16.55: Kanal sinyalleri artık OTOMATİK AÇILMIYOR — kullanıcı kararı:
+    # v16.56: Kanal sinyalleri artık OTOMATİK AÇILMIYOR — kullanıcı kararı:
     # "sadece bot en kaliteli sinyal varsa göndersin, sadece ben açacam
     # manuel". Teyit geçse bile artık asil_islemi_ac() ÇAĞRILMIYOR — Gir/Pas
     # butonlu bir bildirim gönderiliyor (ani_hareket ile aynı mekanizma),
@@ -2355,7 +2380,36 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
     entry_hedef = sinyal["entry"]
     sl = sinyal["sl"]
 
-    # v16.55: RWA (tokenize hisse/ETF) GÜVENLİK KONTROLÜ — hangi yoldan
+    # v16.56: SEMBOL ADI UYUŞMAZLIĞI düzeltmesi — kullanıcı gözlemi: bazı
+    # coinler "isimlerinden dolayı" açılmıyordu. Kanal/manuel'den gelen
+    # sembol borsada TAM olarak bulunamazsa (örn. borsanın gerçek temel
+    # sembolü farklıysa), TABAN COIN ADINA göre büyük/küçük harf duyarsız
+    # bir eşleşme aranıyor — bulunursa DÜZELTİLMİŞ sembolle devam ediliyor,
+    # bulunamazsa net bir hata mesajıyla durduruluyor (sessizce başarısız
+    # olmak yerine).
+    try:
+        exchange.market(sym)
+    except Exception:
+        aranan_taban = sym.split("/")[0].upper()
+        bulunan = None
+        try:
+            for aday_sym, aday_bilgi in exchange.markets.items():
+                if not aday_sym.endswith("/USDT:USDT"):
+                    continue
+                if aday_sym.split("/")[0].upper() == aranan_taban:
+                    bulunan = aday_sym
+                    break
+        except Exception:
+            pass
+        if bulunan:
+            tg(f"ℹ️ {sym} borsada tam eşleşmedi, en yakın sembol kullanılıyor: {bulunan}")
+            sym = bulunan
+        else:
+            tg(f"⚠️ {sym} borsada bulunamadı (ne tam ne yakın eşleşme) — bu coin bu borsada "
+               f"USDT perpetual olarak işlem görmüyor olabilir, işlem açılmadı.")
+            return
+
+    # v16.56: RWA (tokenize hisse/ETF) GÜVENLİK KONTROLÜ — hangi yoldan
     # gelirse gelsin (manuel, kanal, ani hareket) burada son bir kez
     # kontrol edilir. Gerçek örnek: MUUUSDT (Direxion MU Bull 2x ETF)
     # LONG olarak açıldı, ABD borsa saatleri dışında "Market closed"
@@ -2450,22 +2504,31 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
         tg(f"📐 Scalp TP'leri (R-katları, ölçeklenmeden kullanılıyor): "
            f"{[round(x,8) for x in sinyal['tp_liste']]}")
 
-    amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl)
+    # v16.56: coin'in GERÇEK maksimum kaldıracı önce belirlenip, tüm
+    # sonraki hesaplarda (miktar, marj kontrolü, set_leverage) TUTARLI
+    # şekilde kullanılıyor — istenen (LEV) ile borsanın izin verdiği
+    # farklıysa artık "bakiye yetersiz" gibi yanlış hatalar çıkmıyor.
+    efektif_lev = efektif_kaldirac_al(sym)
+    if efektif_lev < LEV:
+        tg(f"ℹ️ {sym} için borsa maksimum {efektif_lev}x kaldıraca izin veriyor "
+           f"(istenen {LEV}x yerine {efektif_lev}x kullanılacak)")
+
+    amount, notional = pozisyon_boyutu_hesapla(entry_hedef, sl, lev=efektif_lev)
     if not amount:
         tg(f"⚠️ {sym} pozisyon boyutu hesaplanamadı, atlandı")
         return
 
-    gereken_marj = notional / LEV
+    gereken_marj = notional / efektif_lev
     if not gercek_bakiye_yeterli_mi(gereken_marj):
         tg(f"⚠️ {sym} atlandı — gerçek bakiye yetersiz (gereken marj≈${gereken_marj:.2f}). "
            f"Bakiyeni kontrol et.")
         return
 
     try:
-        exchange.set_leverage(LEV, sym)
+        exchange.set_leverage(efektif_lev, sym)
     except Exception as e:
-        tg(f"⚠️ {sym} kaldıraç ayarlanamadı: {e} — işlem atlandı")
-        return
+        tg(f"⚠️ {sym} kaldıraç {efektif_lev}x olarak ayarlanamadı ({e}) — "
+           f"borsada o an aktif olan kaldıraçla devam ediliyor")
 
     try:
         t = exchange.fetch_ticker(sym)
@@ -2484,7 +2547,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
 
     side = "buy" if direction == "long" else "sell"
     with islem_aciliyor_lock:
-        islem_aciliyor[sym] = time.time()  # v16.55: manage()'in kurtarma bloğu bu sembolü açılış bitene kadar atlasın
+        islem_aciliyor[sym] = time.time()  # v16.56: manage()'in kurtarma bloğu bu sembolü açılış bitene kadar atlasın
     try:
         acilis_emri = exchange.create_market_order(sym, side, qty)
     except Exception as e:
@@ -2555,7 +2618,7 @@ def asil_islemi_ac(sinyal, gozlem_str=""):
     hard_stop_uyari = "" if hard_stop_id else "\n⚠️ Borsa stop emri konamadı — sadece soft-SL izlemesi aktif"
 
     with islem_aciliyor_lock:
-        islem_aciliyor.pop(sym, None)  # v16.55: açılış tamamen bitti, manage() artık normal takip edebilir
+        islem_aciliyor.pop(sym, None)  # v16.56: açılış tamamen bitti, manage() artık normal takip edebilir
 
     tg(
         f"📈 [KANAL KOPYA] {sym} {direction.upper()} AÇILDI\n"
@@ -2571,7 +2634,7 @@ def tp_limit_emirlerini_koy(sym, direction, tp_liste, orijinal_qty):
     Döner: [{"id": emir_id_veya_None, "fiyat":..., "miktar":...}, ...] —
     tp_liste ile aynı sırada, aynı uzunlukta.
 
-    v16.55 DÜZELTME: Eskiden her TP'nin miktarı AYRI AYRI yuvarlanıyordu
+    v16.56 DÜZELTME: Eskiden her TP'nin miktarı AYRI AYRI yuvarlanıyordu
     (orijinal_qty * oran, sonra precision'a yuvarla) — bu, üç yuvarlanmış
     miktarın TOPLAMININ orijinal_qty'yi tam tutturamamasına sebep oluyordu
     (kullanıcı gözlemi: "TP'ler bittikten sonra kalan 0.010 işe yaramıyor"
@@ -2644,7 +2707,7 @@ def manage():
         try:
             positions = exchange.fetch_positions()
 
-            # v16.55: TERS SENKRONİZASYON — kullanıcı gözlemi: bazen trade_state'te
+            # v16.56: TERS SENKRONİZASYON — kullanıcı gözlemi: bazen trade_state'te
             # bir sembol "açık" görünüyordu ama borsada gerçekte kapanmıştı (TP/SL
             # zaten vurmuş, borsa tarafı temiz ama bot'un hafızası temizlenmemişti
             # — /kapat komutu manuel çalıştırılınca "zaten açık değilmiş" çıkıyordu).
@@ -2677,7 +2740,7 @@ def manage():
                 with state_lock:
                     durum = trade_state.get(sym)
                 if not durum and islem_aciliyor_mu(sym):
-                    # v16.55: Bu sembol TAM ŞU ANDA asil_islemi_ac() tarafından
+                    # v16.56: Bu sembol TAM ŞU ANDA asil_islemi_ac() tarafından
                     # açılıyor (market emri gitti, TP/SL hesaplanıyor) — kurtarma
                     # bloğu bunu "kayıtsız" sanıp KENDİ AYRI SL/TP setini kurmaya
                     # ÇALIŞMASIN (VELVETUSDT/SXTUSDT'de yaşanan yarış durumu:
@@ -3042,7 +3105,7 @@ from telethon.sessions import StringSession
 telethon_client = TelegramClient(StringSession(TG_STRING_SESSION), TG_API_ID, TG_API_HASH)
 
 
-SADECE_MANUEL = os.getenv("SADECE_MANUEL", "false").lower() == "true"  # v16.55: kullanıcı
+SADECE_MANUEL = os.getenv("SADECE_MANUEL", "false").lower() == "true"  # v16.56: kullanıcı
 # talebiyle tekrar KAPATILDI (varsayılan false) — kanal sinyalleri tekrar
 # işlenecek. Kullanıcı gözlemi: kanalın kendi sinyalleri botun kendi ani-
 # hareket tespitinden çok daha hızlı/kaliteli (TP'lerin 1 dakikada
@@ -3205,7 +3268,7 @@ def telethon_baslat():
 # BAŞLANGIÇ
 # ════════════════════════════════════════════
 if __name__ == "__main__":
-    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.55) BAŞLIYOR...")
+    print("TELEGRAM SİNYAL KOPYALAMA BOTU (v16.56) BAŞLIYOR...")
     durumu_diskten_yukle()
     trade_log_yukle()
     durumu_telegramdan_yukle()  # v16.8: disk kaybolmuş olsa bile Telegram yedeğinden geri yükle
@@ -3223,7 +3286,7 @@ if __name__ == "__main__":
 
     tg(
         "🚀 TELEGRAM SİNYAL KOPYALAMA BOTU\n"
-        "🔖 VERSİYON: v16.55 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
+        "🔖 VERSİYON: v16.56 (SADECE MANUEL + TEYITLI + 4 TP + TP1 TABAN + 1H-VOLATILITE SL + ACIK-POZ DUZELTME + KURTARMA-TP + 4 sabit TP - VUR KAÇ %30/25/25/20 tam kapanış + hizli ac/kapat + teyit bekleme + "
         "kademeli SL yukseltme + 4-bilesenli trend teyidi (1h mum yonu dahil) + scalp oz tarama[VARSAYILAN KAPALI] + "
         "coklu kanal (SADECE_MANUEL ile kapatilabilir))\n\n"
         f"💰 Sermaye: ${TOPLAM_SERMAYE} | Kaldıraç: {LEV}x\n"
