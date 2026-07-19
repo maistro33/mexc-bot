@@ -228,7 +228,7 @@ exchange = ccxt.bitget({
 })
 
 TOPLAM_SERMAYE   = 35.0
-MARGIN_SABIT     = 1.0     # v16.60: 10.0'dan 1.0'a düşürüldü — kullanıcı bakiyesi
+MARGIN_SABIT     = 0.80     # v16.60: 10.0'dan 1.0'a düşürüldü — kullanıcı bakiyesi
                             # azaldı, işlem başına riski küçültmek için
 LEV              = 20      # v16.60: 10'dan 20'ye yükseltildi (efektif_kaldirac_al
                             # ile birlikte, coin izin vermezse otomatik düşer)
