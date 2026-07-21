@@ -428,6 +428,89 @@ def pozisyon_ac(sinyal):
        f"{' | ⚠️ volatilite spike, risk kucultuldu' if volatilite_spike else ''}")
 
 
+def gercek_pozisyon_kapat(sym):
+    """Borsadan pozisyonu gercekten kapatir (reduceOnly market emri) ve state'i temizler."""
+    try:
+        pozisyonlar = exchange.fetch_positions([sym])
+        gercek_pos = next((p for p in pozisyonlar if safe(p.get("contracts")) > 0), None)
+        if not gercek_pos:
+            with state_lock:
+                trade_state.pop(sym, None)
+            durumu_diske_yaz()
+            return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi."
+
+        qty = safe(gercek_pos.get("contracts"))
+        direction = "long" if gercek_pos.get("side") == "long" else "short"
+        kapama_yon = "sell" if direction == "long" else "buy"
+
+        exchange.create_market_order(sym, kapama_yon, qty, params={"reduceOnly": True})
+        time.sleep(1)
+        guncel = exchange.fetch_positions([sym])
+        kapandi_mi = not any(safe(p.get("contracts")) > 0 for p in guncel)
+        if not kapandi_mi:
+            return False, f"⚠️ {sym} kapatma emri gönderildi ama doğrulanamadı — tekrar dene."
+
+        with state_lock:
+            trade_state.pop(sym, None)
+        durumu_diske_yaz()
+        return True, f"✅ {sym} manuel olarak kapatıldı."
+    except Exception as e:
+        return False, f"⚠️ {sym} kapatma sırasında hata: {e}"
+
+
+if bot:
+    @bot.message_handler(commands=["kapat"])
+    def kapat_komutu(msg):
+        with state_lock:
+            acik_semboller = list(trade_state.keys())
+        if not acik_semboller:
+            bot.send_message(msg.chat.id, "Açık pozisyon yok.")
+            return
+        # MAX_POS=1 oldugu icin genelde tek sembol vardir, direkt onu kapat
+        parca = msg.text.replace("/kapat", "", 1).strip().upper()
+        hedef = None
+        if parca:
+            for sym in acik_semboller:
+                if parca in sym.upper():
+                    hedef = sym
+                    break
+            if not hedef:
+                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen açık pozisyon bulunamadı: {acik_semboller}")
+                return
+        else:
+            if len(acik_semboller) > 1:
+                bot.send_message(msg.chat.id, f"Birden fazla açık pozisyon var: {acik_semboller}\nHangisini kastettiğini belirt, örn: /kapat {acik_semboller[0].split('/')[0]}")
+                return
+            hedef = acik_semboller[0]
+
+        bot.send_message(msg.chat.id, f"⏳ {hedef} kapatılıyor...")
+        basari, mesaj = gercek_pozisyon_kapat(hedef)
+        bot.send_message(msg.chat.id, mesaj)
+
+    @bot.message_handler(commands=["durum"])
+    def durum_komutu(msg):
+        with state_lock:
+            if not trade_state:
+                bot.send_message(msg.chat.id, "Açık pozisyon yok.")
+                return
+            satirlar = ["📋 AÇIK POZİSYON(LAR)\n"]
+            for sym, d in trade_state.items():
+                satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.6f} "
+                                 f"SL:{d['sl']:.6f} TP:{d['tp']:.6f}")
+        bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+
+def telebot_polling_baslat():
+    if not bot:
+        return
+    while True:
+        try:
+            bot.infinity_polling(timeout=30, long_polling_timeout=30)
+        except Exception as e:
+            log.error(f"[TELEBOT_POLL] {e}")
+            time.sleep(5)
+
+
 def tarama_loop():
     tg(f"🚀 YENİ STRATEJİ BOTU başladı (v4 — kapsamlı piyasa adaptasyonu)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü sinyal seçilir)\n"
@@ -529,4 +612,5 @@ if __name__ == "__main__":
     print("YENİ STRATEJİ BOTU BAŞLIYOR...")
     durumu_diskten_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
+    threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
