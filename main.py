@@ -221,10 +221,19 @@ def pozisyon_ac(sinyal):
     notional = risk_dolar / sl_mesafe_pct
     gereken_marj = notional / LEV
 
-    if gereken_marj > bakiye * 0.9:
-        # marj bakiyenin cogunu yiyorsa notional'i bakiyeye gore sinirla
-        notional = bakiye * 0.9 * LEV
+    # v2 DUZELTME: Eskiden burada "marj bakiyenin cogunu yerse notional'i
+    # bakiyenin %90'ina SINIRLA" mantigi vardi - bu YANLIS yondeydi, riski
+    # BUYUTUYORDU (bakiyenin neredeyse tamamini tek isleme koyuyordu).
+    # Dogrusu: hesaplanan marj bakiyeye gore fazla buyukse, RISKI KUCULTMEK
+    # (notional'i kucultmek) gerekir - bakiyenin sabit bir SEGMENTINI
+    # (MAX_MARJ_PCT) asla asmamali.
+    MAX_MARJ_PCT = 0.25  # tek islemde marj, bakiyenin en fazla %25'i olabilir
+    if gereken_marj > bakiye * MAX_MARJ_PCT:
+        notional = bakiye * MAX_MARJ_PCT * LEV
         gereken_marj = notional / LEV
+        tg(f"ℹ️ {sym} risk bazli pozisyon buyuklugu marj limitini asti, "
+           f"kucultuldu (marj artik bakiyenin %{MAX_MARJ_PCT*100:.0f}'i, "
+           f"gercek risk %{RISK_PCT_BAKIYE*100:.0f} hedefinden dusuk olacak)")
 
     amount = notional / entry
 
