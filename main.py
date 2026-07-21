@@ -68,12 +68,27 @@ def tg(msg):
         log.warning(f"[TG] {e}")
 
 # ── DOĞRULANMIŞ STRATEJİ PARAMETRELERİ (backtest'te bulunan) ──
-COINS = ["SOL/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT", "DOGE/USDT:USDT",
-         "ADA/USDT:USDT", "DOT/USDT:USDT", "NEAR/USDT:USDT", "APT/USDT:USDT"]
+# v4: KAPSAMLI ADAPTASYON SISTEMI
+#   1) BTC ADX filtresi: piyasa yatay/kararsizken (ADX dusukse) HIC islem acilmaz
+#   2) Volatilite bazli pozisyon boyutu: coin'in KENDI normaline gore anormal
+#      oynak oldugu anlarda (ATR spike) risk otomatik kucultulur
+#   3) Dinamik coin secimi: sabit kucuk liste yerine genis bir evren (23 coin)
+#      her turda taranir, o an EN GUCLU teyit skoruna sahip olan secilir -
+#      "sabit liste" yerine "o an piyasada en iyi kurulum nerede" mantigi
+COINS = ["SOL/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT",
+         "DOT/USDT:USDT", "NEAR/USDT:USDT", "APT/USDT:USDT", "ATOM/USDT:USDT",
+         "ARB/USDT:USDT", "OP/USDT:USDT", "SUI/USDT:USDT", "INJ/USDT:USDT",
+         "TIA/USDT:USDT", "SEI/USDT:USDT", "RUNE/USDT:USDT", "FIL/USDT:USDT",
+         "ICP/USDT:USDT", "AAVE/USDT:USDT", "UNI/USDT:USDT", "LTC/USDT:USDT",
+         "ETC/USDT:USDT", "XLM/USDT:USDT", "ALGO/USDT:USDT"]  # DOGE/BCH cikarildi (zayifti)
 ATR_CARPANI = 1.0
 RR = 1.5
 MUM_ESIGI = 4       # 5 mumdan en az kaci ayni yonde olmali
 RSI_ALT, RSI_UST = 50, 70
+BTC_SEMBOL = "BTC/USDT:USDT"
+ADX_ESIK = 20        # BTC 4h ADX bu esigin altindaysa piyasa yatay sayilir, islem aranmaz
+VOLATILITE_SPIKE_CARPANI = 1.8  # mevcut ATR, kendi 20-periyot ortalamasinin bu katindan
+                                  # fazlaysa "anormal oynak" sayilir, risk kisilir
 
 # ── RİSK/GÜVENLİK AYARLARI (bilerek muhafazakar) ──
 LEV = int(os.getenv("LEV", "3"))                       # kaldirac
@@ -133,6 +148,24 @@ def atr(df, period=14):
     return tr.rolling(period).mean()
 
 
+def adx(df, period=14):
+    """v4: ADX (Average Directional Index) - trend gucu olcusu. Dusuk ADX =
+    piyasa yatay/kararsiz (yon yok), yuksek ADX = net trend var. BTC'de bu
+    dusukse hicbir altcoin sinyaline guvenilmez, cunku piyasa genelinde
+    yon belirsizdir."""
+    high, low, close = df["high"], df["low"], df["close"]
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    tr = pd.concat([(high - low), (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    atr_ = tr.rolling(period).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).rolling(period).mean() / atr_.replace(0, 1e-9)
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).rolling(period).mean() / atr_.replace(0, 1e-9)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-9)
+    return dx.rolling(period).mean()
+
+
 def get_df(sym, tf, limit=60):
     try:
         candles = exchange.fetch_ohlcv(sym, tf, limit=limit)
@@ -143,8 +176,29 @@ def get_df(sym, tf, limit=60):
         return None
 
 
-def sinyal_kontrol_et(sym):
-    """Backtest'teki AYNI mantik: 4h MA20+5mum teyidi, 1h RSI+5mum teyidi."""
+def btc_rejimi_al():
+    """v4: piyasa rejimi + trend gucu filtresi.
+    - Yon: BTC 4h MA20'nin ustunde/altinda mi (bullish/bearish)
+    - Guc: BTC 4h ADX(14) ADX_ESIK'in ustunde mi (piyasa net trendde mi,
+      yoksa yatay/kararsiz mi) - yataysa (dusuk ADX) HICBIR sinyale izin
+      verilmez, coin bazinda teyit ne kadar guclu gorunurse gorunsun."""
+    df4h = get_df(BTC_SEMBOL, "4h", 40)
+    if df4h is None or len(df4h) < 30:
+        return None, None, None
+    ma20 = df4h["close"].rolling(20).mean().iloc[-1]
+    fiyat = df4h["close"].iloc[-1]
+    adx_deger = adx(df4h, 14).iloc[-1]
+    if pd.isna(ma20) or pd.isna(adx_deger):
+        return None, None, None
+    trend_guclu = adx_deger >= ADX_ESIK
+    return (fiyat > ma20), (fiyat < ma20), trend_guclu
+
+
+def sinyal_kontrol_et(sym, btc_bullish, btc_bearish):
+    """Backtest'teki AYNI mantik: 4h MA20+5mum teyidi, 1h RSI+5mum teyidi + BTC rejimi.
+    v4: artik bir "guc skoru" ve "volatilite spike" bilgisi de donduruyor -
+    boylece tarama_loop() birden fazla adaydan EN GUCLU olani secebiliyor,
+    ve pozisyon_ac() anormal oynak coinlerde riski otomatik kucultebiliyor."""
     df4h = get_df(sym, "4h", 30)
     df1h = get_df(sym, "1h", 30)
     if df4h is None or df1h is None or len(df4h) < 21 or len(df1h) < 21:
@@ -159,30 +213,55 @@ def sinyal_kontrol_et(sym):
 
     df1h["rsi"] = rsi(df1h["close"], 14)
     df1h["atr"] = atr(df1h, 14)
+    df1h["atr_ort20"] = df1h["atr"].rolling(20).mean()
     df1h["yon"] = np.where(df1h["close"] > df1h["open"], 1, -1)
     yon5_up_1h = (df1h["yon"].iloc[-5:] > 0).sum()
     yon5_down_1h = (df1h["yon"].iloc[-5:] < 0).sum()
     rsi_1h = df1h["rsi"].iloc[-1]
     atr_1h = df1h["atr"].iloc[-1]
+    atr_ort20_1h = df1h["atr_ort20"].iloc[-1]
     fiyat = df1h["close"].iloc[-1]
 
     if pd.isna(ma20) or pd.isna(rsi_1h) or pd.isna(atr_1h) or atr_1h <= 0:
         return None
 
     long_ok = (fiyat_4h > ma20 and yon5_up_4h >= MUM_ESIGI and
-               RSI_ALT < rsi_1h < RSI_UST and yon5_up_1h >= MUM_ESIGI)
+               RSI_ALT < rsi_1h < RSI_UST and yon5_up_1h >= MUM_ESIGI and
+               bool(btc_bullish))
     short_ok = (fiyat_4h < ma20 and yon5_down_4h >= MUM_ESIGI and
-                (100 - RSI_UST) < rsi_1h < (100 - RSI_ALT) and yon5_down_1h >= MUM_ESIGI)
+                (100 - RSI_UST) < rsi_1h < (100 - RSI_ALT) and yon5_down_1h >= MUM_ESIGI and
+                bool(btc_bearish))
 
-    if long_ok:
+    if not (long_ok or short_ok):
+        return None
+
+    direction = "long" if long_ok else "short"
+    if direction == "long":
         sl = fiyat - ATR_CARPANI * atr_1h
         tp = fiyat + ATR_CARPANI * atr_1h * RR
-        return {"symbol": sym, "direction": "long", "entry": fiyat, "sl": sl, "tp": tp}
-    if short_ok:
+        mum_sayisi_4h, mum_sayisi_1h = yon5_up_4h, yon5_up_1h
+        rsi_merkez, rsi_yaricap = 60, 15  # ideal merkez 60 (40-80 araliginin ortasi degil, 50-70'in ortasi)
+    else:
         sl = fiyat + ATR_CARPANI * atr_1h
         tp = fiyat - ATR_CARPANI * atr_1h * RR
-        return {"symbol": sym, "direction": "short", "entry": fiyat, "sl": sl, "tp": tp}
-    return None
+        mum_sayisi_4h, mum_sayisi_1h = yon5_down_4h, yon5_down_1h
+        rsi_merkez, rsi_yaricap = 40, 15
+
+    # ── GUC SKORU: RSI'in ideal merkeze yakinligi + mum netligi (0-100) ──
+    uzaklik = min(abs(rsi_1h - rsi_merkez) / rsi_yaricap, 1.0)
+    rsi_puan = 40 * (1 - uzaklik)
+    mum_tablosu = {4: 22, 5: 30}
+    puan_4h = mum_tablosu.get(int(mum_sayisi_4h), 15)
+    puan_1h = mum_tablosu.get(int(mum_sayisi_1h), 15)
+    skor = rsi_puan + puan_4h + puan_1h
+
+    # ── VOLATILITE SPIKE: mevcut ATR, kendi 20-periyot ortalamasina gore anormal mi ──
+    volatilite_spike = False
+    if not pd.isna(atr_ort20_1h) and atr_ort20_1h > 0:
+        volatilite_spike = (atr_1h / atr_ort20_1h) >= VOLATILITE_SPIKE_CARPANI
+
+    return {"symbol": sym, "direction": direction, "entry": fiyat, "sl": sl, "tp": tp,
+            "skor": skor, "volatilite_spike": volatilite_spike}
 
 
 def gercek_bakiye_al():
@@ -207,6 +286,7 @@ def pozisyon_ac(sinyal):
     entry = sinyal["entry"]
     sl = sinyal["sl"]
     tp = sinyal["tp"]
+    volatilite_spike = sinyal.get("volatilite_spike", False)
 
     bakiye = gercek_bakiye_al()
     if bakiye is None or bakiye <= 0:
@@ -214,9 +294,18 @@ def pozisyon_ac(sinyal):
         return
 
     # ── RİSK BAZLI POZİSYON BOYUTU ──
-    # Risk edilecek $ miktarı = bakiye * RISK_PCT_BAKIYE
-    # SL vurulursa kaybedilecek miktar bu olacak sekilde pozisyon buyuklugu hesaplanir.
     risk_dolar = bakiye * RISK_PCT_BAKIYE
+
+    # v4: VOLATILITE SPIKE KORUMASI - coin kendi normaline gore anormal
+    # oynakken (ATR, 20-periyot ortalamasinin VOLATILITE_SPIKE_CARPANI katindan
+    # fazlaysa) risk YARIYA indirilir. Mantik: ani/asiri oynak anlarda SL'in
+    # gurultuyle tetiklenme ihtimali daha yuksek, o yuzden boyle anlarda
+    # daha kucuk pozisyonla girmek daha guvenli.
+    if volatilite_spike:
+        risk_dolar *= 0.5
+        tg(f"ℹ️ {sym} anormal volatilite tespit edildi (ATR spike) — risk "
+           f"%{RISK_PCT_BAKIYE*100:.0f}'ten %{RISK_PCT_BAKIYE*50:.1f}'e kucultuldu")
+
     sl_mesafe_pct = abs(entry - sl) / entry
     notional = risk_dolar / sl_mesafe_pct
     gereken_marj = notional / LEV
@@ -241,6 +330,32 @@ def pozisyon_ac(sinyal):
         exchange.set_leverage(LEV, sym)
     except Exception as e:
         log.warning(f"[KALDIRAC] {sym}: {e}")
+
+    # v3 DUZELTME: set_leverage() cagrisi SESSIZCE basarisiz olabiliyordu
+    # (APT ornegi: bot 3x istedi ama borsada eskiden kalma 10x kullanildi,
+    # cunku hata sadece log'a yazilip devam ediliyordu). Simdi gercek
+    # kullanilan kaldirac BORSADAN dogrulaniyor, pozisyon buyuklugu de
+    # ona gore YENIDEN hesaplaniyor - boylece gercek risk her zaman
+    # hedeflenen RISK_PCT_BAKIYE'ye sadik kalir.
+    gercek_lev = LEV
+    try:
+        pozisyon_bilgisi = exchange.fetch_positions([sym])
+        for p in pozisyon_bilgisi:
+            lev_bilgi = p.get("leverage")
+            if lev_bilgi:
+                gercek_lev = int(float(lev_bilgi))
+                break
+    except Exception as e:
+        log.warning(f"[KALDIRAC_DOGRULA] {sym}: {e}")
+
+    if gercek_lev != LEV:
+        tg(f"⚠️ {sym} kaldıraç uyuşmazlığı: istenen {LEV}x, borsada gerçek {gercek_lev}x — "
+           f"pozisyon büyüklüğü gerçek kaldırıca göre yeniden hesaplanıyor")
+        notional = gereken_marj * gercek_lev
+        amount = notional / entry
+        LEV_KULLANILAN = gercek_lev
+    else:
+        LEV_KULLANILAN = LEV
 
     try:
         qty = float(exchange.amount_to_precision(sym, amount))
@@ -282,13 +397,16 @@ def pozisyon_ac(sinyal):
 
     tg(f"📈 YENİ POZİSYON: {sym} {direction.upper()}\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} | TP:{tp:.6f}\n"
-       f"Notional≈${notional:.2f} ({LEV}x) | Risk≈${risk_dolar:.2f} (bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i)")
+       f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)"
+       f"{' | ⚠️ volatilite spike, risk kucultuldu' if volatilite_spike else ''}")
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı\n"
-       f"Coinler: {', '.join(c.split('/')[0] for c in COINS)}\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (v4 — kapsamlı piyasa adaptasyonu)\n"
+       f"Coin evreni: {len(COINS)} coin (her turda en güçlü sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x | İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
+       f"BTC ADX filtresi: piyasa yatayken (ADX<{ADX_ESIK}) işlem aranmaz\n"
+       f"Volatilite koruması: anormal oynak coinlerde risk otomatik yarıya iner\n"
        f"Günlük zarar limiti: bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i\n"
        f"⚠️ Bu strateji backtest ile doğrulandı ama gerçek performansı garanti etmez.")
 
@@ -307,15 +425,33 @@ def tarama_loop():
                 pozisyon_dolu = len(trade_state) >= MAX_POS
 
             if not pozisyon_dolu:
+                btc_bullish, btc_bearish, trend_guclu = btc_rejimi_al()
+                if btc_bullish is None:
+                    tg("⚠️ BTC rejimi alınamadı, bu tur atlandı")
+                    time.sleep(KONTROL_ARALIGI_SN)
+                    continue
+
+                if not trend_guclu:
+                    log.info("[ADX] Piyasa yatay/kararsız (ADX düşük) — bu tur taranmadı")
+                    time.sleep(KONTROL_ARALIGI_SN)
+                    continue
+
+                # v4: TUM coin evrenini tara, EN YUKSEK SKORLU sinyali sec
+                # (ilk bulunani degil) - "dinamik olarak en guclu kurulum"
+                adaylar = []
                 for sym in COINS:
                     with state_lock:
                         if sym in trade_state:
                             continue
-                    sinyal = sinyal_kontrol_et(sym)
+                    sinyal = sinyal_kontrol_et(sym, btc_bullish, btc_bearish)
                     if sinyal:
-                        tg(f"🔍 Sinyal bulundu: {sym} {sinyal['direction'].upper()} — açılıyor...")
-                        pozisyon_ac(sinyal)
-                        break  # MAX_POS=1, bir tane bulunca dur
+                        adaylar.append(sinyal)
+
+                if adaylar:
+                    en_iyi = max(adaylar, key=lambda s: s["skor"])
+                    tg(f"🔍 {len(adaylar)} aday bulundu, en güçlüsü seçildi: "
+                       f"{en_iyi['symbol']} {en_iyi['direction'].upper()} (skor:{en_iyi['skor']:.0f}/100)")
+                    pozisyon_ac(en_iyi)
 
             time.sleep(KONTROL_ARALIGI_SN)
         except Exception as e:
