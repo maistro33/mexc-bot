@@ -80,7 +80,15 @@ COINS = ["SOL/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT",
          "ARB/USDT:USDT", "OP/USDT:USDT", "SUI/USDT:USDT", "INJ/USDT:USDT",
          "TIA/USDT:USDT", "SEI/USDT:USDT", "RUNE/USDT:USDT", "FIL/USDT:USDT",
          "ICP/USDT:USDT", "AAVE/USDT:USDT", "UNI/USDT:USDT", "LTC/USDT:USDT",
-         "ETC/USDT:USDT", "XLM/USDT:USDT", "ALGO/USDT:USDT"]  # DOGE/BCH cikarildi (zayifti)
+         "ETC/USDT:USDT", "XLM/USDT:USDT", "ALGO/USDT:USDT",
+         # v5: kucuk-cap taramasindan IKI donemde de tutarli pozitif cikanlar
+         "NIGHT/USDT:USDT", "ONE/USDT:USDT", "ACE/USDT:USDT", "PROM/USDT:USDT",
+         "LA/USDT:USDT", "SYN/USDT:USDT", "VVV/USDT:USDT", "LAB/USDT:USDT",
+         "SIREN/USDT:USDT", "PI/USDT:USDT", "BEAT/USDT:USDT", "HOME/USDT:USDT",
+         "MET/USDT:USDT", "AERO/USDT:USDT",
+         # v5: kullanicinin verdigi listeden IKI donemde de tutarli pozitif cikanlar
+         "M/USDT:USDT", "OGN/USDT:USDT", "PYTH/USDT:USDT", "RPL/USDT:USDT",
+         "KAITO/USDT:USDT", "EDGE/USDT:USDT"]
 ATR_CARPANI = 1.0
 RR = 1.5
 MUM_ESIGI = 4       # 5 mumdan en az kaci ayni yonde olmali
@@ -331,31 +339,8 @@ def pozisyon_ac(sinyal):
     except Exception as e:
         log.warning(f"[KALDIRAC] {sym}: {e}")
 
-    # v3 DUZELTME: set_leverage() cagrisi SESSIZCE basarisiz olabiliyordu
-    # (APT ornegi: bot 3x istedi ama borsada eskiden kalma 10x kullanildi,
-    # cunku hata sadece log'a yazilip devam ediliyordu). Simdi gercek
-    # kullanilan kaldirac BORSADAN dogrulaniyor, pozisyon buyuklugu de
-    # ona gore YENIDEN hesaplaniyor - boylece gercek risk her zaman
-    # hedeflenen RISK_PCT_BAKIYE'ye sadik kalir.
-    gercek_lev = LEV
-    try:
-        pozisyon_bilgisi = exchange.fetch_positions([sym])
-        for p in pozisyon_bilgisi:
-            lev_bilgi = p.get("leverage")
-            if lev_bilgi:
-                gercek_lev = int(float(lev_bilgi))
-                break
-    except Exception as e:
-        log.warning(f"[KALDIRAC_DOGRULA] {sym}: {e}")
-
-    if gercek_lev != LEV:
-        tg(f"⚠️ {sym} kaldıraç uyuşmazlığı: istenen {LEV}x, borsada gerçek {gercek_lev}x — "
-           f"pozisyon büyüklüğü gerçek kaldırıca göre yeniden hesaplanıyor")
-        notional = gereken_marj * gercek_lev
-        amount = notional / entry
-        LEV_KULLANILAN = gercek_lev
-    else:
-        LEV_KULLANILAN = LEV
+    amount = notional / entry
+    LEV_KULLANILAN = LEV  # gercek deger asagida, pozisyon acildiktan SONRA dogrulanacak
 
     try:
         qty = float(exchange.amount_to_precision(sym, amount))
@@ -371,6 +356,48 @@ def pozisyon_ac(sinyal):
     except Exception as e:
         tg(f"⚠️ {sym} giris emri basarisiz: {e}")
         return
+
+    # v5 DUZELTME: Onceki kaldirac dogrulamasi POZISYON ACILMADAN ONCE
+    # calisiyordu - o an borsada bu sembol icin acik pozisyon olmadigindan
+    # fetch_positions() bos donuyor, kontrol hicbir sey dogrulamadan "sorun
+    # yok" varsayiyordu (OP/USDT ornegi: bot "3x" dedi ama gercekte 10x
+    # kullanildi, cunku dogrulama pozisyon yokken yapilmisti). Simdi kontrol
+    # POZISYON GERCEKTEN ACILDIKTAN SONRA yapiliyor - artik borsa gercek
+    # kaldiraci dondurebiliyor. Eger gercek kaldirac istenenden BUYUKSE
+    # (daha riskli), fazla kismi HEMEN reduceOnly emirle kirpip hedeflenen
+    # notional'e geri getiriyoruz - boylece gercek risk her zaman
+    # RISK_PCT_BAKIYE hedefine sadik kalir.
+    time.sleep(0.8)
+    try:
+        pozisyon_bilgisi = exchange.fetch_positions([sym])
+        gercek_pos = next((p for p in pozisyon_bilgisi if safe(p.get("contracts")) > 0), None)
+        if gercek_pos:
+            gercek_lev_ham = gercek_pos.get("leverage")
+            if gercek_lev_ham:
+                gercek_lev = int(float(gercek_lev_ham))
+                if gercek_lev != LEV:
+                    LEV_KULLANILAN = gercek_lev
+                    hedef_notional = gereken_marj * LEV  # istenen risk icin ORIJINAL hedef notional (LEV ile)
+                    gercek_notional = qty * entry
+                    if gercek_notional > hedef_notional * 1.05:  # %5 tolerans
+                        # fazlasini kirp
+                        kirpilacak_qty = qty - (hedef_notional / entry)
+                        kirpilacak_qty = float(exchange.amount_to_precision(sym, kirpilacak_qty))
+                        if kirpilacak_qty > 0:
+                            kapama_yon = "sell" if direction == "long" else "buy"
+                            try:
+                                exchange.create_market_order(sym, kapama_yon, kirpilacak_qty,
+                                                              params={"reduceOnly": True})
+                                qty = qty - kirpilacak_qty
+                                tg(f"⚠️ {sym} kaldıraç uyuşmazlığı tespit edildi: istenen {LEV}x, "
+                                   f"gerçek {gercek_lev}x — fazla pozisyon kırpıldı, risk hedefe geri getirildi")
+                            except Exception as e:
+                                tg(f"⚠️ {sym} kaldıraç uyuşmazlığı var ({gercek_lev}x) ama fazla pozisyon "
+                                   f"kırpılamadı: {e} — risk hedeflenenden YÜKSEK olabilir, dikkatli izle")
+    except Exception as e:
+        log.warning(f"[KALDIRAC_DOGRULA] {sym}: {e}")
+
+    notional = qty * entry  # kirpma sonrasi guncel deger
 
     # Hard stop (borsa seviyesinde SL) + TP limit emri
     try:
