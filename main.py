@@ -101,7 +101,8 @@ VOLATILITE_SPIKE_CARPANI = 1.8  # mevcut ATR, kendi 20-periyot ortalamasinin bu 
 # ── RİSK/GÜVENLİK AYARLARI (bilerek muhafazakar) ──
 LEV = int(os.getenv("LEV", "3"))                       # kaldirac
 RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.05"))  # her islemde bakiyenin %5'i risk
-MAX_POS = 1
+MAX_POS = int(os.getenv("MAX_POS", "2"))  # v6: 1'den 2'ye cikarildi - kullanici talebiyle,
+                                            # ayni anda 2 guclu sinyal varsa ikisini de kacirmasin
 GUNLUK_ZARAR_LIMIT_PCT = 0.15   # bakiyenin %15'i kaybedilirse o gun durur
 KONTROL_ARALIGI_SN = 300        # her 5 dakikada bir yeni sinyal taransin (1h mum bazli strateji, hizli olmasina gerek yok)
 
@@ -175,13 +176,27 @@ def adx(df, period=14):
 
 
 def get_df(sym, tf, limit=60):
-    try:
-        candles = exchange.fetch_ohlcv(sym, tf, limit=limit)
-        df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "volume"])
-        return df
-    except Exception as e:
-        log.warning(f"[VERI] {sym} {tf}: {e}")
-        return None
+    """v6 DUZELTME: coin evreni 23'ten 43'e cikarilinca, her tarama turunda
+    43*2+2=88 istek art arda (aralarinda hic bekleme olmadan) borsaya gidiyordu
+    - bu Bitget'in rate limit'ine (429 Too Many Requests) takiliyordu, bazi
+    coinlerin verisi hic alinamiyordu. Simdi her istekten once kucuk bir
+    bekleme var, 429 alinirsa da otomatik olarak biraz bekleyip tekrar deniyor."""
+    for deneme in range(3):
+        try:
+            candles = exchange.fetch_ohlcv(sym, tf, limit=limit)
+            df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "volume"])
+            time.sleep(0.15)  # her basarili istekten sonra kucuk bir bekleme
+            return df
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                bekleme = 2 * (deneme + 1)
+                log.warning(f"[VERI] {sym} {tf}: rate limit, {bekleme}sn bekleniyor (deneme {deneme+1}/3)")
+                time.sleep(bekleme)
+                continue
+            log.warning(f"[VERI] {sym} {tf}: {e}")
+            return None
+    log.warning(f"[VERI] {sym} {tf}: 3 denemede de rate limit asilamadi, atlandi")
+    return None
 
 
 def btc_rejimi_al():
@@ -320,11 +335,13 @@ def pozisyon_ac(sinyal):
 
     # v2 DUZELTME: Eskiden burada "marj bakiyenin cogunu yerse notional'i
     # bakiyenin %90'ina SINIRLA" mantigi vardi - bu YANLIS yondeydi, riski
-    # BUYUTUYORDU (bakiyenin neredeyse tamamini tek isleme koyuyordu).
-    # Dogrusu: hesaplanan marj bakiyeye gore fazla buyukse, RISKI KUCULTMEK
-    # (notional'i kucultmek) gerekir - bakiyenin sabit bir SEGMENTINI
-    # (MAX_MARJ_PCT) asla asmamali.
-    MAX_MARJ_PCT = 0.25  # tek islemde marj, bakiyenin en fazla %25'i olabilir
+    # BUYUTUYORDU. Dogrusu: hesaplanan marj bakiyeye gore fazla buyukse,
+    # RISKI KUCULTMEK (notional'i kucultmek) gerekir.
+    # v6: MAX_MARJ_PCT artik MAX_POS'a gore olcekleniyor - MAX_POS=2 iken
+    # iki pozisyon ayni anda acik olabilir, ikisi de %25 marj kullansa toplam
+    # %50'ye cikardi (fazla). Simdi tek pozisyonun tavani MAX_POS'a bolunuyor
+    # (MAX_POS=1 icin hala %25, MAX_POS=2 icin %15 -> toplam en fazla %30).
+    MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
     if gereken_marj > bakiye * MAX_MARJ_PCT:
         notional = bakiye * MAX_MARJ_PCT * LEV
         gereken_marj = notional / LEV
@@ -512,8 +529,8 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (v4 — kapsamlı piyasa adaptasyonu)\n"
-       f"Coin evreni: {len(COINS)} coin (her turda en güçlü sinyal seçilir)\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (v6 — MAX_POS={MAX_POS})\n"
+       f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x | İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
        f"BTC ADX filtresi: piyasa yatayken (ADX<{ADX_ESIK}) işlem aranmaz\n"
        f"Volatilite koruması: anormal oynak coinlerde risk otomatik yarıya iner\n"
@@ -532,9 +549,9 @@ def tarama_loop():
                 continue
 
             with state_lock:
-                pozisyon_dolu = len(trade_state) >= MAX_POS
+                bos_slot = MAX_POS - len(trade_state)
 
-            if not pozisyon_dolu:
+            if bos_slot > 0:
                 btc_bullish, btc_bearish, trend_guclu = btc_rejimi_al()
                 if btc_bullish is None:
                     tg("⚠️ BTC rejimi alınamadı, bu tur atlandı")
@@ -546,8 +563,9 @@ def tarama_loop():
                     time.sleep(KONTROL_ARALIGI_SN)
                     continue
 
-                # v4: TUM coin evrenini tara, EN YUKSEK SKORLU sinyali sec
-                # (ilk bulunani degil) - "dinamik olarak en guclu kurulum"
+                # v4: TUM coin evrenini tara, EN YUKSEK SKORLU sinyalleri sec
+                # v6: MAX_POS=2 oldugunda, bos slot sayisi kadar (1 veya 2)
+                # en iyi adayi ac - "en guclu 1-2 kurulum" mantigi
                 adaylar = []
                 for sym in COINS:
                     with state_lock:
@@ -558,10 +576,12 @@ def tarama_loop():
                         adaylar.append(sinyal)
 
                 if adaylar:
-                    en_iyi = max(adaylar, key=lambda s: s["skor"])
-                    tg(f"🔍 {len(adaylar)} aday bulundu, en güçlüsü seçildi: "
-                       f"{en_iyi['symbol']} {en_iyi['direction'].upper()} (skor:{en_iyi['skor']:.0f}/100)")
-                    pozisyon_ac(en_iyi)
+                    adaylar.sort(key=lambda s: s["skor"], reverse=True)
+                    secilenler = adaylar[:bos_slot]
+                    tg(f"🔍 {len(adaylar)} aday bulundu, en güçlü {len(secilenler)} tanesi seçildi")
+                    for aday in secilenler:
+                        tg(f"→ {aday['symbol']} {aday['direction'].upper()} (skor:{aday['skor']:.0f}/100)")
+                        pozisyon_ac(aday)
 
             time.sleep(KONTROL_ARALIGI_SN)
         except Exception as e:
