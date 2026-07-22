@@ -99,7 +99,10 @@ VOLATILITE_SPIKE_CARPANI = 1.8  # mevcut ATR, kendi 20-periyot ortalamasinin bu 
                                   # fazlaysa "anormal oynak" sayilir, risk kisilir
 
 # ── RİSK/GÜVENLİK AYARLARI (bilerek muhafazakar) ──
-LEV = int(os.getenv("LEV", "3"))                       # kaldirac
+LEV = int(os.getenv("LEV", "10"))                      # kaldirac (v6: varsayilan 3'ten 10'a
+                                                         # cikarildi - kullanici tercihi, Railway'de
+                                                         # LEV degiskeni silinir/degismezse bile
+                                                         # kod her zaman 10x ile baslasin diye)
 RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.05"))  # her islemde bakiyenin %5'i risk
 MAX_POS = int(os.getenv("MAX_POS", "2"))  # v6: 1'den 2'ye cikarildi - kullanici talebiyle,
                                             # ayni anda 2 guclu sinyal varsa ikisini de kacirmasin
