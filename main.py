@@ -99,7 +99,9 @@ VOLATILITE_SPIKE_CARPANI = 1.8  # mevcut ATR, kendi 20-periyot ortalamasinin bu 
                                   # fazlaysa "anormal oynak" sayilir, risk kisilir
 
 # ── RİSK/GÜVENLİK AYARLARI (bilerek muhafazakar) ──
-LEV = int(os.getenv("LEV", "10"))                      # kaldirac (v6: varsayilan 3'ten 10'a
+LEV_HAM_DEGER = os.getenv("LEV")  # v6.1 TESHIS: Railway'den GERCEKTE gelen ham deger neyse
+                                    # bunu goruyoruz - "LEV" adinda bir degisken yoksa None doner
+LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10       # kaldirac (v6: varsayilan 3'ten 10'a
                                                          # cikarildi - kullanici tercihi, Railway'de
                                                          # LEV degiskeni silinir/degismezse bile
                                                          # kod her zaman 10x ile baslasin diye)
@@ -115,6 +117,69 @@ state_lock = threading.Lock()
 gunluk_pnl = 0.0
 gunluk_baslangic_bakiye = None
 gunluk_lock = threading.Lock()
+
+# v7: AAVE ornegi - bir coin kapanir kapanmaz (1 dakika sonra) ayni coin'de
+# tekrar sinyal bulunup hemen yeniden acilmisti, bu sefer SL'e gitmisti
+# (-%12). Ayni coin'de "whipsaw" (kazan-kaybet-kazan-kaybet) riskini azaltmak
+# icin, bir coin kapandiktan sonra COOLDOWN_SAAT boyunca ayni coin'e tekrar
+# girilmiyor - piyasanin o coin icin "sakinlesmesi" bekleniyor.
+COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "2"))
+son_kapanis_zamani = {}  # {symbol: epoch_zaman}
+cooldown_lock = threading.Lock()
+
+COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/yeni_strateji_cooldown.json")
+
+# v7: Panel/ozet icin kapanan islemlerin kalici kaydi
+TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/yeni_strateji_log.json")
+trade_log = []
+log_lock = threading.Lock()
+
+def trade_log_kaydet(kayit):
+    with log_lock:
+        trade_log.append(kayit)
+        veri = list(trade_log)
+    try:
+        os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
+        with open(TRADE_LOG_PATH, "w") as f:
+            json.dump(veri, f)
+    except Exception as e:
+        log.warning(f"[LOG] Diske yazma basarisiz: {e}")
+
+def trade_log_yukle():
+    global trade_log
+    try:
+        if os.path.exists(TRADE_LOG_PATH):
+            with open(TRADE_LOG_PATH) as f:
+                trade_log = json.load(f)
+    except Exception as e:
+        log.warning(f"[LOG] Yukleme basarisiz: {e}")
+
+
+def cooldown_diske_yaz():
+    try:
+        os.makedirs(os.path.dirname(COOLDOWN_PATH), exist_ok=True)
+        with cooldown_lock:
+            veri = dict(son_kapanis_zamani)
+        with open(COOLDOWN_PATH, "w") as f:
+            json.dump(veri, f)
+    except Exception as e:
+        log.warning(f"[COOLDOWN] Diske yazma basarisiz: {e}")
+
+def cooldown_diskten_yukle():
+    global son_kapanis_zamani
+    try:
+        if os.path.exists(COOLDOWN_PATH):
+            with open(COOLDOWN_PATH) as f:
+                son_kapanis_zamani = json.load(f)
+    except Exception as e:
+        log.warning(f"[COOLDOWN] Yukleme basarisiz: {e}")
+
+def cooldown_da_mi(sym):
+    with cooldown_lock:
+        son = son_kapanis_zamani.get(sym)
+    if son is None:
+        return False
+    return (time.time() - son) < COOLDOWN_SAAT * 3600
 
 
 def durumu_diske_yaz():
@@ -448,8 +513,10 @@ def pozisyon_ac(sinyal):
        f"{' | ⚠️ volatilite spike, risk kucultuldu' if volatilite_spike else ''}")
 
 
-def gercek_pozisyon_kapat(sym):
-    """Borsadan pozisyonu gercekten kapatir (reduceOnly market emri) ve state'i temizler."""
+def gercek_pozisyon_kapat(sym, oran=1.0):
+    """Borsadan pozisyonu gercekten kapatir (reduceOnly market emri) ve state'i temizler.
+    v7: oran parametresi eklendi - 1.0 tam kapatma, 0.5 pozisyonun yarisini kapatir
+    (kalan yari acik kalir, SL/TP emirleri kalan miktar icin gecerliligini korur)."""
     try:
         pozisyonlar = exchange.fetch_positions([sym])
         gercek_pos = next((p for p in pozisyonlar if safe(p.get("contracts")) > 0), None)
@@ -459,21 +526,47 @@ def gercek_pozisyon_kapat(sym):
             durumu_diske_yaz()
             return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi."
 
-        qty = safe(gercek_pos.get("contracts"))
+        toplam_qty = safe(gercek_pos.get("contracts"))
         direction = "long" if gercek_pos.get("side") == "long" else "short"
         kapama_yon = "sell" if direction == "long" else "buy"
+        entry_fiyat = safe(gercek_pos.get("entryPrice"))
 
-        exchange.create_market_order(sym, kapama_yon, qty, params={"reduceOnly": True})
+        kapatilacak_qty = toplam_qty if oran >= 1.0 else float(exchange.amount_to_precision(sym, toplam_qty * oran))
+        if kapatilacak_qty <= 0:
+            return False, f"⚠️ {sym} kapatılacak miktar hesaplanamadı."
+
+        emir = exchange.create_market_order(sym, kapama_yon, kapatilacak_qty, params={"reduceOnly": True})
         time.sleep(1)
         guncel = exchange.fetch_positions([sym])
-        kapandi_mi = not any(safe(p.get("contracts")) > 0 for p in guncel)
-        if not kapandi_mi:
-            return False, f"⚠️ {sym} kapatma emri gönderildi ama doğrulanamadı — tekrar dene."
+        kalan_pos = next((p for p in guncel if safe(p.get("contracts")) > 0), None)
+
+        try:
+            t = exchange.fetch_ticker(sym)
+            cikis_fiyat = safe(t["last"])
+        except Exception:
+            cikis_fiyat = entry_fiyat
+        pnl = (cikis_fiyat - entry_fiyat) * kapatilacak_qty if direction == "long" else (entry_fiyat - cikis_fiyat) * kapatilacak_qty
+        trade_log_kaydet({
+            "symbol": sym, "direction": direction, "entry": entry_fiyat, "exit": cikis_fiyat,
+            "pnl": pnl, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+            "not": "kismi_manuel" if oran < 1.0 else "manuel",
+        })
+
+        if kalan_pos and safe(kalan_pos.get("contracts")) > 0:
+            # kismi kapatma - state'teki qty'yi guncelle, SL/TP hala gecerli
+            with state_lock:
+                if sym in trade_state:
+                    trade_state[sym]["qty"] = safe(kalan_pos.get("contracts"))
+            durumu_diske_yaz()
+            return True, f"✅ {sym} %{oran*100:.0f}'i kapatıldı | PnL≈{pnl:+.2f}$ | Kalan: {safe(kalan_pos.get('contracts')):.4f}"
 
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
-        return True, f"✅ {sym} manuel olarak kapatıldı."
+        with cooldown_lock:
+            son_kapanis_zamani[sym] = time.time()
+        cooldown_diske_yaz()
+        return True, f"✅ {sym} tamamen kapatıldı | PnL≈{pnl:+.2f}$"
     except Exception as e:
         return False, f"⚠️ {sym} kapatma sırasında hata: {e}"
 
@@ -486,7 +579,6 @@ if bot:
         if not acik_semboller:
             bot.send_message(msg.chat.id, "Açık pozisyon yok.")
             return
-        # MAX_POS=1 oldugu icin genelde tek sembol vardir, direkt onu kapat
         parca = msg.text.replace("/kapat", "", 1).strip().upper()
         hedef = None
         if parca:
@@ -504,20 +596,165 @@ if bot:
             hedef = acik_semboller[0]
 
         bot.send_message(msg.chat.id, f"⏳ {hedef} kapatılıyor...")
-        basari, mesaj = gercek_pozisyon_kapat(hedef)
+        basari, mesaj = gercek_pozisyon_kapat(hedef, oran=1.0)
+        bot.send_message(msg.chat.id, mesaj)
+
+    @bot.message_handler(commands=["yarikapat"])
+    def yarikapat_komutu(msg):
+        """v7: Pozisyonun yarisini kapatir, kalan yari SL/TP ile acik kalir."""
+        with state_lock:
+            acik_semboller = list(trade_state.keys())
+        if not acik_semboller:
+            bot.send_message(msg.chat.id, "Açık pozisyon yok.")
+            return
+        parca = msg.text.replace("/yarikapat", "", 1).strip().upper()
+        hedef = None
+        if parca:
+            for sym in acik_semboller:
+                if parca in sym.upper():
+                    hedef = sym
+                    break
+            if not hedef:
+                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen açık pozisyon bulunamadı: {acik_semboller}")
+                return
+        else:
+            if len(acik_semboller) > 1:
+                bot.send_message(msg.chat.id, f"Birden fazla açık pozisyon var: {acik_semboller}\nHangisini kastettiğini belirt, örn: /yarikapat {acik_semboller[0].split('/')[0]}")
+                return
+            hedef = acik_semboller[0]
+
+        bot.send_message(msg.chat.id, f"⏳ {hedef}'in yarısı kapatılıyor...")
+        basari, mesaj = gercek_pozisyon_kapat(hedef, oran=0.5)
         bot.send_message(msg.chat.id, mesaj)
 
     @bot.message_handler(commands=["durum"])
     def durum_komutu(msg):
+        """v7: Sadece giris/SL/TP degil, ANLIK fiyat ve ANLIK PnL de gosterir."""
         with state_lock:
             if not trade_state:
                 bot.send_message(msg.chat.id, "Açık pozisyon yok.")
                 return
-            satirlar = ["📋 AÇIK POZİSYON(LAR)\n"]
-            for sym, d in trade_state.items():
+            durumlar = dict(trade_state)
+
+        satirlar = ["📋 AÇIK POZİSYON(LAR)\n"]
+        for sym, d in durumlar.items():
+            try:
+                t = exchange.fetch_ticker(sym)
+                guncel_fiyat = safe(t["last"])
+                entry = d["entry"]; qty = d["qty"]; direction = d["direction"]
+                anlik_pnl = (guncel_fiyat - entry) * qty if direction == "long" else (entry - guncel_fiyat) * qty
+                anlik_pnl_pct = (guncel_fiyat - entry) / entry * 100 if direction == "long" else (entry - guncel_fiyat) / entry * 100
+                emoji = "🟢" if anlik_pnl >= 0 else "🔴"
+                satirlar.append(f"{emoji} {sym} [{direction.upper()}]\n"
+                                 f"   Giriş:{entry:.6f} Şimdi:{guncel_fiyat:.6f} (%{anlik_pnl_pct:+.2f})\n"
+                                 f"   SL:{d['sl']:.6f} TP:{d['tp']:.6f}\n"
+                                 f"   Anlık PnL≈{anlik_pnl:+.2f}$")
+            except Exception as e:
                 satirlar.append(f"{sym} [{d['direction'].upper()}] giriş:{d['entry']:.6f} "
-                                 f"SL:{d['sl']:.6f} TP:{d['tp']:.6f}")
+                                 f"SL:{d['sl']:.6f} TP:{d['tp']:.6f} (anlık fiyat alınamadı: {e})")
         bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+    @bot.message_handler(commands=["panel"])
+    def panel_komutu(msg):
+        """v7: Ozet performans paneli - toplam/kazanma orani/son islemler, ayrica su anki
+        acik pozisyon(lar)in ANLIK PnL'i de dahil - hepsi tek yerde."""
+        with log_lock:
+            gecmis = list(trade_log)
+
+        satirlar = ["📊 PERFORMANS PANELİ\n"]
+
+        if gecmis:
+            toplam = len(gecmis)
+            kazanan = [t for t in gecmis if t["pnl"] > 0]
+            kaybeden = [t for t in gecmis if t["pnl"] <= 0]
+            net_toplam = sum(t["pnl"] for t in gecmis)
+            kazanma_orani = len(kazanan) / toplam * 100
+            ort_kazanan = sum(t["pnl"] for t in kazanan) / len(kazanan) if kazanan else 0
+            ort_kaybeden = sum(t["pnl"] for t in kaybeden) / len(kaybeden) if kaybeden else 0
+
+            satirlar += [
+                f"Toplam kapanan işlem: {toplam}",
+                f"Kazanma oranı: %{kazanma_orani:.1f} ({len(kazanan)} kazanan / {len(kaybeden)} kaybeden)",
+                f"Net toplam PnL: {net_toplam:+.2f}$",
+                f"Ort. kazanan: {ort_kazanan:+.2f}$ | Ort. kaybeden: {ort_kaybeden:+.2f}$\n",
+                "Son 10 kapanan işlem:",
+            ]
+            for t in list(reversed(gecmis))[:10]:
+                not_etiket = f" [{t['not']}]" if t.get("not") else ""
+                satirlar.append(f"  {t['symbol'].split('/')[0]} {t['direction'].upper()} "
+                                 f"{t['pnl']:+.2f}$ — {t['zaman']}{not_etiket}")
+        else:
+            satirlar.append("Henüz kapanan işlem yok.")
+
+        with state_lock:
+            acik_durumlar = dict(trade_state)
+        if acik_durumlar:
+            satirlar.append("\n📈 AÇIK POZİSYON(LAR):")
+            for sym, d in acik_durumlar.items():
+                try:
+                    t = exchange.fetch_ticker(sym)
+                    guncel = safe(t["last"])
+                    pnl = (guncel - d["entry"]) * d["qty"] if d["direction"] == "long" else (d["entry"] - guncel) * d["qty"]
+                    satirlar.append(f"  {sym.split('/')[0]} [{d['direction'].upper()}] anlık PnL≈{pnl:+.2f}$")
+                except Exception:
+                    satirlar.append(f"  {sym.split('/')[0]} [{d['direction'].upper()}] (fiyat alınamadı)")
+        else:
+            satirlar.append("\nAçık pozisyon: yok")
+
+        with gunluk_lock:
+            satirlar.append(f"\nBugünkü gerçekleşen PnL: {gunluk_pnl:+.2f}$")
+
+        bot.send_message(msg.chat.id, "\n".join(satirlar))
+
+    @bot.message_handler(commands=["ac"])
+    def ac_komutu(msg):
+        """v7: Manuel pozisyon acma - /ac SEMBOL long|short - kullanici talebiyle
+        (panelde 'manuel ac/kapat' istegi). SL/TP botun kendi ATR bazli mantigiyla
+        otomatik hesaplanir (tutarlilik icin, kanaldan gelen sabit yuzde degil)."""
+        parcalar = msg.text.replace("/ac", "", 1).strip().split()
+        if len(parcalar) < 2:
+            bot.send_message(msg.chat.id, "Kullanım: /ac SOL long  (ya da /ac SOL short)")
+            return
+        taban = parcalar[0].upper()
+        yon = parcalar[1].lower()
+        if yon not in ("long", "short"):
+            bot.send_message(msg.chat.id, "Yön 'long' ya da 'short' olmalı. Örnek: /ac SOL long")
+            return
+
+        sym = f"{taban}/USDT:USDT"
+        with state_lock:
+            if sym in trade_state:
+                bot.send_message(msg.chat.id, f"{sym} zaten açık.")
+                return
+            if len(trade_state) >= MAX_POS:
+                bot.send_message(msg.chat.id, f"MAX_POS={MAX_POS} doldu, önce bir pozisyon kapanmalı.")
+                return
+
+        try:
+            df1h = get_df(sym, "1h", 30)
+            if df1h is None or len(df1h) < 21:
+                bot.send_message(msg.chat.id, f"{sym} için veri alınamadı, sembolü kontrol et.")
+                return
+            df1h["atr"] = atr(df1h, 14)
+            atr_1h = df1h["atr"].iloc[-1]
+            fiyat = df1h["close"].iloc[-1]
+            if pd.isna(atr_1h) or atr_1h <= 0:
+                bot.send_message(msg.chat.id, f"{sym} için ATR hesaplanamadı.")
+                return
+        except Exception as e:
+            bot.send_message(msg.chat.id, f"⚠️ {sym} veri hatası: {e}")
+            return
+
+        if yon == "long":
+            sl = fiyat - ATR_CARPANI * atr_1h
+            tp = fiyat + ATR_CARPANI * atr_1h * RR
+        else:
+            sl = fiyat + ATR_CARPANI * atr_1h
+            tp = fiyat - ATR_CARPANI * atr_1h * RR
+
+        bot.send_message(msg.chat.id, f"⚡ Manuel açılıyor: {sym} {yon.upper()} — Giriş≈{fiyat:.6f} SL:{sl:.6f} TP:{tp:.6f}")
+        pozisyon_ac({"symbol": sym, "direction": yon, "entry": fiyat, "sl": sl, "tp": tp,
+                      "skor": 0, "volatilite_spike": False})
 
 
 def telebot_polling_baslat():
@@ -532,9 +769,10 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (v6 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (v6.1 — MAX_POS={MAX_POS})\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
-       f"Kaldıraç: {LEV}x | İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
+       f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
+       f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
        f"BTC ADX filtresi: piyasa yatayken (ADX<{ADX_ESIK}) işlem aranmaz\n"
        f"Volatilite koruması: anormal oynak coinlerde risk otomatik yarıya iner\n"
        f"Günlük zarar limiti: bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i\n"
@@ -574,6 +812,8 @@ def tarama_loop():
                     with state_lock:
                         if sym in trade_state:
                             continue
+                    if cooldown_da_mi(sym):
+                        continue
                     sinyal = sinyal_kontrol_et(sym, btc_bullish, btc_bearish)
                     if sinyal:
                         adaylar.append(sinyal)
@@ -613,6 +853,9 @@ def manage_loop():
                 with state_lock:
                     durum = trade_state.pop(sym, None)
                 durumu_diske_yaz()
+                with cooldown_lock:
+                    son_kapanis_zamani[sym] = time.time()
+                cooldown_diske_yaz()
                 if durum:
                     try:
                         t = exchange.fetch_ticker(sym)
@@ -623,6 +866,10 @@ def manage_loop():
                     pnl_tahmini = (cikis_fiyat - entry) * qty if direction == "long" else (entry - cikis_fiyat) * qty
                     with gunluk_lock:
                         gunluk_pnl += pnl_tahmini
+                    trade_log_kaydet({
+                        "symbol": sym, "direction": direction, "entry": entry, "exit": cikis_fiyat,
+                        "pnl": pnl_tahmini, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                    })
                     tg(f"✅ {sym} pozisyonu kapandı | Tahmini PnL≈{pnl_tahmini:+.2f}$")
 
             time.sleep(15)
@@ -634,6 +881,8 @@ def manage_loop():
 if __name__ == "__main__":
     print("YENİ STRATEJİ BOTU BAŞLIYOR...")
     durumu_diskten_yukle()
+    cooldown_diskten_yukle()
+    trade_log_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
