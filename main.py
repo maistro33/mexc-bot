@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """
+════════════════════════════════════════════════════════
+SÜRÜM: v7.1 — 22 Temmuz 2026
+(Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
+bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
+════════════════════════════════════════════════════════
 YENİ STRATEJİ BOTU — Backtest ile doğrulanmış, kanaldan bağımsız
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DOĞRULAMA ÖZETİ (21 Temmuz 2026'da yapılan backtest):
@@ -654,15 +659,10 @@ if bot:
                                  f"SL:{d['sl']:.6f} TP:{d['tp']:.6f} (anlık fiyat alınamadı: {e})")
         bot.send_message(msg.chat.id, "\n".join(satirlar))
 
-    @bot.message_handler(commands=["panel"])
-    def panel_komutu(msg):
-        """v7: Ozet performans paneli - toplam/kazanma orani/son islemler, ayrica su anki
-        acik pozisyon(lar)in ANLIK PnL'i de dahil - hepsi tek yerde."""
+    def panel_ozet_metni():
         with log_lock:
             gecmis = list(trade_log)
-
-        satirlar = ["📊 PERFORMANS PANELİ\n"]
-
+        satirlar = ["📊 PERFORMANS ÖZETİ\n"]
         if gecmis:
             toplam = len(gecmis)
             kazanan = [t for t in gecmis if t["pnl"] > 0]
@@ -671,40 +671,131 @@ if bot:
             kazanma_orani = len(kazanan) / toplam * 100
             ort_kazanan = sum(t["pnl"] for t in kazanan) / len(kazanan) if kazanan else 0
             ort_kaybeden = sum(t["pnl"] for t in kaybeden) / len(kaybeden) if kaybeden else 0
-
             satirlar += [
                 f"Toplam kapanan işlem: {toplam}",
                 f"Kazanma oranı: %{kazanma_orani:.1f} ({len(kazanan)} kazanan / {len(kaybeden)} kaybeden)",
                 f"Net toplam PnL: {net_toplam:+.2f}$",
-                f"Ort. kazanan: {ort_kazanan:+.2f}$ | Ort. kaybeden: {ort_kaybeden:+.2f}$\n",
-                "Son 10 kapanan işlem:",
+                f"Ort. kazanan: {ort_kazanan:+.2f}$ | Ort. kaybeden: {ort_kaybeden:+.2f}$",
             ]
-            for t in list(reversed(gecmis))[:10]:
-                not_etiket = f" [{t['not']}]" if t.get("not") else ""
-                satirlar.append(f"  {t['symbol'].split('/')[0]} {t['direction'].upper()} "
-                                 f"{t['pnl']:+.2f}$ — {t['zaman']}{not_etiket}")
         else:
             satirlar.append("Henüz kapanan işlem yok.")
-
-        with state_lock:
-            acik_durumlar = dict(trade_state)
-        if acik_durumlar:
-            satirlar.append("\n📈 AÇIK POZİSYON(LAR):")
-            for sym, d in acik_durumlar.items():
-                try:
-                    t = exchange.fetch_ticker(sym)
-                    guncel = safe(t["last"])
-                    pnl = (guncel - d["entry"]) * d["qty"] if d["direction"] == "long" else (d["entry"] - guncel) * d["qty"]
-                    satirlar.append(f"  {sym.split('/')[0]} [{d['direction'].upper()}] anlık PnL≈{pnl:+.2f}$")
-                except Exception:
-                    satirlar.append(f"  {sym.split('/')[0]} [{d['direction'].upper()}] (fiyat alınamadı)")
-        else:
-            satirlar.append("\nAçık pozisyon: yok")
-
         with gunluk_lock:
             satirlar.append(f"\nBugünkü gerçekleşen PnL: {gunluk_pnl:+.2f}$")
+        return "\n".join(satirlar)
 
-        bot.send_message(msg.chat.id, "\n".join(satirlar))
+    def panel_acik_pozisyon_metni():
+        with state_lock:
+            acik_durumlar = dict(trade_state)
+        if not acik_durumlar:
+            return "📈 AÇIK POZİSYON YOK"
+        satirlar = ["📈 AÇIK POZİSYON(LAR)\n"]
+        for sym, d in acik_durumlar.items():
+            try:
+                t = exchange.fetch_ticker(sym)
+                guncel = safe(t["last"])
+                entry = d["entry"]; qty = d["qty"]; direction = d["direction"]
+                pnl = (guncel - entry) * qty if direction == "long" else (entry - guncel) * qty
+                pnl_pct = (guncel - entry) / entry * 100 if direction == "long" else (entry - guncel) / entry * 100
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                satirlar.append(f"{emoji} {sym.split('/')[0]} [{direction.upper()}]\n"
+                                 f"   Giriş:{entry:.6f} Şimdi:{guncel:.6f} (%{pnl_pct:+.2f})\n"
+                                 f"   SL:{d['sl']:.6f} TP:{d['tp']:.6f}\n"
+                                 f"   Anlık PnL≈{pnl:+.2f}$\n")
+            except Exception:
+                satirlar.append(f"{sym.split('/')[0]} [{d['direction'].upper()}] (fiyat alınamadı)")
+        return "\n".join(satirlar)
+
+    def panel_gecmis_metni():
+        with log_lock:
+            gecmis = list(trade_log)
+        if not gecmis:
+            return "📜 Henüz kapanan işlem yok."
+        satirlar = ["📜 SON 15 İŞLEM\n"]
+        for t in list(reversed(gecmis))[:15]:
+            not_etiket = f" [{t['not']}]" if t.get("not") else ""
+            emoji = "🟢" if t["pnl"] >= 0 else "🔴"
+            satirlar.append(f"{emoji} {t['symbol'].split('/')[0]} {t['direction'].upper()} "
+                             f"{t['pnl']:+.2f}$ — {t['zaman']}{not_etiket}")
+        return "\n".join(satirlar)
+
+    def ana_menu_klavye():
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.row(
+            telebot.types.InlineKeyboardButton("📊 Özet", callback_data="panel_ozet"),
+            telebot.types.InlineKeyboardButton("📈 Açık Pozisyon", callback_data="panel_acik"),
+        )
+        markup.row(
+            telebot.types.InlineKeyboardButton("📜 Geçmiş İşlemler", callback_data="panel_gecmis"),
+        )
+        markup.row(
+            telebot.types.InlineKeyboardButton("❌ Pozisyon Kapat", callback_data="panel_kapat_sec"),
+            telebot.types.InlineKeyboardButton("➗ Yarısını Kapat", callback_data="panel_yarikapat_sec"),
+        )
+        markup.row(telebot.types.InlineKeyboardButton("🔄 Yenile", callback_data="panel_ana"))
+        return markup
+
+    def geri_butonu():
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.row(telebot.types.InlineKeyboardButton("⬅️ Menüye Dön", callback_data="panel_ana"))
+        return markup
+
+    def sembol_secim_klavye(prefix):
+        with state_lock:
+            semboller = list(trade_state.keys())
+        markup = telebot.types.InlineKeyboardMarkup()
+        if not semboller:
+            markup.row(telebot.types.InlineKeyboardButton("⬅️ Menüye Dön", callback_data="panel_ana"))
+            return markup, "Açık pozisyon yok."
+        for sym in semboller:
+            markup.row(telebot.types.InlineKeyboardButton(sym.split("/")[0], callback_data=f"{prefix}|{sym}"))
+        markup.row(telebot.types.InlineKeyboardButton("⬅️ İptal / Menüye Dön", callback_data="panel_ana"))
+        return markup, "Hangi pozisyon?"
+
+    @bot.message_handler(commands=["panel"])
+    def panel_komutu(msg):
+        bot.send_message(msg.chat.id, panel_ozet_metni(), reply_markup=ana_menu_klavye())
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("panel_"))
+    def panel_buton_yaniti(call):
+        veri = call.data
+        try:
+            if veri == "panel_ana":
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=ana_menu_klavye())
+            elif veri == "panel_ozet":
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=geri_butonu())
+            elif veri == "panel_acik":
+                bot.edit_message_text(panel_acik_pozisyon_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=geri_butonu())
+            elif veri == "panel_gecmis":
+                bot.edit_message_text(panel_gecmis_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=geri_butonu())
+            elif veri == "panel_kapat_sec":
+                markup, metin = sembol_secim_klavye("panel_kapat_onay")
+                bot.edit_message_text(f"❌ Kapatılacak pozisyonu seç:\n{metin}", call.message.chat.id,
+                                       call.message.message_id, reply_markup=markup)
+            elif veri == "panel_yarikapat_sec":
+                markup, metin = sembol_secim_klavye("panel_yarikapat_onay")
+                bot.edit_message_text(f"➗ Yarısı kapatılacak pozisyonu seç:\n{metin}", call.message.chat.id,
+                                       call.message.message_id, reply_markup=markup)
+            elif veri.startswith("panel_kapat_onay|"):
+                sym = veri.split("|", 1)[1]
+                bot.answer_callback_query(call.id, f"{sym} kapatılıyor...")
+                basari, mesaj = gercek_pozisyon_kapat(sym, oran=1.0)
+                bot.edit_message_text(mesaj, call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            elif veri.startswith("panel_yarikapat_onay|"):
+                sym = veri.split("|", 1)[1]
+                bot.answer_callback_query(call.id, f"{sym} yarısı kapatılıyor...")
+                basari, mesaj = gercek_pozisyon_kapat(sym, oran=0.5)
+                bot.edit_message_text(mesaj, call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            bot.answer_callback_query(call.id)
+        except Exception as e:
+            log.warning(f"[PANEL_BUTON] {e}")
+            try:
+                bot.answer_callback_query(call.id, "Bir hata oluştu, tekrar dene")
+            except Exception:
+                pass
 
     @bot.message_handler(commands=["ac"])
     def ac_komutu(msg):
@@ -769,7 +860,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (v6.1 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.1 — MAX_POS={MAX_POS})\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
        f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
