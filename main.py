@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.1 — 22 Temmuz 2026
+SÜRÜM: v7.2 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -102,6 +102,14 @@ BTC_SEMBOL = "BTC/USDT:USDT"
 ADX_ESIK = 20        # BTC 4h ADX bu esigin altindaysa piyasa yatay sayilir, islem aranmaz
 VOLATILITE_SPIKE_CARPANI = 1.8  # mevcut ATR, kendi 20-periyot ortalamasinin bu katindan
                                   # fazlaysa "anormal oynak" sayilir, risk kisilir
+
+# v7.2: PULLBACK STRATEJISI parametreleri (backtest: in-sample +0.285R/islem %56.3
+# kazanma, out-of-sample +0.313R/islem %57.0 kazanma - momentum stratejisinden daha
+# iyi). Momentum stratejisiyle PARALEL calisir, her tur ikisi de taranir, en yuksek
+# skorlu adaylar secilir (kaynagi fark etmeksizin).
+PULLBACK_RSI_ESIK = 45          # RSI son PULLBACK_BAKIS_PENCERE mumda bu esigin altina inmis olmali
+PULLBACK_BAKIS_PENCERE = 5
+TOPARLANMA_RSI_MIN, TOPARLANMA_RSI_MAX = 42, 58  # simdiki RSI bu aralikta olmali
 
 # ── RİSK/GÜVENLİK AYARLARI (bilerek muhafazakar) ──
 LEV_HAM_DEGER = os.getenv("LEV")  # v6.1 TESHIS: Railway'den GERCEKTE gelen ham deger neyse
@@ -357,7 +365,81 @@ def sinyal_kontrol_et(sym, btc_bullish, btc_bearish):
         volatilite_spike = (atr_1h / atr_ort20_1h) >= VOLATILITE_SPIKE_CARPANI
 
     return {"symbol": sym, "direction": direction, "entry": fiyat, "sl": sl, "tp": tp,
-            "skor": skor, "volatilite_spike": volatilite_spike}
+            "skor": skor, "volatilite_spike": volatilite_spike, "strateji": "momentum"}
+
+
+def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
+    """v7.2: PULLBACK STRATEJISI - momentum stratejisinden farkli mantik.
+    Momentum RSI'nin ZATEN guclendigi (50-70) anlari ararken, bu strateji
+    guclu bir trend ICINDE kisa vadeli bir GERI CEKILME (RSI son 5 mumda
+    45'in altina inmis) olup sonra TOPARLANMAYA basladigi (RSI 42-58 arasina
+    donmus, mum yesil/kirmizi teyitli) ani arar - "ucuza trende binmek".
+    Backtest: in-sample +0.285R/islem (%56.3 kazanma), out-of-sample
+    +0.313R/islem (%57.0 kazanma) - momentum stratejisinden daha iyi cikti."""
+    df4h = get_df(sym, "4h", 30)
+    df1h = get_df(sym, "1h", 30)
+    if df4h is None or df1h is None or len(df4h) < 21 or len(df1h) < 21:
+        return None
+
+    df4h["ma20"] = df4h["close"].rolling(20).mean()
+    df4h["yon"] = np.where(df4h["close"] > df4h["open"], 1, -1)
+    yon5_up_4h = (df4h["yon"].iloc[-5:] > 0).sum()
+    yon5_down_4h = (df4h["yon"].iloc[-5:] < 0).sum()
+    ma20 = df4h["ma20"].iloc[-1]
+    fiyat_4h = df4h["close"].iloc[-1]
+
+    df1h["rsi"] = rsi(df1h["close"], 14)
+    df1h["atr"] = atr(df1h, 14)
+    df1h["atr_ort20"] = df1h["atr"].rolling(20).mean()
+    rsi_1h = df1h["rsi"].iloc[-1]
+    atr_1h = df1h["atr"].iloc[-1]
+    atr_ort20_1h = df1h["atr_ort20"].iloc[-1]
+    fiyat = df1h["close"].iloc[-1]
+    acilis = df1h["open"].iloc[-1]
+
+    if pd.isna(ma20) or pd.isna(rsi_1h) or pd.isna(atr_1h) or atr_1h <= 0:
+        return None
+    if len(df1h) < PULLBACK_BAKIS_PENCERE + 1:
+        return None
+
+    # kendisi haric son PULLBACK_BAKIS_PENCERE mumun min/max RSI'i
+    rsi_son5 = df1h["rsi"].iloc[-(PULLBACK_BAKIS_PENCERE+1):-1]
+    rsi_min5 = rsi_son5.min()
+    rsi_max5 = rsi_son5.max()
+    if pd.isna(rsi_min5) or pd.isna(rsi_max5):
+        return None
+
+    pullback_oldu_long = rsi_min5 < PULLBACK_RSI_ESIK
+    toparlaniyor_long = TOPARLANMA_RSI_MIN < rsi_1h < TOPARLANMA_RSI_MAX
+    long_ok = (fiyat_4h > ma20 and yon5_up_4h >= MUM_ESIGI and bool(btc_bullish) and
+               pullback_oldu_long and toparlaniyor_long and fiyat > acilis)
+
+    pullback_oldu_short = rsi_max5 > (100 - PULLBACK_RSI_ESIK)
+    toparlaniyor_short = (100 - TOPARLANMA_RSI_MAX) < rsi_1h < (100 - TOPARLANMA_RSI_MIN)
+    short_ok = (fiyat_4h < ma20 and yon5_down_4h >= MUM_ESIGI and bool(btc_bearish) and
+                pullback_oldu_short and toparlaniyor_short and fiyat < acilis)
+
+    if not (long_ok or short_ok):
+        return None
+
+    direction = "long" if long_ok else "short"
+    if direction == "long":
+        sl = fiyat - ATR_CARPANI * atr_1h
+        tp = fiyat + ATR_CARPANI * atr_1h * RR
+        merkez = (TOPARLANMA_RSI_MIN + TOPARLANMA_RSI_MAX) / 2
+    else:
+        sl = fiyat + ATR_CARPANI * atr_1h
+        tp = fiyat - ATR_CARPANI * atr_1h * RR
+        merkez = 100 - (TOPARLANMA_RSI_MIN + TOPARLANMA_RSI_MAX) / 2
+
+    skor = 100 - abs(rsi_1h - merkez)  # merkeze ne kadar yakinsa o kadar yuksek skor
+
+    volatilite_spike = False
+    if not pd.isna(atr_ort20_1h) and atr_ort20_1h > 0:
+        volatilite_spike = (atr_1h / atr_ort20_1h) >= VOLATILITE_SPIKE_CARPANI
+
+    return {"symbol": sym, "direction": direction, "entry": fiyat, "sl": sl, "tp": tp,
+            "skor": skor, "volatilite_spike": volatilite_spike, "strateji": "pullback"}
 
 
 def gercek_bakiye_al():
@@ -382,6 +464,7 @@ def pozisyon_ac(sinyal):
     entry = sinyal["entry"]
     sl = sinyal["sl"]
     tp = sinyal["tp"]
+    strateji = sinyal.get("strateji", "bilinmiyor")
     volatilite_spike = sinyal.get("volatilite_spike", False)
 
     bakiye = gercek_bakiye_al()
@@ -509,10 +592,11 @@ def pozisyon_ac(sinyal):
 
     with state_lock:
         trade_state[sym] = {"direction": direction, "entry": entry, "sl": sl, "tp": tp,
-                             "qty": qty, "tp_emir_id": tp_emir_id, "acilis_zamani": time.time()}
+                             "qty": qty, "tp_emir_id": tp_emir_id, "acilis_zamani": time.time(),
+                             "strateji": strateji}
     durumu_diske_yaz()
 
-    tg(f"📈 YENİ POZİSYON: {sym} {direction.upper()}\n"
+    tg(f"📈 YENİ POZİSYON: {sym} {direction.upper()} [{strateji}]\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} | TP:{tp:.6f}\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)"
        f"{' | ⚠️ volatilite spike, risk kucultuldu' if volatilite_spike else ''}")
@@ -712,10 +796,15 @@ if bot:
             return "📜 Henüz kapanan işlem yok."
         satirlar = ["📜 SON 15 İŞLEM\n"]
         for t in list(reversed(gecmis))[:15]:
-            not_etiket = f" [{t['not']}]" if t.get("not") else ""
+            etiketler = []
+            if t.get("strateji"):
+                etiketler.append(t["strateji"])
+            if t.get("not"):
+                etiketler.append(t["not"])
+            etiket_str = f" [{', '.join(etiketler)}]" if etiketler else ""
             emoji = "🟢" if t["pnl"] >= 0 else "🔴"
             satirlar.append(f"{emoji} {t['symbol'].split('/')[0]} {t['direction'].upper()} "
-                             f"{t['pnl']:+.2f}$ — {t['zaman']}{not_etiket}")
+                             f"{t['pnl']:+.2f}$ — {t['zaman']}{etiket_str}")
         return "\n".join(satirlar)
 
     def ana_menu_klavye():
@@ -791,6 +880,15 @@ if bot:
                 bot.edit_message_text(mesaj, call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             bot.answer_callback_query(call.id)
         except Exception as e:
+            if "message is not modified" in str(e):
+                # v7.1 DUZELTME: zararsiz - ayni icerik tekrar gonderilmeye
+                # calisilmis (orn. "Yenile"ye art arda basma). Kullaniciya
+                # gereksiz "hata olustu" mesaji gostermeye gerek yok.
+                try:
+                    bot.answer_callback_query(call.id, "Zaten güncel")
+                except Exception:
+                    pass
+                return
             log.warning(f"[PANEL_BUTON] {e}")
             try:
                 bot.answer_callback_query(call.id, "Bir hata oluştu, tekrar dene")
@@ -860,7 +958,8 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.1 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.2 — MAX_POS={MAX_POS})\n"
+       f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
        f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
@@ -898,6 +997,9 @@ def tarama_loop():
                 # v4: TUM coin evrenini tara, EN YUKSEK SKORLU sinyalleri sec
                 # v6: MAX_POS=2 oldugunda, bos slot sayisi kadar (1 veya 2)
                 # en iyi adayi ac - "en guclu 1-2 kurulum" mantigi
+                # v7.2: Artik HEM momentum HEM pullback stratejisi taraniyor,
+                # ikisinin adaylari BIRLIKTE degerlendirilip en yuksek skorlular
+                # secilir - hangi stratejiden geldigi onemli degil.
                 adaylar = []
                 for sym in COINS:
                     with state_lock:
@@ -905,16 +1007,20 @@ def tarama_loop():
                             continue
                     if cooldown_da_mi(sym):
                         continue
-                    sinyal = sinyal_kontrol_et(sym, btc_bullish, btc_bearish)
-                    if sinyal:
-                        adaylar.append(sinyal)
+                    sinyal_m = sinyal_kontrol_et(sym, btc_bullish, btc_bearish)
+                    if sinyal_m:
+                        adaylar.append(sinyal_m)
+                    sinyal_p = sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish)
+                    if sinyal_p:
+                        adaylar.append(sinyal_p)
 
                 if adaylar:
                     adaylar.sort(key=lambda s: s["skor"], reverse=True)
                     secilenler = adaylar[:bos_slot]
                     tg(f"🔍 {len(adaylar)} aday bulundu, en güçlü {len(secilenler)} tanesi seçildi")
                     for aday in secilenler:
-                        tg(f"→ {aday['symbol']} {aday['direction'].upper()} (skor:{aday['skor']:.0f}/100)")
+                        tg(f"→ {aday['symbol']} {aday['direction'].upper()} "
+                           f"[{aday['strateji']}] (skor:{aday['skor']:.0f}/100)")
                         pozisyon_ac(aday)
 
             time.sleep(KONTROL_ARALIGI_SN)
@@ -954,14 +1060,16 @@ def manage_loop():
                     except Exception:
                         cikis_fiyat = durum["sl"]
                     entry = durum["entry"]; qty = durum["qty"]; direction = durum["direction"]
+                    strateji = durum.get("strateji", "bilinmiyor")
                     pnl_tahmini = (cikis_fiyat - entry) * qty if direction == "long" else (entry - cikis_fiyat) * qty
                     with gunluk_lock:
                         gunluk_pnl += pnl_tahmini
                     trade_log_kaydet({
                         "symbol": sym, "direction": direction, "entry": entry, "exit": cikis_fiyat,
                         "pnl": pnl_tahmini, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                        "strateji": strateji,
                     })
-                    tg(f"✅ {sym} pozisyonu kapandı | Tahmini PnL≈{pnl_tahmini:+.2f}$")
+                    tg(f"✅ {sym} pozisyonu kapandı [{strateji}] | Tahmini PnL≈{pnl_tahmini:+.2f}$")
 
             time.sleep(15)
         except Exception as e:
