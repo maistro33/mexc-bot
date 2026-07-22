@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.2 — 22 Temmuz 2026
+SÜRÜM: v7.3 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -93,9 +93,20 @@ COINS = ["SOL/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT",
          "MET/USDT:USDT", "AERO/USDT:USDT",
          # v5: kullanicinin verdigi listeden IKI donemde de tutarli pozitif cikanlar
          "M/USDT:USDT", "OGN/USDT:USDT", "PYTH/USDT:USDT", "RPL/USDT:USDT",
-         "KAITO/USDT:USDT", "EDGE/USDT:USDT"]
+         "KAITO/USDT:USDT", "EDGE/USDT:USDT",
+         # v7.3: son 2 haftada gercek anlamda guclu yukselis gosteren, RWA olmayan
+         # yeni adaylar (Bitget gercek 4h veri ile dogrulandi, asiri ekstrem olan
+         # BANK +%535 bilerek disarida birakildi - donus riski cok yuksek)
+         "US/USDT:USDT", "UB/USDT:USDT", "ONDO/USDT:USDT", "ZAMA/USDT:USDT",
+         "PUMP/USDT:USDT", "ENA/USDT:USDT", "VIRTUAL/USDT:USDT", "ALLO/USDT:USDT",
+         "ERA/USDT:USDT", "ETHFI/USDT:USDT", "MIRA/USDT:USDT"]
 ATR_CARPANI = 1.0
-RR = 1.5
+RR = 1.5            # momentum stratejisi TP hedefi (1.5R)
+RR_PULLBACK = 1.0   # v7.3: pullback stratejisi icin AYRI ve DAHA DUSUK TP hedefi -
+                     # backtest: RR=1.0 iken pullback %67-70 kazanma + 0.22-0.28R/islem
+                     # veriyordu (RR=1.5'teki %56-57 kazanmadan DAHA SIK, KUCUK KAR
+                     # profiline daha yakin) - momentum'da ayni degisiklik ZARAR
+                     # veriyordu (0.166->0.070), o yuzden SADECE pullback icin uygulandi.
 MUM_ESIGI = 4       # 5 mumdan en az kaci ayni yonde olmali
 RSI_ALT, RSI_UST = 50, 70
 BTC_SEMBOL = "BTC/USDT:USDT"
@@ -425,11 +436,11 @@ def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
     direction = "long" if long_ok else "short"
     if direction == "long":
         sl = fiyat - ATR_CARPANI * atr_1h
-        tp = fiyat + ATR_CARPANI * atr_1h * RR
+        tp = fiyat + ATR_CARPANI * atr_1h * RR_PULLBACK
         merkez = (TOPARLANMA_RSI_MIN + TOPARLANMA_RSI_MAX) / 2
     else:
         sl = fiyat + ATR_CARPANI * atr_1h
-        tp = fiyat - ATR_CARPANI * atr_1h * RR
+        tp = fiyat - ATR_CARPANI * atr_1h * RR_PULLBACK
         merkez = 100 - (TOPARLANMA_RSI_MIN + TOPARLANMA_RSI_MAX) / 2
 
     skor = 100 - abs(rsi_1h - merkez)  # merkeze ne kadar yakinsa o kadar yuksek skor
@@ -958,7 +969,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.2 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.3 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
