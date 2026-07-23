@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.5 — 22 Temmuz 2026
+SÜRÜM: v7.6.1 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -148,6 +148,17 @@ gunluk_lock = threading.Lock()
 # icin, bir coin kapandiktan sonra COOLDOWN_SAAT boyunca ayni coin'e tekrar
 # girilmiyor - piyasanin o coin icin "sakinlesmesi" bekleniyor.
 COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "2"))
+
+# v7.6: KULLANICI TALEBI - kucuk bakiyede varyansi azaltmak icin, bir pozisyon
+# TP'ye ulasmadan once bile HIZLI KAR ESIGI'ne (sabit $ miktari) ulasirsa
+# TAMAMEN kapatilir, slot hemen boşalir, bot yeni firsatlara bakar. Bu,
+# backtest edilmis "dokunma" stratejisinden BILEREK sapan, kullanicinin
+# kucuk sermayede sermaye koruma/hizli buyutme tercihine gore eklenmis bir
+# kural - istenirse KAR_ESIGI_ROI_PCT=0 yapilarak tamamen kapatilabilir.
+# v7.6.1: KULLANICI TALEBIYLE sabit dolar yerine ROI YUZDESI bazli yapildi -
+# bakiye/marj buyudukce esik de orantili buyusun diye ("kasayi buyutmek"
+# hedefine daha uygun, sabit $ esigi zamanla anlamsizca kucuk kalirdi).
+KAR_ESIGI_ROI_PCT = float(os.getenv("KAR_ESIGI_ROI_PCT", "25"))  # %25 ROI'ye ulasinca kapat
 son_kapanis_zamani = {}  # {symbol: epoch_zaman}
 cooldown_lock = threading.Lock()
 
@@ -652,7 +663,7 @@ def pozisyon_ac(sinyal):
     with state_lock:
         trade_state[sym] = {"direction": direction, "entry": entry, "sl": sl, "tp": tp,
                              "qty": qty, "tp_emir_id": tp_emir_id, "acilis_zamani": time.time(),
-                             "strateji": strateji}
+                             "strateji": strateji, "marj": gereken_marj}
     durumu_diske_yaz()
 
     tg(f"📈 YENİ POZİSYON: {sym} {direction.upper()} [{strateji}]\n"
@@ -661,10 +672,12 @@ def pozisyon_ac(sinyal):
        f"{' | ⚠️ volatilite spike, risk kucultuldu' if volatilite_spike else ''}")
 
 
-def gercek_pozisyon_kapat(sym, oran=1.0):
+def gercek_pozisyon_kapat(sym, oran=1.0, sebep="manuel"):
     """Borsadan pozisyonu gercekten kapatir (reduceOnly market emri) ve state'i temizler.
     v7: oran parametresi eklendi - 1.0 tam kapatma, 0.5 pozisyonun yarisini kapatir
-    (kalan yari acik kalir, SL/TP emirleri kalan miktar icin gecerliligini korur)."""
+    (kalan yari acik kalir, SL/TP emirleri kalan miktar icin gecerliligini korur).
+    v7.6: sebep parametresi eklendi - "manuel" (kullanici), "kismi_manuel" (yari kapatma),
+    "hizli_kar" (KAR_ESIGI_DOLAR otomatik tetiklemesi) gibi ayirt edilebilsin diye."""
     try:
         pozisyonlar = exchange.fetch_positions([sym])
         gercek_pos = next((p for p in pozisyonlar if safe(p.get("contracts")) > 0), None)
@@ -697,7 +710,7 @@ def gercek_pozisyon_kapat(sym, oran=1.0):
         trade_log_kaydet({
             "symbol": sym, "direction": direction, "entry": entry_fiyat, "exit": cikis_fiyat,
             "pnl": pnl, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-            "not": "kismi_manuel" if oran < 1.0 else "manuel",
+            "not": ("kismi_manuel" if oran < 1.0 else sebep),
         })
 
         if kalan_pos and safe(kalan_pos.get("contracts")) > 0:
@@ -1102,7 +1115,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.5 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.6.1 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
@@ -1196,6 +1209,37 @@ def manage_loop():
             if not semboller:
                 time.sleep(15)
                 continue
+
+            positions = exchange.fetch_positions(semboller)
+            acik_semboller = {p["symbol"] for p in positions if safe(p.get("contracts")) > 0}
+
+            # v7.6: HIZLI KAR ESIGI kontrolu - TP'ye ulasmadan once bile,
+            # acik pozisyonun ROI'si KAR_ESIGI_ROI_PCT'ye ulastiysa tamamen
+            # kapat. Boylece slot hemen bosalir, sermaye baglanmaz, zirveden
+            # geri donme (ACE ornegi - %39'a ulasip geri cekilmisti) onlenir.
+            if KAR_ESIGI_ROI_PCT > 0:
+                with state_lock:
+                    hala_acik_semboller = [s for s in semboller if s in acik_semboller]
+                for sym in hala_acik_semboller:
+                    with state_lock:
+                        durum = trade_state.get(sym)
+                    if not durum:
+                        continue
+                    marj = durum.get("marj")
+                    if not marj or marj <= 0:
+                        continue
+                    try:
+                        t = exchange.fetch_ticker(sym)
+                        guncel = safe(t["last"])
+                        entry = durum["entry"]; qty = durum["qty"]; direction = durum["direction"]
+                        anlik_pnl = (guncel - entry) * qty if direction == "long" else (entry - guncel) * qty
+                        roi_pct = anlik_pnl / marj * 100
+                    except Exception:
+                        continue
+                    if roi_pct >= KAR_ESIGI_ROI_PCT:
+                        tg(f"⚡ {sym} hızlı kâr eşiğine ulaştı (ROI %{roi_pct:.1f} ≥ %{KAR_ESIGI_ROI_PCT:.0f}, "
+                           f"≈{anlik_pnl:+.2f}$) — TP beklenmeden kapatılıyor")
+                        gercek_pozisyon_kapat(sym, oran=1.0, sebep="hizli_kar")
 
             positions = exchange.fetch_positions(semboller)
             acik_semboller = {p["symbol"] for p in positions if safe(p.get("contracts")) > 0}
