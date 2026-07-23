@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.3 — 22 Temmuz 2026
+SÜRÜM: v7.4 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -969,7 +969,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.3 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.4 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
@@ -1026,9 +1026,22 @@ def tarama_loop():
                         adaylar.append(sinyal_p)
 
                 if adaylar:
-                    adaylar.sort(key=lambda s: s["skor"], reverse=True)
-                    secilenler = adaylar[:bos_slot]
-                    tg(f"🔍 {len(adaylar)} aday bulundu, en güçlü {len(secilenler)} tanesi seçildi")
+                    # v7.4 DUZELTME: Bir coin AYNI ANDA hem momentum hem pullback
+                    # kosulunu saglayabiliyordu, ikisi de ayri aday olarak listeye
+                    # giriyordu - eger 2 bos slot varsa, AYNI COIN icin IKI AYRI
+                    # ISLEM ACILABILIYORDU (SIREN, ETHFI ornekleri). Simdi her
+                    # sembol icin sadece EN YUKSEK SKORLU aday tutuluyor, secim
+                    # ondan sonra yapiliyor - ayni coin asla iki kez acilamaz.
+                    en_iyi_sembol_basina = {}
+                    for aday in adaylar:
+                        mevcut = en_iyi_sembol_basina.get(aday["symbol"])
+                        if mevcut is None or aday["skor"] > mevcut["skor"]:
+                            en_iyi_sembol_basina[aday["symbol"]] = aday
+                    adaylar_tekil = list(en_iyi_sembol_basina.values())
+
+                    adaylar_tekil.sort(key=lambda s: s["skor"], reverse=True)
+                    secilenler = adaylar_tekil[:bos_slot]
+                    tg(f"🔍 {len(adaylar_tekil)} benzersiz aday bulundu, en güçlü {len(secilenler)} tanesi seçildi")
                     for aday in secilenler:
                         tg(f"→ {aday['symbol']} {aday['direction'].upper()} "
                            f"[{aday['strateji']}] (skor:{aday['skor']:.0f}/100)")
