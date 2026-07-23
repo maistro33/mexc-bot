@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.4 — 22 Temmuz 2026
+SÜRÜM: v7.5 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -462,6 +462,54 @@ def gercek_bakiye_al():
         return None
 
 
+# v7.5: "Genel Bakis" paneli icin - zirve bakiye (all-time-high) diske kaydedilir,
+# boylece drawdown (zirveden ne kadar geri cekildik) hesaplanabilir. Kullanicinin
+# gordugu baska bir platformun panelinde bu bilgiler vardi (Bakiye/Equity/Marj/
+# Drawdown), bizim panelimize de ekliyoruz - ama BIZIM rakamlarimiz backtest ile
+# dogrulanmis gercek bir stratejiden geliyor.
+ZIRVE_BAKIYE_PATH = os.getenv("ZIRVE_BAKIYE_PATH", "/data/zirve_bakiye.json")
+
+def zirve_bakiye_guncelle(guncel_bakiye):
+    zirve = guncel_bakiye
+    try:
+        if os.path.exists(ZIRVE_BAKIYE_PATH):
+            with open(ZIRVE_BAKIYE_PATH) as f:
+                zirve = max(json.load(f).get("zirve", 0), guncel_bakiye)
+        os.makedirs(os.path.dirname(ZIRVE_BAKIYE_PATH), exist_ok=True)
+        with open(ZIRVE_BAKIYE_PATH, "w") as f:
+            json.dump({"zirve": zirve}, f)
+    except Exception as e:
+        log.warning(f"[ZIRVE_BAKIYE] {e}")
+    return zirve
+
+
+def hesap_genel_bilgisi_al():
+    """v7.5: Bakiye, equity (bakiye+gerceklesmemis PnL), kullanilan marj, serbest
+    marj, ve zirve bakiyeden bu yana drawdown - hepsi GERCEK borsa verisinden."""
+    try:
+        bakiye_ham = exchange.fetch_balance()
+        usdt = bakiye_ham.get("USDT", {})
+        serbest = safe(usdt.get("free", 0))
+        toplam = safe(usdt.get("total", 0)) or serbest
+
+        pozisyonlar = exchange.fetch_positions()
+        gercbulmemis_pnl = sum(safe(p.get("unrealizedPnl")) for p in pozisyonlar if safe(p.get("contracts")) > 0)
+        kullanilan_marj = sum(safe(p.get("initialMargin") or p.get("collateral")) for p in pozisyonlar if safe(p.get("contracts")) > 0)
+
+        equity = toplam + gercbulmemis_pnl
+        zirve = zirve_bakiye_guncelle(equity)
+        drawdown_pct = ((zirve - equity) / zirve * 100) if zirve > 0 else 0
+
+        return {
+            "bakiye": toplam, "equity": equity, "gerceklesmemis_pnl": gercbulmemis_pnl,
+            "kullanilan_marj": kullanilan_marj, "serbest_marj": serbest,
+            "zirve": zirve, "drawdown_pct": drawdown_pct,
+        }
+    except Exception as e:
+        log.warning(f"[HESAP_BILGI] {e}")
+        return None
+
+
 def gunluk_limit_kontrolu():
     with gunluk_lock:
         if gunluk_baslangic_bakiye is None:
@@ -757,7 +805,36 @@ if bot:
     def panel_ozet_metni():
         with log_lock:
             gecmis = list(trade_log)
-        satirlar = ["📊 PERFORMANS ÖZETİ\n"]
+        satirlar = ["📊 GENEL ÖZET\n"]
+
+        # ── BAKIYE / EQUITY (gercek borsadan) ──
+        try:
+            bakiye_bilgi = exchange.fetch_balance()
+            usdt = bakiye_bilgi.get("USDT", {})
+            serbest = safe(usdt.get("free", 0))
+            toplam_bakiye = safe(usdt.get("total", 0)) or serbest
+        except Exception:
+            serbest = None
+            toplam_bakiye = None
+
+        acik_toplam_pnl = 0.0
+        with state_lock:
+            acik_durumlar = dict(trade_state)
+        for sym, d in acik_durumlar.items():
+            try:
+                t = exchange.fetch_ticker(sym)
+                guncel = safe(t["last"])
+                pnl = (guncel - d["entry"]) * d["qty"] if d["direction"] == "long" else (d["entry"] - guncel) * d["qty"]
+                acik_toplam_pnl += pnl
+            except Exception:
+                pass
+
+        if toplam_bakiye is not None:
+            equity = toplam_bakiye + acik_toplam_pnl
+            satirlar.append(f"💰 Bakiye: {toplam_bakiye:.2f}$ | Equity: {equity:.2f}$")
+            satirlar.append(f"📌 Serbest: {serbest:.2f}$ | Açık poz. PnL: {acik_toplam_pnl:+.2f}$\n")
+
+        # ── ISLEM ISTATISTIKLERI ──
         if gecmis:
             toplam = len(gecmis)
             kazanan = [t for t in gecmis if t["pnl"] > 0]
@@ -766,16 +843,62 @@ if bot:
             kazanma_orani = len(kazanan) / toplam * 100
             ort_kazanan = sum(t["pnl"] for t in kazanan) / len(kazanan) if kazanan else 0
             ort_kaybeden = sum(t["pnl"] for t in kaybeden) / len(kaybeden) if kaybeden else 0
+            en_iyi = max(gecmis, key=lambda t: t["pnl"])
+            en_kotu = min(gecmis, key=lambda t: t["pnl"])
             satirlar += [
                 f"Toplam kapanan işlem: {toplam}",
                 f"Kazanma oranı: %{kazanma_orani:.1f} ({len(kazanan)} kazanan / {len(kaybeden)} kaybeden)",
                 f"Net toplam PnL: {net_toplam:+.2f}$",
                 f"Ort. kazanan: {ort_kazanan:+.2f}$ | Ort. kaybeden: {ort_kaybeden:+.2f}$",
+                f"En iyi işlem: {en_iyi['symbol'].split('/')[0]} {en_iyi['pnl']:+.2f}$ | "
+                f"En kötü: {en_kotu['symbol'].split('/')[0]} {en_kotu['pnl']:+.2f}$",
             ]
         else:
             satirlar.append("Henüz kapanan işlem yok.")
         with gunluk_lock:
-            satirlar.append(f"\nBugünkü gerçekleşen PnL: {gunluk_pnl:+.2f}$")
+            satirlar.append(f"\n📅 Bugünkü gerçekleşen PnL: {gunluk_pnl:+.2f}$")
+        return "\n".join(satirlar)
+
+    def panel_ayarlar_metni():
+        satirlar = ["⚙️ STRATEJİ AYARLARI\n"]
+        satirlar.append(f"Sürüm: v7.4")
+        satirlar.append(f"Coin evreni: {len(COINS)} coin")
+        satirlar.append(f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}")
+        satirlar.append(f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i")
+        satirlar.append(f"Marj tavanı: bakiyenin %{25 if MAX_POS<=1 else 15}'i (MAX_POS'a göre)")
+        satirlar.append(f"BTC ADX eşiği: {ADX_ESIK} (altındaysa işlem aranmaz)")
+        satirlar.append(f"Volatilite spike koruması: {VOLATILITE_SPIKE_CARPANI}x ATR üstünde risk yarıya iner")
+        satirlar.append(f"Coin cooldown: {COOLDOWN_SAAT} saat")
+        satirlar.append(f"\n📐 Momentum TP/SL: 1x ATR / {RR}R")
+        satirlar.append(f"📐 Pullback TP/SL: 1x ATR / {RR_PULLBACK}R")
+        satirlar.append(f"⏱️ Tarama aralığı: {KONTROL_ARALIGI_SN//60} dakika")
+        return "\n".join(satirlar)
+
+    def panel_risk_metni():
+        satirlar = ["📉 RİSK DURUMU\n"]
+        with gunluk_lock:
+            gp = gunluk_pnl
+        if gunluk_baslangic_bakiye:
+            limit_dolar = gunluk_baslangic_bakiye * GUNLUK_ZARAR_LIMIT_PCT
+            kalan = limit_dolar + gp  # gp negatifse limitten dusuyor
+            satirlar.append(f"Günlük zarar limiti: -{limit_dolar:.2f}$ (bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i)")
+            satirlar.append(f"Bugünkü PnL: {gp:+.2f}$")
+            satirlar.append(f"Limite kalan pay: {kalan:.2f}$")
+            if gunluk_limit_kontrolu():
+                satirlar.append("\n⛔ GÜNLÜK LİMİT AŞILDI — bot bugün yeni işlem aramıyor")
+            else:
+                satirlar.append("\n✅ Limit aşılmadı, bot normal taramaya devam ediyor")
+        else:
+            satirlar.append("Günlük başlangıç bakiyesi henüz kaydedilmedi.")
+
+        with cooldown_lock:
+            cd = dict(son_kapanis_zamani)
+        aktif_cooldown = [(s, t) for s, t in cd.items() if (time.time()-t) < COOLDOWN_SAAT*3600]
+        if aktif_cooldown:
+            satirlar.append(f"\n🕐 Cooldown'da olan coinler ({COOLDOWN_SAAT}sa):")
+            for s, t in aktif_cooldown:
+                kalan_dk = (COOLDOWN_SAAT*3600 - (time.time()-t)) / 60
+                satirlar.append(f"  {s.split('/')[0]}: {kalan_dk:.0f} dk kaldı")
         return "\n".join(satirlar)
 
     def panel_acik_pozisyon_metni():
@@ -826,6 +949,10 @@ if bot:
         )
         markup.row(
             telebot.types.InlineKeyboardButton("📜 Geçmiş İşlemler", callback_data="panel_gecmis"),
+            telebot.types.InlineKeyboardButton("📉 Risk Durumu", callback_data="panel_risk"),
+        )
+        markup.row(
+            telebot.types.InlineKeyboardButton("⚙️ Ayarlar", callback_data="panel_ayarlar"),
         )
         markup.row(
             telebot.types.InlineKeyboardButton("❌ Pozisyon Kapat", callback_data="panel_kapat_sec"),
@@ -870,6 +997,12 @@ if bot:
                                        reply_markup=geri_butonu())
             elif veri == "panel_gecmis":
                 bot.edit_message_text(panel_gecmis_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=geri_butonu())
+            elif veri == "panel_risk":
+                bot.edit_message_text(panel_risk_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=geri_butonu())
+            elif veri == "panel_ayarlar":
+                bot.edit_message_text(panel_ayarlar_metni(), call.message.chat.id, call.message.message_id,
                                        reply_markup=geri_butonu())
             elif veri == "panel_kapat_sec":
                 markup, metin = sembol_secim_klavye("panel_kapat_onay")
@@ -969,7 +1102,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.4 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.5 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
