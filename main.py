@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.7 — 22 Temmuz 2026
+SÜRÜM: v7.8 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -80,26 +80,32 @@ def tg(msg):
 #   3) Dinamik coin secimi: sabit kucuk liste yerine genis bir evren (23 coin)
 #      her turda taranir, o an EN GUCLU teyit skoruna sahip olan secilir -
 #      "sabit liste" yerine "o an piyasada en iyi kurulum nerede" mantigi
-COINS = ["SOL/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT", "ADA/USDT:USDT",
+COINS = ["SOL/USDT:USDT", "LINK/USDT:USDT", "AVAX/USDT:USDT",
          "DOT/USDT:USDT", "NEAR/USDT:USDT", "APT/USDT:USDT", "ATOM/USDT:USDT",
-         "ARB/USDT:USDT", "OP/USDT:USDT", "SUI/USDT:USDT", "INJ/USDT:USDT",
+         "OP/USDT:USDT", "SUI/USDT:USDT", "INJ/USDT:USDT",
          "TIA/USDT:USDT", "SEI/USDT:USDT", "RUNE/USDT:USDT", "FIL/USDT:USDT",
          "ICP/USDT:USDT", "AAVE/USDT:USDT", "UNI/USDT:USDT", "LTC/USDT:USDT",
          "ETC/USDT:USDT", "XLM/USDT:USDT", "ALGO/USDT:USDT",
          # v5: kucuk-cap taramasindan IKI donemde de tutarli pozitif cikanlar
          "NIGHT/USDT:USDT", "ONE/USDT:USDT", "ACE/USDT:USDT", "PROM/USDT:USDT",
-         "LA/USDT:USDT", "SYN/USDT:USDT", "VVV/USDT:USDT", "LAB/USDT:USDT",
+         "LA/USDT:USDT", "VVV/USDT:USDT", "LAB/USDT:USDT",
          "SIREN/USDT:USDT", "PI/USDT:USDT", "BEAT/USDT:USDT", "HOME/USDT:USDT",
-         "MET/USDT:USDT", "AERO/USDT:USDT",
+         "AERO/USDT:USDT",
          # v5: kullanicinin verdigi listeden IKI donemde de tutarli pozitif cikanlar
-         "M/USDT:USDT", "OGN/USDT:USDT", "PYTH/USDT:USDT", "RPL/USDT:USDT",
-         "KAITO/USDT:USDT", "EDGE/USDT:USDT",
+         "M/USDT:USDT", "OGN/USDT:USDT", "RPL/USDT:USDT",
+         "KAITO/USDT:USDT",
+         # v7.8: ARB/ADA (hantal buyuk-cap), SYN/MET/ETHFI (slippage kaynakli buyuk
+         # kayip - SYN -1.38$, MET -1.22$, ETHFI -1.08$), EDGE/PYTH/B (dusuk
+         # likidite, $500K altinda hacim) CIKARILDI. Yerine BTC KORELASYONU
+         # DUSUK (bagimsiz hareket eden) + YETERLI LIKIDITELI yeniler eklendi:
+         "EVAA/USDT:USDT", "DEXE/USDT:USDT", "B2/USDT:USDT", "BILL/USDT:USDT",
+         "GWEI/USDT:USDT", "RE/USDT:USDT", "WLFI/USDT:USDT",
          # v7.3: son 2 haftada gercek anlamda guclu yukselis gosteren, RWA olmayan
          # yeni adaylar (Bitget gercek 4h veri ile dogrulandi, asiri ekstrem olan
          # BANK +%535 bilerek disarida birakildi - donus riski cok yuksek)
          "US/USDT:USDT", "UB/USDT:USDT", "ONDO/USDT:USDT", "ZAMA/USDT:USDT",
          "PUMP/USDT:USDT", "ENA/USDT:USDT", "VIRTUAL/USDT:USDT", "ALLO/USDT:USDT",
-         "ERA/USDT:USDT", "ETHFI/USDT:USDT", "MIRA/USDT:USDT"]
+         "ERA/USDT:USDT", "MIRA/USDT:USDT"]
 ATR_CARPANI = 1.0
 RR = 1.5            # momentum stratejisi TP hedefi (1.5R)
 RR_PULLBACK = 1.0   # v7.3: pullback stratejisi icin AYRI ve DAHA DUSUK TP hedefi -
@@ -1169,7 +1175,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.7 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.8 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
