@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.6.1 — 22 Temmuz 2026
+SÜRÜM: v7.7 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -954,6 +954,56 @@ if bot:
                              f"{t['pnl']:+.2f}$ — {t['zaman']}{etiket_str}")
         return "\n".join(satirlar)
 
+    def panel_analiz_metni():
+        """v7.7: Strateji (momentum/pullback) ve yon (long/short) bazinda
+        kirilim - zamanla 'hangi tur islem daha cok kazandiriyor/kaybettiriyor'
+        gorulebilsin diye. Ayrica coin bazinda en cok kaybettiren/kazandiran
+        ilk 3'u de gosterir."""
+        with log_lock:
+            gecmis = list(trade_log)
+        if not gecmis:
+            return "🔬 STRATEJİ ANALİZİ\n\nHenüz kapanan işlem yok."
+
+        satirlar = ["🔬 STRATEJİ ANALİZİ\n"]
+
+        # ── STRATEJI BAZINDA ──
+        satirlar.append("📐 Strateji bazında:")
+        for strateji_adi in ["momentum", "pullback", "manuel", "hizli_kar", "kismi_manuel"]:
+            alt = [t for t in gecmis if t.get("strateji") == strateji_adi or t.get("not") == strateji_adi]
+            if not alt:
+                continue
+            kazanan = [t for t in alt if t["pnl"] > 0]
+            net = sum(t["pnl"] for t in alt)
+            oran = len(kazanan) / len(alt) * 100
+            satirlar.append(f"  {strateji_adi}: {len(alt)} işlem, %{oran:.0f} kazanma, net {net:+.2f}$")
+
+        # ── YON BAZINDA ──
+        satirlar.append("\n📊 Yön bazında:")
+        for yon in ["long", "short"]:
+            alt = [t for t in gecmis if t.get("direction") == yon]
+            if not alt:
+                continue
+            kazanan = [t for t in alt if t["pnl"] > 0]
+            net = sum(t["pnl"] for t in alt)
+            oran = len(kazanan) / len(alt) * 100
+            satirlar.append(f"  {yon.upper()}: {len(alt)} işlem, %{oran:.0f} kazanma, net {net:+.2f}$")
+
+        # ── COIN BAZINDA (en iyi/en kotu 3) ──
+        coin_pnl = {}
+        for t in gecmis:
+            sym = t["symbol"].split("/")[0]
+            coin_pnl[sym] = coin_pnl.get(sym, 0) + t["pnl"]
+        siralanmis = sorted(coin_pnl.items(), key=lambda x: x[1], reverse=True)
+        if siralanmis:
+            satirlar.append("\n🏆 En kazandıran coinler:")
+            for sym, pnl in siralanmis[:3]:
+                satirlar.append(f"  {sym}: {pnl:+.2f}$")
+            satirlar.append("💀 En kaybettiren coinler:")
+            for sym, pnl in siralanmis[-3:][::-1]:
+                satirlar.append(f"  {sym}: {pnl:+.2f}$")
+
+        return "\n".join(satirlar)
+
     def ana_menu_klavye():
         markup = telebot.types.InlineKeyboardMarkup()
         markup.row(
@@ -966,6 +1016,7 @@ if bot:
         )
         markup.row(
             telebot.types.InlineKeyboardButton("⚙️ Ayarlar", callback_data="panel_ayarlar"),
+            telebot.types.InlineKeyboardButton("🔬 Analiz", callback_data="panel_analiz"),
         )
         markup.row(
             telebot.types.InlineKeyboardButton("❌ Pozisyon Kapat", callback_data="panel_kapat_sec"),
@@ -1016,6 +1067,9 @@ if bot:
                                        reply_markup=geri_butonu())
             elif veri == "panel_ayarlar":
                 bot.edit_message_text(panel_ayarlar_metni(), call.message.chat.id, call.message.message_id,
+                                       reply_markup=geri_butonu())
+            elif veri == "panel_analiz":
+                bot.edit_message_text(panel_analiz_metni(), call.message.chat.id, call.message.message_id,
                                        reply_markup=geri_butonu())
             elif veri == "panel_kapat_sec":
                 markup, metin = sembol_secim_klavye("panel_kapat_onay")
@@ -1115,7 +1169,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.6.1 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.7 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
