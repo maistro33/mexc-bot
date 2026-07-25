@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.9 — 22 Temmuz 2026
+SÜRÜM: v7.11 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -88,38 +88,19 @@ def tg(msg):
 #      (SYN, MET, ETHFI) ve asiri ekstrem pump riskli (BANK, +%535 gormustu)
 #      coinler bu genis listeden de BILEREK CIKARILDI.
 COINS = [
-         "XRP/USDT:USDT", "BCH/USDT:USDT", "LTC/USDT:USDT", "ADA/USDT:USDT",
-         "ETC/USDT:USDT", "LINK/USDT:USDT", "TRX/USDT:USDT", "DOT/USDT:USDT",
-         "DOGE/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT", "UNI/USDT:USDT",
-         "ICP/USDT:USDT", "AAVE/USDT:USDT", "FIL/USDT:USDT", "XLM/USDT:USDT",
-         "ATOM/USDT:USDT", "AVAX/USDT:USDT", "DASH/USDT:USDT", "SHIB/USDT:USDT",
-         "CRV/USDT:USDT", "NEAR/USDT:USDT", "ALGO/USDT:USDT", "APT/USDT:USDT",
-         "CHZ/USDT:USDT", "XMR/USDT:USDT", "OP/USDT:USDT", "API3/USDT:USDT",
-         "LDO/USDT:USDT", "FET/USDT:USDT", "STX/USDT:USDT", "HBAR/USDT:USDT",
-         "INJ/USDT:USDT", "ARB/USDT:USDT", "ID/USDT:USDT", "TLM/USDT:USDT",
-         "ZEC/USDT:USDT", "SUI/USDT:USDT", "PEPE/USDT:USDT", "GRAM/USDT:USDT",
-         "ORDI/USDT:USDT", "1000BONK/USDT:USDT", "1000XEC/USDT:USDT", "WLD/USDT:USDT",
-         "PENDLE/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "PYTH/USDT:USDT",
-         "JTO/USDT:USDT", "ACE/USDT:USDT", "JUP/USDT:USDT", "WIF/USDT:USDT",
-         "BEAM/USDT:USDT", "VANRY/USDT:USDT", "ONDO/USDT:USDT", "ENA/USDT:USDT",
-         "TNSR/USDT:USDT", "TAO/USDT:USDT", "TAIKO/USDT:USDT", "ZRO/USDT:USDT",
-         "BGB/USDT:USDT", "RENDER/USDT:USDT", "ORDER/USDT:USDT", "POL/USDT:USDT",
-         "EIGEN/USDT:USDT", "LUMIA/USDT:USDT", "GRASS/USDT:USDT", "VIRTUAL/USDT:USDT",
-         "AERO/USDT:USDT", "MORPHO/USDT:USDT", "CHILLGUY/USDT:USDT", "HYPE/USDT:USDT",
-         "PENGU/USDT:USDT", "FARTCOIN/USDT:USDT", "DEXE/USDT:USDT", "BIO/USDT:USDT",
-         "PROM/USDT:USDT", "TRUMP/USDT:USDT", "VVV/USDT:USDT", "PI/USDT:USDT",
-         "KAITO/USDT:USDT", "EPIC/USDT:USDT", "SIREN/USDT:USDT",
-         "B2/USDT:USDT", "SKYAI/USDT:USDT", "B/USDT:USDT", "LA/USDT:USDT",
-         "HOME/USDT:USDT", "IDOL/USDT:USDT", "SAHARA/USDT:USDT", "USELESS/USDT:USDT",
-         "PUMP/USDT:USDT", "VELVET/USDT:USDT", "ERA/USDT:USDT", "ESPORTS/USDT:USDT",
-         "WLFI/USDT:USDT", "XPL/USDT:USDT", "UB/USDT:USDT", "ZKC/USDT:USDT",
-         "BARD/USDT:USDT", "ASTER/USDT:USDT", "BLESS/USDT:USDT", "MIRA/USDT:USDT",
-         "EVAA/USDT:USDT", "EUL/USDT:USDT", "ZBT/USDT:USDT", "LAB/USDT:USDT",
-         "RIVER/USDT:USDT", "APR/USDT:USDT", "ALLO/USDT:USDT", "BEAT/USDT:USDT",
-         "US/USDT:USDT", "RAVE/USDT:USDT", "LIT/USDT:USDT", "ZAMA/USDT:USDT",
-         "GWEI/USDT:USDT", "ESP/USDT:USDT", "OPN/USDT:USDT", "BSB/USDT:USDT",
-         "BASED/USDT:USDT", "BILL/USDT:USDT", "SLX/USDT:USDT", "RE/USDT:USDT",
-         "ARX/USDT:USDT", "O/USDT:USDT", "CAP/USDT:USDT"]
+         "BCH/USDT:USDT", "LTC/USDT:USDT", "ETC/USDT:USDT", "TRX/USDT:USDT",
+         "DOT/USDT:USDT", "ICP/USDT:USDT", "FIL/USDT:USDT", "ALGO/USDT:USDT",
+         "XMR/USDT:USDT", "LDO/USDT:USDT", "FET/USDT:USDT", "STX/USDT:USDT",
+         "HBAR/USDT:USDT", "INJ/USDT:USDT", "TLM/USDT:USDT", "GRAM/USDT:USDT",
+         "1000BONK/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "JTO/USDT:USDT",
+         "WIF/USDT:USDT", "VANRY/USDT:USDT", "ENA/USDT:USDT", "TAO/USDT:USDT",
+         "RENDER/USDT:USDT", "VIRTUAL/USDT:USDT", "CHILLGUY/USDT:USDT", "PENGU/USDT:USDT",
+         "FARTCOIN/USDT:USDT", "TRUMP/USDT:USDT", "VVV/USDT:USDT", "PI/USDT:USDT",
+         "EPIC/USDT:USDT", "HOME/USDT:USDT", "PUMP/USDT:USDT", "VELVET/USDT:USDT",
+         "ERA/USDT:USDT", "WLFI/USDT:USDT", "XPL/USDT:USDT", "UB/USDT:USDT",
+         "ASTER/USDT:USDT", "BLESS/USDT:USDT", "MIRA/USDT:USDT", "EVAA/USDT:USDT",
+         "APR/USDT:USDT", "US/USDT:USDT", "BASED/USDT:USDT", "BILL/USDT:USDT",
+         "SLX/USDT:USDT", "ARX/USDT:USDT", "O/USDT:USDT", "CAP/USDT:USDT"]
 ATR_CARPANI = 1.0
 RR = 1.5            # momentum stratejisi TP hedefi (1.5R)
 RR_PULLBACK = 1.0   # v7.3: pullback stratejisi icin AYRI ve DAHA DUSUK TP hedefi -
@@ -680,14 +661,49 @@ def pozisyon_ac(sinyal):
     except Exception as e:
         log.warning(f"[TP_EMIR] {sym}: {e}")
 
+    # v7.11 KULLANICI TALEBI: %25 ROI hizli kar esigi artik GERCEK BIR LIMIT
+    # EMRI ile garanti ediliyor - eskiden manage_loop her 15sn'de bir ticker
+    # fiyatini kontrol edip esige ulasinca MARKET emriyle kapatiyordu, bu da
+    # tetikleme ANI ile gercek kapanis arasinda slippage yaratiyordu (B/USDT
+    # ornegi: bot "+0.85$" dedi, gercek sonuc +0.58$ cikti - tetiklemeden
+    # emri gondermeye kadar gecen sürede fiyat aleyhe gitmisti). Simdi SL/TP
+    # gibi, pozisyon acilir acilmaz BORSAYA GERCEK bir limit emri konuyor -
+    # borsanin kendi motoru fiyata degdigi ANI yakalar, bizim kontrol
+    # turumuzu beklemez, slippage riski neredeyse ortadan kalkar.
+    hizli_kar_emir_id = None
+    hizli_kar_fiyat = None
+    if KAR_ESIGI_ROI_PCT > 0:
+        try:
+            sl_pct_hesap = abs(entry - sl) / entry
+            r_esigi = (KAR_ESIGI_ROI_PCT / 100) / (sl_pct_hesap * LEV_KULLANILAN)
+            risk_mesafe_hesap = abs(entry - sl)
+            if direction == "long":
+                hizli_kar_fiyat_ham = entry + r_esigi * risk_mesafe_hesap
+            else:
+                hizli_kar_fiyat_ham = entry - r_esigi * risk_mesafe_hesap
+            # eger hizli kar seviyesi TP'den daha uzaktaysa (dar SL'li islemlerde
+            # olabilir), anlamsiz - sadece TP'den ONCE gelen durumlarda emri koy
+            gecerli = (direction == "long" and hizli_kar_fiyat_ham < tp) or \
+                      (direction == "short" and hizli_kar_fiyat_ham > tp)
+            if gecerli:
+                kapama_yon = "sell" if direction == "long" else "buy"
+                hizli_kar_fiyat = float(exchange.price_to_precision(sym, hizli_kar_fiyat_ham))
+                hizli_kar_emri = exchange.create_limit_order(sym, kapama_yon, qty, hizli_kar_fiyat,
+                                                               params={"reduceOnly": True})
+                hizli_kar_emir_id = hizli_kar_emri.get("id")
+        except Exception as e:
+            log.warning(f"[HIZLI_KAR_EMIR] {sym}: {e}")
+
     with state_lock:
         trade_state[sym] = {"direction": direction, "entry": entry, "sl": sl, "tp": tp,
                              "qty": qty, "tp_emir_id": tp_emir_id, "acilis_zamani": time.time(),
-                             "strateji": strateji, "marj": gereken_marj}
+                             "strateji": strateji, "marj": gereken_marj,
+                             "hizli_kar_emir_id": hizli_kar_emir_id, "hizli_kar_fiyat": hizli_kar_fiyat}
     durumu_diske_yaz()
 
     tg(f"📈 YENİ POZİSYON: {sym} {direction.upper()} [{strateji}]\n"
-       f"Giriş≈{entry:.6f} | SL:{sl:.6f} | TP:{tp:.6f}\n"
+       f"Giriş≈{entry:.6f} | SL:{sl:.6f} | TP:{tp:.6f}"
+       f"{f' | Hızlı kâr (limit, %{KAR_ESIGI_ROI_PCT:.0f} ROI):{hizli_kar_fiyat:.6f}' if hizli_kar_fiyat else ''}\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)"
        f"{' | ⚠️ volatilite spike, risk kucultuldu' if volatilite_spike else ''}")
 
@@ -1189,7 +1205,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.9 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.11 — MAX_POS={MAX_POS})\n"
        f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
@@ -1287,10 +1303,11 @@ def manage_loop():
             positions = exchange.fetch_positions(semboller)
             acik_semboller = {p["symbol"] for p in positions if safe(p.get("contracts")) > 0}
 
-            # v7.6: HIZLI KAR ESIGI kontrolu - TP'ye ulasmadan once bile,
-            # acik pozisyonun ROI'si KAR_ESIGI_ROI_PCT'ye ulastiysa tamamen
-            # kapat. Boylece slot hemen bosalir, sermaye baglanmaz, zirveden
-            # geri donme (ACE ornegi - %39'a ulasip geri cekilmisti) onlenir.
+            # v7.11: Artik %25 ROI esigi ACILIS ANINDA borsaya konan GERCEK
+            # LIMIT EMRI ile garanti ediliyor (bkz. pozisyon_ac). Bu polling
+            # kontrolu artik sadece YEDEK - limit emri bir sebeple konamadiysa
+            # (hizli_kar_emir_id yoksa) devreye girer, boylece o durumda bile
+            # koruma tamamen kaybolmaz.
             if KAR_ESIGI_ROI_PCT > 0:
                 with state_lock:
                     hala_acik_semboller = [s for s in semboller if s in acik_semboller]
@@ -1299,6 +1316,8 @@ def manage_loop():
                         durum = trade_state.get(sym)
                     if not durum:
                         continue
+                    if durum.get("hizli_kar_emir_id"):
+                        continue  # gercek limit emri zaten borsada, polling'e gerek yok
                     marj = durum.get("marj")
                     if not marj or marj <= 0:
                         continue
@@ -1312,7 +1331,7 @@ def manage_loop():
                         continue
                     if roi_pct >= KAR_ESIGI_ROI_PCT:
                         tg(f"⚡ {sym} hızlı kâr eşiğine ulaştı (ROI %{roi_pct:.1f} ≥ %{KAR_ESIGI_ROI_PCT:.0f}, "
-                           f"≈{anlik_pnl:+.2f}$) — TP beklenmeden kapatılıyor")
+                           f"≈{anlik_pnl:+.2f}$) — [yedek mekanizma, limit emri konulamamıştı] kapatılıyor")
                         gercek_pozisyon_kapat(sym, oran=1.0, sebep="hizli_kar")
 
             positions = exchange.fetch_positions(semboller)
@@ -1321,10 +1340,21 @@ def manage_loop():
             for sym in semboller:
                 if sym in acik_semboller:
                     continue
-                # pozisyon kapanmis (SL ya da TP vurulmus)
+                # pozisyon kapanmis (SL, TP ya da hizli kar limit emri vurulmus)
                 with state_lock:
                     durum = trade_state.pop(sym, None)
                 durumu_diske_yaz()
+                # v7.11: pozisyon kapaninca, ARTIK GEREKSIZ olan diger reduceOnly
+                # emirleri (TP ve/veya hizli kar limit emri - hangisi vurmadiysa)
+                # iptal et, borsada "yetim" emir kalmasin.
+                if durum:
+                    for emir_id_alani in ("tp_emir_id", "hizli_kar_emir_id"):
+                        eid = durum.get(emir_id_alani)
+                        if eid:
+                            try:
+                                exchange.cancel_order(eid, sym)
+                            except Exception:
+                                pass  # zaten dolmus/iptal olmus olabilir, sorun degil
                 with cooldown_lock:
                     son_kapanis_zamani[sym] = time.time()
                 cooldown_diske_yaz()
