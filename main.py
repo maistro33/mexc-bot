@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.13 — 22 Temmuz 2026
+SÜRÜM: v7.14 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -165,7 +165,15 @@ COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "2"))
 # v7.6.1: KULLANICI TALEBIYLE sabit dolar yerine ROI YUZDESI bazli yapildi -
 # bakiye/marj buyudukce esik de orantili buyusun diye ("kasayi buyutmek"
 # hedefine daha uygun, sabit $ esigi zamanla anlamsizca kucuk kalirdi).
-KAR_ESIGI_ROI_PCT = float(os.getenv("KAR_ESIGI_ROI_PCT", "25"))  # %25 ROI'ye ulasinca kapat
+# v7.14 KULLANICI TALEBIYLE TEST EDILDI: bot su an SADECE pullback+LONG
+# calistigi icin, hizli kar esigini bu spesifik strateji uzerinde ayrica
+# backtest ettik (76 coin, 30+30 gun). Sonuc: esik AKTIFKEN in-sample
+# iyilesiyor (+0.647->+0.709R) ama out-of-sample COKUYOR (+0.366->+0.089R) -
+# klasik asiri uyum (overfitting) isareti. Ayrica breakeven trailing de
+# denendi, o da negatif cikti (-0.055/-0.289R). EN GUVENILIR VE TUTARLI
+# sonuc HICBIR ERKEN CIKIS MEKANIZMASI OLMADAN, sabit TP'ye kadar beklemekti
+# (iki donemde de +0.366/+0.647R). Bu yuzden varsayilan KAPATILDI (0).
+KAR_ESIGI_ROI_PCT = float(os.getenv("KAR_ESIGI_ROI_PCT", "0"))  # pullback icin kapali, backtest kaniti
 son_kapanis_zamani = {}  # {symbol: epoch_zaman}
 cooldown_lock = threading.Lock()
 
@@ -1212,7 +1220,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.13 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.14 — MAX_POS={MAX_POS})\n"
        f"Strateji: SADECE pullback + SADECE LONG (backtest: %56-64 kazanma, +0.33-0.46R/işlem)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
