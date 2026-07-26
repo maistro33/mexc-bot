@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.12 — 22 Temmuz 2026
+SÜRÜM: v7.13 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -89,18 +89,24 @@ def tg(msg):
 #      coinler bu genis listeden de BILEREK CIKARILDI.
 COINS = [
          "BCH/USDT:USDT", "LTC/USDT:USDT", "ETC/USDT:USDT", "TRX/USDT:USDT",
-         "DOT/USDT:USDT", "ICP/USDT:USDT", "FIL/USDT:USDT", "ALGO/USDT:USDT",
-         "XMR/USDT:USDT", "LDO/USDT:USDT", "FET/USDT:USDT", "STX/USDT:USDT",
-         "HBAR/USDT:USDT", "INJ/USDT:USDT", "TLM/USDT:USDT", "GRAM/USDT:USDT",
-         "1000BONK/USDT:USDT", "SEI/USDT:USDT", "TIA/USDT:USDT", "JTO/USDT:USDT",
-         "WIF/USDT:USDT", "VANRY/USDT:USDT", "ENA/USDT:USDT", "TAO/USDT:USDT",
-         "RENDER/USDT:USDT", "VIRTUAL/USDT:USDT", "CHILLGUY/USDT:USDT", "PENGU/USDT:USDT",
-         "FARTCOIN/USDT:USDT", "TRUMP/USDT:USDT", "VVV/USDT:USDT", "PI/USDT:USDT",
-         "EPIC/USDT:USDT", "HOME/USDT:USDT", "PUMP/USDT:USDT", "VELVET/USDT:USDT",
-         "ERA/USDT:USDT", "WLFI/USDT:USDT", "XPL/USDT:USDT", "UB/USDT:USDT",
-         "ASTER/USDT:USDT", "BLESS/USDT:USDT", "MIRA/USDT:USDT", "EVAA/USDT:USDT",
-         "APR/USDT:USDT", "US/USDT:USDT", "BASED/USDT:USDT", "BILL/USDT:USDT",
-         "SLX/USDT:USDT", "ARX/USDT:USDT", "O/USDT:USDT", "CAP/USDT:USDT"]
+         "DOT/USDT:USDT", "SOL/USDT:USDT", "UNI/USDT:USDT", "ICP/USDT:USDT",
+         "AAVE/USDT:USDT", "FIL/USDT:USDT", "XLM/USDT:USDT", "AVAX/USDT:USDT",
+         "SHIB/USDT:USDT", "NEAR/USDT:USDT", "PEOPLE/USDT:USDT", "XMR/USDT:USDT",
+         "LDO/USDT:USDT", "FET/USDT:USDT", "HBAR/USDT:USDT", "INJ/USDT:USDT",
+         "ZEC/USDT:USDT", "SUI/USDT:USDT", "PEPE/USDT:USDT", "GRAM/USDT:USDT",
+         "ORDI/USDT:USDT", "1000BONK/USDT:USDT", "WLD/USDT:USDT", "LPT/USDT:USDT",
+         "TIA/USDT:USDT", "JTO/USDT:USDT", "WIF/USDT:USDT", "BOME/USDT:USDT",
+         "ONDO/USDT:USDT", "ENA/USDT:USDT", "TAO/USDT:USDT", "RENDER/USDT:USDT",
+         "DIA/USDT:USDT", "VIRTUAL/USDT:USDT", "PNUT/USDT:USDT", "MORPHO/USDT:USDT",
+         "HYPE/USDT:USDT", "PENGU/USDT:USDT", "FARTCOIN/USDT:USDT", "DEXE/USDT:USDT",
+         "PROM/USDT:USDT", "TRUMP/USDT:USDT", "VVV/USDT:USDT", "KAITO/USDT:USDT",
+         "EPIC/USDT:USDT", "B/USDT:USDT", "LA/USDT:USDT", "CROSS/USDT:USDT",
+         "PUMP/USDT:USDT", "VELVET/USDT:USDT", "ERA/USDT:USDT", "ESPORTS/USDT:USDT",
+         "WLFI/USDT:USDT", "XPL/USDT:USDT", "Q/USDT:USDT", "UB/USDT:USDT",
+         "EVAA/USDT:USDT", "EUL/USDT:USDT", "LAB/USDT:USDT", "ALLO/USDT:USDT",
+         "BEAT/USDT:USDT", "PIEVERSE/USDT:USDT", "US/USDT:USDT", "ZAMA/USDT:USDT",
+         "GWEI/USDT:USDT", "ESP/USDT:USDT", "PRL/USDT:USDT", "BASED/USDT:USDT",
+         "BTW/USDT:USDT", "RE/USDT:USDT", "ARX/USDT:USDT", "CAP/USDT:USDT"]
 ATR_CARPANI = 1.0
 RR = 1.5            # momentum stratejisi TP hedefi (1.5R)
 RR_PULLBACK = 1.0   # v7.3: pullback stratejisi icin AYRI ve DAHA DUSUK TP hedefi -
@@ -1206,7 +1212,7 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.12 — MAX_POS={MAX_POS})\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.13 — MAX_POS={MAX_POS})\n"
        f"Strateji: SADECE pullback + SADECE LONG (backtest: %56-64 kazanma, +0.33-0.46R/işlem)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
