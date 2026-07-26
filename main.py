@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.11 — 22 Temmuz 2026
+SÜRÜM: v7.12 — 22 Temmuz 2026
 (Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
 bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
 ════════════════════════════════════════════════════════
@@ -439,8 +439,9 @@ def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
 
     pullback_oldu_short = rsi_max5 > (100 - PULLBACK_RSI_ESIK)
     toparlaniyor_short = (100 - TOPARLANMA_RSI_MAX) < rsi_1h < (100 - TOPARLANMA_RSI_MIN)
-    short_ok = (fiyat_4h < ma20 and yon5_down_4h >= MUM_ESIGI and bool(btc_bearish) and
-                pullback_oldu_short and toparlaniyor_short and fiyat < acilis)
+    # v7.12 KULLANICI TALEBI: backtest "sadece LONG" kombinasyonunda cok daha
+    # guclu cikti - SHORT devre disi birakildi.
+    short_ok = False
 
     if not (long_ok or short_ok):
         return None
@@ -1205,8 +1206,8 @@ def telebot_polling_baslat():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.11 — MAX_POS={MAX_POS})\n"
-       f"Stratejiler: momentum + pullback (ikisi de taranır, en güçlü sinyaller seçilir)\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.12 — MAX_POS={MAX_POS})\n"
+       f"Strateji: SADECE pullback + SADECE LONG (backtest: %56-64 kazanma, +0.33-0.46R/işlem)\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
        f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
@@ -1254,9 +1255,11 @@ def tarama_loop():
                             continue
                     if cooldown_da_mi(sym):
                         continue
-                    sinyal_m = sinyal_kontrol_et(sym, btc_bullish, btc_bearish)
-                    if sinyal_m:
-                        adaylar.append(sinyal_m)
+                    # v7.12 KULLANICI TALEBI: backtest'te "sadece LONG pullback"
+                    # kombinasyonu cok guclu cikti (in-sample %64 kazanma
+                    # +0.461R/islem, out-of-sample %56.2 kazanma +0.329R/islem -
+                    # bugunku EN IYI sonuclardan biri). Momentum stratejisi
+                    # BILEREK devre disi birakildi - sadece pullback taraniyor.
                     sinyal_p = sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish)
                     if sinyal_p:
                         adaylar.append(sinyal_p)
