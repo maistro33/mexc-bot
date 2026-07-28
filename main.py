@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.6 — 28 Temmuz 2026
+SCALP BOT v1.7 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -791,7 +791,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.6 (PnL tahmini düzeltildi - kademe bazlı hesap)\n"
+                f"Sürüm: v1.7 (TP dolum yarış durumu düzeltildi - ZIL örneği)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -936,7 +936,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.6 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v1.7 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1040,12 +1040,29 @@ def manage_loop():
                     with state_lock:
                         durum2 = trade_state.pop(sym, None)
                     durumu_diske_yaz()
+                    # v1.7 DÜZELTME: ZIL örneğinde görüldü - TP2 ve TP3 hızlıca art
+                    # arda dolduğunda, bir önceki döngüde henüz 'dolu' işaretlenmemiş
+                    # kademeler burada KONTROL EDİLMEDEN direkt "iptal edilmeye
+                    # çalışılıyordu" (zaten dolmuş oldukları için iptal sessizce
+                    # başarısız oluyordu ama 'dolu' bayrağı hiç True olmuyordu) -
+                    # bu da PnL'i eksik saydırıyor ve "tum_tp_tamamlandi" yerine
+                    # yanlışlıkla "SL_basabasta_TP1_sonrasi" etiketi koyuyordu.
+                    # Artık iptal etmeden ÖNCE gerçekten dolup dolmadığı kontrol
+                    # ediliyor.
                     for t in (durum2 or {}).get("tp_emirleri", []):
-                        if not t.get("dolu") and t.get("id"):
-                            try:
-                                exchange.cancel_order(t["id"], sym)
-                            except Exception:
-                                pass
+                        if t.get("dolu") or not t.get("id"):
+                            continue
+                        try:
+                            emir_durumu = exchange.fetch_order(t["id"], sym)
+                            if emir_durumu.get("status") in ("closed", "filled"):
+                                t["dolu"] = True
+                                continue
+                        except Exception:
+                            pass
+                        try:
+                            exchange.cancel_order(t["id"], sym)
+                        except Exception:
+                            pass
                     if durum2 and durum2.get("sl_emir_id"):
                         try:
                             exchange.cancel_order(durum2["sl_emir_id"], sym)
@@ -1140,7 +1157,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.6 BAŞLIYOR...")
+    print("SCALP BOT v1.7 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
