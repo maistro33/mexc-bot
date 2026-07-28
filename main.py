@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.0 — 28 Temmuz 2026
+SCALP BOT v1.1 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -106,6 +106,22 @@ RET_THRESHOLD = 0.025       # %2.5 hareket eşiği
 ADX_ESIK_15M = 15
 COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "1"))   # v1.0: kullanıcı talebiyle 1 saat
 MAX_HOLD_SAAT = 3.0         # bu süreden uzun açık kalan pozisyon piyasa fiyatından kapatılır
+
+# v1.1 YENİ: SÜRDÜRÜLEBİLİR TIRMANIŞ sinyali (VANRY örneği üzerine eklendi).
+# Ani-patlama sinyali (yukarıdaki VOL_SPIKE_MULT vb.) sadece TEK bir 5m mumda
+# hacim+fiyat sıçraması arıyor - VANRY gibi saatler süren, kademeli, tek mumda
+# patlamayan ama toplamda güçlü tırmanışları KAÇIRIYORDU. Bu ikinci sinyal 15m
+# bazlı: son 1.5 saatte %4+ hareket VE hafifçe yükselmiş (1.2x) sürekli hacim
+# arıyor - tek büyük spike değil, süreklilik. Backtest (60 coin, 15 gün, 15m
+# bar): 144 işlem, %57.7 kazanma, +30.7R, ort +0.206R/işlem, iki yarıda da
+# dengeli pozitif (15.0R/14.7R). ⚠️ DÜRÜSTLÜK NOTU: bu parametre noktası
+# komşularına göre HASSAS (ör. eşik %4 yerine %3.5 veya %4.5 yapılınca sonuç
+# belirgin kötüleşiyor) - hafif overfitting riski var, bu yüzden ANİ-PATLAMA
+# sinyalinin YERİNE değil YANINA eklendi, riski tek sinyale bağlamamak için.
+SUSTAINED_RET_WINDOW_BARS = 6   # 15m x 6 = 1.5 saat
+SUSTAINED_RET_THRESHOLD = 0.04  # %4 hareket
+SUSTAINED_VOL_RATIO_THRESH = 1.2
+SUSTAINED_ADX_ESIK = 15
 
 ATR_CARPANI_SL = 2.0        # backtest: en dengeli SL çarpanı bu çıktı
 TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # (kapatılacak_oran, R_katı)
@@ -366,10 +382,45 @@ def piyasa_izleyici_sinyal_kontrol(sym, btc_bullish):
     fiyat = row["close"]
     atr_val = row["atr"]
     skor = row["ret_win"] * row["vol_ratio"]
-    return {"symbol": sym, "entry": fiyat, "atr": atr_val, "skor": skor}
+    return {"symbol": sym, "entry": fiyat, "atr": atr_val, "skor": skor, "tur": "spike"}
 
 
-def btc_1h_bullish():
+def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
+    """AJAN 1 - v1.1 YENİ: 'yavaş yanan' sürdürülebilir tırmanışları yakalar
+    (VANRY örneği). Ani-patlama sinyalinden (yukarıdaki fonksiyon) BAĞIMSIZ
+    çalışır, aynı aday havuzunda taranır. Sinyal tipi 'sustained' olarak
+    etiketlenir ki Telegram mesajlarında hangi mantıkla açıldığı belli olsun."""
+    df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
+    if df15 is None or len(df15) < 30:
+        return None
+
+    df15["ma20"] = df15["close"].rolling(20).mean()
+    df15["adx"] = adx(df15, 14)
+    df15["atr"] = atr(df15, 14)
+    df15["vol_ma20"] = df15["volume"].rolling(20).mean()
+    df15["vol_ma6"] = df15["volume"].rolling(6).mean()
+    df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
+    df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
+
+    row = df15.iloc[-1]
+    if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
+        return None
+    if pd.isna(row["ret_6bar"]) or pd.isna(row["vol_ratio_sustained"]):
+        return None
+
+    trend_ok = row["close"] > row["ma20"] and row["adx"] >= SUSTAINED_ADX_ESIK
+    momentum_ok = row["ret_6bar"] >= SUSTAINED_RET_THRESHOLD
+    volume_ok = row["vol_ratio_sustained"] >= SUSTAINED_VOL_RATIO_THRESH
+    if not (trend_ok and momentum_ok and volume_ok):
+        return None
+    if not btc_bullish:
+        return None
+
+    return {"symbol": sym, "entry": row["close"], "atr": row["atr"],
+            "skor": row["ret_6bar"], "tur": "sustained"}
+
+
+
     df = get_df("BTC/USDT:USDT", "1h", 40)
     if df is None or len(df) < 25:
         return None
@@ -455,6 +506,7 @@ def islem_acici_pozisyon_ac(sinyal):
     sym = sinyal["symbol"]
     entry = sinyal["entry"]
     atr_val = sinyal["atr"]
+    tur = sinyal.get("tur", "bilinmiyor")
 
     bakiye = gercek_bakiye_al()
     if bakiye is None or bakiye <= 0:
@@ -540,12 +592,13 @@ def islem_acici_pozisyon_ac(sinyal):
         trade_state[sym] = {
             "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
             "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
-            "acilis_zamani": time.time(), "breakeven_cekildi": False,
+            "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
         }
     durumu_diske_yaz()
 
+    tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else tur)
     tp_ozet = " | ".join(f"TP{i+1}:{t['fiyat']:.6f}({t['rr']}R)" for i, t in enumerate(tp_emirleri))
-    tg(f"📈 SCALP POZİSYON: {sym} LONG\n"
+    tg(f"📈 SCALP POZİSYON: {sym} LONG [{tur_etiket}]\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} (2×ATR)\n"
        f"{tp_ozet}\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)")
@@ -688,7 +741,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.0 (dinamik coin taraması)\n"
+                f"Sürüm: v1.1 (2 sinyal tipi: ani patlama + sürdürülebilir tırmanış)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -774,8 +827,8 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.0 başladı (MAX_POS={MAX_POS})\n"
-       f"Strateji: dinamik pump taraması (5m sinyal + 15m trend + BTC 1h filtre), SADECE LONG\n"
+    tg(f"🚀 SCALP BOT v1.1 başladı (MAX_POS={MAX_POS})\n"
+       f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -812,16 +865,31 @@ def tarama_loop():
                         continue
                 if cooldown_da_mi(sym):
                     continue
-                sinyal = piyasa_izleyici_sinyal_kontrol(sym, btc_bullish)
-                if sinyal:
-                    sinyaller.append(sinyal)
+                # v1.1: iki bağımsız sinyal tipi de kontrol edilir (ani patlama +
+                # sürdürülebilir tırmanış). Aynı coin ikisini de tetiklerse (nadir),
+                # sadece skoru yüksek olan alınır - tekilleştirme aşağıda.
+                sinyal_spike = piyasa_izleyici_sinyal_kontrol(sym, btc_bullish)
+                if sinyal_spike:
+                    sinyaller.append(sinyal_spike)
+                sinyal_sustained = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
+                if sinyal_sustained:
+                    sinyaller.append(sinyal_sustained)
 
             if sinyaller:
-                sinyaller.sort(key=lambda s: s["skor"], reverse=True)
-                secilenler = sinyaller[:bos_slot]
-                tg(f"🔍 AJAN 1: {len(sinyaller)} pump sinyali bulundu, en güçlü {len(secilenler)} tanesi AJAN 2'ye iletiliyor")
+                en_iyi_sembol_basina = {}
+                for s in sinyaller:
+                    mevcut = en_iyi_sembol_basina.get(s["symbol"])
+                    if mevcut is None or s["skor"] > mevcut["skor"]:
+                        en_iyi_sembol_basina[s["symbol"]] = s
+                sinyaller_tekil = list(en_iyi_sembol_basina.values())
+
+                sinyaller_tekil.sort(key=lambda s: s["skor"], reverse=True)
+                secilenler = sinyaller_tekil[:bos_slot]
+                tg(f"🔍 AJAN 1: {len(sinyaller_tekil)} sinyal bulundu (patlama+sürdürülebilir), "
+                   f"en güçlü {len(secilenler)} tanesi AJAN 2'ye iletiliyor")
                 for s in secilenler:
-                    tg(f"→ AJAN 1: {s['symbol']} güçlü LONG sinyali (skor:{s['skor']:.3f}) — AJAN 2'ye 'hemen aç' komutu veriliyor")
+                    tur_etiket = "ani patlama" if s.get("tur") == "spike" else "sürdürülebilir tırmanış"
+                    tg(f"→ AJAN 1: {s['symbol']} güçlü LONG sinyali [{tur_etiket}] (skor:{s['skor']:.3f}) — AJAN 2'ye 'hemen aç' komutu veriliyor")
                     islem_acici_pozisyon_ac(s)
 
             time.sleep(KONTROL_ARALIGI_SN)
@@ -949,7 +1017,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.0 BAŞLIYOR...")
+    print("SCALP BOT v1.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
