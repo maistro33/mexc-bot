@@ -27,6 +27,22 @@ bir LONG pozisyon varken BTC 1h'de bearish'e (fiyat<MA20 VE ADX>=eşik)
 dönerse, o pozisyon SL/TP beklenmeden piyasa emriyle kapatılıyor (SHORT
 için simetrik). ADX şartı da eklendi ki zayıf/kararsız 1h dalgalanmalar
 gereksiz erken çıkışa yol açmasın.
+SÜRÜM: v8.2 — 28 Temmuz 2026
+════════════════════════════════════════════════════════
+v8.2 DEĞİŞİKLİK (v8.1'den): TP HEDEFİ GENİŞLETİLDİ (RR 1.0 -> 1.5)
+SL/TP grid taraması yapıldı (129 coin, aynı 90 gün, SL=1x ATR sabit
+tutulup sadece RR/TP mesafesi değiştirildi):
+  - RR=1.0 (eski): 650 işlem, %59.5 kazanma, +81.9R, ort +0.126R/işlem
+  - RR=1.5 (yeni): 595 işlem, %52.8 kazanma, +103.3R, ort +0.174R/işlem
+    VE en tutarlı zaman dağılımı (ilk yarı +51.4R, ikinci yarı +51.9R -
+    neredeyse birebir eşit, overfitting riski düşük)
+Kademeli TP (pozisyonun yarısını 1R'de kapat, SL'i başabaşa çek, kalanı
+2R/3R'ye taşı) ayrıca 5 farklı kombinasyonla test edildi - hiçbiri tek
+TP + RR=1.5'i geçemedi, bu yüzden UYGULANMADI (basit kalmak kazandı).
+Mantık: pullback sonrası trend devam ettiğinde fiyat genelde 1x ATR'nin
+ötesine gidiyor - eski RR=1.0 hedefi çok yakındı, kazanılan işlemlerde
+masada para bırakılıyordu. RR=1.5 ile kazanma oranı düşüyor (%59.5->
+%52.8) ama kazanılan işlemler daha büyük, net sonuç iyileşiyor.
 ════════════════════════════════════════════════════════
 v8.0 DEĞİŞİKLİK ÖZETİ (v7.15'ten):
 
@@ -204,7 +220,13 @@ COINS = ["SOL/USDT:USDT", "BANK/USDT:USDT", "HYPE/USDT:USDT", "COTI/USDT:USDT",
          "EIGEN/USDT:USDT"]
 
 ATR_CARPANI = 1.0
-RR_PULLBACK = 1.0   # backtest: 129 coin, %61.8 kazanma, +0.140R/işlem ortalama (komisyon dahil)
+RR_PULLBACK = 1.5   # v8.2: 1.0'dan yükseltildi. SL/TP grid taraması (129 coin,
+                     # SL=1x ATR sabit, sadece RR degisti): RR=1.0 -> +81.9R
+                     # (ort +0.126R/işlem), RR=1.5 -> +103.3R (ort +0.174R/işlem)
+                     # VE en tutarlı ikiye bölünme (ilk yarı +51.4R, ikinci yarı
+                     # +51.9R - neredeyse birebir eşit, overfitting riski düşük).
+                     # Kademeli TP (yarısını 1R'de al, kalanı 2R'ye taşı) de
+                     # ayrıca test edildi, hiçbir varyantı bunu geçemedi.
 MUM_ESIGI = 4
 BTC_SEMBOL = "BTC/USDT:USDT"
 ADX_ESIK = 20
@@ -942,7 +964,7 @@ if bot:
 
     def panel_ayarlar_metni():
         satirlar = ["⚙️ STRATEJİ AYARLARI\n"]
-        satirlar.append(f"Sürüm: v8.1")
+        satirlar.append(f"Sürüm: v8.2")
         satirlar.append(f"Coin evreni: {len(COINS)} coin (backtest doğrulamalı, RWA/durgun majör hariç)")
         satirlar.append(f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}")
         satirlar.append(f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i")
@@ -950,7 +972,7 @@ if bot:
         satirlar.append(f"BTC ADX eşiği: {ADX_ESIK} (altındaysa işlem aranmaz)")
         satirlar.append(f"Volatilite spike koruması: {VOLATILITE_SPIKE_CARPANI}x ATR üstünde risk yarıya iner")
         satirlar.append(f"Coin cooldown: {COOLDOWN_SAAT} saat")
-        satirlar.append(f"\n📐 Pullback TP/SL: 1x ATR(1h,14) / {RR_PULLBACK}R (1:1)")
+        satirlar.append(f"\n📐 Pullback TP/SL: 1x ATR(1h,14) / {RR_PULLBACK}R (1:{RR_PULLBACK})")
         satirlar.append(f"⏱️ Tarama aralığı: {KONTROL_ARALIGI_SN//60} dakika")
         satirlar.append(f"📉 Günlük zarar limiti: %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}")
         satirlar.append(f"📉 Haftalık zarar limiti: %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f} (v8.0 YENİ)")
@@ -1170,10 +1192,12 @@ if bot:
             return
         parcalar = msg.text.replace("/ac", "", 1).strip().split()
         if len(parcalar) < 2:
-            bot.send_message(msg.chat.id, "Kullanım: /ac SOL long  (ya da /ac SOL short)")
+            bot.send_message(msg.chat.id, "Kullanım: /ac SOL long  (ya da /ac SOL short)\n"
+                                           "BTC rejimiyle çelişirse uyarı alırsın, yine de açmak istersen: /ac SOL long force")
             return
         taban = parcalar[0].upper()
         yon = parcalar[1].lower()
+        force = len(parcalar) >= 3 and parcalar[2].lower() == "force"
         if yon not in ("long", "short"):
             bot.send_message(msg.chat.id, "Yön 'long' ya da 'short' olmalı. Örnek: /ac SOL long")
             return
@@ -1185,6 +1209,34 @@ if bot:
                 return
             if len(trade_state) >= MAX_POS:
                 bot.send_message(msg.chat.id, f"MAX_POS={MAX_POS} doldu, önce bir pozisyon kapanmalı.")
+                return
+
+        # v8.1 YENİ: manuel açılış öncesi BTC rejim kontrolü. /ac otomatik
+        # taramanın 4h filtresinden geçmediği için, BTC ile çelişen bir yön
+        # açılırsa manage_loop birkaç saniye içinde zaten erken kapatacaktı
+        # (COTI örneğinde olduğu gibi) - artık açmadan ÖNCE uyarılıyorsun.
+        if not force:
+            btc_bull_4h, btc_bear_4h, btc_strong_4h = btc_rejimi_al()
+            btc_bull_1h, btc_bear_1h, btc_strong_1h = btc_rejimi_al_1h()
+            uyarilar = []
+            if btc_bull_1h is not None and btc_strong_1h:
+                if yon == "long" and btc_bear_1h:
+                    uyarilar.append("BTC 1h rejimi ŞU AN DÜŞÜŞTE (fiyat<MA20, ADX güçlü) — bu pozisyonu "
+                                    "manage_loop birkaç saniye içinde OTOMATİK KAPATACAK.")
+                elif yon == "short" and btc_bull_1h:
+                    uyarilar.append("BTC 1h rejimi ŞU AN YÜKSELİŞTE (fiyat>MA20, ADX güçlü) — bu pozisyonu "
+                                    "manage_loop birkaç saniye içinde OTOMATİK KAPATACAK.")
+            if btc_bull_4h is not None and btc_strong_4h:
+                if yon == "long" and btc_bear_4h:
+                    uyarilar.append("BTC 4h rejimi de düşüş yönünde — botun kendi taramasında bu sinyal "
+                                     "zaten hiç açılmazdı.")
+                elif yon == "short" and btc_bull_4h:
+                    uyarilar.append("BTC 4h rejimi de yükseliş yönünde — botun kendi taramasında bu sinyal "
+                                     "zaten hiç açılmazdı.")
+            if uyarilar:
+                bot.send_message(msg.chat.id,
+                                  "⚠️ UYARI — istediğin yön BTC rejimiyle çelişiyor:\n" + "\n".join(f"• {u}" for u in uyarilar) +
+                                  f"\n\nYine de açmak istersen: /ac {taban} {yon} force")
                 return
 
         try:
@@ -1259,8 +1311,8 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v8.1 — MAX_POS={MAX_POS})\n"
-       f"Strateji: pullback (LONG+SHORT) + 1h rejim-dönüşü erken çıkışı, backtest: %62.5 kazanma, +0.17R/işlem ort.\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v8.2 — MAX_POS={MAX_POS})\n"
+       f"Strateji: pullback (LONG+SHORT), SL=1xATR / TP=1.5xATR + 1h rejim-dönüşü erken çıkışı, backtest ort +0.17R/işlem.\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x | İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
        f"BTC ADX filtresi: piyasa yatayken (ADX<{ADX_ESIK}) işlem aranmaz\n"
@@ -1432,7 +1484,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("YENİ STRATEJİ BOTU v8.1 BAŞLIYOR...")
+    print("YENİ STRATEJİ BOTU v8.2 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
