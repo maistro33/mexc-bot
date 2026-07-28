@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.5 — 28 Temmuz 2026
+SCALP BOT v1.6 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -776,6 +776,11 @@ if bot:
             net = sum(t["pnl"] for t in gecmis)
             satirlar.append(f"Toplam kapanan işlem: {toplam} | Kazanma: %{len(kazanan)/toplam*100:.1f}")
             satirlar.append(f"Net PnL: {net:+.2f}$")
+            satirlar.append("\n📋 Son 5 kapanan işlem:")
+            for t in list(reversed(gecmis))[:5]:
+                emoji = "🟢" if t["pnl"] >= 0 else "🔴"
+                sebep = t.get("not", "")
+                satirlar.append(f"  {emoji} {t['symbol'].split('/')[0]} {t['pnl']:+.2f}$ ({sebep})")
         else:
             satirlar.append("Henüz kapanan işlem yok.")
         with gunluk_lock:
@@ -786,7 +791,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.5 (sinyal bulunca HEMEN açar, 40 coin havuzu)\n"
+                f"Sürüm: v1.6 (PnL tahmini düzeltildi - kademe bazlı hesap)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -931,7 +936,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.5 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v1.6 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1056,13 +1061,23 @@ def manage_loop():
                         except Exception:
                             cikis_fiyat = durum2["sl_guncel"]
                         entry = durum2["entry"]
-                        qty_kalan_tahmini = durum2["qty_orijinal"]
-                        pnl_tahmini = (cikis_fiyat - entry) * qty_kalan_tahmini * 0.3  # kaba tahmin, kademeli oldugundan kesin degil
+                        # v1.6 DÜZELTME: eskiden (çıkış-giriş)×orijinal_miktar×0.3 gibi kaba
+                        # bir tahmin kullanılıyordu - BEAT örneğinde gerçek sonuç +$0.09 iken
+                        # bu formül -$0.11 gösterdi (YÖNÜ BİLE TERSTİ). Artık her dolan TP
+                        # kademesinin GERÇEK fiyatı ve miktarıyla, kalan miktarın da gerçek
+                        # kapanış fiyatıyla ayrı ayrı hesaplanıp toplanıyor - kademeli
+                        # pozisyonun gerçek PnL'ine çok daha yakın bir tahmin.
+                        tp_emirleri = durum2.get("tp_emirleri", [])
+                        dolu_qty_toplam = sum(t.get("qty", 0) for t in tp_emirleri if t.get("dolu"))
+                        pnl_kademeler = sum((t["fiyat"] - entry) * t.get("qty", 0) for t in tp_emirleri if t.get("dolu"))
+                        kalan_qty = max(durum2["qty_orijinal"] - dolu_qty_toplam, 0)
+                        pnl_kalan = (cikis_fiyat - entry) * kalan_qty
+                        pnl_tahmini = pnl_kademeler + pnl_kalan
                         with gunluk_lock:
                             gunluk_pnl += pnl_tahmini
                             haftalik_pnl += pnl_tahmini
                         gunluk_haftalik_diske_yaz()
-                        tum_tp_dolu = all(t.get("dolu") for t in durum2.get("tp_emirleri", []))
+                        tum_tp_dolu = all(t.get("dolu") for t in tp_emirleri) and len(tp_emirleri) > 0
                         if tum_tp_dolu:
                             sebep_etiket = "tum_tp_tamamlandi"
                         elif durum2.get("breakeven_cekildi"):
@@ -1072,7 +1087,8 @@ def manage_loop():
                         trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat,
                                            "pnl": pnl_tahmini, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                                            "not": sebep_etiket, "tur": durum2.get("tur", "bilinmiyor")})
-                        tg(f"✅ {sym} pozisyonu tamamen kapandı [{sebep_etiket}] (tahmini PnL≈{pnl_tahmini:+.2f}$, kesin tutar borsa geçmişinden kontrol edilmeli)")
+                        tg(f"✅ {sym} pozisyonu tamamen kapandı [{sebep_etiket}] (tahmini PnL≈{pnl_tahmini:+.2f}$ — "
+                           f"komisyon dahil değil, kesin tutar borsa Pozisyon Geçmişi'nden teyit edilmeli)")
                     continue
 
                 # hâlâ açık - miktar azaldı mı (bir TP kademesi dolmuş mu)?
@@ -1124,7 +1140,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.5 BAŞLIYOR...")
+    print("SCALP BOT v1.6 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
