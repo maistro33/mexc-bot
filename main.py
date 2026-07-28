@@ -420,7 +420,7 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
             "skor": row["ret_6bar"], "tur": "sustained"}
 
 
-
+def btc_1h_bullish():
     df = get_df("BTC/USDT:USDT", "1h", 40)
     if df is None or len(df) < 25:
         return None
