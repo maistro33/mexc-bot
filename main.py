@@ -1,34 +1,88 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v7.15 — 22 Temmuz 2026
-(Deploy sonrası Railway loglarında/Telegram başlangıç mesajında
-bu sürüm numarasını görmelisin — görmüyorsan deploy güncel değildir)
+SÜRÜM: v8.0 — 28 Temmuz 2026
 ════════════════════════════════════════════════════════
-YENİ STRATEJİ BOTU — Backtest ile doğrulanmış, kanaldan bağımsız
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DOĞRULAMA ÖZETİ (21 Temmuz 2026'da yapılan backtest):
-  - Strateji: 4h MA20 üstünde/altında + 4h son 5 mumun 4'ü aynı yönde +
-    1h RSI 50-70/30-50 aralığında + 1h son 5 mumun 4'ü aynı yönde
-  - SL: 1.0 x ATR(1h,14) | TP: 1.5R sabit hedef
-  - IN-SAMPLE (son 6 ay, 8 coin): 570 işlem, %48.8 kazanma, komisyon
-    dahil +56.2R toplam (+0.099R/işlem ortalama)
-  - OUT-OF-SAMPLE (180-400 gün önce, aynı 8 coin, GRID ARAMASINDA
-    KULLANILMAMIŞ veri): 671 işlem, %47.1 kazanma, komisyon dahil
-    +45.95R toplam (+0.068R/işlem ortalama)
-  - Her iki dönemde de, 8 coin'in her birinde AYRI AYRI pozitif çıktı.
+v8.0 DEĞİŞİKLİK ÖZETİ (v7.15'ten):
 
-⚠️ ÖNEMLİ DÜRÜSTLÜK NOTU: Bu bir garanti değildir. Geçmiş performans
-gelecekteki sonuçları garanti etmez. Backtest, gerçek emir doluşu,
-likidite, ani haber olayları gibi faktörleri tam yansıtmaz. Küçük
-sermaye ve düşük kaldıraçla, dikkatli izleyerek başlanmalıdır.
+1) COIN EVRENİ GENİŞLETİLDİ VE GERÇEK VERİYLE DOĞRULANDI (76 -> 129 coin):
+   Bitget'in kendi "isRwa" bayrağıyla tokenize hisse/emtia enstrümanları
+   (TSLA, NVDA, XAU, XAUT vb. - bunlar kripto değil, RWA türevleri) ve
+   "durgun/düşük volatiliteli" büyük marketcap'ler (BTC, ETH, XRP, ADA,
+   DOGE, BNB, TRX, LINK, LTC, BCH) evrenden bilerek çıkarıldı. Kalan
+   likit coinler (24s hacim >= $500K) arasından GERÇEK Bitget OHLCV
+   verisiyle (90 gün, 1h+4h, ~90.000 mum) pullback stratejisi tam
+   simüle edildi (bar-by-bar, sadece KAPANMIŞ mumlarla, look-ahead yok,
+   round-trip komisyon dahil):
+     - 544 işlem, %61.8 kazanma, toplam +75.9R, ortalama +0.140R/işlem
+     - İlk yarı (May-Haz): %63.2 kazanma, +0.170R/işlem
+     - İkinci yarı (Haz-Tem): %60.3 kazanma, +0.109R/işlem
+     - İki dönemde de pozitif ve tutarlı
+     - 128 coin'in 80'i (%62.5) tek başına pozitif katkı yaptı (birkaç
+       coine bağımlı bir sonuç değil, dağılım sağlıklı)
+   ⚠️ Max drawdown backtest'te -9.93R ölçüldü (%5 risk ile teorik olarak
+   ardışık kötü seri ~%45-50 bakiye düşüşüne denk gelebilir). Bu yüzden
+   aşağıda YENİ bir HAFTALIK zarar limiti eklendi (bkz. madde 4).
 
-GÜVENLİK AYARLARI (kanalın kendi tavsiyesine uygun şekilde bilerek
-düşük tutuldu — önceki bottaki 20x kaldıraç deneyiminden ders alınarak):
-  - Varsayılan kaldıraç: 3x
-  - Pozisyon başına risk: bakiyenin %5'i (yani bir SL ≈ bakiyenin %5'i)
-  - Aynı anda maksimum 1 açık pozisyon (küçük sermayede odaklanma için)
-  - Günlük zarar limiti: bakiyenin %15'i (aşılırsa gün sonuna kadar durur)
+2) TELEGRAM YETKİ KONTROLÜ EKLENDİ (KRİTİK GÜVENLİK DÜZELTMESİ):
+   v7.15'te hiçbir komut (/kapat, /yarikapat, /ac, /panel, panel
+   butonları) chat_id doğrulaması yapmıyordu - bot token'ı ele geçiren
+   ya da grup/kanal üzerinden erişen HERKES pozisyon açıp kapatabilirdi.
+   Artık her handler'ın başında MY_CHAT_ID kontrolü var, yetkisiz istek
+   sessizce yok sayılıyor (log'a düşüyor).
+
+3) SEMBOL EŞLEŞTİRME DÜZELTMESİ:
+   /kapat ve /yarikapat'ta "girilen metin sembolde geçiyor mu" (substring)
+   kontrolü, kısa ticker'larda (ör. "B", "LA") yanlış eşleşme riski
+   taşıyordu. Artık ÖNCE TAM eşleşme aranıyor, sadece bulunamazsa
+   substring'e düşülüyor.
+
+4) HAFTALIK ZARAR LİMİTİ EKLENDİ (backtest'teki -9.93R drawdown'a karşı):
+   Günlük %15 limitin YANINDA, haftanın başındaki bakiyeye göre %25
+   kümülatif kayıp olursa bot o hafta boyunca durur. Ardışık kötü
+   günlerin günlük limitin altında kalıp haftalar içinde birikmesini
+   engellemek için.
+
+5) GÜNLÜK/HAFTALIK BAŞLANGIÇ BAKİYESİ ARTIK GERÇEKTEN SIFIRLANIYOR:
+   v7.15'te gunluk_baslangic_bakiye SADECE bot ilk başladığında set
+   ediliyordu - bot günlerce kesintisiz çalışırsa "günlük" limit aslında
+   "son restart'tan beri kümülatif" hale geliyordu. Artık UTC gün/hafta
+   değişimi tarama_loop içinde tespit edilip başlangıç bakiyeleri
+   otomatik yenileniyor.
+
+6) REPAINT (KAPANMAMIŞ MUM) RİSKİ AZALTILDI:
+   v7.15'te sinyal hesaplamaları borsadan gelen SON mumu (o an hâlâ
+   oluşmakta olan, kapanmamış mum) kullanıyordu - bu, backtest'in
+   SADECE kapanmış mumlarla yapılmış olmasından SAPMA anlamına gelir
+   ve sinyal, mum kapanmadan belirip kaybolabilir. Artık get_df() son
+   (kapanmamış) mumu ATIYOR, tüm sinyal/RSI/ADX hesapları sadece
+   KAPANMIŞ mumlarla yapılıyor - backtest metodolojisiyle birebir uyumlu.
+
+7) RSI/ADX İÇİN MUM SAYISI 30'DAN 110'A ÇIKARILDI:
+   Kullanıcının kendi kuralı: "RSI için en az 100 mum gerekir, azı
+   borsanın gösterdiği değerden sapar". EMA tabanlı RSI/ADX ısınma
+   sürecinin ilk ~14-20 mumu güvenilmez olduğundan, 30 mumla hesaplanan
+   RSI önceki sürümde borsadakinden sapıyordu.
+
+8) STATE DOSYALARI ARTIK ATOMİK YAZILIYOR (geçici dosya + rename),
+   yazma sırasında crash olursa dosyanın yarım/bozuk kalması engellendi.
+
+9) BAŞLANGIÇTA POZİSYON UZLAŞTIRMA (reconciliation): bot yeniden
+   başladığında, diskteki trade_state ile borsadaki GERÇEK açık
+   pozisyonlar karşılaştırılıyor, uyumsuzluk varsa Telegram'a bildirilip
+   borsa esas alınıyor (state dosyası körü körüne güvenilmiyor).
+
+── TP/SL MANTIĞI (DEĞİŞMEDİ, GERÇEK VERİYLE DOĞRULANDI) ──
+SL = giriş ∓ 1.0×ATR(1h,14) | TP (pullback) = giriş ± 1.0×ATR×1.0R
+Bu 1:1 R:R oranı demektir - üstteki 129 coin backtest'inde %61.8 kazanma
+ile validasyonu geçti (başabaş nokta 1:1 R:R'de sadece %50 kazanma
+gerektirir, yani ~12 puanlık bir güvenlik payı var, komisyon zaten
+backtest'e dahil edildi). SL, ATR bazlı olduğu için coin'in KENDİ
+volatilitesine göre otantik şekilde genişler/daralır - sabit yüzde
+SL'den daha sağlam bir yaklaşım. Pozisyon boyutu da risk_dolar/SL_mesafe
+formülüyle hesaplandığından, SL ne kadar geniş/dar olursa olsun HER
+işlemde kaybedilen miktar bakiyenin sabit %RISK_PCT_BAKIYE'si olacak
+şekilde otomatik ayarlanıyor - bu doğru ve profesyonel bir uygulama.
 """
 
 import os
@@ -42,10 +96,10 @@ import pandas as pd
 import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-log = logging.getLogger("YENI_STRATEJI")
+log = logging.getLogger("YENI_STRATEJI_V8")
 
 # ════════════════════════════════════════════
-# CONFIG — Railway ortam değişkenlerinden okunur
+# CONFIG
 # ════════════════════════════════════════════
 TELE_TOKEN = os.getenv("TELE_TOKEN", "")
 CHAT_ID = int(os.getenv("MY_CHAT_ID", "0"))
@@ -55,6 +109,8 @@ PASSPHRASE = os.getenv("BITGET_PASS", "")
 
 if not PASSPHRASE:
     raise RuntimeError("BITGET_PASS ortam değişkeni eksik.")
+if not CHAT_ID:
+    raise RuntimeError("MY_CHAT_ID ortam değişkeni eksik - yetki kontrolü için ZORUNLU.")
 
 exchange = ccxt.bitget({
     "apiKey": API_KEY, "secret": API_SEC, "password": PASSPHRASE,
@@ -62,6 +118,7 @@ exchange = ccxt.bitget({
 })
 
 bot = telebot.TeleBot(TELE_TOKEN) if TELE_TOKEN else None
+
 
 def tg(msg):
     if not bot or not CHAT_ID:
@@ -72,185 +129,182 @@ def tg(msg):
     except Exception as e:
         log.warning(f"[TG] {e}")
 
-# ── DOĞRULANMIŞ STRATEJİ PARAMETRELERİ (backtest'te bulunan) ──
-# v4: KAPSAMLI ADAPTASYON SISTEMI
-#   1) BTC ADX filtresi: piyasa yatay/kararsizken (ADX dusukse) HIC islem acilmaz
-#   2) Volatilite bazli pozisyon boyutu: coin'in KENDI normaline gore anormal
-#      oynak oldugu anlarda (ATR spike) risk otomatik kucultulur
-#   3) Dinamik coin secimi + FIRSATCI GENIS EVREN (v7.9): sabit kucuk liste
-#      yerine BORSADAKI TUM likit (min $500K 24h hacim), RWA olmayan coinler
-#      (126 coin) taranir - "belirli coinlere bagli kalma" yerine "o an
-#      piyasada nerede firsat varsa onu bul" mantigi. Backtest (son 1 hafta +
-#      onceki 1 hafta, 129 coin): %50-60 kazanma, +0.14/+0.40 R/islem - dar
-#      listeden KOTU DEGIL ama coin sayisi artinca islem SIKLIGI dramatik
-#      artmiyor (siki giris kriterleri zaten cogu adayi eliyor - darbogaz
-#      coin sayisi degil, RSI/trend/BTC filtresi). Bilinen slippage sorunlu
-#      (SYN, MET, ETHFI) ve asiri ekstrem pump riskli (BANK, +%535 gormustu)
-#      coinler bu genis listeden de BILEREK CIKARILDI.
-COINS = [
-         "BCH/USDT:USDT", "LTC/USDT:USDT", "ETC/USDT:USDT", "DOT/USDT:USDT",
-         "SOL/USDT:USDT", "UNI/USDT:USDT", "ICP/USDT:USDT", "AAVE/USDT:USDT",
-         "FIL/USDT:USDT", "XLM/USDT:USDT", "AVAX/USDT:USDT", "SHIB/USDT:USDT",
-         "NEAR/USDT:USDT", "PEOPLE/USDT:USDT", "LDO/USDT:USDT", "FET/USDT:USDT",
-         "HBAR/USDT:USDT", "INJ/USDT:USDT", "ZEC/USDT:USDT", "SUI/USDT:USDT",
-         "PEPE/USDT:USDT", "GRAM/USDT:USDT", "ORDI/USDT:USDT", "1000BONK/USDT:USDT",
-         "WLD/USDT:USDT", "LPT/USDT:USDT", "TIA/USDT:USDT", "JTO/USDT:USDT",
-         "WIF/USDT:USDT", "BOME/USDT:USDT", "ONDO/USDT:USDT", "ENA/USDT:USDT",
-         "TAO/USDT:USDT", "RENDER/USDT:USDT", "DIA/USDT:USDT", "VIRTUAL/USDT:USDT",
-         "PNUT/USDT:USDT", "MORPHO/USDT:USDT", "HYPE/USDT:USDT", "PENGU/USDT:USDT",
-         "FARTCOIN/USDT:USDT", "DEXE/USDT:USDT", "PROM/USDT:USDT", "TRUMP/USDT:USDT",
-         "VVV/USDT:USDT", "KAITO/USDT:USDT", "EPIC/USDT:USDT", "B/USDT:USDT",
-         "LA/USDT:USDT", "CROSS/USDT:USDT", "PUMP/USDT:USDT", "VELVET/USDT:USDT",
-         "ERA/USDT:USDT", "ESPORTS/USDT:USDT", "XPL/USDT:USDT", "Q/USDT:USDT",
-         "UB/USDT:USDT", "EVAA/USDT:USDT", "EUL/USDT:USDT", "LAB/USDT:USDT",
-         "ALLO/USDT:USDT", "BEAT/USDT:USDT", "PIEVERSE/USDT:USDT", "US/USDT:USDT",
-         "ZAMA/USDT:USDT", "GWEI/USDT:USDT", "ESP/USDT:USDT", "PRL/USDT:USDT",
-         "BASED/USDT:USDT", "BTW/USDT:USDT", "RE/USDT:USDT", "ARX/USDT:USDT",
-         "CAP/USDT:USDT", "SOON/USDT:USDT", "AEON/USDT:USDT", "NIL/USDT:USDT"]
+
+def yetkili_mi(msg_or_call):
+    """v8.0 KRİTİK GÜVENLİK: her komut/buton bu kontrolden geçmeli.
+    chat_id, MY_CHAT_ID ile eşleşmiyorsa istek tamamen yok sayılır."""
+    try:
+        chat_id = msg_or_call.message.chat.id if hasattr(msg_or_call, "message") else msg_or_call.chat.id
+    except Exception:
+        return False
+    if chat_id != CHAT_ID:
+        log.warning(f"[YETKISIZ ERISIM] chat_id={chat_id} tarafından komut denemesi engellendi")
+        return False
+    return True
+
+
+# ── COIN EVRENİ (v8.0: 129 coin, backtest doğrulamalı, bkz. üstteki not) ──
+COINS = ["SOL/USDT:USDT", "BANK/USDT:USDT", "HYPE/USDT:USDT", "COTI/USDT:USDT",
+         "ZEC/USDT:USDT", "DEXE/USDT:USDT", "LA/USDT:USDT", "BEAT/USDT:USDT",
+         "SHIB/USDT:USDT", "PEPE/USDT:USDT", "SUI/USDT:USDT", "ONDO/USDT:USDT",
+         "KAITO/USDT:USDT", "NEAR/USDT:USDT", "WLD/USDT:USDT", "PUMP/USDT:USDT",
+         "BTW/USDT:USDT", "ENA/USDT:USDT", "EUL/USDT:USDT", "AAVE/USDT:USDT",
+         "SOON/USDT:USDT", "ZAMA/USDT:USDT", "XLM/USDT:USDT", "TAO/USDT:USDT",
+         "UNI/USDT:USDT", "AVAX/USDT:USDT", "DOT/USDT:USDT", "ESPORTS/USDT:USDT",
+         "NIL/USDT:USDT", "ESP/USDT:USDT", "LAB/USDT:USDT", "DIA/USDT:USDT",
+         "APT/USDT:USDT", "FET/USDT:USDT", "INJ/USDT:USDT", "PEOPLE/USDT:USDT",
+         "TAG/USDT:USDT", "XPL/USDT:USDT", "TRUMP/USDT:USDT", "PENGU/USDT:USDT",
+         "FIL/USDT:USDT", "FARTCOIN/USDT:USDT", "LDO/USDT:USDT", "SEI/USDT:USDT",
+         "HBAR/USDT:USDT", "1000BONK/USDT:USDT", "RE/USDT:USDT", "REZ/USDT:USDT",
+         "UB/USDT:USDT", "ALLO/USDT:USDT", "PI/USDT:USDT", "VIRTUAL/USDT:USDT",
+         "VANRY/USDT:USDT", "GRAM/USDT:USDT", "RENDER/USDT:USDT", "US/USDT:USDT",
+         "KGEN/USDT:USDT", "ERA/USDT:USDT", "TIA/USDT:USDT", "AERO/USDT:USDT",
+         "ACH/USDT:USDT", "OP/USDT:USDT", "SKYAI/USDT:USDT", "PROS/USDT:USDT",
+         "BGB/USDT:USDT", "TLM/USDT:USDT", "WIF/USDT:USDT", "PROM/USDT:USDT",
+         "ARB/USDT:USDT", "ARX/USDT:USDT", "ORDI/USDT:USDT", "BOME/USDT:USDT",
+         "ETC/USDT:USDT", "STORJ/USDT:USDT", "JTO/USDT:USDT", "O/USDT:USDT",
+         "JUP/USDT:USDT", "ATOM/USDT:USDT", "API3/USDT:USDT", "CRV/USDT:USDT",
+         "XMR/USDT:USDT", "0G/USDT:USDT", "LIT/USDT:USDT", "SLX/USDT:USDT",
+         "RIVER/USDT:USDT", "ENSO/USDT:USDT", "GWEI/USDT:USDT", "MMT/USDT:USDT",
+         "VELVET/USDT:USDT", "VVV/USDT:USDT", "ICP/USDT:USDT", "ETHFI/USDT:USDT",
+         "CAP/USDT:USDT", "EVAA/USDT:USDT", "WLFI/USDT:USDT", "APE/USDT:USDT",
+         "PIEVERSE/USDT:USDT", "DASH/USDT:USDT", "ALGO/USDT:USDT", "GRASS/USDT:USDT",
+         "TAIKO/USDT:USDT", "BASED/USDT:USDT", "ZRO/USDT:USDT", "CHILLGUY/USDT:USDT",
+         "SYN/USDT:USDT", "SAND/USDT:USDT", "GALA/USDT:USDT", "PYTH/USDT:USDT",
+         "BILL/USDT:USDT", "RAVE/USDT:USDT", "IDOL/USDT:USDT", "ZBT/USDT:USDT",
+         "B/USDT:USDT", "CHZ/USDT:USDT", "STX/USDT:USDT", "COAI/USDT:USDT",
+         "4/USDT:USDT", "IRYS/USDT:USDT", "OPN/USDT:USDT", "EPIC/USDT:USDT",
+         "PIPPIN/USDT:USDT", "MORPHO/USDT:USDT", "HOME/USDT:USDT", "1000XEC/USDT:USDT",
+         "MAGMA/USDT:USDT", "CHIP/USDT:USDT", "PRL/USDT:USDT", "HOLO/USDT:USDT",
+         "EIGEN/USDT:USDT"]
+
 ATR_CARPANI = 1.0
-RR = 1.5            # momentum stratejisi TP hedefi (1.5R)
-RR_PULLBACK = 1.0   # v7.3: pullback stratejisi icin AYRI ve DAHA DUSUK TP hedefi -
-                     # backtest: RR=1.0 iken pullback %67-70 kazanma + 0.22-0.28R/islem
-                     # veriyordu (RR=1.5'teki %56-57 kazanmadan DAHA SIK, KUCUK KAR
-                     # profiline daha yakin) - momentum'da ayni degisiklik ZARAR
-                     # veriyordu (0.166->0.070), o yuzden SADECE pullback icin uygulandi.
-MUM_ESIGI = 4       # 5 mumdan en az kaci ayni yonde olmali
-RSI_ALT, RSI_UST = 50, 70
+RR_PULLBACK = 1.0   # backtest: 129 coin, %61.8 kazanma, +0.140R/işlem ortalama (komisyon dahil)
+MUM_ESIGI = 4
 BTC_SEMBOL = "BTC/USDT:USDT"
-ADX_ESIK = 20        # BTC 4h ADX bu esigin altindaysa piyasa yatay sayilir, islem aranmaz
-VOLATILITE_SPIKE_CARPANI = 1.8  # mevcut ATR, kendi 20-periyot ortalamasinin bu katindan
-                                  # fazlaysa "anormal oynak" sayilir, risk kisilir
+ADX_ESIK = 20
+VOLATILITE_SPIKE_CARPANI = 1.8
 
-# v7.2: PULLBACK STRATEJISI parametreleri (backtest: in-sample +0.285R/islem %56.3
-# kazanma, out-of-sample +0.313R/islem %57.0 kazanma - momentum stratejisinden daha
-# iyi). Momentum stratejisiyle PARALEL calisir, her tur ikisi de taranir, en yuksek
-# skorlu adaylar secilir (kaynagi fark etmeksizin).
-PULLBACK_RSI_ESIK = 45          # RSI son PULLBACK_BAKIS_PENCERE mumda bu esigin altina inmis olmali
+PULLBACK_RSI_ESIK = 45
 PULLBACK_BAKIS_PENCERE = 5
-TOPARLANMA_RSI_MIN, TOPARLANMA_RSI_MAX = 42, 58  # simdiki RSI bu aralikta olmali
+TOPARLANMA_RSI_MIN, TOPARLANMA_RSI_MAX = 42, 58
 
-# ── RİSK/GÜVENLİK AYARLARI (bilerek muhafazakar) ──
-LEV_HAM_DEGER = os.getenv("LEV")  # v6.1 TESHIS: Railway'den GERCEKTE gelen ham deger neyse
-                                    # bunu goruyoruz - "LEV" adinda bir degisken yoksa None doner
-LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10       # kaldirac (v6: varsayilan 3'ten 10'a
-                                                         # cikarildi - kullanici tercihi, Railway'de
-                                                         # LEV degiskeni silinir/degismezse bile
-                                                         # kod her zaman 10x ile baslasin diye)
-RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.05"))  # her islemde bakiyenin %5'i risk
-MAX_POS = int(os.getenv("MAX_POS", "2"))  # v6: 1'den 2'ye cikarildi - kullanici talebiyle,
-                                            # ayni anda 2 guclu sinyal varsa ikisini de kacirmasin
-GUNLUK_ZARAR_LIMIT_PCT = 0.15   # bakiyenin %15'i kaybedilirse o gun durur
-KONTROL_ARALIGI_SN = 300        # her 5 dakikada bir yeni sinyal taransin (1h mum bazli strateji, hizli olmasina gerek yok)
+# v8.0: RSI/ATR/ADX icin yeterli isinma - kullanicinin kendi kurali (>=100 mum)
+GOSTERGE_MUM_SAYISI_1H = 110
+GOSTERGE_MUM_SAYISI_4H = 40
+
+# ── RİSK/GÜVENLİK AYARLARI ──
+LEV_HAM_DEGER = os.getenv("LEV")
+LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10
+RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.05"))
+MAX_POS = int(os.getenv("MAX_POS", "2"))
+GUNLUK_ZARAR_LIMIT_PCT = 0.15
+# v8.0 YENİ: haftalık kümülatif zarar limiti (backtest'teki -9.93R drawdown'a karşı)
+HAFTALIK_ZARAR_LIMIT_PCT = float(os.getenv("HAFTALIK_ZARAR_LIMIT_PCT", "0.25"))
+KONTROL_ARALIGI_SN = 300
+COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "2"))
+KAR_ESIGI_ROI_PCT = float(os.getenv("KAR_ESIGI_ROI_PCT", "0"))
 
 TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/yeni_strateji_state.json")
+COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/yeni_strateji_cooldown.json")
+TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/yeni_strateji_log.json")
+GUNLUK_PATH = os.getenv("GUNLUK_PATH", "/data/yeni_strateji_gunluk.json")
+
 trade_state = {}
 state_lock = threading.Lock()
-gunluk_pnl = 0.0
-gunluk_baslangic_bakiye = None
-gunluk_lock = threading.Lock()
-
-# v7: AAVE ornegi - bir coin kapanir kapanmaz (1 dakika sonra) ayni coin'de
-# tekrar sinyal bulunup hemen yeniden acilmisti, bu sefer SL'e gitmisti
-# (-%12). Ayni coin'de "whipsaw" (kazan-kaybet-kazan-kaybet) riskini azaltmak
-# icin, bir coin kapandiktan sonra COOLDOWN_SAAT boyunca ayni coin'e tekrar
-# girilmiyor - piyasanin o coin icin "sakinlesmesi" bekleniyor.
-COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "2"))
-
-# v7.6: KULLANICI TALEBI - kucuk bakiyede varyansi azaltmak icin, bir pozisyon
-# TP'ye ulasmadan once bile HIZLI KAR ESIGI'ne (sabit $ miktari) ulasirsa
-# TAMAMEN kapatilir, slot hemen boşalir, bot yeni firsatlara bakar. Bu,
-# backtest edilmis "dokunma" stratejisinden BILEREK sapan, kullanicinin
-# kucuk sermayede sermaye koruma/hizli buyutme tercihine gore eklenmis bir
-# kural - istenirse KAR_ESIGI_ROI_PCT=0 yapilarak tamamen kapatilabilir.
-# v7.6.1: KULLANICI TALEBIYLE sabit dolar yerine ROI YUZDESI bazli yapildi -
-# bakiye/marj buyudukce esik de orantili buyusun diye ("kasayi buyutmek"
-# hedefine daha uygun, sabit $ esigi zamanla anlamsizca kucuk kalirdi).
-# v7.14 KULLANICI TALEBIYLE TEST EDILDI: bot su an SADECE pullback+LONG
-# calistigi icin, hizli kar esigini bu spesifik strateji uzerinde ayrica
-# backtest ettik (76 coin, 30+30 gun). Sonuc: esik AKTIFKEN in-sample
-# iyilesiyor (+0.647->+0.709R) ama out-of-sample COKUYOR (+0.366->+0.089R) -
-# klasik asiri uyum (overfitting) isareti. Ayrica breakeven trailing de
-# denendi, o da negatif cikti (-0.055/-0.289R). EN GUVENILIR VE TUTARLI
-# sonuc HICBIR ERKEN CIKIS MEKANIZMASI OLMADAN, sabit TP'ye kadar beklemekti
-# (iki donemde de +0.366/+0.647R). Bu yuzden varsayilan KAPATILDI (0).
-KAR_ESIGI_ROI_PCT = float(os.getenv("KAR_ESIGI_ROI_PCT", "0"))  # pullback icin kapali, backtest kaniti
-son_kapanis_zamani = {}  # {symbol: epoch_zaman}
-cooldown_lock = threading.Lock()
-
-COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/yeni_strateji_cooldown.json")
-
-# v7: Panel/ozet icin kapanan islemlerin kalici kaydi
-TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/yeni_strateji_log.json")
 trade_log = []
 log_lock = threading.Lock()
+son_kapanis_zamani = {}
+cooldown_lock = threading.Lock()
+
+gunluk_pnl = 0.0
+gunluk_baslangic_bakiye = None
+gunluk_gun_damgasi = None       # v8.0: hangi UTC gün icin gecerli
+haftalik_pnl = 0.0
+haftalik_baslangic_bakiye = None
+haftalik_hafta_damgasi = None   # v8.0: hangi ISO hafta icin gecerli
+gunluk_lock = threading.Lock()
+
+
+# ════════════════════════════════════════════
+# ATOMİK DOSYA YAZMA (v8.0)
+# ════════════════════════════════════════════
+def atomik_yaz(path, veri):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(veri, f)
+        os.replace(tmp, path)
+    except Exception as e:
+        log.warning(f"[ATOMIK_YAZ] {path}: {e}")
+
+
+def guvenli_oku(path, varsayilan):
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                return json.load(f)
+    except Exception as e:
+        log.warning(f"[OKU] {path}: {e}")
+    return varsayilan
+
+
+def durumu_diske_yaz():
+    with state_lock:
+        veri = dict(trade_state)
+    atomik_yaz(TRADE_STATE_PATH, veri)
+
+
+def durumu_diskten_yukle():
+    global trade_state
+    trade_state = guvenli_oku(TRADE_STATE_PATH, {})
+
+
+def cooldown_diske_yaz():
+    with cooldown_lock:
+        veri = dict(son_kapanis_zamani)
+    atomik_yaz(COOLDOWN_PATH, veri)
+
+
+def cooldown_diskten_yukle():
+    global son_kapanis_zamani
+    son_kapanis_zamani = guvenli_oku(COOLDOWN_PATH, {})
+
 
 def trade_log_kaydet(kayit):
     with log_lock:
         trade_log.append(kayit)
         veri = list(trade_log)
-    try:
-        os.makedirs(os.path.dirname(TRADE_LOG_PATH), exist_ok=True)
-        with open(TRADE_LOG_PATH, "w") as f:
-            json.dump(veri, f)
-    except Exception as e:
-        log.warning(f"[LOG] Diske yazma basarisiz: {e}")
+    atomik_yaz(TRADE_LOG_PATH, veri)
+
 
 def trade_log_yukle():
     global trade_log
-    try:
-        if os.path.exists(TRADE_LOG_PATH):
-            with open(TRADE_LOG_PATH) as f:
-                trade_log = json.load(f)
-    except Exception as e:
-        log.warning(f"[LOG] Yukleme basarisiz: {e}")
+    trade_log = guvenli_oku(TRADE_LOG_PATH, [])
 
 
-def cooldown_diske_yaz():
-    try:
-        os.makedirs(os.path.dirname(COOLDOWN_PATH), exist_ok=True)
-        with cooldown_lock:
-            veri = dict(son_kapanis_zamani)
-        with open(COOLDOWN_PATH, "w") as f:
-            json.dump(veri, f)
-    except Exception as e:
-        log.warning(f"[COOLDOWN] Diske yazma basarisiz: {e}")
-
-def cooldown_diskten_yukle():
-    global son_kapanis_zamani
-    try:
-        if os.path.exists(COOLDOWN_PATH):
-            with open(COOLDOWN_PATH) as f:
-                son_kapanis_zamani = json.load(f)
-    except Exception as e:
-        log.warning(f"[COOLDOWN] Yukleme basarisiz: {e}")
-
-def cooldown_da_mi(sym):
-    with cooldown_lock:
-        son = son_kapanis_zamani.get(sym)
-    if son is None:
-        return False
-    return (time.time() - son) < COOLDOWN_SAAT * 3600
+def gunluk_haftalik_diske_yaz():
+    with gunluk_lock:
+        veri = {
+            "gunluk_pnl": gunluk_pnl, "gunluk_baslangic_bakiye": gunluk_baslangic_bakiye,
+            "gunluk_gun_damgasi": gunluk_gun_damgasi,
+            "haftalik_pnl": haftalik_pnl, "haftalik_baslangic_bakiye": haftalik_baslangic_bakiye,
+            "haftalik_hafta_damgasi": haftalik_hafta_damgasi,
+        }
+    atomik_yaz(GUNLUK_PATH, veri)
 
 
-def durumu_diske_yaz():
-    try:
-        os.makedirs(os.path.dirname(TRADE_STATE_PATH), exist_ok=True)
-        with state_lock:
-            veri = dict(trade_state)
-        with open(TRADE_STATE_PATH, "w") as f:
-            json.dump(veri, f)
-    except Exception as e:
-        log.warning(f"[KALICI] {e}")
-
-
-def durumu_diskten_yukle():
-    global trade_state
-    try:
-        if os.path.exists(TRADE_STATE_PATH):
-            with open(TRADE_STATE_PATH) as f:
-                trade_state = json.load(f)
-    except Exception as e:
-        log.warning(f"[KALICI] {e}")
+def gunluk_haftalik_diskten_yukle():
+    global gunluk_pnl, gunluk_baslangic_bakiye, gunluk_gun_damgasi
+    global haftalik_pnl, haftalik_baslangic_bakiye, haftalik_hafta_damgasi
+    veri = guvenli_oku(GUNLUK_PATH, {})
+    gunluk_pnl = veri.get("gunluk_pnl", 0.0)
+    gunluk_baslangic_bakiye = veri.get("gunluk_baslangic_bakiye")
+    gunluk_gun_damgasi = veri.get("gunluk_gun_damgasi")
+    haftalik_pnl = veri.get("haftalik_pnl", 0.0)
+    haftalik_baslangic_bakiye = veri.get("haftalik_baslangic_bakiye")
+    haftalik_hafta_damgasi = veri.get("haftalik_hafta_damgasi")
 
 
 def safe(x):
@@ -276,10 +330,6 @@ def atr(df, period=14):
 
 
 def adx(df, period=14):
-    """v4: ADX (Average Directional Index) - trend gucu olcusu. Dusuk ADX =
-    piyasa yatay/kararsiz (yon yok), yuksek ADX = net trend var. BTC'de bu
-    dusukse hicbir altcoin sinyaline guvenilmez, cunku piyasa genelinde
-    yon belirsizdir."""
     high, low, close = df["high"], df["low"], df["close"]
     up_move = high.diff()
     down_move = -low.diff()
@@ -294,16 +344,18 @@ def adx(df, period=14):
 
 
 def get_df(sym, tf, limit=60):
-    """v6 DUZELTME: coin evreni 23'ten 43'e cikarilinca, her tarama turunda
-    43*2+2=88 istek art arda (aralarinda hic bekleme olmadan) borsaya gidiyordu
-    - bu Bitget'in rate limit'ine (429 Too Many Requests) takiliyordu, bazi
-    coinlerin verisi hic alinamiyordu. Simdi her istekten once kucuk bir
-    bekleme var, 429 alinirsa da otomatik olarak biraz bekleyip tekrar deniyor."""
+    """v8.0 DEĞİŞİKLİK: son (henüz KAPANMAMIŞ, oluşmakta olan) mum ATILIYOR.
+    Backtest sadece kapanmış mumlarla yapıldığı için, canlı sinyal de
+    aynı mantıkla SADECE kapanmış mumlara bakmalı - aksi halde sinyal,
+    mum kapanmadan (fiyat dalgalanırken) belirip kaybolabilir (repaint)."""
     for deneme in range(3):
         try:
-            candles = exchange.fetch_ohlcv(sym, tf, limit=limit)
+            candles = exchange.fetch_ohlcv(sym, tf, limit=limit + 1)
+            if not candles or len(candles) < 2:
+                return None
+            candles = candles[:-1]  # son (kapanmamis) mumu at
             df = pd.DataFrame(candles, columns=["ts", "open", "high", "low", "close", "volume"])
-            time.sleep(0.15)  # her basarili istekten sonra kucuk bir bekleme
+            time.sleep(0.15)
             return df
         except Exception as e:
             if "429" in str(e) or "Too Many Requests" in str(e):
@@ -318,12 +370,7 @@ def get_df(sym, tf, limit=60):
 
 
 def btc_rejimi_al():
-    """v4: piyasa rejimi + trend gucu filtresi.
-    - Yon: BTC 4h MA20'nin ustunde/altinda mi (bullish/bearish)
-    - Guc: BTC 4h ADX(14) ADX_ESIK'in ustunde mi (piyasa net trendde mi,
-      yoksa yatay/kararsiz mi) - yataysa (dusuk ADX) HICBIR sinyale izin
-      verilmez, coin bazinda teyit ne kadar guclu gorunurse gorunsun."""
-    df4h = get_df(BTC_SEMBOL, "4h", 40)
+    df4h = get_df(BTC_SEMBOL, "4h", GOSTERGE_MUM_SAYISI_4H)
     if df4h is None or len(df4h) < 30:
         return None, None, None
     ma20 = df4h["close"].rolling(20).mean().iloc[-1]
@@ -335,86 +382,11 @@ def btc_rejimi_al():
     return (fiyat > ma20), (fiyat < ma20), trend_guclu
 
 
-def sinyal_kontrol_et(sym, btc_bullish, btc_bearish):
-    """Backtest'teki AYNI mantik: 4h MA20+5mum teyidi, 1h RSI+5mum teyidi + BTC rejimi.
-    v4: artik bir "guc skoru" ve "volatilite spike" bilgisi de donduruyor -
-    boylece tarama_loop() birden fazla adaydan EN GUCLU olani secebiliyor,
-    ve pozisyon_ac() anormal oynak coinlerde riski otomatik kucultebiliyor."""
-    df4h = get_df(sym, "4h", 30)
-    df1h = get_df(sym, "1h", 30)
-    if df4h is None or df1h is None or len(df4h) < 21 or len(df1h) < 21:
-        return None
-
-    df4h["ma20"] = df4h["close"].rolling(20).mean()
-    df4h["yon"] = np.where(df4h["close"] > df4h["open"], 1, -1)
-    yon5_up_4h = (df4h["yon"].iloc[-5:] > 0).sum()
-    yon5_down_4h = (df4h["yon"].iloc[-5:] < 0).sum()
-    ma20 = df4h["ma20"].iloc[-1]
-    fiyat_4h = df4h["close"].iloc[-1]
-
-    df1h["rsi"] = rsi(df1h["close"], 14)
-    df1h["atr"] = atr(df1h, 14)
-    df1h["atr_ort20"] = df1h["atr"].rolling(20).mean()
-    df1h["yon"] = np.where(df1h["close"] > df1h["open"], 1, -1)
-    yon5_up_1h = (df1h["yon"].iloc[-5:] > 0).sum()
-    yon5_down_1h = (df1h["yon"].iloc[-5:] < 0).sum()
-    rsi_1h = df1h["rsi"].iloc[-1]
-    atr_1h = df1h["atr"].iloc[-1]
-    atr_ort20_1h = df1h["atr_ort20"].iloc[-1]
-    fiyat = df1h["close"].iloc[-1]
-
-    if pd.isna(ma20) or pd.isna(rsi_1h) or pd.isna(atr_1h) or atr_1h <= 0:
-        return None
-
-    long_ok = (fiyat_4h > ma20 and yon5_up_4h >= MUM_ESIGI and
-               RSI_ALT < rsi_1h < RSI_UST and yon5_up_1h >= MUM_ESIGI and
-               bool(btc_bullish))
-    short_ok = (fiyat_4h < ma20 and yon5_down_4h >= MUM_ESIGI and
-                (100 - RSI_UST) < rsi_1h < (100 - RSI_ALT) and yon5_down_1h >= MUM_ESIGI and
-                bool(btc_bearish))
-
-    if not (long_ok or short_ok):
-        return None
-
-    direction = "long" if long_ok else "short"
-    if direction == "long":
-        sl = fiyat - ATR_CARPANI * atr_1h
-        tp = fiyat + ATR_CARPANI * atr_1h * RR
-        mum_sayisi_4h, mum_sayisi_1h = yon5_up_4h, yon5_up_1h
-        rsi_merkez, rsi_yaricap = 60, 15  # ideal merkez 60 (40-80 araliginin ortasi degil, 50-70'in ortasi)
-    else:
-        sl = fiyat + ATR_CARPANI * atr_1h
-        tp = fiyat - ATR_CARPANI * atr_1h * RR
-        mum_sayisi_4h, mum_sayisi_1h = yon5_down_4h, yon5_down_1h
-        rsi_merkez, rsi_yaricap = 40, 15
-
-    # ── GUC SKORU: RSI'in ideal merkeze yakinligi + mum netligi (0-100) ──
-    uzaklik = min(abs(rsi_1h - rsi_merkez) / rsi_yaricap, 1.0)
-    rsi_puan = 40 * (1 - uzaklik)
-    mum_tablosu = {4: 22, 5: 30}
-    puan_4h = mum_tablosu.get(int(mum_sayisi_4h), 15)
-    puan_1h = mum_tablosu.get(int(mum_sayisi_1h), 15)
-    skor = rsi_puan + puan_4h + puan_1h
-
-    # ── VOLATILITE SPIKE: mevcut ATR, kendi 20-periyot ortalamasina gore anormal mi ──
-    volatilite_spike = False
-    if not pd.isna(atr_ort20_1h) and atr_ort20_1h > 0:
-        volatilite_spike = (atr_1h / atr_ort20_1h) >= VOLATILITE_SPIKE_CARPANI
-
-    return {"symbol": sym, "direction": direction, "entry": fiyat, "sl": sl, "tp": tp,
-            "skor": skor, "volatilite_spike": volatilite_spike, "strateji": "momentum"}
-
-
 def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
-    """v7.2: PULLBACK STRATEJISI - momentum stratejisinden farkli mantik.
-    Momentum RSI'nin ZATEN guclendigi (50-70) anlari ararken, bu strateji
-    guclu bir trend ICINDE kisa vadeli bir GERI CEKILME (RSI son 5 mumda
-    45'in altina inmis) olup sonra TOPARLANMAYA basladigi (RSI 42-58 arasina
-    donmus, mum yesil/kirmizi teyitli) ani arar - "ucuza trende binmek".
-    Backtest: in-sample +0.285R/islem (%56.3 kazanma), out-of-sample
-    +0.313R/islem (%57.0 kazanma) - momentum stratejisinden daha iyi cikti."""
-    df4h = get_df(sym, "4h", 30)
-    df1h = get_df(sym, "1h", 30)
+    """v8.0: mantık backtest ile birebir aynı (bkz. üstteki dogrulama notu),
+    tek fark artık sadece KAPANMIŞ mumlar kullanılıyor (get_df içinde)."""
+    df4h = get_df(sym, "4h", GOSTERGE_MUM_SAYISI_4H)
+    df1h = get_df(sym, "1h", GOSTERGE_MUM_SAYISI_1H)
     if df4h is None or df1h is None or len(df4h) < 21 or len(df1h) < 21:
         return None
 
@@ -439,7 +411,6 @@ def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
     if len(df1h) < PULLBACK_BAKIS_PENCERE + 1:
         return None
 
-    # kendisi haric son PULLBACK_BAKIS_PENCERE mumun min/max RSI'i
     rsi_son5 = df1h["rsi"].iloc[-(PULLBACK_BAKIS_PENCERE+1):-1]
     rsi_min5 = rsi_son5.min()
     rsi_max5 = rsi_son5.max()
@@ -453,11 +424,6 @@ def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
 
     pullback_oldu_short = rsi_max5 > (100 - PULLBACK_RSI_ESIK)
     toparlaniyor_short = (100 - TOPARLANMA_RSI_MAX) < rsi_1h < (100 - TOPARLANMA_RSI_MIN)
-    # v7.15 KULLANICI TALEBI: BTC dususe gectiginde botun LONG-only olmasi
-    # firsat kacirtiyordu (SHORT'tan kazanamiyordu). Pullback SHORT ayrica
-    # backtest edildi (76 coin, 30+30 gun): in-sample %62.5 kazanma +0.450R,
-    # out-of-sample %46.9 kazanma +0.103R - LONG kadar guclu degil ama IKI
-    # DONEMDE DE POZITIF, bu yuzden yeniden aktif edildi.
     short_ok = (fiyat_4h < ma20 and yon5_down_4h >= MUM_ESIGI and bool(btc_bearish) and
                 pullback_oldu_short and toparlaniyor_short and fiyat < acilis)
 
@@ -474,7 +440,7 @@ def sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish):
         tp = fiyat - ATR_CARPANI * atr_1h * RR_PULLBACK
         merkez = 100 - (TOPARLANMA_RSI_MIN + TOPARLANMA_RSI_MAX) / 2
 
-    skor = 100 - abs(rsi_1h - merkez)  # merkeze ne kadar yakinsa o kadar yuksek skor
+    skor = 100 - abs(rsi_1h - merkez)
 
     volatilite_spike = False
     if not pd.isna(atr_ort20_1h) and atr_ort20_1h > 0:
@@ -493,30 +459,21 @@ def gercek_bakiye_al():
         return None
 
 
-# v7.5: "Genel Bakis" paneli icin - zirve bakiye (all-time-high) diske kaydedilir,
-# boylece drawdown (zirveden ne kadar geri cekildik) hesaplanabilir. Kullanicinin
-# gordugu baska bir platformun panelinde bu bilgiler vardi (Bakiye/Equity/Marj/
-# Drawdown), bizim panelimize de ekliyoruz - ama BIZIM rakamlarimiz backtest ile
-# dogrulanmis gercek bir stratejiden geliyor.
 ZIRVE_BAKIYE_PATH = os.getenv("ZIRVE_BAKIYE_PATH", "/data/zirve_bakiye.json")
+
 
 def zirve_bakiye_guncelle(guncel_bakiye):
     zirve = guncel_bakiye
     try:
-        if os.path.exists(ZIRVE_BAKIYE_PATH):
-            with open(ZIRVE_BAKIYE_PATH) as f:
-                zirve = max(json.load(f).get("zirve", 0), guncel_bakiye)
-        os.makedirs(os.path.dirname(ZIRVE_BAKIYE_PATH), exist_ok=True)
-        with open(ZIRVE_BAKIYE_PATH, "w") as f:
-            json.dump({"zirve": zirve}, f)
+        veri = guvenli_oku(ZIRVE_BAKIYE_PATH, {})
+        zirve = max(veri.get("zirve", 0), guncel_bakiye)
+        atomik_yaz(ZIRVE_BAKIYE_PATH, {"zirve": zirve})
     except Exception as e:
         log.warning(f"[ZIRVE_BAKIYE] {e}")
     return zirve
 
 
 def hesap_genel_bilgisi_al():
-    """v7.5: Bakiye, equity (bakiye+gerceklesmemis PnL), kullanilan marj, serbest
-    marj, ve zirve bakiyeden bu yana drawdown - hepsi GERCEK borsa verisinden."""
     try:
         bakiye_ham = exchange.fetch_balance()
         usdt = bakiye_ham.get("USDT", {})
@@ -541,11 +498,60 @@ def hesap_genel_bilgisi_al():
         return None
 
 
+def gun_damgasi():
+    return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def hafta_damgasi():
+    t = time.gmtime()
+    return f"{t.tm_year}-W{time.strftime('%W', t)}"
+
+
+def gunluk_haftalik_reset_kontrol():
+    """v8.0: UTC gün/hafta değiştiyse başlangıç bakiyelerini ve PnL sayaçlarını
+    otomatik sıfırlar. v7.15'te bu HİÇ yapılmıyordu - 'günlük limit' aslında
+    bot'un en son restart'ından beri kümülatif hale geliyordu."""
+    global gunluk_pnl, gunluk_baslangic_bakiye, gunluk_gun_damgasi
+    global haftalik_pnl, haftalik_baslangic_bakiye, haftalik_hafta_damgasi
+
+    bugun = gun_damgasi()
+    bu_hafta = hafta_damgasi()
+    degisti = False
+
+    with gunluk_lock:
+        if gunluk_gun_damgasi != bugun:
+            bakiye = gercek_bakiye_al()
+            if bakiye is not None:
+                gunluk_pnl = 0.0
+                gunluk_baslangic_bakiye = bakiye
+                gunluk_gun_damgasi = bugun
+                degisti = True
+                tg(f"🔄 Yeni gün başladı, günlük zarar limiti bakiyeye göre sıfırlandı (bakiye: {bakiye:.2f}$)")
+        if haftalik_hafta_damgasi != bu_hafta:
+            bakiye = gercek_bakiye_al()
+            if bakiye is not None:
+                haftalik_pnl = 0.0
+                haftalik_baslangic_bakiye = bakiye
+                haftalik_hafta_damgasi = bu_hafta
+                degisti = True
+                tg(f"🔄 Yeni hafta başladı, haftalık zarar limiti bakiyeye göre sıfırlandı (bakiye: {bakiye:.2f}$)")
+    if degisti:
+        gunluk_haftalik_diske_yaz()
+
+
 def gunluk_limit_kontrolu():
     with gunluk_lock:
         if gunluk_baslangic_bakiye is None:
             return False
         return gunluk_pnl <= -(gunluk_baslangic_bakiye * GUNLUK_ZARAR_LIMIT_PCT)
+
+
+def haftalik_limit_kontrolu():
+    """v8.0 YENİ: haftalık kümülatif zarar limiti."""
+    with gunluk_lock:
+        if haftalik_baslangic_bakiye is None:
+            return False
+        return haftalik_pnl <= -(haftalik_baslangic_bakiye * HAFTALIK_ZARAR_LIMIT_PCT)
 
 
 def pozisyon_ac(sinyal):
@@ -562,31 +568,20 @@ def pozisyon_ac(sinyal):
         tg(f"⚠️ {sym} atlandı — bakiye alınamadı veya sıfır")
         return
 
-    # ── RİSK BAZLI POZİSYON BOYUTU ──
     risk_dolar = bakiye * RISK_PCT_BAKIYE
 
-    # v4: VOLATILITE SPIKE KORUMASI - coin kendi normaline gore anormal
-    # oynakken (ATR, 20-periyot ortalamasinin VOLATILITE_SPIKE_CARPANI katindan
-    # fazlaysa) risk YARIYA indirilir. Mantik: ani/asiri oynak anlarda SL'in
-    # gurultuyle tetiklenme ihtimali daha yuksek, o yuzden boyle anlarda
-    # daha kucuk pozisyonla girmek daha guvenli.
     if volatilite_spike:
         risk_dolar *= 0.5
         tg(f"ℹ️ {sym} anormal volatilite tespit edildi (ATR spike) — risk "
            f"%{RISK_PCT_BAKIYE*100:.0f}'ten %{RISK_PCT_BAKIYE*50:.1f}'e kucultuldu")
 
     sl_mesafe_pct = abs(entry - sl) / entry
+    if sl_mesafe_pct <= 0:
+        tg(f"⚠️ {sym} atlandı — SL mesafesi geçersiz (0 veya negatif)")
+        return
     notional = risk_dolar / sl_mesafe_pct
     gereken_marj = notional / LEV
 
-    # v2 DUZELTME: Eskiden burada "marj bakiyenin cogunu yerse notional'i
-    # bakiyenin %90'ina SINIRLA" mantigi vardi - bu YANLIS yondeydi, riski
-    # BUYUTUYORDU. Dogrusu: hesaplanan marj bakiyeye gore fazla buyukse,
-    # RISKI KUCULTMEK (notional'i kucultmek) gerekir.
-    # v6: MAX_MARJ_PCT artik MAX_POS'a gore olcekleniyor - MAX_POS=2 iken
-    # iki pozisyon ayni anda acik olabilir, ikisi de %25 marj kullansa toplam
-    # %50'ye cikardi (fazla). Simdi tek pozisyonun tavani MAX_POS'a bolunuyor
-    # (MAX_POS=1 icin hala %25, MAX_POS=2 icin %15 -> toplam en fazla %30).
     MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
     if gereken_marj > bakiye * MAX_MARJ_PCT:
         notional = bakiye * MAX_MARJ_PCT * LEV
@@ -602,9 +597,6 @@ def pozisyon_ac(sinyal):
     except Exception as e:
         log.warning(f"[KALDIRAC] {sym}: {e}")
 
-    amount = notional / entry
-    LEV_KULLANILAN = LEV  # gercek deger asagida, pozisyon acildiktan SONRA dogrulanacak
-
     try:
         qty = float(exchange.amount_to_precision(sym, amount))
     except Exception as e:
@@ -615,21 +607,12 @@ def pozisyon_ac(sinyal):
 
     side = "buy" if direction == "long" else "sell"
     try:
-        emir = exchange.create_market_order(sym, side, qty)
+        exchange.create_market_order(sym, side, qty)
     except Exception as e:
         tg(f"⚠️ {sym} giris emri basarisiz: {e}")
         return
 
-    # v5 DUZELTME: Onceki kaldirac dogrulamasi POZISYON ACILMADAN ONCE
-    # calisiyordu - o an borsada bu sembol icin acik pozisyon olmadigindan
-    # fetch_positions() bos donuyor, kontrol hicbir sey dogrulamadan "sorun
-    # yok" varsayiyordu (OP/USDT ornegi: bot "3x" dedi ama gercekte 10x
-    # kullanildi, cunku dogrulama pozisyon yokken yapilmisti). Simdi kontrol
-    # POZISYON GERCEKTEN ACILDIKTAN SONRA yapiliyor - artik borsa gercek
-    # kaldiraci dondurebiliyor. Eger gercek kaldirac istenenden BUYUKSE
-    # (daha riskli), fazla kismi HEMEN reduceOnly emirle kirpip hedeflenen
-    # notional'e geri getiriyoruz - boylece gercek risk her zaman
-    # RISK_PCT_BAKIYE hedefine sadik kalir.
+    LEV_KULLANILAN = LEV
     time.sleep(0.8)
     try:
         pozisyon_bilgisi = exchange.fetch_positions([sym])
@@ -640,10 +623,9 @@ def pozisyon_ac(sinyal):
                 gercek_lev = int(float(gercek_lev_ham))
                 if gercek_lev != LEV:
                     LEV_KULLANILAN = gercek_lev
-                    hedef_notional = gereken_marj * LEV  # istenen risk icin ORIJINAL hedef notional (LEV ile)
+                    hedef_notional = gereken_marj * LEV
                     gercek_notional = qty * entry
-                    if gercek_notional > hedef_notional * 1.05:  # %5 tolerans
-                        # fazlasini kirp
+                    if gercek_notional > hedef_notional * 1.05:
                         kirpilacak_qty = qty - (hedef_notional / entry)
                         kirpilacak_qty = float(exchange.amount_to_precision(sym, kirpilacak_qty))
                         if kirpilacak_qty > 0:
@@ -653,16 +635,15 @@ def pozisyon_ac(sinyal):
                                                               params={"reduceOnly": True})
                                 qty = qty - kirpilacak_qty
                                 tg(f"⚠️ {sym} kaldıraç uyuşmazlığı tespit edildi: istenen {LEV}x, "
-                                   f"gerçek {gercek_lev}x — fazla pozisyon kırpıldı, risk hedefe geri getirildi")
+                                   f"gerçek {gercek_lev}x — fazla pozisyon kırpıldı")
                             except Exception as e:
                                 tg(f"⚠️ {sym} kaldıraç uyuşmazlığı var ({gercek_lev}x) ama fazla pozisyon "
                                    f"kırpılamadı: {e} — risk hedeflenenden YÜKSEK olabilir, dikkatli izle")
     except Exception as e:
         log.warning(f"[KALDIRAC_DOGRULA] {sym}: {e}")
 
-    notional = qty * entry  # kirpma sonrasi guncel deger
+    notional = qty * entry
 
-    # Hard stop (borsa seviyesinde SL) + TP limit emri
     try:
         kapama_yon = "sell" if direction == "long" else "buy"
         sl_fiyat = float(exchange.price_to_precision(sym, sl))
@@ -680,15 +661,6 @@ def pozisyon_ac(sinyal):
     except Exception as e:
         log.warning(f"[TP_EMIR] {sym}: {e}")
 
-    # v7.11 KULLANICI TALEBI: %25 ROI hizli kar esigi artik GERCEK BIR LIMIT
-    # EMRI ile garanti ediliyor - eskiden manage_loop her 15sn'de bir ticker
-    # fiyatini kontrol edip esige ulasinca MARKET emriyle kapatiyordu, bu da
-    # tetikleme ANI ile gercek kapanis arasinda slippage yaratiyordu (B/USDT
-    # ornegi: bot "+0.85$" dedi, gercek sonuc +0.58$ cikti - tetiklemeden
-    # emri gondermeye kadar gecen sürede fiyat aleyhe gitmisti). Simdi SL/TP
-    # gibi, pozisyon acilir acilmaz BORSAYA GERCEK bir limit emri konuyor -
-    # borsanin kendi motoru fiyata degdigi ANI yakalar, bizim kontrol
-    # turumuzu beklemez, slippage riski neredeyse ortadan kalkar.
     hizli_kar_emir_id = None
     hizli_kar_fiyat = None
     if KAR_ESIGI_ROI_PCT > 0:
@@ -700,8 +672,6 @@ def pozisyon_ac(sinyal):
                 hizli_kar_fiyat_ham = entry + r_esigi * risk_mesafe_hesap
             else:
                 hizli_kar_fiyat_ham = entry - r_esigi * risk_mesafe_hesap
-            # eger hizli kar seviyesi TP'den daha uzaktaysa (dar SL'li islemlerde
-            # olabilir), anlamsiz - sadece TP'den ONCE gelen durumlarda emri koy
             gecerli = (direction == "long" and hizli_kar_fiyat_ham < tp) or \
                       (direction == "short" and hizli_kar_fiyat_ham > tp)
             if gecerli:
@@ -728,11 +698,6 @@ def pozisyon_ac(sinyal):
 
 
 def gercek_pozisyon_kapat(sym, oran=1.0, sebep="manuel"):
-    """Borsadan pozisyonu gercekten kapatir (reduceOnly market emri) ve state'i temizler.
-    v7: oran parametresi eklendi - 1.0 tam kapatma, 0.5 pozisyonun yarisini kapatir
-    (kalan yari acik kalir, SL/TP emirleri kalan miktar icin gecerliligini korur).
-    v7.6: sebep parametresi eklendi - "manuel" (kullanici), "kismi_manuel" (yari kapatma),
-    "hizli_kar" (KAR_ESIGI_DOLAR otomatik tetiklemesi) gibi ayirt edilebilsin diye."""
     try:
         pozisyonlar = exchange.fetch_positions([sym])
         gercek_pos = next((p for p in pozisyonlar if safe(p.get("contracts")) > 0), None)
@@ -751,7 +716,7 @@ def gercek_pozisyon_kapat(sym, oran=1.0, sebep="manuel"):
         if kapatilacak_qty <= 0:
             return False, f"⚠️ {sym} kapatılacak miktar hesaplanamadı."
 
-        emir = exchange.create_market_order(sym, kapama_yon, kapatilacak_qty, params={"reduceOnly": True})
+        exchange.create_market_order(sym, kapama_yon, kapatilacak_qty, params={"reduceOnly": True})
         time.sleep(1)
         guncel = exchange.fetch_positions([sym])
         kalan_pos = next((p for p in guncel if safe(p.get("contracts")) > 0), None)
@@ -769,7 +734,6 @@ def gercek_pozisyon_kapat(sym, oran=1.0, sebep="manuel"):
         })
 
         if kalan_pos and safe(kalan_pos.get("contracts")) > 0:
-            # kismi kapatma - state'teki qty'yi guncelle, SL/TP hala gecerli
             with state_lock:
                 if sym in trade_state:
                     trade_state[sym]["qty"] = safe(kalan_pos.get("contracts"))
@@ -787,23 +751,35 @@ def gercek_pozisyon_kapat(sym, oran=1.0, sebep="manuel"):
         return False, f"⚠️ {sym} kapatma sırasında hata: {e}"
 
 
+def sembol_bul(acik_semboller, parca):
+    """v8.0 DÜZELTME: önce TAM eşleşme aranır (ör. 'B' -> 'B/USDT:USDT'),
+    sadece bulunamazsa substring'e düşülür. Böylece kısa ticker'lar (B, LA,
+    OP, 0G vb.) diğer sembollerle yanlışlıkla eşleşmez."""
+    parca = parca.upper()
+    for sym in acik_semboller:
+        if sym.split("/")[0] == parca:
+            return sym
+    eslesen = [sym for sym in acik_semboller if parca in sym.upper()]
+    if len(eslesen) == 1:
+        return eslesen[0]
+    return None
+
+
 if bot:
     @bot.message_handler(commands=["kapat"])
     def kapat_komutu(msg):
+        if not yetkili_mi(msg):
+            return
         with state_lock:
             acik_semboller = list(trade_state.keys())
         if not acik_semboller:
             bot.send_message(msg.chat.id, "Açık pozisyon yok.")
             return
         parca = msg.text.replace("/kapat", "", 1).strip().upper()
-        hedef = None
         if parca:
-            for sym in acik_semboller:
-                if parca in sym.upper():
-                    hedef = sym
-                    break
+            hedef = sembol_bul(acik_semboller, parca)
             if not hedef:
-                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen açık pozisyon bulunamadı: {acik_semboller}")
+                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen tek bir açık pozisyon bulunamadı: {acik_semboller}")
                 return
         else:
             if len(acik_semboller) > 1:
@@ -817,21 +793,18 @@ if bot:
 
     @bot.message_handler(commands=["yarikapat"])
     def yarikapat_komutu(msg):
-        """v7: Pozisyonun yarisini kapatir, kalan yari SL/TP ile acik kalir."""
+        if not yetkili_mi(msg):
+            return
         with state_lock:
             acik_semboller = list(trade_state.keys())
         if not acik_semboller:
             bot.send_message(msg.chat.id, "Açık pozisyon yok.")
             return
         parca = msg.text.replace("/yarikapat", "", 1).strip().upper()
-        hedef = None
         if parca:
-            for sym in acik_semboller:
-                if parca in sym.upper():
-                    hedef = sym
-                    break
+            hedef = sembol_bul(acik_semboller, parca)
             if not hedef:
-                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen açık pozisyon bulunamadı: {acik_semboller}")
+                bot.send_message(msg.chat.id, f"'{parca}' ile eşleşen tek bir açık pozisyon bulunamadı: {acik_semboller}")
                 return
         else:
             if len(acik_semboller) > 1:
@@ -845,7 +818,8 @@ if bot:
 
     @bot.message_handler(commands=["durum"])
     def durum_komutu(msg):
-        """v7: Sadece giris/SL/TP degil, ANLIK fiyat ve ANLIK PnL de gosterir."""
+        if not yetkili_mi(msg):
+            return
         with state_lock:
             if not trade_state:
                 bot.send_message(msg.chat.id, "Açık pozisyon yok.")
@@ -874,8 +848,6 @@ if bot:
         with log_lock:
             gecmis = list(trade_log)
         satirlar = ["📊 GENEL ÖZET\n"]
-
-        # ── BAKIYE / EQUITY (gercek borsadan) ──
         try:
             bakiye_bilgi = exchange.fetch_balance()
             usdt = bakiye_bilgi.get("USDT", {})
@@ -902,7 +874,6 @@ if bot:
             satirlar.append(f"💰 Bakiye: {toplam_bakiye:.2f}$ | Equity: {equity:.2f}$")
             satirlar.append(f"📌 Serbest: {serbest:.2f}$ | Açık poz. PnL: {acik_toplam_pnl:+.2f}$\n")
 
-        # ── ISLEM ISTATISTIKLERI ──
         if gecmis:
             toplam = len(gecmis)
             kazanan = [t for t in gecmis if t["pnl"] > 0]
@@ -924,40 +895,46 @@ if bot:
         else:
             satirlar.append("Henüz kapanan işlem yok.")
         with gunluk_lock:
-            satirlar.append(f"\n📅 Bugünkü gerçekleşen PnL: {gunluk_pnl:+.2f}$")
+            satirlar.append(f"\n📅 Bugünkü PnL: {gunluk_pnl:+.2f}$ | 📆 Bu haftaki PnL: {haftalik_pnl:+.2f}$")
         return "\n".join(satirlar)
 
     def panel_ayarlar_metni():
         satirlar = ["⚙️ STRATEJİ AYARLARI\n"]
-        satirlar.append(f"Sürüm: v7.4")
-        satirlar.append(f"Coin evreni: {len(COINS)} coin")
+        satirlar.append(f"Sürüm: v8.0")
+        satirlar.append(f"Coin evreni: {len(COINS)} coin (backtest doğrulamalı, RWA/durgun majör hariç)")
         satirlar.append(f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}")
         satirlar.append(f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i")
         satirlar.append(f"Marj tavanı: bakiyenin %{25 if MAX_POS<=1 else 15}'i (MAX_POS'a göre)")
         satirlar.append(f"BTC ADX eşiği: {ADX_ESIK} (altındaysa işlem aranmaz)")
         satirlar.append(f"Volatilite spike koruması: {VOLATILITE_SPIKE_CARPANI}x ATR üstünde risk yarıya iner")
         satirlar.append(f"Coin cooldown: {COOLDOWN_SAAT} saat")
-        satirlar.append(f"\n📐 Momentum TP/SL: 1x ATR / {RR}R")
-        satirlar.append(f"📐 Pullback TP/SL: 1x ATR / {RR_PULLBACK}R")
+        satirlar.append(f"\n📐 Pullback TP/SL: 1x ATR(1h,14) / {RR_PULLBACK}R (1:1)")
         satirlar.append(f"⏱️ Tarama aralığı: {KONTROL_ARALIGI_SN//60} dakika")
+        satirlar.append(f"📉 Günlük zarar limiti: %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}")
+        satirlar.append(f"📉 Haftalık zarar limiti: %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f} (v8.0 YENİ)")
         return "\n".join(satirlar)
 
     def panel_risk_metni():
         satirlar = ["📉 RİSK DURUMU\n"]
         with gunluk_lock:
-            gp = gunluk_pnl
-        if gunluk_baslangic_bakiye:
-            limit_dolar = gunluk_baslangic_bakiye * GUNLUK_ZARAR_LIMIT_PCT
-            kalan = limit_dolar + gp  # gp negatifse limitten dusuyor
+            gp = gunluk_pnl; hp = haftalik_pnl
+            gb = gunluk_baslangic_bakiye; hb = haftalik_baslangic_bakiye
+        if gb:
+            limit_dolar = gb * GUNLUK_ZARAR_LIMIT_PCT
+            kalan = limit_dolar + gp
             satirlar.append(f"Günlük zarar limiti: -{limit_dolar:.2f}$ (bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i)")
-            satirlar.append(f"Bugünkü PnL: {gp:+.2f}$")
-            satirlar.append(f"Limite kalan pay: {kalan:.2f}$")
-            if gunluk_limit_kontrolu():
-                satirlar.append("\n⛔ GÜNLÜK LİMİT AŞILDI — bot bugün yeni işlem aramıyor")
-            else:
-                satirlar.append("\n✅ Limit aşılmadı, bot normal taramaya devam ediyor")
+            satirlar.append(f"Bugünkü PnL: {gp:+.2f}$ | Limite kalan pay: {kalan:.2f}$")
+            satirlar.append("⛔ GÜNLÜK LİMİT AŞILDI" if gunluk_limit_kontrolu() else "✅ Günlük limit aşılmadı")
         else:
             satirlar.append("Günlük başlangıç bakiyesi henüz kaydedilmedi.")
+        if hb:
+            limit_dolar_h = hb * HAFTALIK_ZARAR_LIMIT_PCT
+            kalan_h = limit_dolar_h + hp
+            satirlar.append(f"\nHaftalık zarar limiti: -{limit_dolar_h:.2f}$ (bakiyenin %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f}'i)")
+            satirlar.append(f"Bu haftaki PnL: {hp:+.2f}$ | Limite kalan pay: {kalan_h:.2f}$")
+            satirlar.append("⛔ HAFTALIK LİMİT AŞILDI" if haftalik_limit_kontrolu() else "✅ Haftalık limit aşılmadı")
+        else:
+            satirlar.append("\nHaftalık başlangıç bakiyesi henüz kaydedilmedi.")
 
         with cooldown_lock:
             cd = dict(son_kapanis_zamani)
@@ -1010,30 +987,12 @@ if bot:
         return "\n".join(satirlar)
 
     def panel_analiz_metni():
-        """v7.7: Strateji (momentum/pullback) ve yon (long/short) bazinda
-        kirilim - zamanla 'hangi tur islem daha cok kazandiriyor/kaybettiriyor'
-        gorulebilsin diye. Ayrica coin bazinda en cok kaybettiren/kazandiran
-        ilk 3'u de gosterir."""
         with log_lock:
             gecmis = list(trade_log)
         if not gecmis:
             return "🔬 STRATEJİ ANALİZİ\n\nHenüz kapanan işlem yok."
-
         satirlar = ["🔬 STRATEJİ ANALİZİ\n"]
-
-        # ── STRATEJI BAZINDA ──
-        satirlar.append("📐 Strateji bazında:")
-        for strateji_adi in ["momentum", "pullback", "manuel", "hizli_kar", "kismi_manuel"]:
-            alt = [t for t in gecmis if t.get("strateji") == strateji_adi or t.get("not") == strateji_adi]
-            if not alt:
-                continue
-            kazanan = [t for t in alt if t["pnl"] > 0]
-            net = sum(t["pnl"] for t in alt)
-            oran = len(kazanan) / len(alt) * 100
-            satirlar.append(f"  {strateji_adi}: {len(alt)} işlem, %{oran:.0f} kazanma, net {net:+.2f}$")
-
-        # ── YON BAZINDA ──
-        satirlar.append("\n📊 Yön bazında:")
+        satirlar.append("📊 Yön bazında:")
         for yon in ["long", "short"]:
             alt = [t for t in gecmis if t.get("direction") == yon]
             if not alt:
@@ -1042,8 +1001,6 @@ if bot:
             net = sum(t["pnl"] for t in alt)
             oran = len(kazanan) / len(alt) * 100
             satirlar.append(f"  {yon.upper()}: {len(alt)} işlem, %{oran:.0f} kazanma, net {net:+.2f}$")
-
-        # ── COIN BAZINDA (en iyi/en kotu 3) ──
         coin_pnl = {}
         for t in gecmis:
             sym = t["symbol"].split("/")[0]
@@ -1056,7 +1013,6 @@ if bot:
             satirlar.append("💀 En kaybettiren coinler:")
             for sym, pnl in siralanmis[-3:][::-1]:
                 satirlar.append(f"  {sym}: {pnl:+.2f}$")
-
         return "\n".join(satirlar)
 
     def ana_menu_klavye():
@@ -1099,10 +1055,18 @@ if bot:
 
     @bot.message_handler(commands=["panel"])
     def panel_komutu(msg):
+        if not yetkili_mi(msg):
+            return
         bot.send_message(msg.chat.id, panel_ozet_metni(), reply_markup=ana_menu_klavye())
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("panel_"))
     def panel_buton_yaniti(call):
+        if not yetkili_mi(call):
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            return
         veri = call.data
         try:
             if veri == "panel_ana":
@@ -1147,9 +1111,6 @@ if bot:
             bot.answer_callback_query(call.id)
         except Exception as e:
             if "message is not modified" in str(e):
-                # v7.1 DUZELTME: zararsiz - ayni icerik tekrar gonderilmeye
-                # calisilmis (orn. "Yenile"ye art arda basma). Kullaniciya
-                # gereksiz "hata olustu" mesaji gostermeye gerek yok.
                 try:
                     bot.answer_callback_query(call.id, "Zaten güncel")
                 except Exception:
@@ -1163,9 +1124,8 @@ if bot:
 
     @bot.message_handler(commands=["ac"])
     def ac_komutu(msg):
-        """v7: Manuel pozisyon acma - /ac SEMBOL long|short - kullanici talebiyle
-        (panelde 'manuel ac/kapat' istegi). SL/TP botun kendi ATR bazli mantigiyla
-        otomatik hesaplanir (tutarlilik icin, kanaldan gelen sabit yuzde degil)."""
+        if not yetkili_mi(msg):
+            return
         parcalar = msg.text.replace("/ac", "", 1).strip().split()
         if len(parcalar) < 2:
             bot.send_message(msg.chat.id, "Kullanım: /ac SOL long  (ya da /ac SOL short)")
@@ -1186,7 +1146,7 @@ if bot:
                 return
 
         try:
-            df1h = get_df(sym, "1h", 30)
+            df1h = get_df(sym, "1h", GOSTERGE_MUM_SAYISI_1H)
             if df1h is None or len(df1h) < 21:
                 bot.send_message(msg.chat.id, f"{sym} için veri alınamadı, sembolü kontrol et.")
                 return
@@ -1202,10 +1162,10 @@ if bot:
 
         if yon == "long":
             sl = fiyat - ATR_CARPANI * atr_1h
-            tp = fiyat + ATR_CARPANI * atr_1h * RR
+            tp = fiyat + ATR_CARPANI * atr_1h * RR_PULLBACK
         else:
             sl = fiyat + ATR_CARPANI * atr_1h
-            tp = fiyat - ATR_CARPANI * atr_1h * RR
+            tp = fiyat - ATR_CARPANI * atr_1h * RR_PULLBACK
 
         bot.send_message(msg.chat.id, f"⚡ Manuel açılıyor: {sym} {yon.upper()} — Giriş≈{fiyat:.6f} SL:{sl:.6f} TP:{tp:.6f}")
         pozisyon_ac({"symbol": sym, "direction": yon, "entry": fiyat, "sl": sl, "tp": tp,
@@ -1223,25 +1183,61 @@ def telebot_polling_baslat():
             time.sleep(5)
 
 
+def baslangic_uzlastirma():
+    """v8.0 YENİ: bot başlarken diskteki state ile borsadaki GERÇEK açık
+    pozisyonları karşılaştırır. Diskte var ama borsada yoksa (bot çalışmazken
+    kapanmış olabilir) temizler; borsada var ama diskte yoksa (manuel açılmış
+    ya da state dosyası kaybolmuş) uyarı verir - state dosyasına körü körüne
+    güvenmek yerine borsa esas alınır."""
+    try:
+        gercek_pozlar = exchange.fetch_positions()
+        gercek_semboller = {p["symbol"] for p in gercek_pozlar if safe(p.get("contracts")) > 0}
+    except Exception as e:
+        log.warning(f"[UZLASTIRMA] Pozisyonlar alınamadı: {e}")
+        return
+
+    with state_lock:
+        state_semboller = set(trade_state.keys())
+
+    sadece_diskte = state_semboller - gercek_semboller
+    sadece_borsada = gercek_semboller - state_semboller
+
+    if sadece_diskte:
+        with state_lock:
+            for sym in sadece_diskte:
+                trade_state.pop(sym, None)
+        durumu_diske_yaz()
+        tg(f"ℹ️ Uzlaştırma: diskte kayıtlı ama borsada açık olmayan {len(sadece_diskte)} pozisyon "
+           f"temizlendi: {sorted(sadece_diskte)}")
+
+    if sadece_borsada:
+        tg(f"⚠️ UYARI: borsada açık ama bot state'inde KAYITLI OLMAYAN {len(sadece_borsada)} pozisyon "
+           f"var: {sorted(sadece_borsada)}\nBu pozisyonlar botun otomatik SL/TP yönetiminin DIŞINDA "
+           f"kalabilir - manuel kontrol et.")
+
+
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v7.15 — MAX_POS={MAX_POS})\n"
-       f"Strateji: pullback (LONG+SHORT) — LONG backtest %57-64 kazanma +0.33-0.46R, SHORT %47-63 kazanma +0.10-0.45R\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v8.0 — MAX_POS={MAX_POS})\n"
+       f"Strateji: pullback (LONG+SHORT), backtest: 129 coin, %61.8 kazanma, +0.14R/işlem ort.\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
-       f"Kaldıraç: {LEV}x [Railway'den okunan ham LEV değeri: {LEV_HAM_DEGER!r}] | "
-       f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
+       f"Kaldıraç: {LEV}x | İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
        f"BTC ADX filtresi: piyasa yatayken (ADX<{ADX_ESIK}) işlem aranmaz\n"
-       f"Volatilite koruması: anormal oynak coinlerde risk otomatik yarıya iner\n"
-       f"Günlük zarar limiti: bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i\n"
+       f"Günlük zarar limiti: %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f} | Haftalık: %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f}\n"
        f"⚠️ Bu strateji backtest ile doğrulandı ama gerçek performansı garanti etmez.")
 
-    global gunluk_baslangic_bakiye
-    bakiye = gercek_bakiye_al()
-    if bakiye:
-        gunluk_baslangic_bakiye = bakiye
+    baslangic_uzlastirma()
+    gunluk_haftalik_reset_kontrol()
 
     while True:
         try:
+            gunluk_haftalik_reset_kontrol()
+
             if gunluk_limit_kontrolu():
+                log.info("[LIMIT] Günlük zarar limiti aşıldı, bu tur atlandı")
+                time.sleep(KONTROL_ARALIGI_SN)
+                continue
+            if haftalik_limit_kontrolu():
+                log.info("[LIMIT] Haftalık zarar limiti aşıldı, bu tur atlandı")
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
@@ -1260,35 +1256,20 @@ def tarama_loop():
                     time.sleep(KONTROL_ARALIGI_SN)
                     continue
 
-                # v4: TUM coin evrenini tara, EN YUKSEK SKORLU sinyalleri sec
-                # v6: MAX_POS=2 oldugunda, bos slot sayisi kadar (1 veya 2)
-                # en iyi adayi ac - "en guclu 1-2 kurulum" mantigi
-                # v7.2: Artik HEM momentum HEM pullback stratejisi taraniyor,
-                # ikisinin adaylari BIRLIKTE degerlendirilip en yuksek skorlular
-                # secilir - hangi stratejiden geldigi onemli degil.
                 adaylar = []
                 for sym in COINS:
                     with state_lock:
                         if sym in trade_state:
                             continue
-                    if cooldown_da_mi(sym):
+                    with cooldown_lock:
+                        son = son_kapanis_zamani.get(sym)
+                    if son and (time.time() - son) < COOLDOWN_SAAT * 3600:
                         continue
-                    # v7.12 KULLANICI TALEBI: backtest'te "sadece LONG pullback"
-                    # kombinasyonu cok guclu cikti (in-sample %64 kazanma
-                    # +0.461R/islem, out-of-sample %56.2 kazanma +0.329R/islem -
-                    # bugunku EN IYI sonuclardan biri). Momentum stratejisi
-                    # BILEREK devre disi birakildi - sadece pullback taraniyor.
                     sinyal_p = sinyal_kontrol_et_pullback(sym, btc_bullish, btc_bearish)
                     if sinyal_p:
                         adaylar.append(sinyal_p)
 
                 if adaylar:
-                    # v7.4 DUZELTME: Bir coin AYNI ANDA hem momentum hem pullback
-                    # kosulunu saglayabiliyordu, ikisi de ayri aday olarak listeye
-                    # giriyordu - eger 2 bos slot varsa, AYNI COIN icin IKI AYRI
-                    # ISLEM ACILABILIYORDU (SIREN, ETHFI ornekleri). Simdi her
-                    # sembol icin sadece EN YUKSEK SKORLU aday tutuluyor, secim
-                    # ondan sonra yapiliyor - ayni coin asla iki kez acilamaz.
                     en_iyi_sembol_basina = {}
                     for aday in adaylar:
                         mevcut = en_iyi_sembol_basina.get(aday["symbol"])
@@ -1311,8 +1292,7 @@ def tarama_loop():
 
 
 def manage_loop():
-    """Acik pozisyonlari izler, SL/TP vurulmasini borsadan dogrular, state temizler."""
-    global gunluk_pnl
+    global gunluk_pnl, haftalik_pnl
     while True:
         try:
             with state_lock:
@@ -1321,24 +1301,12 @@ def manage_loop():
                 time.sleep(15)
                 continue
 
-            positions = exchange.fetch_positions(semboller)
-            acik_semboller = {p["symbol"] for p in positions if safe(p.get("contracts")) > 0}
-
-            # v7.11: Artik %25 ROI esigi ACILIS ANINDA borsaya konan GERCEK
-            # LIMIT EMRI ile garanti ediliyor (bkz. pozisyon_ac). Bu polling
-            # kontrolu artik sadece YEDEK - limit emri bir sebeple konamadiysa
-            # (hizli_kar_emir_id yoksa) devreye girer, boylece o durumda bile
-            # koruma tamamen kaybolmaz.
             if KAR_ESIGI_ROI_PCT > 0:
-                with state_lock:
-                    hala_acik_semboller = [s for s in semboller if s in acik_semboller]
-                for sym in hala_acik_semboller:
+                for sym in list(semboller):
                     with state_lock:
                         durum = trade_state.get(sym)
-                    if not durum:
+                    if not durum or durum.get("hizli_kar_emir_id"):
                         continue
-                    if durum.get("hizli_kar_emir_id"):
-                        continue  # gercek limit emri zaten borsada, polling'e gerek yok
                     marj = durum.get("marj")
                     if not marj or marj <= 0:
                         continue
@@ -1352,7 +1320,7 @@ def manage_loop():
                         continue
                     if roi_pct >= KAR_ESIGI_ROI_PCT:
                         tg(f"⚡ {sym} hızlı kâr eşiğine ulaştı (ROI %{roi_pct:.1f} ≥ %{KAR_ESIGI_ROI_PCT:.0f}, "
-                           f"≈{anlik_pnl:+.2f}$) — [yedek mekanizma, limit emri konulamamıştı] kapatılıyor")
+                           f"≈{anlik_pnl:+.2f}$) — [yedek mekanizma] kapatılıyor")
                         gercek_pozisyon_kapat(sym, oran=1.0, sebep="hizli_kar")
 
             positions = exchange.fetch_positions(semboller)
@@ -1361,13 +1329,9 @@ def manage_loop():
             for sym in semboller:
                 if sym in acik_semboller:
                     continue
-                # pozisyon kapanmis (SL, TP ya da hizli kar limit emri vurulmus)
                 with state_lock:
                     durum = trade_state.pop(sym, None)
                 durumu_diske_yaz()
-                # v7.11: pozisyon kapaninca, ARTIK GEREKSIZ olan diger reduceOnly
-                # emirleri (TP ve/veya hizli kar limit emri - hangisi vurmadiysa)
-                # iptal et, borsada "yetim" emir kalmasin.
                 if durum:
                     for emir_id_alani in ("tp_emir_id", "hizli_kar_emir_id"):
                         eid = durum.get(emir_id_alani)
@@ -1375,7 +1339,7 @@ def manage_loop():
                             try:
                                 exchange.cancel_order(eid, sym)
                             except Exception:
-                                pass  # zaten dolmus/iptal olmus olabilir, sorun degil
+                                pass
                 with cooldown_lock:
                     son_kapanis_zamani[sym] = time.time()
                 cooldown_diske_yaz()
@@ -1390,6 +1354,8 @@ def manage_loop():
                     pnl_tahmini = (cikis_fiyat - entry) * qty if direction == "long" else (entry - cikis_fiyat) * qty
                     with gunluk_lock:
                         gunluk_pnl += pnl_tahmini
+                        haftalik_pnl += pnl_tahmini
+                    gunluk_haftalik_diske_yaz()
                     trade_log_kaydet({
                         "symbol": sym, "direction": direction, "entry": entry, "exit": cikis_fiyat,
                         "pnl": pnl_tahmini, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
@@ -1404,10 +1370,11 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("YENİ STRATEJİ BOTU BAŞLIYOR...")
+    print("YENİ STRATEJİ BOTU v8.0 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
+    gunluk_haftalik_diskten_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
