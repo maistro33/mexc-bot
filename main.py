@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.3 — 28 Temmuz 2026
+SCALP BOT v1.5 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -136,7 +136,11 @@ ATR_CARPANI_SL = 2.0        # backtest: en dengeli SL çarpanı bu çıktı
 MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.06"))  # SL mesafesi fiyatın en fazla %6'sı olabilir
 TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # (kapatılacak_oran, R_katı)
 
-ADAY_HAVUZU_BUYUKLUGU = 80  # ön elemeden sonra 5m'ye bakılacak aday sayısı
+ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "40"))
+# v1.5 DÜZELTME: 80 iken tam tarama ~60sn sürüyordu (ölçüldü) - bu da
+# KONTROL_ARALIGI_SN (60sn) ile neredeyse eşit, yani "hemen aç" tam tersi
+# oluyordu: erken bulunan sinyal, tarama bitene kadar bekliyordu. 40'a
+# düşürülüp AŞAĞIDAKİ "bulunca hemen aç" mantığıyla birleştirildi.
 GOSTERGE_MUM_5M = 60
 GOSTERGE_MUM_15M = 40
 
@@ -681,7 +685,8 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
             cikis_fiyat = entry_fiyat
         pnl = (cikis_fiyat - entry_fiyat) * qty
         trade_log_kaydet({"symbol": sym, "entry": entry_fiyat, "exit": cikis_fiyat, "pnl": pnl,
-                           "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "not": sebep})
+                           "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "not": sebep,
+                           "tur": (durum or {}).get("tur", "bilinmiyor")})
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
@@ -781,7 +786,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.3 (SL/TP tavanı: max %{MAX_SL_PCT*100:.0f})\n"
+                f"Sürüm: v1.5 (sinyal bulunca HEMEN açar, 40 coin havuzu)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -792,11 +797,66 @@ if bot:
                 f"Günlük zarar limiti: %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f} | Haftalık: %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f}\n"
                 f"Tarama aralığı: {KONTROL_ARALIGI_SN}sn")
 
+    def panel_gecmis_metni():
+        with log_lock:
+            gecmis = list(trade_log)
+        if not gecmis:
+            return "📜 Henüz kapanan işlem yok."
+        satirlar = ["📜 SON 15 İŞLEM\n"]
+        for t in list(reversed(gecmis))[:15]:
+            tur = t.get("tur", "?")
+            tur_kisa = "patlama" if tur == "spike" else ("sürdürülebilir" if tur == "sustained" else tur)
+            sebep = t.get("not", "")
+            emoji = "🟢" if t["pnl"] >= 0 else "🔴"
+            satirlar.append(f"{emoji} {t['symbol'].split('/')[0]} {t['pnl']:+.2f}$ "
+                             f"[{tur_kisa}] ({sebep}) — {t['zaman']}")
+        return "\n".join(satirlar)
+
+    def panel_analiz_metni():
+        with log_lock:
+            gecmis = list(trade_log)
+        if not gecmis:
+            return "🔬 SCALP ANALİZ\n\nHenüz kapanan işlem yok."
+        satirlar = ["🔬 SCALP ANALİZ\n"]
+        satirlar.append("📊 Sinyal tipi bazında:")
+        for tur in ["spike", "sustained"]:
+            alt = [t for t in gecmis if t.get("tur") == tur]
+            if not alt:
+                continue
+            kazanan = [t for t in alt if t["pnl"] > 0]
+            net = sum(t["pnl"] for t in alt)
+            tur_ad = "Ani patlama" if tur == "spike" else "Sürdürülebilir tırmanış"
+            satirlar.append(f"  {tur_ad}: {len(alt)} işlem, %{len(kazanan)/len(alt)*100:.0f} kazanma, net {net:+.2f}$")
+        satirlar.append("\n🚪 Kapanış sebebi bazında:")
+        for sebep in ["tum_tp_tamamlandi", "SL_basabasta_TP1_sonrasi", "SL_ilk_TPden_once", "max_hold_timeout", "manuel"]:
+            alt = [t for t in gecmis if t.get("not") == sebep]
+            if not alt:
+                continue
+            net = sum(t["pnl"] for t in alt)
+            satirlar.append(f"  {sebep}: {len(alt)} işlem, net {net:+.2f}$")
+        coin_pnl = {}
+        for t in gecmis:
+            sym = t["symbol"].split("/")[0]
+            coin_pnl[sym] = coin_pnl.get(sym, 0) + t["pnl"]
+        siralanmis = sorted(coin_pnl.items(), key=lambda x: x[1], reverse=True)
+        if siralanmis:
+            satirlar.append("\n🏆 En kazandıran coinler:")
+            for sym, pnl in siralanmis[:3]:
+                satirlar.append(f"  {sym}: {pnl:+.2f}$")
+            satirlar.append("💀 En kaybettiren coinler:")
+            for sym, pnl in siralanmis[-3:][::-1]:
+                satirlar.append(f"  {sym}: {pnl:+.2f}$")
+        return "\n".join(satirlar)
+
     def ana_menu_klavye():
         markup = telebot.types.InlineKeyboardMarkup()
         markup.row(
             telebot.types.InlineKeyboardButton("📊 Özet", callback_data="panel_ozet"),
             telebot.types.InlineKeyboardButton("⚙️ Ayarlar", callback_data="panel_ayarlar"),
+        )
+        markup.row(
+            telebot.types.InlineKeyboardButton("📜 Geçmiş İşlemler", callback_data="panel_gecmis"),
+            telebot.types.InlineKeyboardButton("🔬 Analiz", callback_data="panel_analiz"),
         )
         markup.row(telebot.types.InlineKeyboardButton("🔄 Yenile", callback_data="panel_ana"))
         return markup
@@ -826,6 +886,10 @@ if bot:
                 bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             elif veri == "panel_ayarlar":
                 bot.edit_message_text(panel_ayarlar_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            elif veri == "panel_gecmis":
+                bot.edit_message_text(panel_gecmis_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            elif veri == "panel_analiz":
+                bot.edit_message_text(panel_analiz_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             bot.answer_callback_query(call.id)
         except Exception as e:
             if "message is not modified" not in str(e):
@@ -867,7 +931,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.3 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v1.5 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -897,40 +961,36 @@ def tarama_loop():
                 continue
 
             # AJAN 1: piyasayı izle, aday havuzunu bul
+            # v1.5 DÜZELTME: eskiden TÜM havuz taranıp sonra en iyi sinyaller
+            # seçilirdi - bu da taramanın başında bulunan bir sinyalin, tarama
+            # bitene kadar (ölçüldü: ~60sn) BEKLEMESİ anlamına geliyordu, tam
+            # da "hemen aç" hedefinin tersiydi. Artık aday havuzu zaten 24s
+            # değişim/hacme göre en güçlüden zayıfa SIRALI geliyor
+            # (piyasa_izleyici_aday_havuzu içinde skor sıralı) - bu sırayla
+            # taranır, bir coin için sinyal (patlama VEYA sürdürülebilir)
+            # bulunur bulunmaz AJAN 2'ye HEMEN iletilir, slot dolunca tarama
+            # o an durur - kalan adaylar bir sonraki turda taranır.
             adaylar_havuzu = piyasa_izleyici_aday_havuzu()
-            sinyaller = []
+            acilan_sayisi = 0
             for sym in adaylar_havuzu:
+                if acilan_sayisi >= bos_slot:
+                    break
                 with state_lock:
                     if sym in trade_state:
                         continue
                 if cooldown_da_mi(sym):
                     continue
-                # v1.1: iki bağımsız sinyal tipi de kontrol edilir (ani patlama +
-                # sürdürülebilir tırmanış). Aynı coin ikisini de tetiklerse (nadir),
-                # sadece skoru yüksek olan alınır - tekilleştirme aşağıda.
-                sinyal_spike = piyasa_izleyici_sinyal_kontrol(sym, btc_bullish)
-                if sinyal_spike:
-                    sinyaller.append(sinyal_spike)
-                sinyal_sustained = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
-                if sinyal_sustained:
-                    sinyaller.append(sinyal_sustained)
 
-            if sinyaller:
-                en_iyi_sembol_basina = {}
-                for s in sinyaller:
-                    mevcut = en_iyi_sembol_basina.get(s["symbol"])
-                    if mevcut is None or s["skor"] > mevcut["skor"]:
-                        en_iyi_sembol_basina[s["symbol"]] = s
-                sinyaller_tekil = list(en_iyi_sembol_basina.values())
+                sinyal = piyasa_izleyici_sinyal_kontrol(sym, btc_bullish)
+                if not sinyal:
+                    sinyal = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
+                if not sinyal:
+                    continue
 
-                sinyaller_tekil.sort(key=lambda s: s["skor"], reverse=True)
-                secilenler = sinyaller_tekil[:bos_slot]
-                tg(f"🔍 AJAN 1: {len(sinyaller_tekil)} sinyal bulundu (patlama+sürdürülebilir), "
-                   f"en güçlü {len(secilenler)} tanesi AJAN 2'ye iletiliyor")
-                for s in secilenler:
-                    tur_etiket = "ani patlama" if s.get("tur") == "spike" else "sürdürülebilir tırmanış"
-                    tg(f"→ AJAN 1: {s['symbol']} güçlü LONG sinyali [{tur_etiket}] (skor:{s['skor']:.3f}) — AJAN 2'ye 'hemen aç' komutu veriliyor")
-                    islem_acici_pozisyon_ac(s)
+                tur_etiket = "ani patlama" if sinyal.get("tur") == "spike" else "sürdürülebilir tırmanış"
+                tg(f"🔍 AJAN 1: {sym} güçlü LONG sinyali [{tur_etiket}] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
+                islem_acici_pozisyon_ac(sinyal)
+                acilan_sayisi += 1
 
             time.sleep(KONTROL_ARALIGI_SN)
         except Exception as e:
@@ -1002,10 +1062,17 @@ def manage_loop():
                             gunluk_pnl += pnl_tahmini
                             haftalik_pnl += pnl_tahmini
                         gunluk_haftalik_diske_yaz()
+                        tum_tp_dolu = all(t.get("dolu") for t in durum2.get("tp_emirleri", []))
+                        if tum_tp_dolu:
+                            sebep_etiket = "tum_tp_tamamlandi"
+                        elif durum2.get("breakeven_cekildi"):
+                            sebep_etiket = "SL_basabasta_TP1_sonrasi"
+                        else:
+                            sebep_etiket = "SL_ilk_TPden_once"
                         trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat,
                                            "pnl": pnl_tahmini, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                                           "not": "kapandi"})
-                        tg(f"✅ {sym} pozisyonu tamamen kapandı (tahmini PnL≈{pnl_tahmini:+.2f}$, kesin tutar borsa geçmişinden kontrol edilmeli)")
+                                           "not": sebep_etiket, "tur": durum2.get("tur", "bilinmiyor")})
+                        tg(f"✅ {sym} pozisyonu tamamen kapandı [{sebep_etiket}] (tahmini PnL≈{pnl_tahmini:+.2f}$, kesin tutar borsa geçmişinden kontrol edilmeli)")
                     continue
 
                 # hâlâ açık - miktar azaldı mı (bir TP kademesi dolmuş mu)?
@@ -1057,7 +1124,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.3 BAŞLIYOR...")
+    print("SCALP BOT v1.5 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
