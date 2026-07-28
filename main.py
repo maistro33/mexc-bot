@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.1 — 28 Temmuz 2026
+SCALP BOT v1.2 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -306,6 +306,24 @@ def market_bilgisi_al():
     return _market_cache["markets"] or {}
 
 
+def sembol_max_kaldirac(sym, istenen_lev):
+    """v1.2 YENİ: her coin için Bitget'in izin verdiği MAX kaldıraç farklı
+    olabilir (özellikle küçük/yeni coinlerde 5x, 3x hatta 1x'e kadar düşebilir -
+    BTW örneğinde görüldüğü gibi 'Exceeded the maximum settable leverage'
+    hatası). Körü körüne istenen kaldıracı göndermek yerine, önce borsanın
+    o sembol için verdiği limiti okuyup istenenle kıyaslıyoruz, düşük olanı
+    kullanıyoruz. Bu sayede hem hata mesajı önleniyor hem de gerçek kullanılan
+    kaldıraç, pozisyon büyüklüğü hesabıyla tutarlı kalıyor."""
+    markets = market_bilgisi_al()
+    m = markets.get(sym)
+    if not m:
+        return istenen_lev
+    max_lev = (m.get("limits", {}) or {}).get("leverage", {}).get("max")
+    if max_lev is None:
+        return istenen_lev
+    return min(istenen_lev, int(max_lev))
+
+
 def piyasa_izleyici_aday_havuzu():
     """AJAN 1 - ADIM A: borsanın TAMAMINI tek istekte tarar, RWA/durgun majörleri
     eler, hacim+hareket bazlı en 'canlı' ADAY_HAVUZU_BUYUKLUGU coini döner.
@@ -519,17 +537,23 @@ def islem_acici_pozisyon_ac(sinyal):
     if sl_mesafe_pct <= 0:
         return
     notional = risk_dolar / sl_mesafe_pct
-    gereken_marj = notional / LEV
+
+    # v1.2: gerçek kullanılabilir kaldıraç önceden belirlenir (bkz.
+    # sembol_max_kaldirac notu) - marj hesabı da BUNA göre yapılır, "Exceeded
+    # the maximum settable leverage" hatasını ve sonrasındaki tutarsız marj
+    # kullanımını baştan engeller.
+    LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
+    gereken_marj = notional / LEV_KULLANILAN
 
     MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
     if gereken_marj > bakiye * MAX_MARJ_PCT:
-        notional = bakiye * MAX_MARJ_PCT * LEV
-        gereken_marj = notional / LEV
+        notional = bakiye * MAX_MARJ_PCT * LEV_KULLANILAN
+        gereken_marj = notional / LEV_KULLANILAN
 
     amount = notional / entry
 
     try:
-        exchange.set_leverage(LEV, sym)
+        exchange.set_leverage(LEV_KULLANILAN, sym)
     except Exception as e:
         log.warning(f"[KALDIRAC] {sym}: {e}")
 
@@ -548,7 +572,10 @@ def islem_acici_pozisyon_ac(sinyal):
         return
 
     time.sleep(0.8)
-    LEV_KULLANILAN = LEV
+    # not: LEV_KULLANILAN zaten yukarıda sembol_max_kaldirac() ile doğru
+    # ayarlanmıştı - burada sadece borsanın GERÇEKTE uyguladığı değeri
+    # teyit ediyoruz, varsayılan olarak LEV (istenen ham değer) değil,
+    # zaten hesapladığımız kırpılmış değeri koruyoruz.
     try:
         pozisyon_bilgisi = exchange.fetch_positions([sym])
         gercek_pos = next((p for p in pozisyon_bilgisi if safe(p.get("contracts")) > 0), None)
@@ -741,7 +768,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.1 (2 sinyal tipi: ani patlama + sürdürülebilir tırmanış)\n"
+                f"Sürüm: v1.2 (coin-bazlı max kaldıraç otomatik tespiti)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -827,7 +854,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.1 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v1.2 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1017,7 +1044,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.1 BAŞLIYOR...")
+    print("SCALP BOT v1.2 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
