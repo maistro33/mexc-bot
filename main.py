@@ -1,7 +1,32 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SÜRÜM: v8.0 — 28 Temmuz 2026
+SÜRÜM: v8.1 — 28 Temmuz 2026
+════════════════════════════════════════════════════════
+v8.1 DEĞİŞİKLİK (v8.0'dan): REJİM-DÖNÜŞÜNDE ERKEN ÇIKIŞ
+Kullanıcı gözlemi: BTC hızlı düşüşe geçtiğinde bot (4h mum bazlı rejim
+filtresi yüzünden) geç fark ediyor, SL'e kadar bekliyor. Bunu doğrulamak
+için AYNI 129 coin verisiyle 3 varyant test edildi:
+  - BASELINE (4h rejim, mevcut): 544 işlem, %61.8 kazanma, +75.9R
+  - VARYANT A (1h rejim ile giriş kararı da hızlandırılsın): 472 işlem,
+    %60.2 kazanma, +53.1R -> DAHA KÖTÜ (1h ADX/MA20 çok gürültülü,
+    iyi kurulumları da eliyor) - UYGULANMADI.
+  - VARYANT B (giriş 4h'de kalsın, ama AÇIK pozisyonda BTC 1h rejimi
+    pozisyonun aleyhine dönerse SL/TP beklemeden erken kapat): 557
+    işlem, %62.5 kazanma, +93.0R, ort +0.167R/işlem -> DAHA İYİ, hem
+    ilk hem ikinci yarıda tutarlı iyileşme (overfitting değil).
+    Rejim-dönüşünde kapanan 30 işlemin kendisi zarar ediyor (-4.3R,
+    %33 kazanma) AMA ortalama -0.14R'de kesiliyor - tam SL'e gitseydi
+    -1R olurdu. Yani mekanizma "kaybı büyümeden durdurma" olarak
+    çalışıyor, tam olarak şikayet edilen gecikmeyi hedefliyor.
+    ⚠️ Dikkat: max drawdown bu varyantta hafif arttı (-10.1R->-12.3R),
+    izlenmeli.
+Bu yüzden v8.1'de: giriş kararı YİNE 4h BTC rejimine bakıyor (değişmedi),
+ama manage_loop artık her turda BTC 1h rejimini de kontrol ediyor - açık
+bir LONG pozisyon varken BTC 1h'de bearish'e (fiyat<MA20 VE ADX>=eşik)
+dönerse, o pozisyon SL/TP beklenmeden piyasa emriyle kapatılıyor (SHORT
+için simetrik). ADX şartı da eklendi ki zayıf/kararsız 1h dalgalanmalar
+gereksiz erken çıkışa yol açmasın.
 ════════════════════════════════════════════════════════
 v8.0 DEĞİŞİKLİK ÖZETİ (v7.15'ten):
 
@@ -370,12 +395,29 @@ def get_df(sym, tf, limit=60):
 
 
 def btc_rejimi_al():
+    """Giriş kararı için kullanılan YAVAŞ (4h) rejim filtresi - v8.1'de değişmedi."""
     df4h = get_df(BTC_SEMBOL, "4h", GOSTERGE_MUM_SAYISI_4H)
     if df4h is None or len(df4h) < 30:
         return None, None, None
     ma20 = df4h["close"].rolling(20).mean().iloc[-1]
     fiyat = df4h["close"].iloc[-1]
     adx_deger = adx(df4h, 14).iloc[-1]
+    if pd.isna(ma20) or pd.isna(adx_deger):
+        return None, None, None
+    trend_guclu = adx_deger >= ADX_ESIK
+    return (fiyat > ma20), (fiyat < ma20), trend_guclu
+
+
+def btc_rejimi_al_1h():
+    """v8.1 YENİ: açık pozisyonları erken kapatmak için kullanılan HIZLI (1h)
+    rejim filtresi. Backtest doğrulaması: bkz. üstteki v8.1 notu - 129 coin,
+    557 işlem, %62.5 kazanma, +93.0R (baseline'dan +17.1R daha iyi)."""
+    df1h = get_df(BTC_SEMBOL, "1h", GOSTERGE_MUM_SAYISI_1H)
+    if df1h is None or len(df1h) < 30:
+        return None, None, None
+    ma20 = df1h["close"].rolling(20).mean().iloc[-1]
+    fiyat = df1h["close"].iloc[-1]
+    adx_deger = adx(df1h, 14).iloc[-1]
     if pd.isna(ma20) or pd.isna(adx_deger):
         return None, None, None
     trend_guclu = adx_deger >= ADX_ESIK
@@ -900,7 +942,7 @@ if bot:
 
     def panel_ayarlar_metni():
         satirlar = ["⚙️ STRATEJİ AYARLARI\n"]
-        satirlar.append(f"Sürüm: v8.0")
+        satirlar.append(f"Sürüm: v8.1")
         satirlar.append(f"Coin evreni: {len(COINS)} coin (backtest doğrulamalı, RWA/durgun majör hariç)")
         satirlar.append(f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}")
         satirlar.append(f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i")
@@ -1217,8 +1259,8 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v8.0 — MAX_POS={MAX_POS})\n"
-       f"Strateji: pullback (LONG+SHORT), backtest: 129 coin, %61.8 kazanma, +0.14R/işlem ort.\n"
+    tg(f"🚀 YENİ STRATEJİ BOTU başladı (SÜRÜM: v8.1 — MAX_POS={MAX_POS})\n"
+       f"Strateji: pullback (LONG+SHORT) + 1h rejim-dönüşü erken çıkışı, backtest: %62.5 kazanma, +0.17R/işlem ort.\n"
        f"Coin evreni: {len(COINS)} coin (her turda en güçlü {MAX_POS} sinyal seçilir)\n"
        f"Kaldıraç: {LEV}x | İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
        f"BTC ADX filtresi: piyasa yatayken (ADX<{ADX_ESIK}) işlem aranmaz\n"
@@ -1301,6 +1343,26 @@ def manage_loop():
                 time.sleep(15)
                 continue
 
+            # v8.1 YENİ: BTC 1h rejimi pozisyonun aleyhine dönerse SL/TP
+            # beklemeden erken çıkış. Backtest: bu mekanizma sayesinde
+            # kesilen işlemler ortalama -0.14R'de kapanıyor (tam SL -1R
+            # olurdu) - "kaybı büyümeden durdurma" mantığı.
+            if semboller:
+                btc_bull_1h, btc_bear_1h, btc_strong_1h = btc_rejimi_al_1h()
+                if btc_bull_1h is not None and btc_strong_1h:
+                    for sym in list(semboller):
+                        with state_lock:
+                            durum = trade_state.get(sym)
+                        if not durum:
+                            continue
+                        direction = durum.get("direction")
+                        rejim_donmus = (direction == "long" and btc_bear_1h) or \
+                                        (direction == "short" and btc_bull_1h)
+                        if rejim_donmus:
+                            tg(f"⚡ {sym} [{direction.upper()}] — BTC 1h rejimi aleyhe döndü, "
+                               f"SL/TP beklenmeden erken kapatılıyor")
+                            gercek_pozisyon_kapat(sym, oran=1.0, sebep="rejim_donusu")
+
             if KAR_ESIGI_ROI_PCT > 0:
                 for sym in list(semboller):
                     with state_lock:
@@ -1370,7 +1432,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("YENİ STRATEJİ BOTU v8.0 BAŞLIYOR...")
+    print("YENİ STRATEJİ BOTU v8.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
