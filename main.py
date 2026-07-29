@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.8 — 28 Temmuz 2026
+SCALP BOT v1.9 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -556,53 +556,54 @@ def islem_acici_pozisyon_ac(sinyal):
     notional = risk_dolar / sl_mesafe_pct
 
     # v1.2: gerçek kullanılabilir kaldıraç önceden belirlenir (bkz.
-    # sembol_max_kaldirac notu) - marj hesabı da BUNA göre yapılır, "Exceeded
-    # the maximum settable leverage" hatasını ve sonrasındaki tutarsız marj
-    # kullanımını baştan engeller.
+    # sembol_max_kaldirac notu) - marj hesabı da BUNA göre yapılır.
     LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
 
-    # v1.8 DÜZELTME: BTW örneğinde görüldü - market_bilgisi_al() geçici bir
-    # ağ/API hatasıyla başarısız olursa, sembol_max_kaldirac() sessizce
-    # "bilmiyorum, istenen kaldıracı kullan" diyerek 10x'e geri dönüyordu ve
-    # aynı hata (40797) tekrar oluşuyordu. Artık set_leverage GERÇEKTEN
-    # başarısız olursa (önbellek ne derse desin), kaldıraç kademeli olarak
-    # (10->5->3->2->1) düşürülüp YENİDEN denenir - borsanın gerçek cevabına
-    # göre kendini düzeltir, tek bir veri kaynağına bağımlı kalmaz.
+    # v1.9 DÜZELTME: v1.8'de sadece set_leverage() çağrısı yeniden deneniyordu,
+    # ama BTW'de hata GİRİŞ EMRİNİN KENDİSİNDE (create_market_order) tekrar
+    # oluştu - yani set_leverage muhtemelen "başarılı" görünmüştü ama borsa
+    # tarafında değişikliğin oturması (propagation) zaman almış olabilir, ya da
+    # emrin kendisi ayrı bir kontrolden geçiyor. Artık kaldıraç ayarlama VE
+    # giriş emri TEK bir döngüde birlikte deneniyor - hangisi başarısız olursa
+    # olsun kaldıraç düşürülüp ikisi baştan deneniyor. Ayrıca set_leverage
+    # sonrası kısa bir bekleme eklendi (borsa tarafında oturması için).
+    qty = None
     for deneme in range(5):
+        gereken_marj = notional / LEV_KULLANILAN
+        MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
+        notional_bu_deneme = notional
+        if gereken_marj > bakiye * MAX_MARJ_PCT:
+            notional_bu_deneme = bakiye * MAX_MARJ_PCT * LEV_KULLANILAN
+        amount = notional_bu_deneme / entry
+        try:
+            qty = float(exchange.amount_to_precision(sym, amount))
+        except Exception as e:
+            tg(f"⚠️ {sym} miktar hesaplanamadı: {e}")
+            return
+        if qty <= 0:
+            return
+
         try:
             exchange.set_leverage(LEV_KULLANILAN, sym)
+            time.sleep(0.3)  # borsada kaldıraç değişikliğinin oturması için
+        except Exception as e:
+            log.warning(f"[KALDIRAC] {sym}: set_leverage {LEV_KULLANILAN}x hata: {e}")
+
+        try:
+            exchange.create_market_order(sym, "buy", qty)
+            notional = notional_bu_deneme
             break
         except Exception as e:
-            if "40797" in str(e) or "maximum settable leverage" in str(e).lower():
-                if LEV_KULLANILAN <= 1:
-                    tg(f"⚠️ {sym} atlandı — kaldıraç 1x'te bile ayarlanamadı: {e}")
-                    return
+            hata_metni = str(e)
+            leverage_hatasi = "40797" in hata_metni or "maximum settable leverage" in hata_metni.lower() or "leverage" in hata_metni.lower()
+            if leverage_hatasi and LEV_KULLANILAN > 1 and deneme < 4:
                 LEV_KULLANILAN = max(1, LEV_KULLANILAN // 2)
-                log.warning(f"[KALDIRAC] {sym}: izin verilen max aşıldı, {LEV_KULLANILAN}x ile tekrar deneniyor")
+                log.warning(f"[GIRIS] {sym}: kaldıraç kaynaklı hata, {LEV_KULLANILAN}x ile tekrar deneniyor: {e}")
                 continue
-            log.warning(f"[KALDIRAC] {sym}: {e}")
-            break
-
-    gereken_marj = notional / LEV_KULLANILAN
-    MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
-    if gereken_marj > bakiye * MAX_MARJ_PCT:
-        notional = bakiye * MAX_MARJ_PCT * LEV_KULLANILAN
-        gereken_marj = notional / LEV_KULLANILAN
-
-    amount = notional / entry
-
-    try:
-        qty = float(exchange.amount_to_precision(sym, amount))
-    except Exception as e:
-        tg(f"⚠️ {sym} miktar hesaplanamadı: {e}")
-        return
-    if qty <= 0:
-        return
-
-    try:
-        exchange.create_market_order(sym, "buy", qty)
-    except Exception as e:
-        tg(f"⚠️ {sym} giriş emri başarısız: {e}")
+            tg(f"⚠️ {sym} giriş emri başarısız (denenen kaldıraç: {LEV_KULLANILAN}x): {e}")
+            return
+    else:
+        tg(f"⚠️ {sym} atlandı — 5 denemede de giriş emri açılamadı")
         return
 
     time.sleep(0.8)
@@ -808,7 +809,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.8 (kaldıraç kendini düzeltiyor - BTW örneği)\n"
+                f"Sürüm: v1.9 (kaldıraç+giriş emri birlikte kendini düzeltiyor)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -953,7 +954,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.8 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v1.9 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1174,7 +1175,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.8 BAŞLIYOR...")
+    print("SCALP BOT v1.9 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
