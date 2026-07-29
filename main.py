@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v2.7 — 29 Temmuz 2026
+SCALP BOT v2.9 — 29 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -159,7 +159,11 @@ GOSTERGE_MUM_15M = 40
 # ── RİSK/GÜVENLİK AYARLARI ──
 LEV_HAM_DEGER = os.getenv("LEV")
 LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10
-RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.05"))
+RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
+# v2.9: kullanıcı talebiyle %5'ten %10'a çıkarıldı - daha büyük marj/pozisyon
+# ve dolayısıyla TP'lerde daha büyük $ kazanç için. SL mesafesine göre otomatik
+# ölçeklendiği için risk oranı yine de tutarlı kalıyor (sabit $ marjdan farklı
+# olarak) - sadece o oran büyüdü.
 MAX_POS = int(os.getenv("MAX_POS", "2"))
 GUNLUK_ZARAR_LIMIT_PCT = 0.15
 HAFTALIK_ZARAR_LIMIT_PCT = float(os.getenv("HAFTALIK_ZARAR_LIMIT_PCT", "0.25"))
@@ -591,7 +595,6 @@ def islem_acici_pozisyon_ac(sinyal):
         tg(f"⚠️ {sym} atlandı — bakiye alınamadı")
         return
 
-    risk_dolar = bakiye * RISK_PCT_BAKIYE
     sl = entry - ATR_CARPANI_SL * atr_val
     # v1.3: ATR anomali yüzünden şişmişse SL/TP mesafesini tavana çek
     if (entry - sl) / entry > MAX_SL_PCT:
@@ -600,6 +603,13 @@ def islem_acici_pozisyon_ac(sinyal):
     if sl_mesafe_pct <= 0:
         acilis_basarisiz_cooldown_uygula(sym)
         return
+
+    # v2.9: pozisyon büyüklüğü RISK_PCT_BAKIYE ile ölçekleniyor (marj sabit
+    # $ değil - SL mesafesine göre otomatik ayarlanıyor ki her işlemde gerçek
+    # $ risk tutarlı kalsın). Daha büyük marj/kâr isteniyorsa RISK_PCT_BAKIYE
+    # büyütülür (varsayılan %5 -> %10) - bu, sabit $ marjdan daha güvenli,
+    # çünkü SL dar/geniş olduğuna göre riski dengede tutuyor.
+    risk_dolar = bakiye * RISK_PCT_BAKIYE
     notional = risk_dolar / sl_mesafe_pct
 
     # v1.2: gerçek kullanılabilir kaldıraç önceden belirlenir (bkz.
@@ -751,7 +761,14 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
             with state_lock:
                 trade_state.pop(sym, None)
             durumu_diske_yaz()
-            return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi."
+            # v2.8 DÜZELTME: DIA örneğinde görüldü - pozisyon çağrıldığı anda
+            # borsada ZATEN kapanmışsa (örn. borsanın kendi SL'i az önce
+            # tetiklenmiş, biz henüz haberdar olmadan), bu erken çıkış
+            # cooldown UYGULAMIYORDU - coin hemen tekrar açılabiliyordu.
+            with cooldown_lock:
+                son_kapanis_zamani[sym] = time.time()
+            cooldown_diske_yaz()
+            return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi (cooldown uygulandı)."
 
         qty = safe(gercek_pos.get("contracts"))
         entry_fiyat = safe(gercek_pos.get("entryPrice"))
@@ -884,7 +901,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v2.7 (tek, backtest doğrulamalı TP yapısı)\n"
+                f"Sürüm: v2.9 (risk %{RISK_PCT_BAKIYE*100:.0f} - marj/kâr büyütüldü)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1077,7 +1094,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v2.7 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.9 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1368,7 +1385,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v2.7 BAŞLIYOR...")
+    print("SCALP BOT v2.9 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
