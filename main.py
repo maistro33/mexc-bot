@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v2.1 — 29 Temmuz 2026
+SCALP BOT v2.2 — 29 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -666,15 +666,39 @@ def islem_acici_pozisyon_ac(sinyal):
     notional = qty * entry
     r_risk = entry - sl
 
-    # Hard SL - TAM miktar için
+    # v2.2 KRİTİK GÜVENLİK DÜZELTMESİ: UB örneğinde SL emri borsaya
+    # YERLEŞEMEDİ ama kod bunu SADECE Railway logunda sessizce kaydediyordu -
+    # Telegram'a hiç haber gitmiyordu, pozisyon TAMAMEN KORUMASIZ kaldı ve
+    # gerçek para kaybı oldu. Artık: (1) SL yerleştirme 3 kez denenir ve
+    # GERÇEKTEN oluştuğu doğrulanır, (2) hâlâ başarısız olursa pozisyon
+    # SL'siz AÇIK BIRAKILMAZ - hemen piyasa fiyatından kapatılır ve sana
+    # ACİL bir uyarı gider - "sessiz başarısızlık" artık mümkün değil.
     sl_emir_id = None
-    try:
-        sl_fiyat = float(exchange.price_to_precision(sym, sl))
-        sl_emri = exchange.create_order(sym, "market", "sell", qty, None,
-                                         {"reduceOnly": True, "stopLossPrice": sl_fiyat})
-        sl_emir_id = sl_emri.get("id")
-    except Exception as e:
-        log.warning(f"[HARD_STOP] {sym}: {e}")
+    sl_fiyat = float(exchange.price_to_precision(sym, sl))
+    for sl_deneme in range(3):
+        try:
+            sl_emri = exchange.create_order(sym, "market", "sell", qty, None,
+                                             {"reduceOnly": True, "stopLossPrice": sl_fiyat})
+            sl_emir_id = sl_emri.get("id")
+            if sl_emir_id:
+                break
+        except Exception as e:
+            log.warning(f"[HARD_STOP] {sym} deneme {sl_deneme+1}/3: {e}")
+        time.sleep(0.5)
+
+    if not sl_emir_id:
+        # 3 denemede de SL yerleştirilemedi - pozisyonu KORUMASIZ BIRAKMA,
+        # hemen kapat ve acil uyar.
+        tg(f"🚨 ACİL: {sym} için SL emri 3 denemede de yerleştirilemedi! "
+           f"Pozisyon KORUMASIZ kalmasın diye HEMEN piyasa fiyatından kapatılıyor.")
+        try:
+            exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+            tg(f"✅ {sym} güvenlik amaçlı kapatıldı (SL yerleştirilemediği için).")
+        except Exception as e:
+            tg(f"🚨🚨 KRİTİK: {sym} SL YERLEŞTİRİLEMEDİ VE GÜVENLİK KAPATMASI DA BAŞARISIZ OLDU: {e}\n"
+               f"LÜTFEN HEMEN BORSAYA GİRİP MANUEL KONTROL ET.")
+        acilis_basarisiz_cooldown_uygula(sym)
+        return
 
     # 3 kademeli TP emri
     tp_emirleri = []
@@ -853,7 +877,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v2.1 (zirveye yakın giriş filtresi - ESP örneği)\n"
+                f"Sürüm: v2.2 KRİTİK: SL doğrulama+güvenlik ağı (UB örneği, gerçek zarar sonrası)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -998,7 +1022,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v2.1 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.2 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1088,6 +1112,28 @@ def manage_loop():
                     tg(f"⏱️ {sym} — max tutma süresi ({MAX_HOLD_SAAT}sa) aşıldı, piyasa fiyatından kapatılıyor")
                     pozisyonu_tamamen_kapat(sym, sebep="max_hold_timeout")
                     continue
+
+                # v2.2 YENİ - YAZILIM TARAFI SL GÜVENLİK AĞI: UB örneğinde borsa
+                # SL emri hiç yerleşmemişti (bkz. islem_acici_pozisyon_ac'taki
+                # düzeltme, bunu artık açılışta yakalayıp engelliyor). Ama yine
+                # de - emir sonradan iptal olursa, borsa tarafında bir aksaklık
+                # olursa, ya da başka bir sebeple borsadaki SL çalışmazsa diye -
+                # bot burada BAĞIMSIZ OLARAK, borsadaki emre hiç güvenmeden,
+                # güncel fiyatı kendi kayıtlı SL seviyesiyle karşılaştırıyor.
+                # Fiyat SL'i geçmişse ve pozisyon hâlâ açıksa, borsa ne derse
+                # desin BOT KENDİSİ hemen piyasa fiyatından kapatıyor. Bu,
+                # borsadaki emirle YEDEKLİ çalışan ikinci bir güvenlik katmanı.
+                try:
+                    t = exchange.fetch_ticker(sym)
+                    guncel_fiyat = safe(t["last"])
+                    if guncel_fiyat > 0 and guncel_fiyat <= durum["sl_guncel"]:
+                        tg(f"🛡️ YAZILIM SL GÜVENLİK AĞI: {sym} fiyatı ({guncel_fiyat:.6f}) "
+                           f"SL seviyesini ({durum['sl_guncel']:.6f}) geçti — borsadaki emir ne "
+                           f"durumda olursa olsun bot kendisi HEMEN kapatıyor.")
+                        pozisyonu_tamamen_kapat(sym, sebep="yazilim_sl_guvenlik_agi")
+                        continue
+                except Exception as e:
+                    log.warning(f"[SL_GUVENLIK_AGI] {sym}: fiyat kontrol edilemedi: {e}")
 
                 # borsadaki gerçek pozisyon hâlâ açık mı?
                 try:
@@ -1219,7 +1265,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v2.1 BAŞLIYOR...")
+    print("SCALP BOT v2.2 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
