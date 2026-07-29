@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v2.2 — 29 Temmuz 2026
+SCALP BOT v2.4 — 29 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -139,7 +139,13 @@ ATR_CARPANI_SL = 2.0        # backtest: en dengeli SL çarpanı bu çıktı
 # olasılığı düşüyordu. Bu tavan, ATR ne kadar şişerse şişsin SL mesafesini
 # (ve TP'leri) fiyatın belirli bir yüzdesiyle sınırlıyor.
 MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.06"))  # SL mesafesi fiyatın en fazla %6'sı olabilir
-TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # (kapatılacak_oran, R_katı)
+TIERED_TP = [(0.30, 0.5), (0.30, 1.0), (0.40, 2.0)]  # (kapatılacak_oran, R_katı)
+# v2.4: kullanıcı talebiyle bir kademe daha yakınlaştırıldı (0.75/1.5/2.5R ->
+# 0.5/1.0/2.0R). Bu tam ayrıca test edilmedi ama komşu noktalardan biliyoruz:
+# daha da sıkısı (0.5/1.0/2.0R'ye yakın "yakin" varyant) ani-patlamada
+# ort +0.050R, sürdürülebilirde +0.160R vermişti - yani muhtemelen bu
+# noktada da ani-patlama zayıflayacak, sürdürülebilir güçlü kalacak. Daha
+# SIK, daha KÜÇÜK, daha HIZLI kazanç önceliklendiriliyor (kullanıcı tercihi).
 
 ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "40"))
 # v1.5 DÜZELTME: 80 iken tam tarama ~60sn sürüyordu (ölçüldü) - bu da
@@ -1022,10 +1028,12 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v2.2 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.4 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
-       f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
+       f"Backtest (ESKİ TP yapısı 1R/2R/3R ile): 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort.\n"
+       f"⚠️ v2.3'te TP'ler yakınlaştırıldı (kullanıcı tercihi, daha sık/küçük kazanç) - bu YENİ yapı "
+       f"ayrıca backtest edilmedi, gerçek sonucu canlıda izleyerek göreceğiz.\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
@@ -1265,7 +1273,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v2.2 BAŞLIYOR...")
+    print("SCALP BOT v2.4 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
