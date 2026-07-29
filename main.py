@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v2.6 — 29 Temmuz 2026
+SCALP BOT v2.7 — 29 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -139,53 +139,14 @@ ATR_CARPANI_SL = 2.0        # backtest: en dengeli SL çarpanı bu çıktı
 # olasılığı düşüyordu. Bu tavan, ATR ne kadar şişerse şişsin SL mesafesini
 # (ve TP'leri) fiyatın belirli bir yüzdesiyle sınırlıyor.
 MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.06"))  # SL mesafesi fiyatın en fazla %6'sı olabilir
-# v2.5: kullanıcı talebiyle - TP yapısı bakiye büyüdükçe KENDİLİĞİNDEN
-# kademeli olarak genişler (tek seferlik değil, sürekli). Küçük bakiyede
-# sık/küçük kazanç (kasa büyütme), bakiye büyüdükçe "büyük balık" peşinde
-# koşma moduna otomatik geçiş. Her aşama (bakiye_esigi, TP_yapisi, etiket).
-# tarama_loop her turda bakiyeyi kontrol edip uygun aşamayı otomatik seçer -
-# bakiye düşerse bir alt aşamaya da geri dönebilir (o an ki gerçek bakiyeye
-# göre risk profili ayarlanır, "kilitli" bir geçiş değil).
-TP_ASAMALARI = [
-    (0,   [(0.30, 0.5), (0.30, 1.0), (0.40, 2.0)], "Aşama 1: Kasa büyütme (küçük/hızlı kazanç)"),
-    (25,  [(0.30, 0.75), (0.30, 1.5), (0.40, 2.5)], "Aşama 2: Orta hedefler"),
-    (50,  [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)], "Aşama 3: Standart (backtest doğrulamalı)"),
-    (100, [(0.30, 1.25), (0.30, 2.5), (0.40, 4.0)], "Aşama 4: Büyük balık"),
-    (200, [(0.30, 1.5), (0.30, 3.0), (0.40, 5.0)], "Aşama 5: Agresif büyük balık"),
-]
-TIERED_TP = list(TP_ASAMALARI[0][1])  # aktif TP yapısı - calışma zamanında değişir
-mevcut_asama_index = 0
-ASAMA_PATH = os.getenv("ASAMA_PATH", "/data/scalp_asama.json")
-
-
-def uygun_asama_bul(bakiye):
-    """Bakiyeye göre en yüksek uygun aşamayı döner (esik, tp_yapisi, etiket, index)."""
-    secilen = 0
-    for i, (esik, tp, etiket) in enumerate(TP_ASAMALARI):
-        if bakiye >= esik:
-            secilen = i
-    return secilen
-
-
-def asama_kontrol_et():
-    """v2.5: her tarama turunda çağrılır - bakiyeye göre doğru TP aşamasını
-    seçer, değiştiyse global TIERED_TP'yi günceller ve Telegram'a haber verir."""
-    global TIERED_TP, mevcut_asama_index
-    bakiye = gercek_bakiye_al()
-    if bakiye is None:
-        return
-    yeni_index = uygun_asama_bul(bakiye)
-    if yeni_index != mevcut_asama_index:
-        eski_index = mevcut_asama_index
-        eski_etiket = TP_ASAMALARI[eski_index][2]
-        yeni_etiket = TP_ASAMALARI[yeni_index][2]
-        yon = "📈 YÜKSELDİ" if yeni_index > eski_index else "📉 DÜŞTÜ"
-        mevcut_asama_index = yeni_index
-        TIERED_TP = list(TP_ASAMALARI[yeni_index][1])
-        atomik_yaz(ASAMA_PATH, {"index": mevcut_asama_index})
-        tg(f"🔄 TP AŞAMASI {yon} (bakiye: {bakiye:.2f}$)\n"
-           f"{eski_etiket} → {yeni_etiket}\n"
-           f"Yeni TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP))
+# v2.7 DÜZELTME: çoklu-aşama TP sistemi (v2.5) KALDIRILDI. Kullanıcı geri
+# bildirimi: "kasa büyütme" adına sıkıştırılan TP'ler (0.5R/1R/2R) backtest'te
+# zaten ZAYIF çıkmıştı (ort +0.05R/işlem), oysa aşağıdaki tek yapı (1R/2R/3R)
+# +0.197R/işlem veriyordu - kasa büyütmenin matematiği "sık kazan" değil
+# "toplam R'yi maksimize et". Çoklu aşama sistemi de kafa karıştırıcıydı.
+# Artık TEK, backtest doğrulamalı TP yapısı kullanılıyor.
+TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # backtest: 131 işlem/15gün,
+# %58 kazanma, ort +0.197R/işlem, iki zaman yarısında da pozitif ve tutarlı.
 
 ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "40"))
 # v1.5 DÜZELTME: 80 iken tam tarama ~60sn sürüyordu (ölçüldü) - bu da
@@ -923,7 +884,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v2.5 (TP aşaması otomatik büyüyor: {TP_ASAMALARI[mevcut_asama_index][2]})\n"
+                f"Sürüm: v2.7 (tek, backtest doğrulamalı TP yapısı)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1116,23 +1077,21 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v2.6 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.7 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
-       f"SL={ATR_CARPANI_SL}x ATR | Şu anki TP aşaması: {TP_ASAMALARI[mevcut_asama_index][2]}\n"
-       f"TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
-       f"🔄 v2.5 YENİ: TP yapısı bakiye büyüdükçe OTOMATİK genişler (kasa büyütme -> büyük balık), "
-       f"eşikler: " + ", ".join(f"${e}+" for e, _, _ in TP_ASAMALARI) + "\n"
+       f"SL={ATR_CARPANI_SL}x ATR | TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
+       f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
+       f"🔧 v2.7: çoklu-aşama TP sistemi kaldırıldı (kafa karıştırıcıydı, backtest'te de zayıf çıkmıştı) - "
+       f"tek, kanıtlanmış TP yapısına sabitlendi. Ayrıca TP1/başabaş kontrolü artık SL güvenlik ağından ÖNCE çalışıyor (RAVE bugı düzeltildi).\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
     baslangic_uzlastirma()
     gunluk_haftalik_reset_kontrol()
-    asama_kontrol_et()
 
     while True:
         try:
             gunluk_haftalik_reset_kontrol()
-            asama_kontrol_et()
 
             if gunluk_limit_kontrolu() or haftalik_limit_kontrolu():
                 time.sleep(KONTROL_ARALIGI_SN)
@@ -1210,6 +1169,52 @@ def manage_loop():
                     tg(f"⏱️ {sym} — max tutma süresi ({MAX_HOLD_SAAT}sa) aşıldı, piyasa fiyatından kapatılıyor")
                     pozisyonu_tamamen_kapat(sym, sebep="max_hold_timeout")
                     continue
+
+                # v2.7 KRİTİK SIRA DÜZELTMESİ: RAVE örneğinde görüldü - TP1 dolmuş
+                # ve SL başabaşa çekilmesi gerekirken, YAZILIM SL GÜVENLİK AĞI bunu
+                # fark etmeden ÖNCE eski (dar) SL'e göre pozisyonu kapatıyordu.
+                # Artık TP dolum/başabaş kontrolü ÖNCE yapılıyor, güvenlik ağı
+                # SONRA (güncellenmiş SL ile) çalışıyor.
+                try:
+                    pozlar_erken = exchange.fetch_positions([sym])
+                    gercek_pos_erken = next((p for p in pozlar_erken if safe(p.get("contracts")) > 0), None)
+                except Exception:
+                    gercek_pos_erken = None
+
+                if gercek_pos_erken:
+                    guncel_qty_erken = safe(gercek_pos_erken.get("contracts"))
+                    degisti_erken = False
+                    for t in durum["tp_emirleri"]:
+                        if t.get("dolu"):
+                            continue
+                        try:
+                            emir_durumu = exchange.fetch_order(t["id"], sym)
+                            if emir_durumu.get("status") in ("closed", "filled"):
+                                t["dolu"] = True
+                                degisti_erken = True
+                        except Exception:
+                            pass
+                    if degisti_erken and not durum.get("breakeven_cekildi"):
+                        try:
+                            if durum.get("sl_emir_id"):
+                                exchange.cancel_order(durum["sl_emir_id"], sym)
+                        except Exception:
+                            pass
+                        try:
+                            yeni_sl_fiyat = float(exchange.price_to_precision(sym, durum["entry"]))
+                            yeni_sl_emri = exchange.create_order(sym, "market", "sell", guncel_qty_erken, None,
+                                                                  {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
+                            with state_lock:
+                                durum["sl_emir_id"] = yeni_sl_emri.get("id")
+                                durum["sl_guncel"] = yeni_sl_fiyat
+                                durum["breakeven_cekildi"] = True
+                            durumu_diske_yaz()
+                            tg(f"🔒 {sym} — ilk TP vuruldu, SL başabaşa ({yeni_sl_fiyat:.6f}) çekildi. "
+                               f"Bu andan sonra pozisyon en kötü ihtimalle sıfır zararla kapanır.")
+                        except Exception as e:
+                            log.warning(f"[BREAKEVEN_ERKEN] {sym}: {e}")
+                    elif degisti_erken:
+                        durumu_diske_yaz()
 
                 # v2.2 YENİ - YAZILIM TARAFI SL GÜVENLİK AĞI: UB örneğinde borsa
                 # SL emri hiç yerleşmemişti (bkz. islem_acici_pozisyon_ac'taki
@@ -1363,15 +1368,11 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v2.6 BAŞLIYOR...")
+    print("SCALP BOT v2.7 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
     gunluk_haftalik_diskten_yukle()
-    _asama_veri = guvenli_oku(ASAMA_PATH, {})
-    if "index" in _asama_veri and 0 <= _asama_veri["index"] < len(TP_ASAMALARI):
-        mevcut_asama_index = _asama_veri["index"]
-        TIERED_TP = list(TP_ASAMALARI[mevcut_asama_index][1])
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
