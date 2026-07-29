@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v2.0 — 28 Temmuz 2026
+SCALP BOT v2.1 — 29 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -122,6 +122,11 @@ SUSTAINED_RET_WINDOW_BARS = 6   # 15m x 6 = 1.5 saat
 SUSTAINED_RET_THRESHOLD = 0.04  # %4 hareket
 SUSTAINED_VOL_RATIO_THRESH = 1.2
 SUSTAINED_ADX_ESIK = 15
+SUSTAINED_ZIRVE_MESAFE_MIN = float(os.getenv("SUSTAINED_ZIRVE_MESAFE_MIN", "0.03"))
+# v2.1: ESP örneği - fiyat son 2 saatin zirvesine bu orandan daha yakınsa
+# sürdürülebilir tırmanış sinyali ARANMAZ (dönüş riski yüksek). Backtest:
+# %3 eşiği ile kazanma %59->%71, ort R/işlem +0.206->+0.388 (komşu eşiklerde
+# de tutarlı iyileşme görüldü, tek noktaya özgü değil).
 
 ATR_CARPANI_SL = 2.0        # backtest: en dengeli SL çarpanı bu çıktı
 # v1.3 YENİ: SL/TP TAVANI. COTI örneğinde görüldü - bir coin dev tek mumla
@@ -421,7 +426,21 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
     """AJAN 1 - v1.1 YENİ: 'yavaş yanan' sürdürülebilir tırmanışları yakalar
     (VANRY örneği). Ani-patlama sinyalinden (yukarıdaki fonksiyon) BAĞIMSIZ
     çalışır, aynı aday havuzunda taranır. Sinyal tipi 'sustained' olarak
-    etiketlenir ki Telegram mesajlarında hangi mantıkla açıldığı belli olsun."""
+    etiketlenir ki Telegram mesajlarında hangi mantıkla açıldığı belli olsun.
+
+    v2.1 DÜZELTME: ESP örneğinde görüldü - bu sinyal geriye bakan göstergelere
+    (MA20, ADX, 1.5 saatlik getiri) dayandığı için, fiyat TAM TEPE YAPIP
+    DÖNMEYE BAŞLADIKTAN sonra bile birkaç mum boyunca 'hâlâ güçlü tırmanış'
+    gibi görünebiliyor - göstergeler geçmişe bakıyor, henüz dönüşü fark
+    etmiyor. Backtest (60 coin, 15 gün, 15m bar) bunu doğruladı: sinyal
+    fiyatının son 2 saatin (8x15dk) zirvesine YAKIN olduğu durumlar filtrelenip
+    çıkarılınca performans belirgin iyileşti:
+      - Filtresiz: 144 işlem, %59.0 kazanma, ort +0.206R/işlem
+      - Zirveye >%3 uzak şartı: 76 işlem, %71.1 kazanma, ort +0.388R/işlem
+        (komşu eşiklerde de - %2.5→+0.354, %3.5→+0.324 - tutarlı, tek
+        noktaya özgü bir tesadüf değil)
+    Yani artık: sinyal anındaki fiyat, son 2 saatin zirvesinin en az %3
+    ALTINDA olmalı - tam tepeye yakın girişler (ESP'deki gibi) elenir."""
     df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
     if df15 is None or len(df15) < 30:
         return None
@@ -433,6 +452,7 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
     df15["vol_ma6"] = df15["volume"].rolling(6).mean()
     df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
     df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
+    df15["zirve_2sa"] = df15["high"].rolling(8).max()
 
     row = df15.iloc[-1]
     if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
@@ -445,6 +465,13 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
     volume_ok = row["vol_ratio_sustained"] >= SUSTAINED_VOL_RATIO_THRESH
     if not (trend_ok and momentum_ok and volume_ok):
         return None
+
+    if pd.isna(row["zirve_2sa"]) or row["zirve_2sa"] <= 0:
+        return None
+    zirve_mesafe = (row["zirve_2sa"] - row["close"]) / row["zirve_2sa"]
+    if zirve_mesafe < SUSTAINED_ZIRVE_MESAFE_MIN:
+        return None  # fiyat zirveye cok yakin - dönüş riski yüksek, girme
+
     if not btc_bullish:
         return None
 
@@ -826,7 +853,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v2.0 (kalıcı açılış hatalarında da cooldown uygulanıyor)\n"
+                f"Sürüm: v2.1 (zirveye yakın giriş filtresi - ESP örneği)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -971,7 +998,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v2.0 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.1 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1192,7 +1219,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v2.0 BAŞLIYOR...")
+    print("SCALP BOT v2.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
