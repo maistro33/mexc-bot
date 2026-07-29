@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v2.5 — 29 Temmuz 2026
+SCALP BOT v2.6 — 29 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -985,6 +985,51 @@ if bot:
                 satirlar.append(f"  {sym}: {pnl:+.2f}$")
         return "\n".join(satirlar)
 
+    def panel_risk_metni():
+        """v2.6 YENİ: pullback botunda (v8.2) vardı, scalp botuna eklenmemişti -
+        günlük/haftalık zarar limiti durumu ve cooldown'daki coinler burada."""
+        satirlar = ["📉 RİSK DURUMU\n"]
+        with gunluk_lock:
+            gp = gunluk_pnl; hp = haftalik_pnl
+            gb = gunluk_baslangic_bakiye; hb = haftalik_baslangic_bakiye
+        if gb:
+            limit_dolar = gb * GUNLUK_ZARAR_LIMIT_PCT
+            kalan = limit_dolar + gp
+            satirlar.append(f"Günlük zarar limiti: -{limit_dolar:.2f}$ (bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i)")
+            satirlar.append(f"Bugünkü PnL: {gp:+.2f}$ | Limite kalan pay: {kalan:.2f}$")
+            satirlar.append("⛔ GÜNLÜK LİMİT AŞILDI - tarama duruyor" if gunluk_limit_kontrolu() else "✅ Günlük limit aşılmadı")
+        else:
+            satirlar.append("Günlük başlangıç bakiyesi henüz kaydedilmedi.")
+        if hb:
+            limit_dolar_h = hb * HAFTALIK_ZARAR_LIMIT_PCT
+            kalan_h = limit_dolar_h + hp
+            satirlar.append(f"\nHaftalık zarar limiti: -{limit_dolar_h:.2f}$ (bakiyenin %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f}'i)")
+            satirlar.append(f"Bu haftaki PnL: {hp:+.2f}$ | Limite kalan pay: {kalan_h:.2f}$")
+            satirlar.append("⛔ HAFTALIK LİMİT AŞILDI - tarama duruyor" if haftalik_limit_kontrolu() else "✅ Haftalık limit aşılmadı")
+        else:
+            satirlar.append("\nHaftalık başlangıç bakiyesi henüz kaydedilmedi.")
+
+        try:
+            btc_bull = btc_1h_bullish()
+            if btc_bull is None:
+                satirlar.append("\n₿ BTC 1h rejimi alınamadı")
+            elif btc_bull:
+                satirlar.append("\n₿ BTC 1h rejimi: 🟢 YÜKSELİŞTE - tarama aktif")
+            else:
+                satirlar.append("\n₿ BTC 1h rejimi: 🔴 DÜŞÜŞTE/YATAY - tarama DURUYOR (LONG sinyali aranmıyor)")
+        except Exception:
+            pass
+
+        with cooldown_lock:
+            cd = dict(son_kapanis_zamani)
+        aktif_cooldown = [(s, t) for s, t in cd.items() if (time.time()-t) < COOLDOWN_SAAT*3600]
+        if aktif_cooldown:
+            satirlar.append(f"\n🕐 Cooldown'da olan coinler ({COOLDOWN_SAAT}sa):")
+            for s, t in sorted(aktif_cooldown, key=lambda x: x[1], reverse=True)[:10]:
+                kalan_dk = (COOLDOWN_SAAT*3600 - (time.time()-t)) / 60
+                satirlar.append(f"  {s.split('/')[0]}: {kalan_dk:.0f} dk kaldı")
+        return "\n".join(satirlar)
+
     def ana_menu_klavye():
         markup = telebot.types.InlineKeyboardMarkup()
         markup.row(
@@ -995,6 +1040,7 @@ if bot:
             telebot.types.InlineKeyboardButton("📜 Geçmiş İşlemler", callback_data="panel_gecmis"),
             telebot.types.InlineKeyboardButton("🔬 Analiz", callback_data="panel_analiz"),
         )
+        markup.row(telebot.types.InlineKeyboardButton("📉 Risk Durumu", callback_data="panel_risk"))
         markup.row(telebot.types.InlineKeyboardButton("🔄 Yenile", callback_data="panel_ana"))
         return markup
 
@@ -1027,6 +1073,8 @@ if bot:
                 bot.edit_message_text(panel_gecmis_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             elif veri == "panel_analiz":
                 bot.edit_message_text(panel_analiz_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            elif veri == "panel_risk":
+                bot.edit_message_text(panel_risk_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             bot.answer_callback_query(call.id)
         except Exception as e:
             if "message is not modified" not in str(e):
@@ -1068,7 +1116,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v2.5 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.6 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | Şu anki TP aşaması: {TP_ASAMALARI[mevcut_asama_index][2]}\n"
        f"TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
@@ -1315,7 +1363,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v2.5 BAŞLIYOR...")
+    print("SCALP BOT v2.6 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
