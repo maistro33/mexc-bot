@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v1.9 — 28 Temmuz 2026
+SCALP BOT v2.0 — 28 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -532,6 +532,18 @@ def cooldown_da_mi(sym):
 # ════════════════════════════════════════════
 # AJAN 2: İŞLEM AÇICI — pozisyon açma, kademeli TP, breakeven kilit
 # ════════════════════════════════════════════
+def acilis_basarisiz_cooldown_uygula(sym):
+    """v2.0 YENİ: BTW örneğinde görüldü - açılış meşru bir sebeple (kaldıraç/
+    minimum tutar kısıtı gibi) başarısız olursa, cooldown UYGULANMIYORDU -
+    bu da her tarama turunda (dakikada bir) aynı coin için aynı başarısız
+    denemenin tekrarlanmasına, gereksiz Telegram mesajı kirliliğine yol
+    açıyordu. Artık başarısız açılışlar da normal bir kapanış gibi 1 saatlik
+    cooldown'a giriyor."""
+    with cooldown_lock:
+        son_kapanis_zamani[sym] = time.time()
+    cooldown_diske_yaz()
+
+
 def islem_acici_pozisyon_ac(sinyal):
     """AJAN 2: Ajan 1'den gelen sinyali alır, risk bazlı boyutlandırıp
     SL + 3 kademeli TP emirlerini borsaya yerleştirir."""
@@ -552,6 +564,7 @@ def islem_acici_pozisyon_ac(sinyal):
         sl = entry * (1 - MAX_SL_PCT)
     sl_mesafe_pct = (entry - sl) / entry
     if sl_mesafe_pct <= 0:
+        acilis_basarisiz_cooldown_uygula(sym)
         return
     notional = risk_dolar / sl_mesafe_pct
 
@@ -579,8 +592,10 @@ def islem_acici_pozisyon_ac(sinyal):
             qty = float(exchange.amount_to_precision(sym, amount))
         except Exception as e:
             tg(f"⚠️ {sym} miktar hesaplanamadı: {e}")
+            acilis_basarisiz_cooldown_uygula(sym)
             return
         if qty <= 0:
+            acilis_basarisiz_cooldown_uygula(sym)
             return
 
         try:
@@ -601,9 +616,11 @@ def islem_acici_pozisyon_ac(sinyal):
                 log.warning(f"[GIRIS] {sym}: kaldıraç kaynaklı hata, {LEV_KULLANILAN}x ile tekrar deneniyor: {e}")
                 continue
             tg(f"⚠️ {sym} giriş emri başarısız (denenen kaldıraç: {LEV_KULLANILAN}x): {e}")
+            acilis_basarisiz_cooldown_uygula(sym)
             return
     else:
         tg(f"⚠️ {sym} atlandı — 5 denemede de giriş emri açılamadı")
+        acilis_basarisiz_cooldown_uygula(sym)
         return
 
     time.sleep(0.8)
@@ -809,7 +826,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v1.9 (kaldıraç+giriş emri birlikte kendini düzeltiyor)\n"
+                f"Sürüm: v2.0 (kalıcı açılış hatalarında da cooldown uygulanıyor)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -954,7 +971,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v1.9 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v2.0 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1175,7 +1192,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v1.9 BAŞLIYOR...")
+    print("SCALP BOT v2.0 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
