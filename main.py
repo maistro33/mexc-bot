@@ -560,19 +560,36 @@ def islem_acici_pozisyon_ac(sinyal):
     # the maximum settable leverage" hatasını ve sonrasındaki tutarsız marj
     # kullanımını baştan engeller.
     LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
-    gereken_marj = notional / LEV_KULLANILAN
 
+    # v1.8 DÜZELTME: BTW örneğinde görüldü - market_bilgisi_al() geçici bir
+    # ağ/API hatasıyla başarısız olursa, sembol_max_kaldirac() sessizce
+    # "bilmiyorum, istenen kaldıracı kullan" diyerek 10x'e geri dönüyordu ve
+    # aynı hata (40797) tekrar oluşuyordu. Artık set_leverage GERÇEKTEN
+    # başarısız olursa (önbellek ne derse desin), kaldıraç kademeli olarak
+    # (10->5->3->2->1) düşürülüp YENİDEN denenir - borsanın gerçek cevabına
+    # göre kendini düzeltir, tek bir veri kaynağına bağımlı kalmaz.
+    for deneme in range(5):
+        try:
+            exchange.set_leverage(LEV_KULLANILAN, sym)
+            break
+        except Exception as e:
+            if "40797" in str(e) or "maximum settable leverage" in str(e).lower():
+                if LEV_KULLANILAN <= 1:
+                    tg(f"⚠️ {sym} atlandı — kaldıraç 1x'te bile ayarlanamadı: {e}")
+                    return
+                LEV_KULLANILAN = max(1, LEV_KULLANILAN // 2)
+                log.warning(f"[KALDIRAC] {sym}: izin verilen max aşıldı, {LEV_KULLANILAN}x ile tekrar deneniyor")
+                continue
+            log.warning(f"[KALDIRAC] {sym}: {e}")
+            break
+
+    gereken_marj = notional / LEV_KULLANILAN
     MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
     if gereken_marj > bakiye * MAX_MARJ_PCT:
         notional = bakiye * MAX_MARJ_PCT * LEV_KULLANILAN
         gereken_marj = notional / LEV_KULLANILAN
 
     amount = notional / entry
-
-    try:
-        exchange.set_leverage(LEV_KULLANILAN, sym)
-    except Exception as e:
-        log.warning(f"[KALDIRAC] {sym}: {e}")
 
     try:
         qty = float(exchange.amount_to_precision(sym, amount))
