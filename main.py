@@ -702,7 +702,25 @@ def islem_acici_pozisyon_ac(sinyal):
         if gercek_pos and gercek_pos.get("leverage"):
             LEV_KULLANILAN = int(float(gercek_pos["leverage"]))
     except Exception as e:
+        gercek_pos = None
         log.warning(f"[KALDIRAC_DOGRULA] {sym}: {e}")
+
+    # v3.2 KRİTİK DÜZELTME: EPIC örneğinde görüldü - SL fiyatı, borsadan
+    # GERÇEK dolum fiyatı gelmeden ÖNCE, sinyal anındaki TAHMİNİ fiyata göre
+    # sabitleniyordu. Sürdürülebilir tırmanış gibi hızlı hareket eden
+    # sinyallerde gerçek dolum fiyatı tahminden belirgin kayabiliyor (EPIC'te
+    # %1.34 kaydı) - SL fiyatı sabit kaldığı için gerçek risk mesafesi
+    # planlanandan (%6 tavan) daha GENİŞ hale geliyordu (%7.16 çıktı). Artık
+    # SL/TP, borsadan gelen GERÇEK ortalama dolum fiyatına göre yeniden
+    # hesaplanıyor - aynı yüzde mesafesi korunuyor, ama doğru referans
+    # noktasından.
+    if gercek_pos and safe(gercek_pos.get("entryPrice")) > 0:
+        gercek_giris = safe(gercek_pos.get("entryPrice"))
+        if abs(gercek_giris - entry) / entry > 0.001:  # %0.1'den fazla kaymışsa yeniden hesapla
+            log.info(f"[GIRIS_KAYMASI] {sym}: sinyal={entry:.6f} gercek={gercek_giris:.6f} "
+                     f"(%{(gercek_giris-entry)/entry*100:+.2f})")
+        entry = gercek_giris
+        sl = entry * (1 - sl_mesafe_pct)  # ayni yuzde mesafesi, dogru referans noktasindan
 
     notional = qty * entry
     r_risk = entry - sl
