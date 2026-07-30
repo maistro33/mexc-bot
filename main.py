@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.2 — 30 Temmuz 2026
+SCALP BOT v3.3 — 30 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -943,7 +943,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v3.2 KRİTİK: SL artık gerçek dolum fiyatına göre hesaplanıyor (EPIC örneği)\n"
+                f"Sürüm: v3.3 (bot kapalıyken kapanan pozisyonlar artık kaydediliyor - EPIC örneği)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1115,6 +1115,16 @@ def telebot_polling_baslat():
 
 
 def baslangic_uzlastirma():
+    """v3.3 KRİTİK DÜZELTME: EPIC örneğinde görüldü - bot bir sebeple (Railway
+    deploy/restart gibi) çalışmadığı sırada bir pozisyon borsada kapanmışsa,
+    bu fonksiyon eskiden sadece kaydı SESSİZCE temizliyordu - trade_log'a HİÇ
+    yazmıyordu. Sonuç: gerçek bir kayıp (-$1.94) hiçbir zaman istatistiklere
+    girmedi, /panel Analiz olduğundan daha iyi bir tablo gösterdi. Artık her
+    böyle durumda, elimizdeki bilgiyle (kayıtlı giriş fiyatı + güncel piyasa
+    fiyatı) KABA bir tahminle trade_log'a kaydediliyor ve sana açıkça
+    "kesin tutar için borsa geçmişini kontrol et" uyarısı gidiyor - sessiz
+    kayıp bir daha olmayacak."""
+    global gunluk_pnl, haftalik_pnl
     try:
         gercek_pozlar = exchange.fetch_positions()
         gercek_semboller = {p["symbol"] for p in gercek_pozlar if safe(p.get("contracts")) > 0}
@@ -1125,18 +1135,38 @@ def baslangic_uzlastirma():
         state_semboller = set(trade_state.keys())
     sadece_diskte = state_semboller - gercek_semboller
     if sadece_diskte:
-        with state_lock:
-            for sym in sadece_diskte:
-                trade_state.pop(sym, None)
+        for sym in sadece_diskte:
+            with state_lock:
+                durum = trade_state.pop(sym, None)
+            if durum:
+                try:
+                    t = exchange.fetch_ticker(sym)
+                    guncel_fiyat = safe(t["last"])
+                except Exception:
+                    guncel_fiyat = durum.get("sl_guncel", durum["entry"])
+                entry = durum["entry"]
+                qty = durum.get("qty_orijinal", 0)
+                pnl_tahmini = (guncel_fiyat - entry) * qty
+                with gunluk_lock:
+                    gunluk_pnl += pnl_tahmini
+                    haftalik_pnl += pnl_tahmini
+                gunluk_haftalik_diske_yaz()
+                trade_log_kaydet({"symbol": sym, "entry": entry, "exit": guncel_fiyat, "pnl": pnl_tahmini,
+                                   "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                                   "not": "uzlastirma_tahmini", "tur": durum.get("tur", "bilinmiyor")})
+                tg(f"ℹ️ Uzlaştırma: {sym} bot çalışmazken kapanmış - ÇOK KABA tahmini PnL≈{pnl_tahmini:+.2f}$ "
+                   f"kaydedildi. KESİN TUTAR İÇİN BORSA POZİSYON GEÇMİŞİNİ KONTROL ET.")
+            with cooldown_lock:
+                son_kapanis_zamani[sym] = time.time()
+            cooldown_diske_yaz()
         durumu_diske_yaz()
-        tg(f"ℹ️ Uzlaştırma: {len(sadece_diskte)} eski kayıt temizlendi: {sorted(sadece_diskte)}")
     sadece_borsada = gercek_semboller - state_semboller
     if sadece_borsada:
         tg(f"⚠️ UYARI: borsada açık ama state'te olmayan pozisyonlar var: {sorted(sadece_borsada)}")
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v3.2 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v3.3 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1462,7 +1492,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.2 BAŞLIYOR...")
+    print("SCALP BOT v3.3 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
