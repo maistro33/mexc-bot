@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.0 — 30 Temmuz 2026
+SCALP BOT v3.1 — 30 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -139,6 +139,13 @@ ATR_CARPANI_SL = 2.0        # backtest: en dengeli SL çarpanı bu çıktı
 # olasılığı düşüyordu. Bu tavan, ATR ne kadar şişerse şişsin SL mesafesini
 # (ve TP'leri) fiyatın belirli bir yüzdesiyle sınırlıyor.
 MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.06"))  # SL mesafesi fiyatın en fazla %6'sı olabilir
+MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
+# v3.1 YENİ: GIGGLE örneği - aşırı ince likiditeli/volatil bir coinde ATR
+# gerçek volatiliteyi yakalayamadı, SL sadece %1.42 çıktı ve 25 SANİYEDE
+# whipsaw ile vuruldu. Backtest (60 coin, 15 gün): SL mesafesine %2.0 minimum
+# taban eklenince ort R/işlem +0.141 -> +0.190 (iki zaman yarısında da güçlü
+# tutarlı iyileşme, 14.8R/27.0R). ATR ne kadar dar hesaplarsa hesaplasın,
+# SL artık en az fiyatın %2'si kadar mesafede olacak.
 # v2.7 DÜZELTME: çoklu-aşama TP sistemi (v2.5) KALDIRILDI. Kullanıcı geri
 # bildirimi: "kasa büyütme" adına sıkıştırılan TP'ler (0.5R/1R/2R) backtest'te
 # zaten ZAYIF çıkmıştı (ort +0.05R/işlem), oysa aşağıdaki tek yapı (1R/2R/3R)
@@ -612,6 +619,10 @@ def islem_acici_pozisyon_ac(sinyal):
     # v1.3: ATR anomali yüzünden şişmişse SL/TP mesafesini tavana çek
     if (entry - sl) / entry > MAX_SL_PCT:
         sl = entry * (1 - MAX_SL_PCT)
+    # v3.1: ATR gerçek volatiliteyi yakalayamayıp SL çok darsa (GIGGLE örneği)
+    # tabana çek
+    if (entry - sl) / entry < MIN_SL_PCT:
+        sl = entry * (1 - MIN_SL_PCT)
     sl_mesafe_pct = (entry - sl) / entry
     if sl_mesafe_pct <= 0:
         acilis_basarisiz_cooldown_uygula(sym)
@@ -914,7 +925,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v3.0 (ani patlama sinyaline 5dk giriş teyidi eklendi - COTI/VELVET/EUL örneği)\n"
+                f"Sürüm: v3.1 (SL minimum %2 taban - GIGGLE whipsaw örneği)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1107,7 +1118,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v3.0 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v3.1 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1433,7 +1444,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.0 BAŞLIYOR...")
+    print("SCALP BOT v3.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
