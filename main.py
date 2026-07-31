@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.3 — 30 Temmuz 2026
+SCALP BOT v3.4 — 30 Temmuz 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -100,9 +100,15 @@ def yetkili_mi(msg_or_call):
 SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC", "BCH"}
 
 # ── SİNYAL PARAMETRELERİ (backtest doğrulamalı, bkz. üstteki not) ──
-VOL_SPIKE_MULT = 4.0        # 5m hacim, 20-bar ortalamasının kaç katı olmalı
+VOL_SPIKE_MULT = 5.0        # 5m hacim, 20-bar ortalamasının kaç katı olmalı
+# v3.4: kullanıcı talebiyle 4.0'dan yükseltildi ("emin değilse almasın").
+# Backtest (60 coin, 15 gün): 4.0x/%2.5 -> ort +0.141R/işlem (235 işlem),
+# 5.0x/%3.0 -> ort +0.227R/işlem (134 işlem, %61.9 kazanma, iki zaman
+# yarısında da pozitif). Daha da sıkısı (6x/8x) denendi ama tutarlılık
+# bozuluyordu (ikinci yarı zayıflıyor/negatife dönüyor) - bu nokta en
+# dengeli sıkılaştırma.
 RET_WINDOW_BARS = 3         # kaç 5m bar'lık getiriye bakılıyor (3x5dk=15dk)
-RET_THRESHOLD = 0.025       # %2.5 hareket eşiği
+RET_THRESHOLD = 0.03        # %3.0 hareket eşiği (v3.4: %2.5'ten yükseltildi)
 ADX_ESIK_15M = 15
 COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "1"))   # v1.0: kullanıcı talebiyle 1 saat
 MAX_HOLD_SAAT = 3.0         # bu süreden uzun açık kalan pozisyon piyasa fiyatından kapatılır
@@ -943,7 +949,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v3.3 (bot kapalıyken kapanan pozisyonlar artık kaydediliyor - EPIC örneği)\n"
+                f"Sürüm: v3.4 (ani patlama sinyali sıkılaştırıldı: hacim 5x, hareket %3)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1166,7 +1172,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v3.3 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v3.4 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
        f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
@@ -1492,7 +1498,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.3 BAŞLIYOR...")
+    print("SCALP BOT v3.4 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
