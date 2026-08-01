@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.5 — 01 Ağustos 2026
+SCALP BOT v3.6 — 01 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -623,6 +623,7 @@ def islem_acici_pozisyon_ac(sinyal):
     bakiye = gercek_bakiye_al()
     if bakiye is None or bakiye <= 0:
         tg(f"⚠️ {sym} atlandı — bakiye alınamadı")
+        acilis_basarisiz_cooldown_uygula(sym)
         return
 
     sl = entry - ATR_CARPANI_SL * atr_val
@@ -1502,7 +1503,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.5 BAŞLIYOR...")
+    print("SCALP BOT v3.6 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
