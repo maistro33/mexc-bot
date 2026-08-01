@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.4 — 30 Temmuz 2026
+SCALP BOT v3.5 — 01 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -158,8 +158,12 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 # +0.197R/işlem veriyordu - kasa büyütmenin matematiği "sık kazan" değil
 # "toplam R'yi maksimize et". Çoklu aşama sistemi de kafa karıştırıcıydı.
 # Artık TEK, backtest doğrulamalı TP yapısı kullanılıyor.
-TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # backtest: 131 işlem/15gün,
-# %58 kazanma, ort +0.197R/işlem, iki zaman yarısında da pozitif ve tutarlı.
+HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.55"))
+# v3.5: kullanıcı talebiyle kademeli TP (1R/2R/3R) kaldırıldı - artık TEK TP,
+# sabit net kâr hedefi (varsayılan $0.55, "$0.50 veya $0.60" aralığının
+# ortası, komisyon düşülmüş net rakam). Backtest notu: bu RR≈0.4-0.5'e denk
+# geliyor ve daha geniş tek hedeften (RR=1.0, ort +0.223R) zayıf çıkıyor
+# (ort +0.083R) - kullanıcı "sık küçük kazanç" tercihiyle bilerek seçti.
 
 ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "40"))
 # v1.5 DÜZELTME: 80 iken tam tarama ~60sn sürüyordu (ölçüldü) - bu da
@@ -765,23 +769,21 @@ def islem_acici_pozisyon_ac(sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    # 3 kademeli TP emri
+    # v3.5 DEĞİŞİKLİK: kullanıcı talebiyle kademeli TP kaldırıldı, TEK TP -
+    # sabit net dolar hedefi (varsayılan $0.55, %50-60 aralığının ortası).
+    # ⚠️ DÜRÜSTLÜK NOTU: backtest bu yaklaşımın (RR≈0.4-0.5'e denk geliyor)
+    # daha geniş tek hedeften (RR=1.0, ort +0.223R) daha ZAYIF olduğunu
+    # gösterdi (ort +0.083R) - kullanıcı bunu bilerek, "sık küçük kazanç"
+    # tercihiyle seçti.
+    tahmini_komisyon = notional * KOMISYON_PCT * 2  # giris+cikis kaba tahmini
+    tp_fiyat_ham = entry + (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
     tp_emirleri = []
-    kalan_qty = qty
-    for i, (oran, rr) in enumerate(TIERED_TP):
-        tp_fiyat_ham = entry + r_risk * rr
-        tp_qty = float(exchange.amount_to_precision(sym, qty * oran))
-        if i == len(TIERED_TP) - 1:
-            tp_qty = kalan_qty  # yuvarlama artığını son kademeye ekle
-        if tp_qty <= 0:
-            continue
-        try:
-            tp_fiyat = float(exchange.price_to_precision(sym, tp_fiyat_ham))
-            emir = exchange.create_limit_order(sym, "sell", tp_qty, tp_fiyat, params={"reduceOnly": True})
-            tp_emirleri.append({"id": emir.get("id"), "fiyat": tp_fiyat, "qty": tp_qty, "rr": rr, "dolu": False})
-            kalan_qty = round(kalan_qty - tp_qty, 8)
-        except Exception as e:
-            log.warning(f"[TP_EMIR {i}] {sym}: {e}")
+    try:
+        tp_fiyat = float(exchange.price_to_precision(sym, tp_fiyat_ham))
+        emir = exchange.create_limit_order(sym, "sell", qty, tp_fiyat, params={"reduceOnly": True})
+        tp_emirleri.append({"id": emir.get("id"), "fiyat": tp_fiyat, "qty": qty, "rr": None, "dolu": False})
+    except Exception as e:
+        log.warning(f"[TP_EMIR] {sym}: {e}")
 
     with state_lock:
         trade_state[sym] = {
@@ -792,7 +794,7 @@ def islem_acici_pozisyon_ac(sinyal):
     durumu_diske_yaz()
 
     tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else tur)
-    tp_ozet = " | ".join(f"TP{i+1}:{t['fiyat']:.6f}({t['rr']}R)" for i, t in enumerate(tp_emirleri))
+    tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} (hedef net ≈${HEDEF_NET_KAR_USDT:.2f})" if tp_emirleri else "TP: yerleştirilemedi"
     tg(f"📈 SCALP POZİSYON: {sym} LONG [{tur_etiket}]\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} (2×ATR)\n"
        f"{tp_ozet}\n"
@@ -949,11 +951,11 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v3.4 (ani patlama sinyali sıkılaştırıldı: hacim 5x, hareket %3)\n"
+                f"Sürüm: v3.5 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresi kaldırıldı)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
-                f"TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
+                f"TP: tek hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
                 f"İlk TP'de SL başabaşa çekilir\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin taranır\n"
@@ -1040,9 +1042,9 @@ if bot:
             if btc_bull is None:
                 satirlar.append("\n₿ BTC 1h rejimi alınamadı")
             elif btc_bull:
-                satirlar.append("\n₿ BTC 1h rejimi: 🟢 YÜKSELİŞTE - tarama aktif")
+                satirlar.append("\n₿ BTC 1h rejimi: 🟢 YÜKSELİŞTE (bilgi amaçlı - v3.5'te filtre kaldırıldı, tarama her durumda aktif)")
             else:
-                satirlar.append("\n₿ BTC 1h rejimi: 🔴 DÜŞÜŞTE/YATAY - tarama DURUYOR (LONG sinyali aranmıyor)")
+                satirlar.append("\n₿ BTC 1h rejimi: 🔴 DÜŞÜŞTE/YATAY (bilgi amaçlı - v3.5'te filtre kaldırıldı, tarama her durumda aktif)")
         except Exception:
             pass
 
@@ -1172,12 +1174,12 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v3.4 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v3.5 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
-       f"SL={ATR_CARPANI_SL}x ATR | TP kademeleri: " + ", ".join(f"%{int(o*100)}@{r}R" for o, r in TIERED_TP) + "\n"
-       f"Backtest: 131 işlem/15gün, %58 kazanma, +0.197R/işlem ort. (iki yarıda da pozitif)\n"
-       f"🔧 v2.7: çoklu-aşama TP sistemi kaldırıldı (kafa karıştırıcıydı, backtest'te de zayıf çıkmıştı) - "
-       f"tek, kanıtlanmış TP yapısına sabitlendi. Ayrıca TP1/başabaş kontrolü artık SL güvenlik ağından ÖNCE çalışıyor (RAVE bugı düzeltildi).\n"
+       f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
+       f"🔧 v3.5: BTC 1h rejim filtresi KALDIRILDI (backtest: filtresiz daha fazla toplam kazanç veriyor). "
+       f"Kademeli TP kaldırıldı, tek sabit-dolar hedefe geçildi (kullanıcı tercihi: sık/küçük kazanç).\n"
+       f"⚠️ Bu tek-hedef yaklaşımı backtest'te geniş tek hedeften (RR=1.0) daha zayıf çıktı - bilinçli bir tercih.\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
@@ -1198,10 +1200,12 @@ def tarama_loop():
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
-            btc_bullish = btc_1h_bullish()
-            if not btc_bullish:
-                time.sleep(KONTROL_ARALIGI_SN)
-                continue
+            # v3.5: kullanıcı talebiyle BTC 1h rejim filtresi KALDIRILDI.
+            # Backtest: filtresiz +30.33R (136 işlem) vs filtreli +19.90R
+            # (80 işlem) - filtresiz daha fazla toplam kazanç veriyor (daha
+            # fazla fırsat yakalanıyor), kullanıcının "sık küçük kazanç"
+            # hedefiyle örtüşüyor. btc_bullish artık her zaman True.
+            btc_bullish = True
 
             # AJAN 1: piyasayı izle, aday havuzunu bul
             # v1.5 DÜZELTME: eskiden TÜM havuz taranıp sonra en iyi sinyaller
@@ -1498,7 +1502,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.4 BAŞLIYOR...")
+    print("SCALP BOT v3.5 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
