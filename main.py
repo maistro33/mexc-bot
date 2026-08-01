@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.8 — 01 Ağustos 2026
+SCALP BOT v4.1 — 01 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -158,12 +158,21 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 # +0.197R/işlem veriyordu - kasa büyütmenin matematiği "sık kazan" değil
 # "toplam R'yi maksimize et". Çoklu aşama sistemi de kafa karıştırıcıydı.
 # Artık TEK, backtest doğrulamalı TP yapısı kullanılıyor.
+KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.55"))
-# v3.5: kullanıcı talebiyle kademeli TP (1R/2R/3R) kaldırıldı - artık TEK TP,
-# sabit net kâr hedefi (varsayılan $0.55, "$0.50 veya $0.60" aralığının
-# ortası, komisyon düşülmüş net rakam). Backtest notu: bu RR≈0.4-0.5'e denk
-# geliyor ve daha geniş tek hedeften (RR=1.0, ort +0.223R) zayıf çıkıyor
-# (ort +0.083R) - kullanıcı "sık küçük kazanç" tercihiyle bilerek seçti.
+# v4.1: kullanıcı talebiyle TEK TP + BTC filtresiz kombinasyonuna GERİ
+# DÖNÜLDÜ. v4.0'da KOMISYON_PCT sabiti zaten tanımlıydı (yukarıda), bu yüzden
+# v3.5-v3.9'daki "KOMISYON_PCT tanımsız" hatası bir daha oluşmayacak.
+# ⚠️ DÜRÜSTLÜK NOTU (tekrar): backtest'te tek sabit hedef (+0.083R/işlem)
+# kademeli yapıdan (+0.223R/işlem) zayıf çıkmıştı - bu bilinçli bir tercih.
+TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]
+# v4.0: KARARLI YAPIYA DÖNÜŞ. Bugünkü son deneyler (tek sabit-dolar TP
+# hedefi, BTC filtresiz) hem test edilmemişti hem de art arda hatalara
+# (KOMISYON_PCT tanımsız, TP hiç yerleşmemesi) yol açtı. Backtest'te de
+# zaten bu kademeli yapı (+0.223R/işlem) tek sabit hedeften (+0.083R)
+# belirgin daha iyiydi. Kullanıcı talebiyle kanıtlanmış yapıya dönülüyor -
+# bugün eklenen GERÇEK güvenlik düzeltmeleri (v3.7 cooldown güvenlik ağı,
+# v3.8 trade_state erken yazma) korunuyor.
 
 ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "40"))
 # v1.5 DÜZELTME: 80 iken tam tarama ~60sn sürüyordu (ölçüldü) - bu da
@@ -795,12 +804,7 @@ def islem_acici_pozisyon_ac(sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    # v3.5 DEĞİŞİKLİK: kullanıcı talebiyle kademeli TP kaldırıldı, TEK TP -
-    # sabit net dolar hedefi (varsayılan $0.55, %50-60 aralığının ortası).
-    # ⚠️ DÜRÜSTLÜK NOTU: backtest bu yaklaşımın (RR≈0.4-0.5'e denk geliyor)
-    # daha geniş tek hedeften (RR=1.0, ort +0.223R) daha ZAYIF olduğunu
-    # gösterdi (ort +0.083R) - kullanıcı bunu bilerek, "sık küçük kazanç"
-    # tercihiyle seçti.
+    # v4.1: kullanıcı talebiyle TEK TP - sabit net dolar hedefi (~$0.55).
     tahmini_komisyon = notional * KOMISYON_PCT * 2  # giris+cikis kaba tahmini
     tp_fiyat_ham = entry + (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
     tp_emirleri = []
@@ -987,7 +991,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v3.5 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresi kaldırıldı)\n"
+                f"Sürüm: v4.1 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1078,9 +1082,9 @@ if bot:
             if btc_bull is None:
                 satirlar.append("\n₿ BTC 1h rejimi alınamadı")
             elif btc_bull:
-                satirlar.append("\n₿ BTC 1h rejimi: 🟢 YÜKSELİŞTE (bilgi amaçlı - v3.5'te filtre kaldırıldı, tarama her durumda aktif)")
+                satirlar.append("\n₿ BTC 1h rejimi: 🟢 YÜKSELİŞTE (bilgi amaçlı - v4.1'de filtre kaldırıldı)")
             else:
-                satirlar.append("\n₿ BTC 1h rejimi: 🔴 DÜŞÜŞTE/YATAY (bilgi amaçlı - v3.5'te filtre kaldırıldı, tarama her durumda aktif)")
+                satirlar.append("\n₿ BTC 1h rejimi: 🔴 DÜŞÜŞTE/YATAY (bilgi amaçlı - v4.1'de filtre kaldırıldı, tarama her durumda aktif)")
         except Exception:
             pass
 
@@ -1210,12 +1214,15 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v3.5 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.1 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
-       f"🔧 v3.5: BTC 1h rejim filtresi KALDIRILDI (backtest: filtresiz daha fazla toplam kazanç veriyor). "
-       f"Kademeli TP kaldırıldı, tek sabit-dolar hedefe geçildi (kullanıcı tercihi: sık/küçük kazanç).\n"
-       f"⚠️ Bu tek-hedef yaklaşımı backtest'te geniş tek hedeften (RR=1.0) daha zayıf çıktı - bilinçli bir tercih.\n"
+       f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
+       f"KOMISYON_PCT tanımsızlık hatası (v3.5-v3.9) kalıcı olarak düzeltildi. Bugünkü GERÇEK "
+       f"güvenlik düzeltmeleri (cooldown güvenlik ağı, trade_state erken yazma, SL güvenlik ağı, "
+       f"gerçek fiyat bazlı SL) korundu.\n"
+       f"⚠️ Bu tek-hedef+filtresiz kombinasyon backtest'te kademeli+filtreli yapıdan zayıf çıkmıştı - "
+       f"bilinçli bir kullanıcı tercihi.\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
@@ -1236,11 +1243,7 @@ def tarama_loop():
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
-            # v3.5: kullanıcı talebiyle BTC 1h rejim filtresi KALDIRILDI.
-            # Backtest: filtresiz +30.33R (136 işlem) vs filtreli +19.90R
-            # (80 işlem) - filtresiz daha fazla toplam kazanç veriyor (daha
-            # fazla fırsat yakalanıyor), kullanıcının "sık küçük kazanç"
-            # hedefiyle örtüşüyor. btc_bullish artık her zaman True.
+            # v4.1: kullanıcı talebiyle BTC 1h rejim filtresi tekrar KALDIRILDI.
             btc_bullish = True
 
             # AJAN 1: piyasayı izle, aday havuzunu bul
@@ -1562,7 +1565,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.8 BAŞLIYOR...")
+    print("SCALP BOT v4.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
