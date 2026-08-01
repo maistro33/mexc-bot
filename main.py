@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v3.6 — 01 Ağustos 2026
+SCALP BOT v3.8 — 01 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -686,6 +686,23 @@ def islem_acici_pozisyon_ac(sinyal):
         try:
             exchange.create_market_order(sym, "buy", qty)
             notional = notional_bu_deneme
+            # v3.8 KRİTİK DÜZELTME: pozisyonun ustune ayni pozisyonu tekrar
+            # acma bugu bulundu - eskiden trade_state SADECE SL+TP de
+            # yerlestikten SONRA yaziliyordu. Aradaki herhangi bir noktada
+            # (SL/TP yerlestirme hatasi gibi) beklenmedik bir sey olursa,
+            # pozisyon BORSADA GERCEKTEN ACIK ama bot bundan HABERSIZ
+            # kaliyordu - sonraki tarama ayni coin'i "bos" sanip TEKRAR
+            # aciyordu. Artik giris emri basarir basarmaz HEMEN minimal bir
+            # kayit yaziliyor, boylece "sym in trade_state" kontrolu her
+            # zaman dogru sonuc veriyor - SL/TP detaylari asagida eklenecek.
+            with state_lock:
+                trade_state[sym] = {
+                    "entry": entry, "sl_orijinal": None, "sl_guncel": None, "sl_emir_id": None,
+                    "qty_orijinal": qty, "r_risk": None, "tp_emirleri": [],
+                    "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
+                    "kurulum_tamamlanmadi": True,
+                }
+            durumu_diske_yaz()
             break
         except Exception as e:
             hata_metni = str(e)
@@ -764,9 +781,17 @@ def islem_acici_pozisyon_ac(sinyal):
         try:
             exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
             tg(f"✅ {sym} güvenlik amaçlı kapatıldı (SL yerleştirilemediği için).")
+            # v3.8: kapatma BAŞARILI oldu - onceden yazilmis gecici kaydi
+            # temizle. Kapatma basarisiz olursa kaydi BİLEREK SİLMİYORUZ
+            # (asagida) - pozisyon hala acik olabilir, "trade_state'te yok"
+            # sanip TEKRAR acmasin diye.
+            with state_lock:
+                trade_state.pop(sym, None)
+            durumu_diske_yaz()
         except Exception as e:
             tg(f"🚨🚨 KRİTİK: {sym} SL YERLEŞTİRİLEMEDİ VE GÜVENLİK KAPATMASI DA BAŞARISIZ OLDU: {e}\n"
-               f"LÜTFEN HEMEN BORSAYA GİRİP MANUEL KONTROL ET.")
+               f"LÜTFEN HEMEN BORSAYA GİRİP MANUEL KONTROL ET. (Kayıt bilerek silinmedi - "
+               f"pozisyon hâlâ açık olabilir, tekrar açılmasın diye.)")
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
@@ -787,11 +812,21 @@ def islem_acici_pozisyon_ac(sinyal):
         log.warning(f"[TP_EMIR] {sym}: {e}")
 
     with state_lock:
-        trade_state[sym] = {
-            "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
-            "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
-            "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
-        }
+        if sym in trade_state:
+            trade_state[sym].update({
+                "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
+                "r_risk": r_risk, "tp_emirleri": tp_emirleri,
+                "kurulum_tamamlanmadi": False,
+            })
+        else:
+            # normalde buraya girmemeli (yukarida onceden kaydedildi) ama
+            # guvenlik icin: hic yoksa sifirdan yaz
+            trade_state[sym] = {
+                "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
+                "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
+                "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
+                "kurulum_tamamlanmadi": False,
+            }
     durumu_diske_yaz()
 
     tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else tur)
@@ -1245,8 +1280,19 @@ def tarama_loop():
                     if cooldown_da_mi(sym):
                         continue
                     tg(f"✅ AJAN 1: {sym} teyit edildi (fiyat tuttu) — AJAN 2'ye 'şimdi aç' komutu veriliyor")
-                    islem_acici_pozisyon_ac({"symbol": sym, "entry": guncel_fiyat, "atr": p["atr"],
-                                              "skor": p["skor"], "tur": p["tur"]})
+                    # v3.7 GÜVENLİK AĞI: UAI/BEAT örneğinde görüldü - bir yerde
+                    # beklenmedik bir hata oluşursa, cooldown UYGULANMADAN
+                    # fonksiyon yarıda kesilip aynı coin dakikalar içinde
+                    # tekrar tekrar denenebiliyordu. Artık HER çağrı try/except
+                    # ile sarılı - ne olursa olsun (beklenmeyen hata dahil)
+                    # cooldown garantili uygulanıyor.
+                    try:
+                        islem_acici_pozisyon_ac({"symbol": sym, "entry": guncel_fiyat, "atr": p["atr"],
+                                                  "skor": p["skor"], "tur": p["tur"]})
+                    except Exception as e:
+                        log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
+                        tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
+                        acilis_basarisiz_cooldown_uygula(sym)
                     acilan_sayisi += 1
 
             for sym in adaylar_havuzu:
@@ -1272,7 +1318,14 @@ def tarama_loop():
                     continue
 
                 tg(f"🔍 AJAN 1: {sym} güçlü LONG sinyali [sürdürülebilir tırmanış] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
-                islem_acici_pozisyon_ac(sinyal)
+                # v3.7 GÜVENLİK AĞI: bkz. yukarıdaki not - her açılış denemesi
+                # artık cooldown garantili olacak şekilde sarılı.
+                try:
+                    islem_acici_pozisyon_ac(sinyal)
+                except Exception as e:
+                    log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
+                    tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
+                    acilis_basarisiz_cooldown_uygula(sym)
                 acilan_sayisi += 1
 
             time.sleep(KONTROL_ARALIGI_SN)
@@ -1303,6 +1356,12 @@ def manage_loop():
                 if (time.time() - durum["acilis_zamani"]) > MAX_HOLD_SAAT * 3600:
                     tg(f"⏱️ {sym} — max tutma süresi ({MAX_HOLD_SAAT}sa) aşıldı, piyasa fiyatından kapatılıyor")
                     pozisyonu_tamamen_kapat(sym, sebep="max_hold_timeout")
+                    continue
+
+                # v3.8: kurulum henüz tamamlanmadıysa (SL/TP hâlâ yerleştiriliyor,
+                # islem_acici_pozisyon_ac bu sembol için hâlâ çalışıyor) bu
+                # turda dokunma - sl_guncel/r_risk henüz None olabilir.
+                if durum.get("kurulum_tamamlanmadi"):
                     continue
 
                 # v2.7 KRİTİK SIRA DÜZELTMESİ: RAVE örneğinde görüldü - TP1 dolmuş
@@ -1503,7 +1562,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v3.6 BAŞLIYOR...")
+    print("SCALP BOT v3.8 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
