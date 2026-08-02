@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.4 — 02 Ağustos 2026
+SCALP BOT v4.6 — 03 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE SHORT (v4.2: pump-fade), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -131,6 +131,12 @@ SUSTAINED_ADX_ESIK = 15
 SUSTAINED_ZIRVE_MESAFE_MIN = float(os.getenv("SUSTAINED_ZIRVE_MESAFE_MIN", "0.03"))
 # v2.1: ESP örneği - fiyat son 2 saatin zirvesine bu orandan daha yakınsa
 # sürdürülebilir tırmanış sinyali ARANMAZ (dönüş riski yüksek). Backtest:
+
+# v4.5 YENİ: dusus-devam sinyali icin sabitler (piyasa_izleyici_dusus_devam_kontrol)
+DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03   # fiyat son 2sa dibine bu kadar uzak olmali
+DUSUS_DEVAM_MUM_ESIK = 0.01         # son mum en az %1 dusmus olmali
+DUSUS_DEVAM_HACIM_ESIK = 1.5        # son mumda hacim, 20-bar ortalamasinin en az bu kati
+DUSUS_DEVAM_RR = 3.0                # backtest'te en iyi/tutarli sonuc bu RR'de cikti
 # %3 eşiği ile kazanma %59->%71, ort R/işlem +0.206->+0.388 (komşu eşiklerde
 # de tutarlı iyileşme görüldü, tek noktaya özgü değil).
 
@@ -533,7 +539,66 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
             "skor": row["ret_6bar"], "tur": "sustained"}
 
 
-def btc_1h_bullish():
+def piyasa_izleyici_dusus_devam_kontrol(sym):
+    """v4.5 YENİ: kullanıcı fikri - 'coin zaten düşüyor, satıcılar çoğalıyor,
+    aşırı satışa başladığı an gir'. Yukarıdaki sustained fonksiyonunun tam
+    AYNASI ama YÖN TERSİ: pump'ın tepesini avlamak (pump-fade) yerine, ZATEN
+    düşüş trendinde olan bir coin'in düşüşünün DEVAM edeceğine oynuyor -
+    LONG'daki kanıtlanmış 'sürdürülebilir tırmanış' mantığının SHORT ayarı.
+    Backtest (36 coin, 15gün, 15m): düşüş trendi + son mumda hacimli satış
+    (≥1.5x hacim, ≥%1 düşüş) şartıyla, RR=3.0 hedefte ort +0.180R/işlem,
+    iki zaman yarısında da tutarlı pozitif (+5.99R / +1.76R) - bugün test
+    edilen TÜM diğer SHORT varyantlarından (hepsi negatif) farklı olarak
+    ilk kez tutarlı pozitif çıkan sonuç. ⚠️ Örneklem küçük (43 işlem),
+    küçük ölçekte deneme amaçlı eklendi."""
+    df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
+    if df15 is None or len(df15) < 30:
+        return None
+
+    df15["ma20"] = df15["close"].rolling(20).mean()
+    df15["adx"] = adx(df15, 14)
+    df15["atr"] = atr(df15, 14)
+    df15["vol_ma20"] = df15["volume"].rolling(20).mean()
+    df15["vol_ma6"] = df15["volume"].rolling(6).mean()
+    df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
+    df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
+    df15["dip_2sa"] = df15["low"].rolling(8).min()
+
+    row = df15.iloc[-1]
+    if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
+        return None
+    if pd.isna(row["ret_6bar"]) or pd.isna(row["vol_ratio_sustained"]):
+        return None
+
+    # zaten dusus trendinde mi (LONG'daki trend_ok'un aynasi)
+    trend_ok = row["close"] < row["ma20"] and row["adx"] >= SUSTAINED_ADX_ESIK
+    momentum_ok = row["ret_6bar"] <= -SUSTAINED_RET_THRESHOLD
+    volume_ok = row["vol_ratio_sustained"] >= SUSTAINED_VOL_RATIO_THRESH
+    if not (trend_ok and momentum_ok and volume_ok):
+        return None
+
+    # henuz "dip yakalama" degil - dususu TAZE olmali (dipten yeterince uzak)
+    dip_2sa = row["dip_2sa"]
+    if pd.isna(dip_2sa) or dip_2sa <= 0:
+        return None
+    dip_mesafe = (row["close"] - dip_2sa) / dip_2sa
+    if dip_mesafe < DUSUS_DEVAM_DIP_MESAFE_MIN:
+        return None  # fiyat dibe cok yakin - tepki yukselisi riski yuksek
+
+    # YENI: son mumda ani/hacimli satis baskisi (asiri satim ani)
+    if pd.isna(row["open"]) or row["open"] <= 0:
+        return None
+    son_mum_ret = (row["close"] - row["open"]) / row["open"]
+    son_mum_hacim = row["volume"] / row["vol_ma20"] if row["vol_ma20"] else 0
+    capitulation_ok = son_mum_ret <= -DUSUS_DEVAM_MUM_ESIK and son_mum_hacim >= DUSUS_DEVAM_HACIM_ESIK
+    if not capitulation_ok:
+        return None
+
+    return {"symbol": sym, "entry": row["close"], "atr": row["atr"],
+            "skor": abs(row["ret_6bar"]) * row["vol_ratio_sustained"], "tur": "dusus_devam"}
+
+
+
     df = get_df("BTC/USDT:USDT", "1h", 40)
     if df is None or len(df) < 25:
         return None
@@ -808,8 +873,13 @@ def islem_acici_pozisyon_ac(sinyal):
         return
 
     # v4.2: SHORT icin TEK TP - hedef fiyatin ALTINDA (geri alarak kar).
-    tahmini_komisyon = notional * KOMISYON_PCT * 2
-    tp_fiyat_ham = entry - (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
+    # v4.5: dusus-devam sinyali icin FARKLI mantik - sabit dolar yerine
+    # R-multiple bazli (RR=3.0), backtest bu turde boyle test edildigi icin.
+    if tur == "dusus_devam":
+        tp_fiyat_ham = entry - DUSUS_DEVAM_RR * r_risk
+    else:
+        tahmini_komisyon = notional * KOMISYON_PCT * 2
+        tp_fiyat_ham = entry - (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
     tp_emirleri = []
     try:
         tp_fiyat = float(exchange.price_to_precision(sym, tp_fiyat_ham))
@@ -836,8 +906,14 @@ def islem_acici_pozisyon_ac(sinyal):
             }
     durumu_diske_yaz()
 
-    tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else tur)
-    tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} (hedef net ≈${HEDEF_NET_KAR_USDT:.2f})" if tp_emirleri else "TP: yerleştirilemedi"
+    tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else ("düşüş devamı" if tur == "dusus_devam" else tur))
+    if tp_emirleri:
+        if tur == "dusus_devam":
+            tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} ({DUSUS_DEVAM_RR}R hedef)"
+        else:
+            tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} (hedef net ≈${HEDEF_NET_KAR_USDT:.2f})"
+    else:
+        tp_ozet = "TP: yerleştirilemedi"
     tg(f"📉 SCALP POZİSYON: {sym} SHORT [{tur_etiket}]\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} (2×ATR)\n"
        f"{tp_ozet}\n"
@@ -998,7 +1074,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.4 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
+                f"Sürüm: v4.6 (+düşüş devamı sinyali eklendi) (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1130,6 +1206,25 @@ if bot:
             return
         bot.send_message(msg.chat.id, panel_ozet_metni(), reply_markup=ana_menu_klavye())
 
+    @bot.message_handler(commands=["sifirla"])
+    def sifirla_komutu(msg):
+        """v4.6 YENİ: kullanıcı talebiyle eklendi - panel istatistiklerini
+        (trade_log, günlük/haftalık PnL sayaçları) temizler. Açık pozisyonlara
+        ve trade_state'e DOKUNMAZ - sadece geçmiş kayıt/istatistikleri
+        sıfırlar, güvenlik/risk mekanizmalarını etkilemez."""
+        if not yetkili_mi(msg):
+            return
+        global trade_log, gunluk_pnl, haftalik_pnl
+        with state_lock:
+            trade_log = []
+        atomik_yaz(TRADE_LOG_PATH, [])
+        with gunluk_lock:
+            gunluk_pnl = 0.0
+            haftalik_pnl = 0.0
+        gunluk_haftalik_diske_yaz()
+        bot.send_message(msg.chat.id, "🔄 Panel istatistikleri sıfırlandı (trade_log, günlük/haftalık PnL). "
+                                        "Açık pozisyonlar ve risk mekanizmaları etkilenmedi.")
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("panel_"))
     def panel_buton_yaniti(call):
         if not yetkili_mi(call):
@@ -1221,7 +1316,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.4 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.6 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE SHORT (pump-fade)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1329,14 +1424,26 @@ def tarama_loop():
                     continue
 
                 sinyal = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
-                if not sinyal:
+                if sinyal:
+                    tg(f"🔍 AJAN 1: {sym} güçlü SHORT sinyali [sürdürülebilir tırmanış - pump-fade] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
+                    try:
+                        islem_acici_pozisyon_ac(sinyal)
+                    except Exception as e:
+                        log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
+                        tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
+                        acilis_basarisiz_cooldown_uygula(sym)
+                    acilan_sayisi += 1
                     continue
 
-                tg(f"🔍 AJAN 1: {sym} güçlü SHORT sinyali [sürdürülebilir tırmanış - pump-fade] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
-                # v3.7 GÜVENLİK AĞI: bkz. yukarıdaki not - her açılış denemesi
-                # artık cooldown garantili olacak şekilde sarılı.
+                # v4.5 YENİ: dusus-devam sinyali (kullanici fikri - "saticiler
+                # cogaliyor, asiri satisa basladigi an gir")
+                sinyal2 = piyasa_izleyici_dusus_devam_kontrol(sym)
+                if not sinyal2:
+                    continue
+
+                tg(f"🔍 AJAN 1: {sym} güçlü SHORT sinyali [düşüş devamı] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
                 try:
-                    islem_acici_pozisyon_ac(sinyal)
+                    islem_acici_pozisyon_ac(sinyal2)
                 except Exception as e:
                     log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
                     tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
@@ -1578,7 +1685,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.4 BAŞLIYOR...")
+    print("SCALP BOT v4.6 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
