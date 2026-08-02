@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.1 — 01 Ağustos 2026
+SCALP BOT v4.3 — 02 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE SHORT (v4.2: pump-fade), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -994,7 +994,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.1 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
+                f"Sürüm: v4.3 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1217,7 +1217,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.1 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.3 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE SHORT (pump-fade)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1274,9 +1274,14 @@ def tarama_loop():
                     continue
                 if guncel_fiyat <= 0:
                     continue
-                retrace = (p["sinyal_fiyat"] - guncel_fiyat) / p["sinyal_fiyat"]
-                if retrace > CONFIRM_MAX_RETRACE_PCT:
-                    del bekleyen_sinyaller[sym]  # tepe yakalama şüphesi, iptal
+                # v4.3 KRİTİK DÜZELTME: ELSA örneğinde görüldü - bu kontrol hâlâ
+                # LONG mantığıyla yazılmıştı ("fiyat düşerse iptal et"), ama
+                # SHORT'ta fiyatın düşmesi bizim LEHİMİZE - iptal etmemeli!
+                # Artık SHORT için doğru yön: fiyat YÜKSELİRSE (short'un
+                # aleyhine hareket ederse) iptal ediliyor.
+                yukselme = (guncel_fiyat - p["sinyal_fiyat"]) / p["sinyal_fiyat"]
+                if yukselme > CONFIRM_MAX_RETRACE_PCT:
+                    del bekleyen_sinyaller[sym]  # fiyat aleyhimize yukseldi, iptal
                     continue
                 if (time.time() - p["zaman"]) >= CONFIRM_BEKLEME_SN:
                     del bekleyen_sinyaller[sym]
@@ -1316,7 +1321,7 @@ def tarama_loop():
                     bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
                                                 "skor": sinyal["skor"], "tur": sinyal["tur"], "zaman": time.time()}
                     tg(f"⏳ AJAN 1: {sym} ani patlama sinyali bulundu, {CONFIRM_BEKLEME_SN//60} dakika "
-                       f"'tutuyor mu' diye izleniyor (tepe yakalamayı önlemek için)")
+                       f"'tutuyor mu' diye izleniyor (fiyat aleyhe donerse iptal, lehe donerse SHORT acilir)")
                     continue
 
                 sinyal = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
@@ -1569,7 +1574,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.1 BAŞLIYOR...")
+    print("SCALP BOT v4.3 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
