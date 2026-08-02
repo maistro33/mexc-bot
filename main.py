@@ -2,7 +2,7 @@
 """
 ════════════════════════════════════════════════════════
 SCALP BOT v4.1 — 01 Ağustos 2026
-5m/15m/1h çoklu zaman dilimi, SADECE LONG, o an pump yapan coinleri
+5m/15m/1h çoklu zaman dilimi, SADECE SHORT (v4.2: pump-fade), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
 ════════════════════════════════════════════════════════
@@ -159,7 +159,7 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 # "toplam R'yi maksimize et". Çoklu aşama sistemi de kafa karıştırıcıydı.
 # Artık TEK, backtest doğrulamalı TP yapısı kullanılıyor.
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
-HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.55"))
+HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
 # v4.1: kullanıcı talebiyle TEK TP + BTC filtresiz kombinasyonuna GERİ
 # DÖNÜLDÜ. v4.0'da KOMISYON_PCT sabiti zaten tanımlıydı (yukarıda), bu yüzden
 # v3.5-v3.9'daki "KOMISYON_PCT tanımsız" hatası bir daha oluşmayacak.
@@ -635,15 +635,14 @@ def islem_acici_pozisyon_ac(sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    sl = entry - ATR_CARPANI_SL * atr_val
-    # v1.3: ATR anomali yüzünden şişmişse SL/TP mesafesini tavana çek
-    if (entry - sl) / entry > MAX_SL_PCT:
-        sl = entry * (1 - MAX_SL_PCT)
-    # v3.1: ATR gerçek volatiliteyi yakalayamayıp SL çok darsa (GIGGLE örneği)
-    # tabana çek
-    if (entry - sl) / entry < MIN_SL_PCT:
-        sl = entry * (1 - MIN_SL_PCT)
-    sl_mesafe_pct = (entry - sl) / entry
+    # v4.2: kullanıcı talebiyle YÖN TERSİNE ÇEVRİLDİ - artık SHORT.
+    # SL artık girişin ÜSTÜNDE (fiyat yükselirse zarar).
+    sl = entry + ATR_CARPANI_SL * atr_val
+    if (sl - entry) / entry > MAX_SL_PCT:
+        sl = entry * (1 + MAX_SL_PCT)
+    if (sl - entry) / entry < MIN_SL_PCT:
+        sl = entry * (1 + MIN_SL_PCT)
+    sl_mesafe_pct = (sl - entry) / entry
     if sl_mesafe_pct <= 0:
         acilis_basarisiz_cooldown_uygula(sym)
         return
@@ -693,7 +692,7 @@ def islem_acici_pozisyon_ac(sinyal):
             log.warning(f"[KALDIRAC] {sym}: set_leverage {LEV_KULLANILAN}x hata: {e}")
 
         try:
-            exchange.create_market_order(sym, "buy", qty)
+            exchange.create_market_order(sym, "sell", qty)  # v4.2: SHORT giris
             notional = notional_bu_deneme
             # v3.8 KRİTİK DÜZELTME: pozisyonun ustune ayni pozisyonu tekrar
             # acma bugu bulundu - eskiden trade_state SADECE SL+TP de
@@ -757,10 +756,10 @@ def islem_acici_pozisyon_ac(sinyal):
             log.info(f"[GIRIS_KAYMASI] {sym}: sinyal={entry:.6f} gercek={gercek_giris:.6f} "
                      f"(%{(gercek_giris-entry)/entry*100:+.2f})")
         entry = gercek_giris
-        sl = entry * (1 - sl_mesafe_pct)  # ayni yuzde mesafesi, dogru referans noktasindan
+        sl = entry * (1 + sl_mesafe_pct)  # v4.2: SHORT icin SL yukarida
 
     notional = qty * entry
-    r_risk = entry - sl
+    r_risk = sl - entry  # v4.2: SHORT risk mesafesi
 
     # v2.2 KRİTİK GÜVENLİK DÜZELTMESİ: UB örneğinde SL emri borsaya
     # YERLEŞEMEDİ ama kod bunu SADECE Railway logunda sessizce kaydediyordu -
@@ -773,7 +772,7 @@ def islem_acici_pozisyon_ac(sinyal):
     sl_fiyat = float(exchange.price_to_precision(sym, sl))
     for sl_deneme in range(3):
         try:
-            sl_emri = exchange.create_order(sym, "market", "sell", qty, None,
+            sl_emri = exchange.create_order(sym, "market", "buy", qty, None,
                                              {"reduceOnly": True, "stopLossPrice": sl_fiyat})
             sl_emir_id = sl_emri.get("id")
             if sl_emir_id:
@@ -788,7 +787,7 @@ def islem_acici_pozisyon_ac(sinyal):
         tg(f"🚨 ACİL: {sym} için SL emri 3 denemede de yerleştirilemedi! "
            f"Pozisyon KORUMASIZ kalmasın diye HEMEN piyasa fiyatından kapatılıyor.")
         try:
-            exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+            exchange.create_market_order(sym, "buy", qty, params={"reduceOnly": True})
             tg(f"✅ {sym} güvenlik amaçlı kapatıldı (SL yerleştirilemediği için).")
             # v3.8: kapatma BAŞARILI oldu - onceden yazilmis gecici kaydi
             # temizle. Kapatma basarisiz olursa kaydi BİLEREK SİLMİYORUZ
@@ -804,13 +803,13 @@ def islem_acici_pozisyon_ac(sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    # v4.1: kullanıcı talebiyle TEK TP - sabit net dolar hedefi (~$0.55).
-    tahmini_komisyon = notional * KOMISYON_PCT * 2  # giris+cikis kaba tahmini
-    tp_fiyat_ham = entry + (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
+    # v4.2: SHORT icin TEK TP - hedef fiyatin ALTINDA (geri alarak kar).
+    tahmini_komisyon = notional * KOMISYON_PCT * 2
+    tp_fiyat_ham = entry - (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
     tp_emirleri = []
     try:
         tp_fiyat = float(exchange.price_to_precision(sym, tp_fiyat_ham))
-        emir = exchange.create_limit_order(sym, "sell", qty, tp_fiyat, params={"reduceOnly": True})
+        emir = exchange.create_limit_order(sym, "buy", qty, tp_fiyat, params={"reduceOnly": True})
         tp_emirleri.append({"id": emir.get("id"), "fiyat": tp_fiyat, "qty": qty, "rr": None, "dolu": False})
     except Exception as e:
         log.warning(f"[TP_EMIR] {sym}: {e}")
@@ -835,7 +834,7 @@ def islem_acici_pozisyon_ac(sinyal):
 
     tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else tur)
     tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} (hedef net ≈${HEDEF_NET_KAR_USDT:.2f})" if tp_emirleri else "TP: yerleştirilemedi"
-    tg(f"📈 SCALP POZİSYON: {sym} LONG [{tur_etiket}]\n"
+    tg(f"📉 SCALP POZİSYON: {sym} SHORT [{tur_etiket}]\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} (2×ATR)\n"
        f"{tp_ozet}\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)")
@@ -862,7 +861,11 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
 
         qty = safe(gercek_pos.get("contracts"))
         entry_fiyat = safe(gercek_pos.get("entryPrice"))
-        exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+        # v4.2: yön artık borsadan okunuyor (long/short farketmeksizin doğru
+        # kapatma yönü ve PnL hesabı için).
+        pozisyon_yonu = gercek_pos.get("side", "short")
+        kapama_yon = "buy" if pozisyon_yonu == "short" else "sell"
+        exchange.create_market_order(sym, kapama_yon, qty, params={"reduceOnly": True})
 
         if durum:
             for t in durum.get("tp_emirleri", []):
@@ -883,7 +886,7 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
             cikis_fiyat = safe(t["last"])
         except Exception:
             cikis_fiyat = entry_fiyat
-        pnl = (cikis_fiyat - entry_fiyat) * qty
+        pnl = (cikis_fiyat - entry_fiyat) * qty if pozisyon_yonu == "long" else (entry_fiyat - cikis_fiyat) * qty
         trade_log_kaydet({"symbol": sym, "entry": entry_fiyat, "exit": cikis_fiyat, "pnl": pnl,
                            "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "not": sebep,
                            "tur": (durum or {}).get("tur", "bilinmiyor")})
@@ -952,7 +955,7 @@ if bot:
                 pnl_pct = (guncel - d["entry"]) / d["entry"] * 100
                 dolu_tp = sum(1 for x in d["tp_emirleri"] if x.get("dolu"))
                 be_durum = " | 🔒 SL başabaşta" if d.get("breakeven_cekildi") else ""
-                satirlar.append(f"🟢 {sym} LONG\n"
+                satirlar.append(f"🔴 {sym} SHORT\n"
                                  f"   Giriş:{d['entry']:.6f} Şimdi:{guncel:.6f} (%{pnl_pct:+.2f})\n"
                                  f"   SL:{d['sl_guncel']:.6f} | TP kademesi: {dolu_tp}/{len(d['tp_emirleri'])} dolu{be_durum}")
             except Exception:
@@ -1194,7 +1197,7 @@ def baslangic_uzlastirma():
                     guncel_fiyat = durum.get("sl_guncel", durum["entry"])
                 entry = durum["entry"]
                 qty = durum.get("qty_orijinal", 0)
-                pnl_tahmini = (guncel_fiyat - entry) * qty
+                pnl_tahmini = (entry - guncel_fiyat) * qty  # v4.2: SHORT yonu
                 with gunluk_lock:
                     gunluk_pnl += pnl_tahmini
                     haftalik_pnl += pnl_tahmini
@@ -1215,7 +1218,7 @@ def baslangic_uzlastirma():
 
 def tarama_loop():
     tg(f"🚀 SCALP BOT v4.1 başladı (MAX_POS={MAX_POS})\n"
-       f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE LONG\n"
+       f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE SHORT (pump-fade)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
        f"KOMISYON_PCT tanımsızlık hatası (v3.5-v3.9) kalıcı olarak düzeltildi. Bugünkü GERÇEK "
@@ -1320,7 +1323,7 @@ def tarama_loop():
                 if not sinyal:
                     continue
 
-                tg(f"🔍 AJAN 1: {sym} güçlü LONG sinyali [sürdürülebilir tırmanış] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
+                tg(f"🔍 AJAN 1: {sym} güçlü SHORT sinyali [sürdürülebilir tırmanış - pump-fade] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
                 # v3.7 GÜVENLİK AĞI: bkz. yukarıdaki not - her açılış denemesi
                 # artık cooldown garantili olacak şekilde sarılı.
                 try:
@@ -1399,7 +1402,7 @@ def manage_loop():
                             pass
                         try:
                             yeni_sl_fiyat = float(exchange.price_to_precision(sym, durum["entry"]))
-                            yeni_sl_emri = exchange.create_order(sym, "market", "sell", guncel_qty_erken, None,
+                            yeni_sl_emri = exchange.create_order(sym, "market", "buy", guncel_qty_erken, None,
                                                                   {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
                             with state_lock:
                                 durum["sl_emir_id"] = yeni_sl_emri.get("id")
@@ -1426,7 +1429,8 @@ def manage_loop():
                 try:
                     t = exchange.fetch_ticker(sym)
                     guncel_fiyat = safe(t["last"])
-                    if guncel_fiyat > 0 and guncel_fiyat <= durum["sl_guncel"]:
+                    # v4.2: SHORT icin SL yukarida - fiyat SL_guncel'in USTUNE cikarsa tetiklenir
+                    if guncel_fiyat > 0 and guncel_fiyat >= durum["sl_guncel"]:
                         tg(f"🛡️ YAZILIM SL GÜVENLİK AĞI: {sym} fiyatı ({guncel_fiyat:.6f}) "
                            f"SL seviyesini ({durum['sl_guncel']:.6f}) geçti — borsadaki emir ne "
                            f"durumda olursa olsun bot kendisi HEMEN kapatıyor.")
@@ -1494,9 +1498,9 @@ def manage_loop():
                         # pozisyonun gerçek PnL'ine çok daha yakın bir tahmin.
                         tp_emirleri = durum2.get("tp_emirleri", [])
                         dolu_qty_toplam = sum(t.get("qty", 0) for t in tp_emirleri if t.get("dolu"))
-                        pnl_kademeler = sum((t["fiyat"] - entry) * t.get("qty", 0) for t in tp_emirleri if t.get("dolu"))
+                        pnl_kademeler = sum((entry - t["fiyat"]) * t.get("qty", 0) for t in tp_emirleri if t.get("dolu"))  # v4.2: SHORT
                         kalan_qty = max(durum2["qty_orijinal"] - dolu_qty_toplam, 0)
-                        pnl_kalan = (cikis_fiyat - entry) * kalan_qty
+                        pnl_kalan = (entry - cikis_fiyat) * kalan_qty  # v4.2: SHORT
                         pnl_tahmini = pnl_kademeler + pnl_kalan
                         with gunluk_lock:
                             gunluk_pnl += pnl_tahmini
@@ -1544,7 +1548,7 @@ def manage_loop():
                         pass
                     try:
                         yeni_sl_fiyat = float(exchange.price_to_precision(sym, durum["entry"]))
-                        yeni_sl_emri = exchange.create_order(sym, "market", "sell", guncel_qty, None,
+                        yeni_sl_emri = exchange.create_order(sym, "market", "buy", guncel_qty, None,
                                                               {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
                         with state_lock:
                             durum["sl_emir_id"] = yeni_sl_emri.get("id")
