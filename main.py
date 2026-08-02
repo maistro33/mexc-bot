@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.3 — 02 Ağustos 2026
+SCALP BOT v4.4 — 02 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, SADECE SHORT (v4.2: pump-fade), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -224,7 +224,11 @@ gunluk_lock = threading.Lock()
 # +0.179R/işlem'e çıktı (iki zaman yarısında da tutarlı, 12.1R/14.2R).
 # Sürdürülebilir tırmanış sinyaline uygulanmadı (farklı bir mantığı var,
 # zaten kendi zirve-mesafe filtresi mevcut).
-CONFIRM_BEKLEME_SN = 300
+CONFIRM_BEKLEME_SN = 180
+# v4.4: kullanıcı talebiyle 300sn'den (5dk) 180sn'ye (3dk) düşürüldü - "tepeden
+# yakalamadı, en sonda yakaladı" gözlemi üzerine. ⚠️ NOT: elimizdeki backtest
+# verisi 5dk'lık mumlar halinde, 3dk'yı hassas test edemedik - bu küçük,
+# düşük riskli bir ayar (yönü/mantığı değiştirmiyor) ama test edilmemiş.
 CONFIRM_MAX_RETRACE_PCT = 0.01
 bekleyen_sinyaller = {}  # sym -> {sinyal_fiyat, atr, skor, tur, zaman}
 
@@ -994,7 +998,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.3 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
+                f"Sürüm: v4.4 (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1217,7 +1221,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.3 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.4 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — 2 sinyal tipi (ani patlama 5m + sürdürülebilir tırmanış 15m), SADECE SHORT (pump-fade)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1574,7 +1578,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.3 BAŞLIYOR...")
+    print("SCALP BOT v4.4 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
