@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.9 — 03 Ağustos 2026
+SCALP BOT v4.12 — 03 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -136,7 +136,10 @@ SUSTAINED_ZIRVE_MESAFE_MIN = float(os.getenv("SUSTAINED_ZIRVE_MESAFE_MIN", "0.03
 DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03   # fiyat son 2sa dibine bu kadar uzak olmali
 DUSUS_DEVAM_MUM_ESIK = 0.01         # son mum en az %1 dusmus olmali
 DUSUS_DEVAM_HACIM_ESIK = 1.5        # son mumda hacim, 20-bar ortalamasinin en az bu kati
-DUSUS_DEVAM_RR = 3.0                # backtest'te en iyi/tutarli sonuc bu RR'de cikti
+# v4.11 TEMİZLİK: DUSUS_DEVAM_RR (3.0) kaldırıldı - v4.8'de sabit TP tamamen
+# kaldırılıp iz süren kâr al'a geçildiğinde bu sabiti kullanan kod da kalkmıştı,
+# ölü/kullanılmayan bir değerdi. Düşüş devamı sinyali artık diğer ikisiyle
+# TAMAMEN AYNI iz sürme eşiğini kullanıyor ($0.30 aktivasyon, $0.30 geri çekilme).
 # %3 eşiği ile kazanma %59->%71, ort R/işlem +0.206->+0.388 (komşu eşiklerde
 # de tutarlı iyileşme görüldü, tek noktaya özgü değil).
 
@@ -1093,7 +1096,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.9 (KRİTİK: iz sürme başabaş hatası düzeltildi) (iz süren kâr al - sabit TP kaldırıldı) (hem LONG hem SHORT - sinyal türüne göre yön) (+düşüş devamı sinyali eklendi) (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
+                f"Sürüm: v4.12 (sağlamlaştırma: ölü/çakışan eski kod temizlendi, tek başabaş mekanizması)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1336,7 +1339,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.9 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.12 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — ani patlama/sürdürülebilir tırmanış artık LONG (devam kanıtlanmış), düşüş devamı SHORT (v4.7)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1438,12 +1441,12 @@ def tarama_loop():
                     bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
                                                 "skor": sinyal["skor"], "tur": sinyal["tur"], "zaman": time.time()}
                     tg(f"⏳ AJAN 1: {sym} ani patlama sinyali bulundu, {CONFIRM_BEKLEME_SN//60} dakika "
-                       f"'tutuyor mu' diye izleniyor (fiyat aleyhe donerse iptal, lehe donerse SHORT acilir)")
+                       f"'tutuyor mu' diye izleniyor (fiyat düşerse iptal, tutarsa LONG açılır)")
                     continue
 
                 sinyal = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
                 if sinyal:
-                    tg(f"🔍 AJAN 1: {sym} güçlü SHORT sinyali [sürdürülebilir tırmanış - pump-fade] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
+                    tg(f"🔍 AJAN 1: {sym} güçlü LONG sinyali [sürdürülebilir tırmanış] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
                     try:
                         islem_acici_pozisyon_ac(sinyal)
                     except Exception as e:
@@ -1504,60 +1507,15 @@ def manage_loop():
                 if durum.get("kurulum_tamamlanmadi"):
                     continue
 
-                # v2.7 KRİTİK SIRA DÜZELTMESİ: RAVE örneğinde görüldü - TP1 dolmuş
-                # ve SL başabaşa çekilmesi gerekirken, YAZILIM SL GÜVENLİK AĞI bunu
-                # fark etmeden ÖNCE eski (dar) SL'e göre pozisyonu kapatıyordu.
-                # Artık TP dolum/başabaş kontrolü ÖNCE yapılıyor, güvenlik ağı
-                # SONRA (güncellenmiş SL ile) çalışıyor.
-                try:
-                    pozlar_erken = exchange.fetch_positions([sym])
-                    gercek_pos_erken = next((p for p in pozlar_erken if safe(p.get("contracts")) > 0), None)
-                except Exception:
-                    gercek_pos_erken = None
+                # v4.11 TEMİZLİK: eski kademeli-TP dönemine ait "ilk TP dolunca
+                # başabaşa çek" blokları (iki tane vardı) kaldırıldı - tp_emirleri
+                # artık hep boş liste olduğu için bu bloklar zaten hiçbir zaman
+                # çalışmıyordu (dead code), ama gelecekte kafa karıştırıp yanlışlıkla
+                # tekrar aktifleşme riski taşıyordu. Başabaşa çekme artık SADECE
+                # aşağıdaki iz süren kâr al (İZ_SURME) bloğunda, tek bir yerde
+                # yönetiliyor - çakışma riski yok.
 
-                if gercek_pos_erken:
-                    guncel_qty_erken = safe(gercek_pos_erken.get("contracts"))
-                    degisti_erken = False
-                    for t in durum["tp_emirleri"]:
-                        if t.get("dolu"):
-                            continue
-                        try:
-                            emir_durumu = exchange.fetch_order(t["id"], sym)
-                            if emir_durumu.get("status") in ("closed", "filled"):
-                                t["dolu"] = True
-                                degisti_erken = True
-                        except Exception:
-                            pass
-                    if degisti_erken and not durum.get("breakeven_cekildi"):
-                        try:
-                            if durum.get("sl_emir_id"):
-                                exchange.cancel_order(durum["sl_emir_id"], sym)
-                        except Exception:
-                            pass
-                        try:
-                            yeni_sl_fiyat = float(exchange.price_to_precision(sym, durum["entry"]))
-                            be_yonu = "sell" if sinyal_yonu(durum.get("tur")) == "long" else "buy"
-                            yeni_sl_emri = exchange.create_order(sym, "market", be_yonu, guncel_qty_erken, None,
-                                                                  {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
-                            with state_lock:
-                                durum["sl_emir_id"] = yeni_sl_emri.get("id")
-                                durum["sl_guncel"] = yeni_sl_fiyat
-                                durum["breakeven_cekildi"] = True
-                            durumu_diske_yaz()
-                            tg(f"🔒 {sym} — ilk TP vuruldu, SL başabaşa ({yeni_sl_fiyat:.6f}) çekildi. "
-                               f"Bu andan sonra pozisyon en kötü ihtimalle sıfır zararla kapanır.")
-                        except Exception as e:
-                            log.warning(f"[BREAKEVEN_ERKEN] {sym}: {e}")
-                    elif degisti_erken:
-                        durumu_diske_yaz()
 
-                # v2.2 YENİ - YAZILIM TARAFI SL GÜVENLİK AĞI: UB örneğinde borsa
-                # SL emri hiç yerleşmemişti (bkz. islem_acici_pozisyon_ac'taki
-                # düzeltme, bunu artık açılışta yakalayıp engelliyor). Ama yine
-                # de - emir sonradan iptal olursa, borsa tarafında bir aksaklık
-                # olursa, ya da başka bir sebeple borsadaki SL çalışmazsa diye -
-                # bot burada BAĞIMSIZ OLARAK, borsadaki emre hiç güvenmeden,
-                # güncel fiyatı kendi kayıtlı SL seviyesiyle karşılaştırıyor.
                 # Fiyat SL'i geçmişse ve pozisyon hâlâ açıksa, borsa ne derse
                 # desin BOT KENDİSİ hemen piyasa fiyatından kapatıyor. Bu,
                 # borsadaki emirle YEDEKLİ çalışan ikinci bir güvenlik katmanı.
@@ -1610,7 +1568,25 @@ def manage_loop():
                                 except Exception as e_cancel:
                                     log.warning(f"[IZ_SURME_IPTAL] {sym}: eski SL iptal edilemedi (görmezden geliniyor): {e_cancel}")
                                 try:
-                                    be_fiyat = float(exchange.price_to_precision(sym, entry_iz))
+                                    # v4.11 KRİTİK DÜZELTME: HFT örneğinde görüldü -
+                                    # "başabaşa çekildi" mesajı geldi ama gerçek SL
+                                    # girişten daha KÖTÜ bir seviyeye yerleşmiş, pozisyon
+                                    # zararla kapandı. Kesin sebep izole edilemedi ama
+                                    # en güvenli çözüm: hafızadaki (durum["entry"])
+                                    # değere güvenmek yerine, borsadan o an GERÇEK
+                                    # giriş fiyatını taze çekmek - bayat/yanlış referans
+                                    # riskini tamamen ortadan kaldırıyor. Ayrıca komisyonu
+                                    # karşılayacak küçük bir güvenlik payı ekleniyor ki
+                                    # "sıfır zararla kapanır" sözü gerçekten tutsun.
+                                    taze_pos = exchange.fetch_positions([sym])
+                                    taze_giris = next((safe(p.get("entryPrice")) for p in taze_pos
+                                                        if safe(p.get("contracts")) > 0), None)
+                                    be_referans = taze_giris if taze_giris and taze_giris > 0 else entry_iz
+                                    guvenlik_payi = KOMISYON_PCT * 2  # komisyonu karsilasin
+                                    if iz_yonu == "long":
+                                        be_fiyat = float(exchange.price_to_precision(sym, be_referans * (1 + guvenlik_payi)))
+                                    else:
+                                        be_fiyat = float(exchange.price_to_precision(sym, be_referans * (1 - guvenlik_payi)))
                                     be_yon_iz = "sell" if iz_yonu == "long" else "buy"
                                     be_emir = exchange.create_order(sym, "market", be_yon_iz, qty_iz, None,
                                                                      {"reduceOnly": True, "stopLossPrice": be_fiyat})
@@ -1779,7 +1755,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.9 BAŞLIYOR...")
+    print("SCALP BOT v4.12 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
