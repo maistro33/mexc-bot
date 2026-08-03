@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.13 — 03 Ağustos 2026
+SCALP BOT v4.14 — 03 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -136,6 +136,7 @@ SUSTAINED_ZIRVE_MESAFE_MIN = float(os.getenv("SUSTAINED_ZIRVE_MESAFE_MIN", "0.03
 DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03   # fiyat son 2sa dibine bu kadar uzak olmali
 DUSUS_DEVAM_MUM_ESIK = 0.01         # son mum en az %1 dusmus olmali
 DUSUS_DEVAM_HACIM_ESIK = 1.5        # son mumda hacim, 20-bar ortalamasinin en az bu kati
+DUSUS_DEVAM_RSI_TABAN = 25           # v4.14: RSI bu seviyenin ALTINDAYSA (asiri satilmis) sinyal reddedilir
 # v4.11 TEMİZLİK: DUSUS_DEVAM_RR (3.0) kaldırıldı - v4.8'de sabit TP tamamen
 # kaldırılıp iz süren kâr al'a geçildiğinde bu sabiti kullanan kod da kalkmıştı,
 # ölü/kullanılmayan bir değerdi. Düşüş devamı sinyali artık diğer ikisiyle
@@ -355,6 +356,21 @@ def adx(df, period=14):
     return dx.rolling(period).mean()
 
 
+def rsi(df, period=14):
+    """v4.14 YENİ: BLESS örneği - coin kesintisiz düşerken, dipten-uzaklık
+    filtresi (referans nokta da coinle birlikte aşağı kaydığı için) aşırı
+    satılmış (dip) anları elemekte yetersiz kalıyordu. RSI, bunu doğrudan
+    ölçüyor - düşük RSI = aşırı satılmış = tepki yükselişi riski yüksek."""
+    close = df["close"]
+    delta = close.diff()
+    kazanc = delta.clip(lower=0)
+    kayip = -delta.clip(upper=0)
+    ort_kazanc = kazanc.rolling(period).mean()
+    ort_kayip = kayip.rolling(period).mean()
+    rs = ort_kazanc / ort_kayip.replace(0, 1e-9)
+    return 100 - (100 / (1 + rs))
+
+
 def get_df(sym, tf, limit=60):
     """Son (kapanmamış) mumu atar - sadece kapanmış mumlarla çalışır."""
     for deneme in range(3):
@@ -570,6 +586,7 @@ def piyasa_izleyici_dusus_devam_kontrol(sym):
     df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
     df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
     df15["dip_2sa"] = df15["low"].rolling(8).min()
+    df15["rsi"] = rsi(df15, 14)
 
     row = df15.iloc[-1]
     if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
@@ -601,11 +618,23 @@ def piyasa_izleyici_dusus_devam_kontrol(sym):
     if not capitulation_ok:
         return None
 
+    # v4.14 YENİ: BLESS örneği - coin kesintisiz düşerken dipten-uzaklık
+    # filtresi yetersiz kalıyordu (referans nokta da coinle kayıyordu).
+    # RSI çok düşükse (aşırı satılmış) sinyal REDDEDİLİR - tepki yükselişi
+    # riski çok yüksek, "dipten short açma" senaryosunu önlüyor.
+    if pd.isna(row["rsi"]) or row["rsi"] <= DUSUS_DEVAM_RSI_TABAN:
+        return None
+
     return {"symbol": sym, "entry": row["close"], "atr": row["atr"],
             "skor": abs(row["ret_6bar"]) * row["vol_ratio_sustained"], "tur": "dusus_devam"}
 
 
-
+def btc_1h_bullish():
+    """v4.14 KRİTİK DÜZELTME: bu fonksiyonun 'def' satırı önceki bir
+    düzenlemede yanlışlıkla silinmişti, gövdesi yukarıdaki fonksiyonun
+    içine sürüklenmiş (erişilemez) kod olarak kalmıştı. Fonksiyon panel'de
+    (Risk Durumu) hâlâ çağrılıyordu - her açılışta NameError ile çökerdi.
+    Artık düzgün bir fonksiyon olarak geri kondu."""
     df = get_df("BTC/USDT:USDT", "1h", 40)
     if df is None or len(df) < 25:
         return None
@@ -1111,7 +1140,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.13 (panel PnL artık gerçek emir dolum fiyatını kullanıyor, ticker tahmini değil)\n"
+                f"Sürüm: v4.14 (KRİTİK: eksik btc_1h_bullish fonksiyonu geri kondu + RSI aşırı-satım filtresi eklendi - BLESS örneği)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1354,7 +1383,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.13 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.14 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — ani patlama/sürdürülebilir tırmanış artık LONG (devam kanıtlanmış), düşüş devamı SHORT (v4.7)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1784,7 +1813,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.13 BAŞLIYOR...")
+    print("SCALP BOT v4.14 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
