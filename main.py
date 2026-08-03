@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.8 — 03 Ağustos 2026
+SCALP BOT v4.9 — 03 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1093,7 +1093,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.8 (iz süren kâr al - sabit TP kaldırıldı) (hem LONG hem SHORT - sinyal türüne göre yön) (+düşüş devamı sinyali eklendi) (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
+                f"Sürüm: v4.9 (KRİTİK: iz sürme başabaş hatası düzeltildi) (iz süren kâr al - sabit TP kaldırıldı) (hem LONG hem SHORT - sinyal türüne göre yön) (+düşüş devamı sinyali eklendi) (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1336,7 +1336,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.8 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.9 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — ani patlama/sürdürülebilir tırmanış artık LONG (devam kanıtlanmış), düşüş devamı SHORT (v4.7)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1595,11 +1595,21 @@ def manage_loop():
                         en_iyi_kar = durum.get("en_iyi_kar")
                         if anlik_kar >= IZ_SURME_AKTIVASYON_USDT:
                             if not durum.get("breakeven_cekildi"):
-                                # v4.8: iz surme aktiflesince SL'i basabasa cek -
-                                # geri cekilme paritten sonra kayba donmesin
+                                # v4.9 KRİTİK DÜZELTME: MAGMA/BICO örneğinde görüldü -
+                                # cancel_order eski SL emrini "bulamıyordu" (43001,
+                                # muhtemelen stopLossPrice tetikleyici bir "plan emri"
+                                # oluşturuyor, normal cancel_order ile iptal edilemiyor)
+                                # ve bu hata TÜM başabaş denemesini durduruyordu -
+                                # breakeven_cekildi hiç True olmuyordu, aynı hata
+                                # SONSUZA KADAR her turda tekrarlanıyordu. Artık iptal
+                                # denemesi AYRI bir try/except'te - başarısız olsa bile
+                                # yeni SL emri yerleştirmeye devam ediliyor.
                                 try:
                                     if durum.get("sl_emir_id"):
                                         exchange.cancel_order(durum["sl_emir_id"], sym)
+                                except Exception as e_cancel:
+                                    log.warning(f"[IZ_SURME_IPTAL] {sym}: eski SL iptal edilemedi (görmezden geliniyor): {e_cancel}")
+                                try:
                                     be_fiyat = float(exchange.price_to_precision(sym, entry_iz))
                                     be_yon_iz = "sell" if iz_yonu == "long" else "buy"
                                     be_emir = exchange.create_order(sym, "market", be_yon_iz, qty_iz, None,
@@ -1609,9 +1619,19 @@ def manage_loop():
                                         durum["sl_guncel"] = be_fiyat
                                         durum["breakeven_cekildi"] = True
                                     durumu_diske_yaz()
-                                    tg(f"🔒 {sym} — iz sürme aktifleşti (${anlik_kar:.2f} kâr), SL başabaşa çekildi.")
+                                    tg(f"🔒 {sym} — iz sürme AKTİFLEŞTİ (${anlik_kar:.2f} kâr), SL başabaşa çekildi. "
+                                       f"Fiyat lehte gittikçe takip edecek, en iyi kârdan ${IZ_SURME_PAYI_USDT:.2f} "
+                                       f"geri çekilirse kapanacak.")
                                 except Exception as e:
-                                    log.warning(f"[IZ_SURME_BASABAS] {sym}: {e}")
+                                    log.warning(f"[IZ_SURME_BASABAS] {sym}: yeni SL yerleştirilemedi: {e}")
+                                    tg(f"⚠️ {sym} — iz sürme ${anlik_kar:.2f} kârda aktifleşmeye çalıştı ama "
+                                       f"başabaş SL emri yerleştirilemedi: {e}. Eski SL geçerliliğini koruyor, "
+                                       f"iz sürme takibi yine de devam ediyor.")
+                                    # v4.9: SL emri yerlesemese bile en_iyi_kar takibi
+                                    # ve kapanis mantigi calismaya devam etsin diye
+                                    # breakeven_cekildi'yi burada TRUE YAPMIYORUZ ki
+                                    # bir sonraki turda tekrar denesin, ama asagidaki
+                                    # en_iyi_kar/kapanis kontrolu YINE DE calisir.
                             if en_iyi_kar is None or anlik_kar > en_iyi_kar:
                                 with state_lock:
                                     durum["en_iyi_kar"] = anlik_kar
@@ -1759,7 +1779,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.8 BAŞLIYOR...")
+    print("SCALP BOT v4.9 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
