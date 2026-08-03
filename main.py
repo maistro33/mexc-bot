@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.12 — 03 Ağustos 2026
+SCALP BOT v4.13 — 03 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -964,7 +964,7 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
         # kapatma yönü ve PnL hesabı için).
         pozisyon_yonu = gercek_pos.get("side", "short")
         kapama_yon = "buy" if pozisyon_yonu == "short" else "sell"
-        exchange.create_market_order(sym, kapama_yon, qty, params={"reduceOnly": True})
+        kapama_emri = exchange.create_market_order(sym, kapama_yon, qty, params={"reduceOnly": True})
 
         if durum:
             for t in durum.get("tp_emirleri", []):
@@ -980,11 +980,26 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
                     pass
 
         time.sleep(1)
+        # v4.13 KRİTİK DÜZELTME: kullanıcı gözlemi - panel'deki kapanış PnL'i
+        # gerçek borsa sonucuyla uyuşmuyordu. Sebep: cikis_fiyat, emrin GERÇEK
+        # dolum fiyatı değil, 1sn sonraki bir ticker anlık görüntüsüyle tahmin
+        # ediliyordu - hareketli coinlerde bu ikisi farklı çıkabiliyordu. Artık
+        # önce GERÇEK emrin kendi dolum fiyatı (average) borsadan soruluyor,
+        # sadece o başarısız olursa ticker'a geri dönülüyor.
+        cikis_fiyat = None
         try:
-            t = exchange.fetch_ticker(sym)
-            cikis_fiyat = safe(t["last"])
-        except Exception:
-            cikis_fiyat = entry_fiyat
+            emir_detay = exchange.fetch_order(kapama_emri.get("id"), sym)
+            gercek_dolum = safe(emir_detay.get("average")) or safe(emir_detay.get("price"))
+            if gercek_dolum and gercek_dolum > 0:
+                cikis_fiyat = gercek_dolum
+        except Exception as e:
+            log.warning(f"[CIKIS_FIYATI] {sym}: gerçek dolum fiyatı alınamadı, ticker'a dönülüyor: {e}")
+        if not cikis_fiyat:
+            try:
+                t = exchange.fetch_ticker(sym)
+                cikis_fiyat = safe(t["last"])
+            except Exception:
+                cikis_fiyat = entry_fiyat
         pnl = (cikis_fiyat - entry_fiyat) * qty if pozisyon_yonu == "long" else (entry_fiyat - cikis_fiyat) * qty
         trade_log_kaydet({"symbol": sym, "entry": entry_fiyat, "exit": cikis_fiyat, "pnl": pnl,
                            "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "not": sebep,
@@ -1096,7 +1111,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.12 (sağlamlaştırma: ölü/çakışan eski kod temizlendi, tek başabaş mekanizması)\n"
+                f"Sürüm: v4.13 (panel PnL artık gerçek emir dolum fiyatını kullanıyor, ticker tahmini değil)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1339,7 +1354,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.12 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.13 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — ani patlama/sürdürülebilir tırmanış artık LONG (devam kanıtlanmış), düşüş devamı SHORT (v4.7)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1665,11 +1680,25 @@ def manage_loop():
                         son_kapanis_zamani[sym] = time.time()
                     cooldown_diske_yaz()
                     if durum2:
-                        try:
-                            t = exchange.fetch_ticker(sym)
-                            cikis_fiyat = safe(t["last"])
-                        except Exception:
-                            cikis_fiyat = durum2["sl_guncel"]
+                        # v4.13: aynı düzeltme burada da - önce SL emrinin
+                        # GERÇEK dolum fiyatını sormayı dene, olmazsa ticker'a
+                        # dön (bu yol, borsada hard SL kendiliğinden tetiklenip
+                        # pozisyonu kapattığında devreye giriyor).
+                        cikis_fiyat = None
+                        if durum2.get("sl_emir_id"):
+                            try:
+                                sl_detay = exchange.fetch_order(durum2["sl_emir_id"], sym)
+                                gercek_sl_dolum = safe(sl_detay.get("average")) or safe(sl_detay.get("price"))
+                                if gercek_sl_dolum and gercek_sl_dolum > 0:
+                                    cikis_fiyat = gercek_sl_dolum
+                            except Exception:
+                                pass
+                        if not cikis_fiyat:
+                            try:
+                                t = exchange.fetch_ticker(sym)
+                                cikis_fiyat = safe(t["last"])
+                            except Exception:
+                                cikis_fiyat = durum2["sl_guncel"]
                         entry = durum2["entry"]
                         # v1.6 DÜZELTME: eskiden (çıkış-giriş)×orijinal_miktar×0.3 gibi kaba
                         # bir tahmin kullanılıyordu - BEAT örneğinde gerçek sonuç +$0.09 iken
@@ -1755,7 +1784,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.12 BAŞLIYOR...")
+    print("SCALP BOT v4.13 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
