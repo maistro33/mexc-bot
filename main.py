@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.7 — 03 Ağustos 2026
+SCALP BOT v4.8 — 03 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -166,6 +166,10 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 # Artık TEK, backtest doğrulamalı TP yapısı kullanılıyor.
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
+# v4.8 YENİ: iz süren kâr al (trailing TP) - sabit TP emri KALDIRILDI,
+# yerine bu iki eşik kullanılıyor. Üç sinyal türüne de uygulanıyor.
+IZ_SURME_AKTIVASYON_USDT = float(os.getenv("IZ_SURME_AKTIVASYON_USDT", "0.30"))  # bu kâra ulaşınca iz sürme baslar
+IZ_SURME_PAYI_USDT = float(os.getenv("IZ_SURME_PAYI_USDT", "0.30"))  # en iyi kârdan bu kadar geri cekilirse kapat
 # v4.1: kullanıcı talebiyle TEK TP + BTC filtresiz kombinasyonuna GERİ
 # DÖNÜLDÜ. v4.0'da KOMISYON_PCT sabiti zaten tanımlıydı (yukarıda), bu yüzden
 # v3.5-v3.9'daki "KOMISYON_PCT tanımsız" hatası bir daha oluşmayacak.
@@ -800,7 +804,7 @@ def islem_acici_pozisyon_ac(sinyal):
                     "entry": entry, "sl_orijinal": None, "sl_guncel": None, "sl_emir_id": None,
                     "qty_orijinal": qty, "r_risk": None, "tp_emirleri": [],
                     "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
-                    "kurulum_tamamlanmadi": True,
+                    "kurulum_tamamlanmadi": True, "en_iyi_kar": None,
                 }
             durumu_diske_yaz()
             break
@@ -896,32 +900,19 @@ def islem_acici_pozisyon_ac(sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    # v4.7: TP yön bazlı - LONG'da girişin ÜSTÜNDE, SHORT'ta ALTINDA.
-    # dusus-devam (SHORT) hâlâ R-multiple bazlı (RR=3.0); diğerleri
-    # (artık LONG) sabit dolar hedefi kullanıyor.
-    if tur == "dusus_devam":
-        tp_fiyat_ham = entry - DUSUS_DEVAM_RR * r_risk
-    else:
-        tahmini_komisyon = notional * KOMISYON_PCT * 2
-        if yon == "long":
-            tp_fiyat_ham = entry + (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
-        else:
-            tp_fiyat_ham = entry - (HEDEF_NET_KAR_USDT + tahmini_komisyon) / qty
-    tp_kapatma_yonu = "sell" if yon == "long" else "buy"
+    # v4.8: SABİT TP EMRİ KALDIRILDI - artık "iz süren kâr al" mantığı
+    # manage_loop içinde yönetiyor (bkz. IZ_SURME_AKTIVASYON_USDT /
+    # IZ_SURME_PAYI_USDT). Borsaya limit TP emri YERLEŞTİRİLMİYOR, kapanış
+    # kararı tamamen bot tarafından (yazılım seviyesinde) veriliyor. Koruma
+    # hâlâ borsadaki hard SL emriyle sağlanıyor.
     tp_emirleri = []
-    try:
-        tp_fiyat = float(exchange.price_to_precision(sym, tp_fiyat_ham))
-        emir = exchange.create_limit_order(sym, tp_kapatma_yonu, qty, tp_fiyat, params={"reduceOnly": True})
-        tp_emirleri.append({"id": emir.get("id"), "fiyat": tp_fiyat, "qty": qty, "rr": None, "dolu": False})
-    except Exception as e:
-        log.warning(f"[TP_EMIR] {sym}: {e}")
 
     with state_lock:
         if sym in trade_state:
             trade_state[sym].update({
                 "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
                 "r_risk": r_risk, "tp_emirleri": tp_emirleri,
-                "kurulum_tamamlanmadi": False,
+                "kurulum_tamamlanmadi": False, "en_iyi_kar": None,
             })
         else:
             # normalde buraya girmemeli (yukarida onceden kaydedildi) ama
@@ -930,18 +921,13 @@ def islem_acici_pozisyon_ac(sinyal):
                 "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
                 "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
                 "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
-                "kurulum_tamamlanmadi": False,
+                "kurulum_tamamlanmadi": False, "en_iyi_kar": None,
             }
     durumu_diske_yaz()
 
     tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else ("düşüş devamı" if tur == "dusus_devam" else tur))
-    if tp_emirleri:
-        if tur == "dusus_devam":
-            tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} ({DUSUS_DEVAM_RR}R hedef)"
-        else:
-            tp_ozet = f"TP:{tp_emirleri[0]['fiyat']:.6f} (hedef net ≈${HEDEF_NET_KAR_USDT:.2f})"
-    else:
-        tp_ozet = "TP: yerleştirilemedi"
+    tp_ozet = (f"TP: İZ SÜREN — ${IZ_SURME_AKTIVASYON_USDT:.2f} kârda aktifleşir, "
+               f"en iyi kârdan ${IZ_SURME_PAYI_USDT:.2f} geri çekilirse kapanır")
     yon_etiket = "LONG" if yon == "long" else "SHORT"
     yon_emoji = "📈" if yon == "long" else "📉"
     tg(f"{yon_emoji} SCALP POZİSYON: {sym} {yon_etiket} [{tur_etiket}]\n"
@@ -1064,13 +1050,13 @@ if bot:
                 guncel = safe(t["last"])
                 d_yonu = sinyal_yonu(d.get("tur"))
                 pnl_pct = (guncel - d["entry"]) / d["entry"] * 100 if d_yonu == "long" else (d["entry"] - guncel) / d["entry"] * 100
-                dolu_tp = sum(1 for x in d["tp_emirleri"] if x.get("dolu"))
-                be_durum = " | 🔒 SL başabaşta" if d.get("breakeven_cekildi") else ""
+                en_iyi = d.get("en_iyi_kar")
+                iz_durum = f" | 🎯 en iyi kâr: ${en_iyi:.2f}" if en_iyi is not None else ""
                 yon_etiket2 = "LONG" if d_yonu == "long" else "SHORT"
                 yon_emoji2 = "🟢" if d_yonu == "long" else "🔴"
                 satirlar.append(f"{yon_emoji2} {sym} {yon_etiket2}\n"
                                  f"   Giriş:{d['entry']:.6f} Şimdi:{guncel:.6f} (%{pnl_pct:+.2f})\n"
-                                 f"   SL:{d['sl_guncel']:.6f} | TP kademesi: {dolu_tp}/{len(d['tp_emirleri'])} dolu{be_durum}")
+                                 f"   SL:{d['sl_guncel']:.6f}{iz_durum}")
             except Exception:
                 satirlar.append(f"{sym} (fiyat alınamadı)")
         bot.send_message(msg.chat.id, "\n".join(satirlar))
@@ -1107,7 +1093,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.7 (hem LONG hem SHORT - sinyal türüne göre yön) (+düşüş devamı sinyali eklendi) (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
+                f"Sürüm: v4.8 (iz süren kâr al - sabit TP kaldırıldı) (hem LONG hem SHORT - sinyal türüne göre yön) (+düşüş devamı sinyali eklendi) (tek TP sabit ${HEDEF_NET_KAR_USDT:.2f} hedef, BTC filtresiz)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1350,7 +1336,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.7 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.8 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — ani patlama/sürdürülebilir tırmanış artık LONG (devam kanıtlanmış), düşüş devamı SHORT (v4.7)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1590,6 +1576,53 @@ def manage_loop():
                         continue
                 except Exception as e:
                     log.warning(f"[SL_GUVENLIK_AGI] {sym}: fiyat kontrol edilemedi: {e}")
+                    guncel_fiyat = None
+
+                # v4.8 YENİ: İZ SÜREN KÂR AL (trailing take-profit). Kullanıcı
+                # talebiyle - sabit $0.30 hedefte hemen kapatmak yerine,
+                # pozisyon $0.30 kâra ulaşınca "aktif" olur, sonra fiyat lehte
+                # gittikçe gider (sınır yok), en iyi görülen kârdan $0.30
+                # GERİ ÇEKİLİRSE o zaman kapatılır. ZEST/MANTRA gibi büyük
+                # hareketlerde daha fazla kâr yakalama potansiyeli için.
+                # ⚠️ Bu mantık henüz backtest edilmedi - kullanıcı isteğiyle
+                # doğrudan canlıya eklendi, izlenmesi gerekiyor.
+                if guncel_fiyat and guncel_fiyat > 0:
+                    try:
+                        iz_yonu = sinyal_yonu(durum.get("tur"))
+                        entry_iz = durum["entry"]
+                        qty_iz = durum.get("qty_orijinal", 0)
+                        anlik_kar = (guncel_fiyat - entry_iz) * qty_iz if iz_yonu == "long" else (entry_iz - guncel_fiyat) * qty_iz
+                        en_iyi_kar = durum.get("en_iyi_kar")
+                        if anlik_kar >= IZ_SURME_AKTIVASYON_USDT:
+                            if not durum.get("breakeven_cekildi"):
+                                # v4.8: iz surme aktiflesince SL'i basabasa cek -
+                                # geri cekilme paritten sonra kayba donmesin
+                                try:
+                                    if durum.get("sl_emir_id"):
+                                        exchange.cancel_order(durum["sl_emir_id"], sym)
+                                    be_fiyat = float(exchange.price_to_precision(sym, entry_iz))
+                                    be_yon_iz = "sell" if iz_yonu == "long" else "buy"
+                                    be_emir = exchange.create_order(sym, "market", be_yon_iz, qty_iz, None,
+                                                                     {"reduceOnly": True, "stopLossPrice": be_fiyat})
+                                    with state_lock:
+                                        durum["sl_emir_id"] = be_emir.get("id")
+                                        durum["sl_guncel"] = be_fiyat
+                                        durum["breakeven_cekildi"] = True
+                                    durumu_diske_yaz()
+                                    tg(f"🔒 {sym} — iz sürme aktifleşti (${anlik_kar:.2f} kâr), SL başabaşa çekildi.")
+                                except Exception as e:
+                                    log.warning(f"[IZ_SURME_BASABAS] {sym}: {e}")
+                            if en_iyi_kar is None or anlik_kar > en_iyi_kar:
+                                with state_lock:
+                                    durum["en_iyi_kar"] = anlik_kar
+                                durumu_diske_yaz()
+                            elif anlik_kar <= en_iyi_kar - IZ_SURME_PAYI_USDT:
+                                tg(f"🎯 İZ SÜREN TP: {sym} en iyi kâr ${en_iyi_kar:.2f} idi, "
+                                   f"${IZ_SURME_PAYI_USDT:.2f} geri çekildi (${anlik_kar:.2f}) — kapatılıyor.")
+                                pozisyonu_tamamen_kapat(sym, sebep="iz_suren_tp")
+                                continue
+                    except Exception as e:
+                        log.warning(f"[IZ_SURME] {sym}: {e}")
 
                 # borsadaki gerçek pozisyon hâlâ açık mı?
                 try:
@@ -1726,7 +1759,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.7 BAŞLIYOR...")
+    print("SCALP BOT v4.8 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
