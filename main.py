@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.23 — 04 Ağustos 2026
+SCALP BOT v4.25 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -189,6 +189,15 @@ DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03
 DUSUS_DEVAM_MUM_ESIK = 0.01
 DUSUS_DEVAM_HACIM_ESIK = 1.5
 DUSUS_DEVAM_RSI_TABAN = 25
+# v4.25 TRADER KARARI (04 Ağustos 2026): 45 coin/4 gün gerçek veriyle yapılan
+# backtest'te düşüş devamı (SHORT) sinyali %14 kazanma, ortalama -0.798R
+# gösterdi (14 işlem) - LONG sinyallerinden (sustained -0.323R, ama büyük
+# kazançlar mevcut) belirgin daha kötü ve tutarlı biçimde negatif. Kullanıcı
+# tüm kararı bana bıraktı; trader mantığıyla zayıf kanıtlanmış, para kaybeden
+# bir kolu açık tutmanın gerekçesi yok. SHORT sinyali geçici KAPATILDI.
+# Kod silinmedi - DUSUS_DEVAM_AKTIF=true ile tekrar açılabilir, ör. daha
+# uzun/geniş bir backtest ileride farklı sonuç verirse.
+DUSUS_DEVAM_AKTIF = os.getenv("DUSUS_DEVAM_AKTIF", "false").lower() == "true"
 
 ATR_CARPANI_SL = 2.0
 
@@ -370,6 +379,12 @@ _ws_tetik_havuzu = ThreadPoolExecutor(max_workers=3)
 
 def ws_on_message(ws, message):
     try:
+        # v4.24 DÜZELTME: Bitget metin tabanlı "ping"/"pong" heartbeat kullanıyor
+        # (standart websocket protokol ping'i yetmiyor, ~2-2.5dk'da bağlantı
+        # kopuyordu - canlıda gözlemlendi ve doğrulandı). "pong" cevabı JSON
+        # değil, düz metin - json.loads'a girmeden burada elenmeli.
+        if message == "pong":
+            return
         d = json.loads(message)
         if d.get("action") not in ("snapshot", "update"):
             return
@@ -419,6 +434,26 @@ def ws_on_open(ws):
     log.info("[WS_ACIK] websocket bağlantısı kuruldu")
 
 
+def ws_ping_gonder(ws_beklenen):
+    """v4.24 YENİ: Bitget'in beklediği metin tabanlı "ping" heartbeat'i
+    20 saniyede bir gönderir. Canlıda doğrulandı: standart websocket
+    protokol ping'i (ping_interval parametresi) Bitget için yetersizdi,
+    bağlantı ~2-2.5 dakikada bir kopuyordu ("Connection to remote host
+    was lost"). Metin "ping" gönderimi bunu tamamen çözdü (50sn test
+    edildi, hiç kopma olmadı). ws_beklenen: bu ping thread'inin hangi
+    websocket nesnesine ait olduğunu bilmesi için - yeniden bağlanma
+    durumunda eski thread'in yeni bağlantıya ping atmaya devam edip
+    çakışmaması için kontrol ediliyor."""
+    while True:
+        time.sleep(20)
+        if ws_app_ref.get("ws") is not ws_beklenen:
+            return  # bağlantı değişmiş (yeniden bağlanmış), bu eski thread sonlansın
+        try:
+            ws_beklenen.send("ping")
+        except Exception:
+            return
+
+
 def ws_gozcu_baslat():
     """AJAN 0'ı ayrı bir daemon thread'de sürekli çalıştırır, bağlantı
     koparsa otomatik yeniden bağlanır."""
@@ -433,7 +468,11 @@ def ws_gozcu_baslat():
             ws_app_ref["ws"] = ws
             with ws_abone_lock:
                 ws_abone_semboller.clear()  # yeniden bağlanınca abonelikler sıfırlanır
-            ws.run_forever(ping_interval=20, ping_timeout=10)
+            # v4.24: protokol ping KAPALI (ping_interval=None) - Bitget bunu
+            # yeterli bulmuyordu. Bunun yerine metin "ping" heartbeat thread'i
+            # ayrı başlatılıyor (bkz. ws_ping_gonder).
+            threading.Thread(target=ws_ping_gonder, args=(ws,), daemon=True).start()
+            ws.run_forever(ping_interval=None)
         except Exception as e:
             log.warning(f"[WS_GOZCU] bağlantı hatası, 10sn sonra tekrar denenecek: {e}")
         ws_app_ref["ws"] = None
@@ -817,9 +856,12 @@ def sembol_sinyal_kontrol_tumu(sym, btc_bullish):
         sinyal = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
         if sinyal:
             return sinyal
-        sinyal = piyasa_izleyici_dusus_devam_kontrol(sym)
-        if sinyal:
-            return sinyal
+        # v4.25 TRADER KARARI: backtest kanıtına göre SHORT sinyali geçici
+        # kapalı (DUSUS_DEVAM_AKTIF=false varsayılan) - bkz. yukarıdaki not.
+        if DUSUS_DEVAM_AKTIF:
+            sinyal = piyasa_izleyici_dusus_devam_kontrol(sym)
+            if sinyal:
+                return sinyal
     except Exception as e:
         log.warning(f"[PARALEL_TARAMA] {sym}: {e}")
     return None
@@ -1265,6 +1307,7 @@ if bot:
                 f"RSI aşırı-alım filtresi: spike ≥{SPIKE_RSI_TAVAN:.0f}, sustained ≥{SUSTAINED_RSI_TAVAN:.0f} reddedilir\n"
                 f"Spike üst fitil filtresi: mum aralığının %{SPIKE_UST_FITIL_MAX*100:.0f}'inden fazlası üst fitilse reddedilir\n"
                 f"Teyit kuyruğu: LONG ve SHORT sinyalleri simetrik korumalı (ters yöne dönerse iptal)\n"
+                f"Düşüş devamı (SHORT) sinyali: {'AKTİF' if DUSUS_DEVAM_AKTIF else 'KAPALI (backtest kanıtıyla, 04.08.2026 — %14 kazanma/-0.80R görüldü)'}\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin, "
                 f"{TARAMA_PARALEL_WORKER} paralel worker ile taranır\n"
@@ -1888,7 +1931,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.23 BAŞLIYOR...")
+    print("SCALP BOT v4.25 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
