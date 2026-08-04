@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.22 — 04 Ağustos 2026
+SCALP BOT v4.23 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -101,6 +101,7 @@ import ccxt
 import telebot
 import pandas as pd
 import numpy as np
+import websocket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import sys
@@ -205,7 +206,7 @@ TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # artık kullanılmıyor (t
 # v4.18 DEĞİŞTİ: 40 -> 60. Paralel taramayla (aşağıda ThreadPoolExecutor)
 # artık daha büyük bir havuzu aynı sürede kontrol edebiliyoruz - "bot
 # hareketli coinleri kaçırıyor" şikayetine karşı kapsam genişletildi.
-ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "60"))
+ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "100"))
 # v4.18 YENİ: paralel tarama için thread sayısı. Bitget rate limit'e takılmamak
 # için ölçülü tutuldu - ccxt zaten enableRateLimit=True ile kendi içinde
 # throttle ediyor, bu sadece I/O bekleme süresini örtüştürüyor.
@@ -258,6 +259,185 @@ gunluk_lock = threading.Lock()
 CONFIRM_BEKLEME_SN = 180
 CONFIRM_MAX_RETRACE_PCT = 0.01
 bekleyen_sinyaller = {}  # sym -> {sinyal_fiyat, atr, skor, tur, zaman}
+# v4.23 YENİ: artık hem ana tarama döngüsü hem de AJAN 0 (websocket gözcüsü)
+# bekleyen_sinyaller'a yazıyor - thread-safety için kilit eklendi.
+bekleyen_lock = threading.Lock()
+
+# ════════════════════════════════════════════
+# AJAN 0: WEBSOCKET GÖZCÜSÜ (v4.23 YENİ)
+# ════════════════════════════════════════════
+# Kullanıcı talebi: 60sn'lik periyodik tarama arasında hızlı hareket eden
+# coinler kaçırılıyordu. Bu ajan Bitget'in public websocket'inden (ticker
+# kanalı) CANLI fiyat akışı dinler, kısa pencerede (WS_PENCERE_SN) sert
+# hareket gördüğü coin için AJAN 1'in normal sinyal fonksiyonlarını HEMEN
+# çağırır - yani hiçbir güvenlik filtresi (RSI, üst fitil, trend, teyit
+# kuyruğu) ATLANMAZ, sadece "ne zaman deep-check yapılacağı" hızlanır.
+# ⚠️ Bu websocket bağlantısı canlı ortamda test edilmedi (sadece bağlantı
+# ve mesaj formatı doğrulandı) - izlenmesi gerekir, sorun çıkarsa
+# WS_GOZCU_AKTIF=false ile kapatılabilir.
+WS_GOZCU_AKTIF = os.getenv("WS_GOZCU_AKTIF", "true").lower() == "true"
+WS_HIZLI_TETIK_YUZDE = float(os.getenv("WS_HIZLI_TETIK_YUZDE", "0.02"))  # pencerede %2 hareket
+WS_PENCERE_SN = int(os.getenv("WS_PENCERE_SN", "30"))  # 30 saniyelik hareket penceresi
+WS_TETIK_COOLDOWN_SN = 120  # aynı coin için art arda tetiklenmeyi önler
+WS_URL = "wss://ws.bitget.com/v2/ws/public"
+
+ws_fiyat_takip = {}   # bitget_instId -> [(ts, fiyat), ...] kısa rolling buffer
+ws_fiyat_lock = threading.Lock()
+ws_son_tetik = {}     # ccxt_sym -> son tetiklenme zamanı
+ws_son_tetik_lock = threading.Lock()
+ws_abone_semboller = set()  # şu an abone olunan bitget instId'leri
+ws_abone_lock = threading.Lock()
+ws_app_ref = {"ws": None}
+
+
+def ccxt_to_bitget_inst(sym):
+    """'BANK/USDT:USDT' -> 'BANKUSDT'"""
+    return sym.split("/")[0] + "USDT"
+
+
+def bitget_inst_to_ccxt(inst_id):
+    """'BANKUSDT' -> 'BANK/USDT:USDT'"""
+    if inst_id.endswith("USDT"):
+        return inst_id[:-4] + "/USDT:USDT"
+    return None
+
+
+def ws_abonelik_guncelle(ccxt_semboller):
+    """Ana tarama döngüsü her turda güncel aday havuzunu bu fonksiyona
+    gönderir - henüz abone olunmamış coinler için websocket'e subscribe
+    mesajı yollanır. Zaten abone olunanlar tekrar gönderilmez."""
+    if not WS_GOZCU_AKTIF:
+        return
+    ws = ws_app_ref.get("ws")
+    if ws is None:
+        return
+    yeni = []
+    with ws_abone_lock:
+        for sym in ccxt_semboller:
+            inst = ccxt_to_bitget_inst(sym)
+            if inst not in ws_abone_semboller:
+                ws_abone_semboller.add(inst)
+                yeni.append(inst)
+    if not yeni:
+        return
+    try:
+        # Bitget tek mesajda çok sayıda args kabul ediyor (test edildi, 8+ sorunsuz)
+        args = [{"instType": "USDT-FUTURES", "channel": "ticker", "instId": inst} for inst in yeni]
+        ws.send(json.dumps({"op": "subscribe", "args": args}))
+        log.info(f"[WS_ABONE] {len(yeni)} yeni coin'e abone olundu (toplam {len(ws_abone_semboller)})")
+    except Exception as e:
+        log.warning(f"[WS_ABONE] gönderilemedi: {e}")
+
+
+def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
+    """AJAN 0'ın hızlı hareket tespit ettiği bir coin için AJAN 1'in normal
+    (RSI/fitil/trend dahil TÜM filtreleri uygulayan) sinyal kontrolünü
+    çalıştırır - websocket sadece TETİKLEYİCİ, filtreleri atlamıyor."""
+    try:
+        with state_lock:
+            if sym in trade_state:
+                return
+        if cooldown_da_mi(sym):
+            return
+        with bekleyen_lock:
+            if sym in bekleyen_sinyaller:
+                return
+        with ws_son_tetik_lock:
+            son = ws_son_tetik.get(sym, 0)
+            if time.time() - son < WS_TETIK_COOLDOWN_SN:
+                return
+            ws_son_tetik[sym] = time.time()
+
+        sinyal = sembol_sinyal_kontrol_tumu(sym, btc_bullish)
+        if not sinyal:
+            return
+        tur = sinyal.get("tur")
+        with bekleyen_lock:
+            if sym in bekleyen_sinyaller:
+                return
+            bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
+                                        "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
+        etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
+                  "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
+        tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti → {etiket} sinyali doğrulandı, "
+           f"teyit kuyruğuna alındı (normal 60sn turunu beklemeden)")
+    except Exception as e:
+        log.warning(f"[WS_TETIK] {sym}: {e}")
+
+
+_ws_tetik_havuzu = ThreadPoolExecutor(max_workers=3)
+
+
+def ws_on_message(ws, message):
+    try:
+        d = json.loads(message)
+        if d.get("action") not in ("snapshot", "update"):
+            return
+        arg = d.get("arg", {})
+        if arg.get("channel") != "ticker":
+            return
+        data = d.get("data")
+        if not data:
+            return
+        inst_id = arg.get("instId")
+        fiyat = safe(data[0].get("lastPr"))
+        if not inst_id or fiyat <= 0:
+            return
+        simdi = time.time()
+        with ws_fiyat_lock:
+            buf = ws_fiyat_takip.setdefault(inst_id, [])
+            buf.append((simdi, fiyat))
+            # pencereden eskileri temizle
+            kesim = simdi - WS_PENCERE_SN
+            while buf and buf[0][0] < kesim:
+                buf.pop(0)
+            if len(buf) < 2:
+                return
+            eski_fiyat = buf[0][1]
+        if eski_fiyat <= 0:
+            return
+        degisim = abs(fiyat - eski_fiyat) / eski_fiyat
+        if degisim < WS_HIZLI_TETIK_YUZDE:
+            return
+        ccxt_sym = bitget_inst_to_ccxt(inst_id)
+        if not ccxt_sym:
+            return
+        _ws_tetik_havuzu.submit(ws_hizli_tetik_isle, ccxt_sym, True, None)
+    except Exception as e:
+        log.warning(f"[WS_MESAJ] {e}")
+
+
+def ws_on_error(ws, error):
+    log.warning(f"[WS_HATA] {error}")
+
+
+def ws_on_close(ws, close_status_code, close_msg):
+    log.warning(f"[WS_KAPANDI] code={close_status_code} msg={close_msg}")
+
+
+def ws_on_open(ws):
+    log.info("[WS_ACIK] websocket bağlantısı kuruldu")
+
+
+def ws_gozcu_baslat():
+    """AJAN 0'ı ayrı bir daemon thread'de sürekli çalıştırır, bağlantı
+    koparsa otomatik yeniden bağlanır."""
+    if not WS_GOZCU_AKTIF:
+        log.info("[WS_GOZCU] WS_GOZCU_AKTIF=false, websocket gözcüsü devre dışı")
+        return
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                WS_URL, on_open=ws_on_open, on_message=ws_on_message,
+                on_error=ws_on_error, on_close=ws_on_close)
+            ws_app_ref["ws"] = ws
+            with ws_abone_lock:
+                ws_abone_semboller.clear()  # yeniden bağlanınca abonelikler sıfırlanır
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as e:
+            log.warning(f"[WS_GOZCU] bağlantı hatası, 10sn sonra tekrar denenecek: {e}")
+        ws_app_ref["ws"] = None
+        time.sleep(10)
 
 
 # ════════════════════════════════════════════
@@ -1070,7 +1250,8 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.22 (LONG/SHORT simetrik teyit, spike üst-fitil filtresi, günlük limit kapalı) (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
+                f"Sürüm: v4.23 (log trafiği temizlendi; LONG/SHORT simetrik teyit, spike üst-fitil filtresi, "
+                f"günlük limit kapalı, entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
                 f"sustained'e teyit bekleme, SL tavanı %3'e düşürüldü, paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
@@ -1272,15 +1453,12 @@ def telebot_polling_baslat():
 
 
 def baslangic_uzlastirma():
-    print("[CHECKPOINT] baslangic_uzlastirma() başladı", flush=True)
     global gunluk_pnl, haftalik_pnl
     try:
         gercek_pozlar = exchange.fetch_positions()
-        print(f"[CHECKPOINT] fetch_positions() tamamlandı, {len(gercek_pozlar)} pozisyon", flush=True)
         gercek_semboller = {p["symbol"] for p in gercek_pozlar if safe(p.get("contracts")) > 0}
     except Exception as e:
         log.warning(f"[UZLASTIRMA] {e}")
-        print(f"[CHECKPOINT] fetch_positions() HATA: {e}", flush=True)
         return
     with state_lock:
         state_semboller = set(trade_state.keys())
@@ -1318,7 +1496,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.22 başladı (LONG/SHORT simetrik teyit + spike üst-fitil filtresi eklendi) (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.23 başladı (debug loglar temizlendi, log trafiği azaltıldı) (MAX_POS={MAX_POS})\n"
        f"v4.18: entry-kayıt bug'ı düzeltildi | spike sinyaline RSI filtresi | "
        f"sustained sinyaline de teyit bekleme | SL tavanı %6→%3 (kaldıraç {LEV}x sabit) | "
        f"paralel tarama ({TARAMA_PARALEL_WORKER} worker, havuz {ADAY_HAVUZU_BUYUKLUGU})\n"
@@ -1327,40 +1505,45 @@ def tarama_loop():
        f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
     baslangic_uzlastirma()
-    print("[CHECKPOINT] baslangic_uzlastirma() bitti, gunluk_haftalik_reset_kontrol() başlıyor", flush=True)
     gunluk_haftalik_reset_kontrol()
-    print("[CHECKPOINT] gunluk_haftalik_reset_kontrol() bitti, ana döngü başlıyor", flush=True)
 
     while True:
         try:
-            print("[CHECKPOINT] tur başladı", flush=True)
             gunluk_haftalik_reset_kontrol()
 
             if gunluk_limit_kontrolu() or haftalik_limit_kontrolu():
-                print("[CHECKPOINT] gunluk/haftalik limit aşıldı, tur atlanıyor", flush=True)
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
             with state_lock:
                 bos_slot = MAX_POS - len(trade_state)
             if bos_slot <= 0:
-                print("[CHECKPOINT] boş slot yok, tur atlanıyor", flush=True)
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
             btc_bullish = True
 
-            print("[CHECKPOINT] aday havuzu taranıyor (fetch_tickers)...", flush=True)
             adaylar_havuzu = piyasa_izleyici_aday_havuzu()
-            print(f"[CHECKPOINT] aday havuzu tamamlandı: {len(adaylar_havuzu)} coin", flush=True)
             acilan_sayisi = 0
+
+            # v4.23 YENİ: AJAN 0'ın (websocket gözcüsü) dinlediği coin listesini
+            # güncel aday havuzuyla senkronlar - böylece websocket sadece zaten
+            # ilgilendiğimiz coinleri dinler, gereksiz genişlemez.
+            ws_abonelik_guncelle(adaylar_havuzu)
 
             # önce bekleyen (teyit aşamasındaki) sinyalleri kontrol et
             # v4.18: artık hem spike HEM sustained sinyalleri bu kuyruktan geçiyor
-            for sym in list(bekleyen_sinyaller.keys()):
+            # v4.23: bekleyen_sinyaller artık AJAN 0 tarafından da yazılabildiği
+            # için tüm erişimler bekleyen_lock ile korunuyor.
+            with bekleyen_lock:
+                kuyruk_semboller = list(bekleyen_sinyaller.keys())
+            for sym in kuyruk_semboller:
                 if acilan_sayisi >= bos_slot:
                     break
-                p = bekleyen_sinyaller[sym]
+                with bekleyen_lock:
+                    p = bekleyen_sinyaller.get(sym)
+                if p is None:
+                    continue
                 try:
                     t = exchange.fetch_ticker(sym)
                     guncel_fiyat = safe(t["last"])
@@ -1382,10 +1565,12 @@ def tarama_loop():
                     # artık LONG ile simetrik güvenlik katmanına alındı.
                     ters_hareket = (guncel_fiyat - p["sinyal_fiyat"]) / p["sinyal_fiyat"]
                 if ters_hareket > CONFIRM_MAX_RETRACE_PCT:
-                    del bekleyen_sinyaller[sym]  # ters yöne dönüş şüphesi, iptal
+                    with bekleyen_lock:
+                        bekleyen_sinyaller.pop(sym, None)  # ters yöne dönüş şüphesi, iptal
                     continue
                 if (time.time() - p["zaman"]) >= CONFIRM_BEKLEME_SN:
-                    del bekleyen_sinyaller[sym]
+                    with bekleyen_lock:
+                        bekleyen_sinyaller.pop(sym, None)
                     with state_lock:
                         if sym in trade_state:
                             continue
@@ -1411,13 +1596,14 @@ def tarama_loop():
                 with state_lock:
                     if sym in trade_state:
                         continue
-                if cooldown_da_mi(sym) or sym in bekleyen_sinyaller:
+                with bekleyen_lock:
+                    zaten_bekliyor = sym in bekleyen_sinyaller
+                if cooldown_da_mi(sym) or zaten_bekliyor:
                     continue
                 taranacaklar.append(sym)
 
             bulunan_sinyaller = []  # (sym, sinyal) sırayla - havuz zaten skor sıralı
             if taranacaklar:
-                print(f"[CHECKPOINT] paralel tarama başlıyor: {len(taranacaklar)} sembol", flush=True)
                 with ThreadPoolExecutor(max_workers=TARAMA_PARALEL_WORKER) as havuz:
                     gelecekler = {havuz.submit(sembol_sinyal_kontrol_tumu, sym, btc_bullish): sym
                                   for sym in taranacaklar}
@@ -1429,7 +1615,6 @@ def tarama_loop():
                         except Exception as e:
                             log.warning(f"[PARALEL_SONUC] {sym}: {e}")
                             sonuclar[sym] = None
-                print(f"[CHECKPOINT] paralel tarama bitti: {len(sonuclar)} sonuç", flush=True)
                 # orijinal skor sırasını koru (en canlı coin önce işlensin)
                 for sym in taranacaklar:
                     sinyal = sonuclar.get(sym)
@@ -1443,7 +1628,9 @@ def tarama_loop():
                 with state_lock:
                     if sym in trade_state:
                         continue
-                if cooldown_da_mi(sym) or sym in bekleyen_sinyaller:
+                with bekleyen_lock:
+                    zaten_bekliyor = sym in bekleyen_sinyaller
+                if cooldown_da_mi(sym) or zaten_bekliyor:
                     continue
 
                 tur = sinyal.get("tur")
@@ -1452,8 +1639,9 @@ def tarama_loop():
                     # düşüş devamı) aynı teyit kuyruğundan geçiyor - kullanıcı
                     # talebiyle "en tepeden long, en dipten short girme"
                     # riskine karşı simetrik koruma (04 Ağustos 2026).
-                    bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
-                                                "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
+                    with bekleyen_lock:
+                        bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
+                                                    "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
                     etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
                               "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
                     yon_kelime = "tutuyor mu" if tur != "dusus_devam" else "düşüş devam ediyor mu"
@@ -1468,8 +1656,10 @@ def tarama_loop():
             # loglarında bu satır düzenli aralıklarla görünmüyorsa bot gerçekten
             # takılmış demektir, görünüyorsa bot çalışıyor ama piyasa/filtre
             # koşulları sinyal üretmiyor demektir.
+            with bekleyen_lock:
+                kuyruk_uzunluk = len(bekleyen_sinyaller)
             log.info(f"[NABIZ] tur tamam | havuz={len(adaylar_havuzu)} | "
-                     f"teyit_kuyrugu={len(bekleyen_sinyaller)} | acik_pozisyon={MAX_POS - bos_slot}/{MAX_POS} | "
+                     f"teyit_kuyrugu={kuyruk_uzunluk} | acik_pozisyon={MAX_POS - bos_slot}/{MAX_POS} | "
                      f"acilan_bu_tur={acilan_sayisi}")
 
             time.sleep(KONTROL_ARALIGI_SN)
@@ -1698,11 +1888,12 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.22 BAŞLIYOR...")
+    print("SCALP BOT v4.23 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
     gunluk_haftalik_diskten_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
+    threading.Thread(target=ws_gozcu_baslat, daemon=True).start()
     tarama_loop()
