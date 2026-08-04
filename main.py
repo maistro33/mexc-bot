@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.20 — 04 Ağustos 2026
+SCALP BOT v4.22 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -176,6 +176,12 @@ SUSTAINED_RSI_TAVAN = 75  # v4.17: sürdürülebilir tırmanış RSI aşırı-al
 # Spike doğası gereği sustained'den daha ani olduğu için eşik biraz daha
 # sıkı tutuldu (70) - "az önce patladı, RSI zaten tavanda" durumunu eler.
 SPIKE_RSI_TAVAN = float(os.getenv("SPIKE_RSI_TAVAN", "70"))
+# v4.22 YENİ: spike sinyaline "üst fitil" (tepeden ret) filtresi. Sinyal
+# mumunun İÇİNDE fiyat tepeye çıkıp geri düşmüşse (uzun üst fitil), bu o an
+# tepeden satış baskısı geldiğinin işareti - "en tepeden girme" riskini
+# doğrudan azaltır. Fitil, mumun toplam aralığının bu orandan fazlasıysa
+# sinyal reddedilir.
+SPIKE_UST_FITIL_MAX = float(os.getenv("SPIKE_UST_FITIL_MAX", "0.40"))
 
 # v4.5: dusus-devam sinyali icin sabitler
 DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03
@@ -218,6 +224,12 @@ LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10  # kullanıcı talebiyle 10x S
 RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
 MAX_POS = int(os.getenv("MAX_POS", "2"))
 GUNLUK_ZARAR_LIMIT_PCT = 0.15
+# v4.21 KULLANICI TALEBİYLE: günlük zarar limiti artık taramayı DURDURMUYOR.
+# GUNLUK_ZARAR_LIMIT_PCT değeri panelde bilgi amaçlı gösterilmeye devam ediyor,
+# ama gunluk_limit_kontrolu() artık tarama_loop'ta kullanılmıyor - kullanıcı
+# bilinçli olarak bu güvenlik frenini kaldırmayı istedi (04 Ağustos 2026).
+# Haftalık limit (%25) hâlâ aktif - son çare fren olarak duruyor.
+GUNLUK_LIMIT_AKTIF = False
 HAFTALIK_ZARAR_LIMIT_PCT = float(os.getenv("HAFTALIK_ZARAR_LIMIT_PCT", "0.25"))
 KONTROL_ARALIGI_SN = 60
 
@@ -475,6 +487,17 @@ def piyasa_izleyici_sinyal_kontrol(sym, btc_bullish):
     if pd.isna(row["rsi"]) or row["rsi"] >= SPIKE_RSI_TAVAN:
         return None
 
+    # v4.22 YENİ: üst fitil (tepeden ret) filtresi - "en tepeden girme"
+    # koruması. Mum içinde fiyat tepeye çıkıp kapanıştan önce geri
+    # düşmüşse (uzun üst fitil), bu tepede satış baskısı geldiğinin
+    # işareti - sinyal reddedilir.
+    mum_araligi = row["high"] - row["low"]
+    if mum_araligi > 0:
+        ust_fitil = row["high"] - max(row["open"], row["close"])
+        ust_fitil_orani = ust_fitil / mum_araligi
+        if ust_fitil_orani > SPIKE_UST_FITIL_MAX:
+            return None
+
     # 15m trend teyidi
     df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
     if df15 is None or len(df15) < 25:
@@ -667,6 +690,8 @@ def gunluk_haftalik_reset_kontrol():
 
 
 def gunluk_limit_kontrolu():
+    if not GUNLUK_LIMIT_AKTIF:
+        return False
     with gunluk_lock:
         if gunluk_baslangic_bakiye is None:
             return False
@@ -1045,7 +1070,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.20 (checkpoint debug build) (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
+                f"Sürüm: v4.22 (LONG/SHORT simetrik teyit, spike üst-fitil filtresi, günlük limit kapalı) (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
                 f"sustained'e teyit bekleme, SL tavanı %3'e düşürüldü, paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
@@ -1057,6 +1082,8 @@ if bot:
                 f"'tutuyor mu' diye izlenir (fiyat %{CONFIRM_MAX_RETRACE_PCT*100:.0f}'ten fazla "
                 f"geri çekilirse iptal)\n"
                 f"RSI aşırı-alım filtresi: spike ≥{SPIKE_RSI_TAVAN:.0f}, sustained ≥{SUSTAINED_RSI_TAVAN:.0f} reddedilir\n"
+                f"Spike üst fitil filtresi: mum aralığının %{SPIKE_UST_FITIL_MAX*100:.0f}'inden fazlası üst fitilse reddedilir\n"
+                f"Teyit kuyruğu: LONG ve SHORT sinyalleri simetrik korumalı (ters yöne dönerse iptal)\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin, "
                 f"{TARAMA_PARALEL_WORKER} paralel worker ile taranır\n"
@@ -1126,9 +1153,13 @@ if bot:
         if gb:
             limit_dolar = gb * GUNLUK_ZARAR_LIMIT_PCT
             kalan = limit_dolar + gp
-            satirlar.append(f"Günlük zarar limiti: -{limit_dolar:.2f}$ (bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i)")
-            satirlar.append(f"Bugünkü PnL: {gp:+.2f}$ | Limite kalan pay: {kalan:.2f}$")
-            satirlar.append("⛔ GÜNLÜK LİMİT AŞILDI - tarama duruyor" if gunluk_limit_kontrolu() else "✅ Günlük limit aşılmadı")
+            if GUNLUK_LIMIT_AKTIF:
+                satirlar.append(f"Günlük zarar limiti: -{limit_dolar:.2f}$ (bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i)")
+                satirlar.append(f"Bugünkü PnL: {gp:+.2f}$ | Limite kalan pay: {kalan:.2f}$")
+                satirlar.append("⛔ GÜNLÜK LİMİT AŞILDI - tarama duruyor" if gunluk_limit_kontrolu() else "✅ Günlük limit aşılmadı")
+            else:
+                satirlar.append("Günlük zarar limiti: KAPALI (kullanıcı talebiyle, 04.08.2026) - tarama durmuyor")
+                satirlar.append(f"Bugünkü PnL (bilgi amaçlı): {gp:+.2f}$ (referans limit olsaydı: -{limit_dolar:.2f}$)")
         else:
             satirlar.append("Günlük başlangıç bakiyesi henüz kaydedilmedi.")
         if hb:
@@ -1287,7 +1318,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.20 (debug) başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.22 başladı (LONG/SHORT simetrik teyit + spike üst-fitil filtresi eklendi) (MAX_POS={MAX_POS})\n"
        f"v4.18: entry-kayıt bug'ı düzeltildi | spike sinyaline RSI filtresi | "
        f"sustained sinyaline de teyit bekleme | SL tavanı %6→%3 (kaldıraç {LEV}x sabit) | "
        f"paralel tarama ({TARAMA_PARALEL_WORKER} worker, havuz {ADAY_HAVUZU_BUYUKLUGU})\n"
@@ -1337,9 +1368,21 @@ def tarama_loop():
                     continue
                 if guncel_fiyat <= 0:
                     continue
-                dusme = (p["sinyal_fiyat"] - guncel_fiyat) / p["sinyal_fiyat"]
-                if dusme > CONFIRM_MAX_RETRACE_PCT:
-                    del bekleyen_sinyaller[sym]  # tepe yakalama şüphesi, iptal
+                p_yonu = sinyal_yonu(p["tur"])
+                if p_yonu == "long":
+                    # LONG: fiyat sinyal anından bu yana DÜŞTÜYSE (tepe
+                    # yakalama şüphesi) iptal - "en tepeden girme" koruması.
+                    ters_hareket = (p["sinyal_fiyat"] - guncel_fiyat) / p["sinyal_fiyat"]
+                else:
+                    # v4.22 YENİ: SHORT (düşüş devamı) için simetrik koruma -
+                    # fiyat sinyal anından bu yana YÜKSELDİYSE (dip sıçraması
+                    # şüphesi) iptal - "en dipten girme" koruması. Eskiden
+                    # SHORT sinyalleri bu teyit kuyruğundan hiç geçmiyordu,
+                    # hemen açılıyordu - kullanıcı talebiyle (04 Ağustos 2026)
+                    # artık LONG ile simetrik güvenlik katmanına alındı.
+                    ters_hareket = (guncel_fiyat - p["sinyal_fiyat"]) / p["sinyal_fiyat"]
+                if ters_hareket > CONFIRM_MAX_RETRACE_PCT:
+                    del bekleyen_sinyaller[sym]  # ters yöne dönüş şüphesi, iptal
                     continue
                 if (time.time() - p["zaman"]) >= CONFIRM_BEKLEME_SN:
                     del bekleyen_sinyaller[sym]
@@ -1404,27 +1447,19 @@ def tarama_loop():
                     continue
 
                 tur = sinyal.get("tur")
-                if tur in ("spike", "sustained"):
-                    # v4.18: sustained artık da teyit kuyruğuna giriyor (eskiden
-                    # hemen açılıyordu - CYS/AIO gibi tam tepe örnekleri sonrası
-                    # spike ile aynı güvenlik katmanına alındı).
+                if tur in ("spike", "sustained", "dusus_devam"):
+                    # v4.22: artık ÜÇÜ de (LONG spike, LONG sustained, SHORT
+                    # düşüş devamı) aynı teyit kuyruğundan geçiyor - kullanıcı
+                    # talebiyle "en tepeden long, en dipten short girme"
+                    # riskine karşı simetrik koruma (04 Ağustos 2026).
                     bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
                                                 "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
-                    etiket = "ani patlama" if tur == "spike" else "sürdürülebilir tırmanış"
+                    etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
+                              "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
+                    yon_kelime = "tutuyor mu" if tur != "dusus_devam" else "düşüş devam ediyor mu"
                     tg(f"⏳ AJAN 1: {sym} {etiket} sinyali bulundu, {CONFIRM_BEKLEME_SN//60} dakika "
-                       f"'tutuyor mu' diye izleniyor (fiyat düşerse iptal, tutarsa LONG açılır)")
+                       f"'{yon_kelime}' diye izleniyor (ters yöne dönerse iptal)")
                     continue
-
-                # dusus_devam (short) - eskisi gibi hemen açılıyor (kendi zaten
-                # "taze düşüş + kapitülasyon mumu" şartlarıyla anlık bir sinyal)
-                tg(f"🔍 AJAN 1: {sym} güçlü SHORT sinyali [düşüş devamı] bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
-                try:
-                    islem_acici_pozisyon_ac(sinyal)
-                except Exception as e:
-                    log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
-                    tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
-                    acilis_basarisiz_cooldown_uygula(sym)
-                acilan_sayisi += 1
 
             # v4.19 YENİ: her turda NABIZ logu - "log'da hiçbir şey yok" ile
             # "bot çalışıyor ama sinyal bulamıyor" birbirinden ayırt edilemiyordu
@@ -1663,7 +1698,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.20 BAŞLIYOR...")
+    print("SCALP BOT v4.22 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
