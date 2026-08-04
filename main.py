@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.18 — 04 Ağustos 2026
+SCALP BOT v4.19 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -200,7 +200,11 @@ ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "60"))
 # v4.18 YENİ: paralel tarama için thread sayısı. Bitget rate limit'e takılmamak
 # için ölçülü tutuldu - ccxt zaten enableRateLimit=True ile kendi içinde
 # throttle ediyor, bu sadece I/O bekleme süresini örtüştürüyor.
-TARAMA_PARALEL_WORKER = int(os.getenv("TARAMA_PARALEL_WORKER", "8"))
+TARAMA_PARALEL_WORKER = int(os.getenv("TARAMA_PARALEL_WORKER", "5"))
+# v4.18: temkinli başlangıç değeri 5 - ccxt tek exchange nesnesi çoklu
+# thread'den paylaşıldığı için (enableRateLimit tek-thread varsayımıyla
+# çalışır) ilk günlerde loglarda 429/beklenmedik hata sıklığı artmazsa
+# TARAMA_PARALEL_WORKER env değişkeniyle kademeli olarak yükseltilebilir.
 
 GOSTERGE_MUM_5M = 60
 GOSTERGE_MUM_15M = 40
@@ -1038,7 +1042,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.18 (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
+                f"Sürüm: v4.19 (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
                 f"sustained'e teyit bekleme, SL tavanı %3'e düşürüldü, paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
@@ -1277,7 +1281,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.18 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.19 başladı (MAX_POS={MAX_POS})\n"
        f"v4.18: entry-kayıt bug'ı düzeltildi | spike sinyaline RSI filtresi | "
        f"sustained sinyaline de teyit bekleme | SL tavanı %6→%3 (kaldıraç {LEV}x sabit) | "
        f"paralel tarama ({TARAMA_PARALEL_WORKER} worker, havuz {ADAY_HAVUZU_BUYUKLUGU})\n"
@@ -1406,6 +1410,17 @@ def tarama_loop():
                     tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
                     acilis_basarisiz_cooldown_uygula(sym)
                 acilan_sayisi += 1
+
+            # v4.19 YENİ: her turda NABIZ logu - "log'da hiçbir şey yok" ile
+            # "bot çalışıyor ama sinyal bulamıyor" birbirinden ayırt edilemiyordu
+            # (bu turdan önce sadece sinyal bulununca/hata olunca log basılıyordu).
+            # Artık her turun sonunda kısa bir özet basılıyor - Railway
+            # loglarında bu satır düzenli aralıklarla görünmüyorsa bot gerçekten
+            # takılmış demektir, görünüyorsa bot çalışıyor ama piyasa/filtre
+            # koşulları sinyal üretmiyor demektir.
+            log.info(f"[NABIZ] tur tamam | havuz={len(adaylar_havuzu)} | "
+                     f"teyit_kuyrugu={len(bekleyen_sinyaller)} | acik_pozisyon={MAX_POS - bos_slot}/{MAX_POS} | "
+                     f"acilan_bu_tur={acilan_sayisi}")
 
             time.sleep(KONTROL_ARALIGI_SN)
         except Exception as e:
@@ -1633,7 +1648,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.18 BAŞLIYOR...")
+    print("SCALP BOT v4.19 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
