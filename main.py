@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.19 — 04 Ağustos 2026
+SCALP BOT v4.20 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -103,7 +103,10 @@ import pandas as pd
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+import sys
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s",
+                     stream=sys.stdout, force=True)
 log = logging.getLogger("SCALP_BOT")
 
 # ════════════════════════════════════════════
@@ -1042,7 +1045,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.19 (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
+                f"Sürüm: v4.20 (checkpoint debug build) (entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
                 f"sustained'e teyit bekleme, SL tavanı %3'e düşürüldü, paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
@@ -1238,12 +1241,15 @@ def telebot_polling_baslat():
 
 
 def baslangic_uzlastirma():
+    print("[CHECKPOINT] baslangic_uzlastirma() başladı", flush=True)
     global gunluk_pnl, haftalik_pnl
     try:
         gercek_pozlar = exchange.fetch_positions()
+        print(f"[CHECKPOINT] fetch_positions() tamamlandı, {len(gercek_pozlar)} pozisyon", flush=True)
         gercek_semboller = {p["symbol"] for p in gercek_pozlar if safe(p.get("contracts")) > 0}
     except Exception as e:
         log.warning(f"[UZLASTIRMA] {e}")
+        print(f"[CHECKPOINT] fetch_positions() HATA: {e}", flush=True)
         return
     with state_lock:
         state_semboller = set(trade_state.keys())
@@ -1281,7 +1287,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.19 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.20 (debug) başladı (MAX_POS={MAX_POS})\n"
        f"v4.18: entry-kayıt bug'ı düzeltildi | spike sinyaline RSI filtresi | "
        f"sustained sinyaline de teyit bekleme | SL tavanı %6→%3 (kaldıraç {LEV}x sabit) | "
        f"paralel tarama ({TARAMA_PARALEL_WORKER} worker, havuz {ADAY_HAVUZU_BUYUKLUGU})\n"
@@ -1290,25 +1296,32 @@ def tarama_loop():
        f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
     baslangic_uzlastirma()
+    print("[CHECKPOINT] baslangic_uzlastirma() bitti, gunluk_haftalik_reset_kontrol() başlıyor", flush=True)
     gunluk_haftalik_reset_kontrol()
+    print("[CHECKPOINT] gunluk_haftalik_reset_kontrol() bitti, ana döngü başlıyor", flush=True)
 
     while True:
         try:
+            print("[CHECKPOINT] tur başladı", flush=True)
             gunluk_haftalik_reset_kontrol()
 
             if gunluk_limit_kontrolu() or haftalik_limit_kontrolu():
+                print("[CHECKPOINT] gunluk/haftalik limit aşıldı, tur atlanıyor", flush=True)
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
             with state_lock:
                 bos_slot = MAX_POS - len(trade_state)
             if bos_slot <= 0:
+                print("[CHECKPOINT] boş slot yok, tur atlanıyor", flush=True)
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
             btc_bullish = True
 
+            print("[CHECKPOINT] aday havuzu taranıyor (fetch_tickers)...", flush=True)
             adaylar_havuzu = piyasa_izleyici_aday_havuzu()
+            print(f"[CHECKPOINT] aday havuzu tamamlandı: {len(adaylar_havuzu)} coin", flush=True)
             acilan_sayisi = 0
 
             # önce bekleyen (teyit aşamasındaki) sinyalleri kontrol et
@@ -1361,6 +1374,7 @@ def tarama_loop():
 
             bulunan_sinyaller = []  # (sym, sinyal) sırayla - havuz zaten skor sıralı
             if taranacaklar:
+                print(f"[CHECKPOINT] paralel tarama başlıyor: {len(taranacaklar)} sembol", flush=True)
                 with ThreadPoolExecutor(max_workers=TARAMA_PARALEL_WORKER) as havuz:
                     gelecekler = {havuz.submit(sembol_sinyal_kontrol_tumu, sym, btc_bullish): sym
                                   for sym in taranacaklar}
@@ -1372,6 +1386,7 @@ def tarama_loop():
                         except Exception as e:
                             log.warning(f"[PARALEL_SONUC] {sym}: {e}")
                             sonuclar[sym] = None
+                print(f"[CHECKPOINT] paralel tarama bitti: {len(sonuclar)} sonuç", flush=True)
                 # orijinal skor sırasını koru (en canlı coin önce işlensin)
                 for sym in taranacaklar:
                     sinyal = sonuclar.get(sym)
@@ -1648,7 +1663,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.19 BAŞLIYOR...")
+    print("SCALP BOT v4.20 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
