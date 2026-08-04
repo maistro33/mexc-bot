@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.16 — 04 Ağustos 2026
+SCALP BOT v4.17 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -131,6 +131,7 @@ SUSTAINED_ADX_ESIK = 15
 SUSTAINED_ZIRVE_MESAFE_MIN = float(os.getenv("SUSTAINED_ZIRVE_MESAFE_MIN", "0.03"))
 # v2.1: ESP örneği - fiyat son 2 saatin zirvesine bu orandan daha yakınsa
 # sürdürülebilir tırmanış sinyali ARANMAZ (dönüş riski yüksek). Backtest:
+SUSTAINED_RSI_TAVAN = 75  # v4.17: CYS/AIO örneği - RSI bu seviyenin ÜSTÜNDEYSE (asiri alinmis) sinyal reddedilir
 
 # v4.5 YENİ: dusus-devam sinyali icin sabitler (piyasa_izleyici_dusus_devam_kontrol)
 DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03   # fiyat son 2sa dibine bu kadar uzak olmali
@@ -541,6 +542,7 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
     df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
     df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
     df15["zirve_2sa"] = df15["high"].rolling(8).max()
+    df15["rsi"] = rsi(df15, 14)
 
     row = df15.iloc[-1]
     if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
@@ -561,6 +563,13 @@ def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
         return None  # fiyat zirveye cok yakin - dönüş riski yüksek, girme
 
     if not btc_bullish:
+        return None
+
+    # v4.17 YENİ: CYS/AIO örneği - "sürdürülebilir tırmanış" sinyali, zirve
+    # mesafesi filtresine rağmen bazen tam tepede yakalanıyordu (CYS 19
+    # saniyede -%53, AIO birkaç dakikada -%55 SL'e gitti). RSI aşırı-alım
+    # filtresi ekleniyor - düşüş devamındaki (RSI tabanı) mantığın simetriği.
+    if pd.isna(row["rsi"]) or row["rsi"] >= SUSTAINED_RSI_TAVAN:
         return None
 
     return {"symbol": sym, "entry": row["close"], "atr": row["atr"],
@@ -1146,7 +1155,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.16 (coin cooldown 1 saatten 4 saate çıkarıldı)\n"
+                f"Sürüm: v4.17 (sürdürülebilir tırmanışa RSI aşırı-alım filtresi eklendi - CYS/AIO örneği)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -1389,7 +1398,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.16 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.17 başladı (MAX_POS={MAX_POS})\n"
        f"Strateji: dinamik pump taraması — ani patlama/sürdürülebilir tırmanış artık LONG (devam kanıtlanmış), düşüş devamı SHORT (v4.7)\n"
        f"SL={ATR_CARPANI_SL}x ATR | TP: TEK hedef, net ≈${HEDEF_NET_KAR_USDT:.2f}\n"
        f"🔧 v4.1: kullanıcı talebiyle TEK TP + BTC FİLTRESİZ kombinasyonuna geri dönüldü. "
@@ -1824,7 +1833,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.16 BAŞLIYOR...")
+    print("SCALP BOT v4.17 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
