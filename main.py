@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.18 — 04 Ağustos 2026
+SCALP BOT v4.20 — 04 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
 ════════════════════════════════════════════════════════
-v4.18 DEĞİŞİKLİKLERİ (kullanıcı gözlemi: "panel yanlış", "31.20$ olup geri düştü"):
+v4.20 DEĞİŞİKLİKLERİ (kullanıcı gözlemi: "panel yanlış", "31.20$ olup geri düştü"):
   1) PANEL KAYIP KAYIT DÜZELTMESİ: manage_loop artık her sembolü AYRI bir
      try/except içinde işliyor (_manage_tek_pozisyon fonksiyonu). Eskiden
      TÜM sembol döngüsü tek bir dış try/except içindeydi - bir sembolde
@@ -125,7 +125,7 @@ HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
 IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.15"))
 TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]
 
-# v4.18 YENİ: erken çıkış (bkz. üst not) - backtest edilmedi, izlenmeli.
+# v4.20 YENİ: erken çıkış (bkz. üst not) - backtest edilmedi, izlenmeli.
 ERKEN_CIKIS_SURE_SN = float(os.getenv("ERKEN_CIKIS_SURE_SN", "90"))
 ERKEN_CIKIS_SL_ORANI = float(os.getenv("ERKEN_CIKIS_SL_ORANI", "0.30"))
 
@@ -135,7 +135,11 @@ GOSTERGE_MUM_15M = 40
 
 LEV_HAM_DEGER = os.getenv("LEV")
 LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10
-RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
+RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.05"))
+# v4.20: kullanıcı talebiyle %10'dan %5'e düşürüldü - küçük bakiyede (~25$)
+# %10 risk, tek SL'de bakiyenin ~%10'unu (BEAT örneği: -2.26$) kaybettiriyordu.
+# %5 ile aynı SL yaklaşık yarı zarar verir, art arda kayıp serisi bakiyeyi
+# çok daha yavaş eritir.
 MAX_POS = int(os.getenv("MAX_POS", "2"))
 GUNLUK_ZARAR_LIMIT_PCT = 0.15
 HAFTALIK_ZARAR_LIMIT_PCT = float(os.getenv("HAFTALIK_ZARAR_LIMIT_PCT", "0.25"))
@@ -571,10 +575,10 @@ def cooldown_da_mi(sym):
 
 
 # ════════════════════════════════════════════
-# GERÇEK ÇIKIŞ FİYATI YARDIMCISI (v4.18 YENİ)
+# GERÇEK ÇIKIŞ FİYATI YARDIMCISI (v4.20 YENİ)
 # ════════════════════════════════════════════
 def gercek_cikis_fiyati_bul(sym, kapama_emri_id=None, fallback=None):
-    """v4.18 YENİ: HFT örneğinde görülen yön/miktar sapmasını azaltmak için
+    """v4.20 YENİ: HFT örneğinde görülen yön/miktar sapmasını azaltmak için
     üç kademeli doğrulama: (1) kapatma emrinin kendi dolum fiyatı,
     (2) exchange.fetch_my_trades ile SON birkaç dakikadaki gerçek fill,
     (3) son çare ticker anlık fiyatı. İlk bulunan güvenilir değer kullanılır."""
@@ -694,7 +698,7 @@ def islem_acici_pozisyon_ac(sinyal):
                 trade_state[sym] = {
                     "entry": entry, "sl_orijinal": None, "sl_guncel": None, "sl_emir_id": None,
                     "qty_orijinal": qty, "r_risk": None, "tp_emirleri": [],
-                    "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
+                    "acilis_zamani": time.time(), "breakeven_cekildi": False, "iz_surme_aktif": False, "tur": tur,
                     "kurulum_tamamlanmadi": True, "en_iyi_kar": None,
                 }
             durumu_diske_yaz()
@@ -777,7 +781,7 @@ def islem_acici_pozisyon_ac(sinyal):
             trade_state[sym] = {
                 "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
                 "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
-                "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
+                "acilis_zamani": time.time(), "breakeven_cekildi": False, "iz_surme_aktif": False, "tur": tur,
                 "kurulum_tamamlanmadi": False, "en_iyi_kar": None,
             }
     durumu_diske_yaz()
@@ -830,7 +834,7 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
                     pass
 
         time.sleep(1)
-        # v4.18: gercek_cikis_fiyati_bul() kademeli doğrulama yapıyor
+        # v4.20: gercek_cikis_fiyati_bul() kademeli doğrulama yapıyor
         # (emir dolum -> fetch_my_trades -> ticker)
         cikis_fiyat = gercek_cikis_fiyati_bul(sym, kapama_emri.get("id"), fallback=entry_fiyat)
         pnl = (cikis_fiyat - entry_fiyat) * qty if pozisyon_yonu == "long" else (entry_fiyat - cikis_fiyat) * qty
@@ -944,7 +948,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.18 (panel kayıp-kayıt düzeltmesi, gerçek PnL doğrulama, erken çıkış eklendi)\n"
+                f"Sürüm: v4.20 (panel kayıp-kayıt düzeltmesi, gerçek PnL doğrulama, erken çıkış eklendi)\n"
                 f"Kaldıraç: {LEV}x | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14)\n"
@@ -986,7 +990,7 @@ if bot:
             tur_ad = "Ani patlama" if tur == "spike" else ("Sürdürülebilir tırmanış" if tur == "sustained" else "Düşüş devamı")
             satirlar.append(f"  {tur_ad}: {len(alt)} işlem, %{len(kazanan)/len(alt)*100:.0f} kazanma, net {net:+.2f}$")
         satirlar.append("\n🚪 Kapanış sebebi bazında:")
-        for sebep in ["tum_tp_tamamlandi", "SL_basabasta_TP1_sonrasi", "SL_ilk_TPden_once",
+        for sebep in ["tum_tp_tamamlandi", "SL_iz_surme_aktifken", "SL_ilk_TPden_once",
                       "erken_cikis_ters_gidis", "max_hold_timeout", "iz_suren_tp",
                       "yazilim_sl_guvenlik_agi", "manuel"]:
             alt = [t for t in gecmis if t.get("not") == sebep]
@@ -1170,7 +1174,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.18 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.20 başladı (MAX_POS={MAX_POS})\n"
        f"Yeni: panel kayıp-kayıt düzeltmesi, gerçek PnL doğrulama, erken çıkış "
        f"(ilk {ERKEN_CIKIS_SURE_SN:.0f}sn'de hiç kâra geçmeden SL'in %{ERKEN_CIKIS_SL_ORANI*100:.0f}'ına ulaşırsa kapat)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1279,10 +1283,10 @@ def tarama_loop():
 
 
 # ════════════════════════════════════════════
-# AJAN 3: POZİSYON YÖNETİCİSİ (v4.18: sembol başına try/except ile ayrıldı)
+# AJAN 3: POZİSYON YÖNETİCİSİ (v4.20: sembol başına try/except ile ayrıldı)
 # ════════════════════════════════════════════
 def _manage_tek_pozisyon(sym):
-    """v4.18 YENİ: eskiden manage_loop içindeki TÜM sembol döngüsü tek bir
+    """v4.20 YENİ: eskiden manage_loop içindeki TÜM sembol döngüsü tek bir
     dış try/except'in içindeydi - bir sembolde beklenmedik hata olursa o
     turda sıradaki TÜM semboller atlanıyordu (BANK/CYS'in panelden kaybolma
     sebebi buydu). Artık her sembol kendi try/except'i içinde, tarama_loop
@@ -1317,11 +1321,11 @@ def _manage_tek_pozisyon(sym):
         log.warning(f"[SL_GUVENLIK_AGI] {sym}: fiyat kontrol edilemedi: {e}")
         guncel_fiyat = None
 
-    # v4.18 YENİ: ERKEN ÇIKIŞ - ilk ERKEN_CIKIS_SURE_SN saniyede hiç kâra
+    # v4.20 YENİ: ERKEN ÇIKIŞ - ilk ERKEN_CIKIS_SURE_SN saniyede hiç kâra
     # geçmeden zarar SL mesafesinin ERKEN_CIKIS_SL_ORANI'na ulaşırsa kapat.
     # ⚠️ Backtest edilmedi - kullanıcı talebiyle eklendi, izlenmeli
     # (panel_analiz'de "erken_cikis_ters_gidis" etiketiyle takip edilebilir).
-    if guncel_fiyat and guncel_fiyat > 0 and not durum.get("breakeven_cekildi"):
+    if guncel_fiyat and guncel_fiyat > 0 and not durum.get("iz_surme_aktif"):
         gecen_sure = time.time() - durum["acilis_zamani"]
         if gecen_sure <= ERKEN_CIKIS_SURE_SN:
             erken_yon = sinyal_yonu(durum.get("tur"))
@@ -1348,38 +1352,21 @@ def _manage_tek_pozisyon(sym):
             risk_dolar_iz = r_risk_fiyat * qty_iz
             iz_esik = risk_dolar_iz * IZ_SURME_R_ORANI if risk_dolar_iz > 0 else HEDEF_NET_KAR_USDT
             if anlik_kar >= iz_esik:
-                if not durum.get("breakeven_cekildi"):
-                    try:
-                        if durum.get("sl_emir_id"):
-                            exchange.cancel_order(durum["sl_emir_id"], sym)
-                    except Exception as e_cancel:
-                        log.warning(f"[IZ_SURME_IPTAL] {sym}: eski SL iptal edilemedi (görmezden geliniyor): {e_cancel}")
-                    try:
-                        taze_pos = exchange.fetch_positions([sym])
-                        taze_giris = next((safe(p.get("entryPrice")) for p in taze_pos
-                                            if safe(p.get("contracts")) > 0), None)
-                        be_referans = taze_giris if taze_giris and taze_giris > 0 else entry_iz
-                        guvenlik_payi = KOMISYON_PCT * 2
-                        if iz_yonu == "long":
-                            be_fiyat = float(exchange.price_to_precision(sym, be_referans * (1 + guvenlik_payi)))
-                        else:
-                            be_fiyat = float(exchange.price_to_precision(sym, be_referans * (1 - guvenlik_payi)))
-                        be_yon_iz = "sell" if iz_yonu == "long" else "buy"
-                        be_emir = exchange.create_order(sym, "market", be_yon_iz, qty_iz, None,
-                                                         {"reduceOnly": True, "stopLossPrice": be_fiyat})
-                        with state_lock:
-                            durum["sl_emir_id"] = be_emir.get("id")
-                            durum["sl_guncel"] = be_fiyat
-                            durum["breakeven_cekildi"] = True
-                        durumu_diske_yaz()
-                        tg(f"🔒 {sym} — iz sürme AKTİFLEŞTİ (${anlik_kar:.2f} kâr, eşik≈${iz_esik:.2f}), SL başabaşa çekildi. "
-                           f"Fiyat lehte gittikçe takip edecek, en iyi kârdan ${iz_esik:.2f} "
-                           f"geri çekilirse kapanacak.")
-                    except Exception as e:
-                        log.warning(f"[IZ_SURME_BASABAS] {sym}: yeni SL yerleştirilemedi: {e}")
-                        tg(f"⚠️ {sym} — iz sürme ${anlik_kar:.2f} kârda aktifleşmeye çalıştı ama "
-                           f"başabaş SL emri yerleştirilemedi: {e}. Eski SL geçerliliğini koruyor, "
-                           f"iz sürme takibi yine de devam ediyor.")
+                # v4.20: kullanıcı talebiyle SL BAŞABAŞA ÇEKME KALDIRILDI.
+                # Zaten iz süren TP (aşağıdaki en_iyi_kar takibi) kârı koruyor,
+                # SL taşımaya gerek yok - borsadaki orijinal (ATR bazlı) SL
+                # hiç dokunulmadan yerinde kalıyor, sadece "en kötü senaryo"
+                # güvenlik ağı olarak duruyor. Bu, eskiden SL taşırken oluşan
+                # emir iptal/yeniden oluşturma hatalarını (bkz. v4.9/v4.11
+                # notları - HFT örneğinde SL girişten daha kötü bir yere
+                # yerleşmişti) tamamen ortadan kaldırıyor.
+                if not durum.get("iz_surme_aktif"):
+                    with state_lock:
+                        durum["iz_surme_aktif"] = True
+                    durumu_diske_yaz()
+                    tg(f"🎯 {sym} — iz sürme AKTİFLEŞTİ (${anlik_kar:.2f} kâr, eşik≈${iz_esik:.2f}). "
+                       f"SL yerinde kalıyor (taşınmıyor), en iyi kâr takip edilecek, "
+                       f"${iz_esik:.2f} geri çekilirse kapanacak.")
                 if en_iyi_kar is None or anlik_kar > en_iyi_kar:
                     with state_lock:
                         durum["en_iyi_kar"] = anlik_kar
@@ -1426,7 +1413,7 @@ def _manage_tek_pozisyon(sym):
             son_kapanis_zamani[sym] = time.time()
         cooldown_diske_yaz()
         if durum2:
-            # v4.18: gercek_cikis_fiyati_bul() ile SL emri + fetch_my_trades +
+            # v4.20: gercek_cikis_fiyati_bul() ile SL emri + fetch_my_trades +
             # ticker kademeli doğrulaması
             cikis_fiyat = gercek_cikis_fiyati_bul(sym, durum2.get("sl_emir_id"), fallback=durum2["sl_guncel"])
             entry = durum2["entry"]
@@ -1447,8 +1434,12 @@ def _manage_tek_pozisyon(sym):
             tum_tp_dolu = all(t.get("dolu") for t in tp_emirleri) and len(tp_emirleri) > 0
             if tum_tp_dolu:
                 sebep_etiket = "tum_tp_tamamlandi"
-            elif durum2.get("breakeven_cekildi"):
-                sebep_etiket = "SL_basabasta_TP1_sonrasi"
+            elif durum2.get("iz_surme_aktif"):
+                # v4.20: SL artık başabaşa çekilmiyor, ama iz sürme aktifken
+                # (kâr görüldükten sonra) SL'e takıldıysa bunu ayrı etiketle -
+                # "SL_ilk_TPden_once" ile karıştırılmasın (kâr GÖRÜLDÜ ama
+                # sonra geri SL'e döndü anlamına gelir).
+                sebep_etiket = "SL_iz_surme_aktifken"
             else:
                 sebep_etiket = "SL_ilk_TPden_once"
             trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat,
@@ -1502,7 +1493,7 @@ def _manage_tek_pozisyon(sym):
 
 
 def manage_loop():
-    """v4.18: her sembol artık _manage_tek_pozisyon() içinde AYRI try/except
+    """v4.20: her sembol artık _manage_tek_pozisyon() içinde AYRI try/except
     ile işleniyor - bir coin'de beklenmedik hata olursa sadece o coin atlanır,
     diğerleri (BANK/CYS örneğinde olduğu gibi) etkilenmez."""
     while True:
@@ -1527,7 +1518,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.18 BAŞLIYOR...")
+    print("SCALP BOT v4.20 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
