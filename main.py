@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.27 — 05 Ağustos 2026
+SCALP BOT v4.28 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1358,9 +1358,9 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.23 (log trafiği temizlendi; LONG/SHORT simetrik teyit, spike üst-fitil filtresi, "
-                f"günlük limit kapalı, entry-kayıt bugı düzeltildi, spike'a RSI filtresi, "
-                f"sustained'e teyit bekleme, SL tavanı %3'e düşürüldü, paralel tarama)\n"
+                f"Sürüm: v4.28 (iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
+                f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
+                f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14), tavan %{MAX_SL_PCT*100:.0f} / taban %{MIN_SL_PCT*100:.0f}\n"
@@ -1617,7 +1617,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.26 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.28 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
@@ -1839,8 +1839,18 @@ def manage_loop():
                         r_risk_fiyat = durum.get("r_risk") or 0
                         risk_dolar_iz = r_risk_fiyat * qty_iz
                         iz_esik = risk_dolar_iz * IZ_SURME_R_ORANI if risk_dolar_iz > 0 else HEDEF_NET_KAR_USDT
-                        if anlik_kar >= iz_esik:
-                            if not durum.get("breakeven_cekildi"):
+                        # v4.28 KRİTİK DÜZELTME: eskiden bu blok SADECE
+                        # anlik_kar >= iz_esik iken çalışıyordu. Yani iz sürme
+                        # aktifleştikten SONRA fiyat sert düşüp anlik_kar eşiğin
+                        # ALTINA inerse (ama hâlâ başabaşın üstündeyse), TÜM
+                        # kontrol atlanıyordu - "en iyi kârdan $X geri çekilirse
+                        # kapat" kuralı hiç değerlendirilmiyordu, pozisyon sadece
+                        # başabaş SL'e kadar kâr geri verebiliyordu (istenenden
+                        # daha fazla). Artık iz sürme bir kez aktifleşince
+                        # (breakeven_cekildi=True), anlik_kar eşiğin altına
+                        # düşse bile kapanma kontrolü çalışmaya devam ediyor.
+                        if anlik_kar >= iz_esik or durum.get("breakeven_cekildi"):
+                            if anlik_kar >= iz_esik and not durum.get("breakeven_cekildi"):
                                 try:
                                     if durum.get("sl_emir_id"):
                                         exchange.cancel_order(durum["sl_emir_id"], sym)
@@ -2010,7 +2020,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.25 BAŞLIYOR...")
+    print("SCALP BOT v4.28 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
