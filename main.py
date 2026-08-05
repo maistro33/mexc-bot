@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.29 — 05 Ağustos 2026
+SCALP BOT v4.30 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -224,7 +224,16 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
-IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.15"))
+IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.30"))
+# v4.30 KULLANICI KARARI (05 Ağustos 2026): 0.15R -> 0.30R. Gerekçe: CYS ve
+# VANRY işlemlerinde iz sürme çok erken ($0.16-0.17 kârda) aktifleşiyor,
+# bu da fiyatın girişten henüz az uzaklaştığı bir anda başabaş SL'in de
+# girişe çok yakın konmasına yol açıyordu - normal fiyat gürültüsü bile
+# "nefes almadan" kapanmaya sebep oluyordu. Eşik iki katına çıkarılınca
+# aktifleşme anında fiyat girişten daha uzakta olacak, başabaş SL ile
+# güncel fiyat arasında daha doğal bir boşluk kalacak. Bedeli: koruma biraz
+# daha geç devreye giriyor, ilk aşamada teorik olarak biraz daha fazla
+# geri verme riski var - ama kullanıcı bu takası bilerek seçti.
 TIERED_TP = [(0.30, 1.0), (0.30, 2.0), (0.40, 3.0)]  # artık kullanılmıyor (trailing TP), tarihsel referans
 
 # v4.18 DEĞİŞTİ: 40 -> 60. Paralel taramayla (aşağıda ThreadPoolExecutor)
@@ -1362,7 +1371,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.29 (duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
+                f"Sürüm: v4.30 (iz sürme eşiği 0.15R->0.30R geciktirildi; duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
                 f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
                 f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1621,7 +1630,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.29 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.30 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
@@ -2043,7 +2052,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.29 BAŞLIYOR...")
+    print("SCALP BOT v4.30 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
