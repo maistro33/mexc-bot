@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.25 — 04 Ağustos 2026
+SCALP BOT v4.26 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -176,13 +176,13 @@ SUSTAINED_RSI_TAVAN = 75  # v4.17: sürdürülebilir tırmanış RSI aşırı-al
 # CYS örneği: RSI 97.66'da tek mumda +58%, saniyeler içinde SL'e çarptı.
 # Spike doğası gereği sustained'den daha ani olduğu için eşik biraz daha
 # sıkı tutuldu (70) - "az önce patladı, RSI zaten tavanda" durumunu eler.
-SPIKE_RSI_TAVAN = float(os.getenv("SPIKE_RSI_TAVAN", "70"))
+SPIKE_RSI_TAVAN = float(os.getenv("SPIKE_RSI_TAVAN", "75"))
 # v4.22 YENİ: spike sinyaline "üst fitil" (tepeden ret) filtresi. Sinyal
 # mumunun İÇİNDE fiyat tepeye çıkıp geri düşmüşse (uzun üst fitil), bu o an
 # tepeden satış baskısı geldiğinin işareti - "en tepeden girme" riskini
 # doğrudan azaltır. Fitil, mumun toplam aralığının bu orandan fazlasıysa
 # sinyal reddedilir.
-SPIKE_UST_FITIL_MAX = float(os.getenv("SPIKE_UST_FITIL_MAX", "0.40"))
+SPIKE_UST_FITIL_MAX = float(os.getenv("SPIKE_UST_FITIL_MAX", "0.50"))
 
 # v4.5: dusus-devam sinyali icin sabitler
 DUSUS_DEVAM_DIP_MESAFE_MIN = 0.03
@@ -198,6 +198,21 @@ DUSUS_DEVAM_RSI_TABAN = 25
 # Kod silinmedi - DUSUS_DEVAM_AKTIF=true ile tekrar açılabilir, ör. daha
 # uzun/geniş bir backtest ileride farklı sonuç verirse.
 DUSUS_DEVAM_AKTIF = os.getenv("DUSUS_DEVAM_AKTIF", "false").lower() == "true"
+
+# v4.26 TRADER KARARI (05 Ağustos 2026, gece): Gerçek Bitget geçmişi ile
+# botun /panel Analiz çıktısı arasında ciddi bir tutarsızlık bulundu -
+# panel "7 işlem %100 kazanma +$4.17" gösterirken gerçek borsa geçmişi
+# 12 işlem, %41.7 kazanma, ~-$0.91 net gösteriyordu (BEAT -1.34, ACX -1.33,
+# BIRB -0.26, HFT -1.18 gibi zararlar panelde HİÇ görünmüyordu). Kök sebep
+# tam teşhis edilemedi (volume mount path doğru, /sifirla çalıştırılmamış).
+# Bu, gunluk_pnl/haftalik_pnl sayaçlarının da gerçek zararları eksik
+# sayıyor olabileceği, dolayısıyla HAFTALIK_ZARAR_LIMIT_PCT güvenlik
+# frenini KÖRLEŞTİRMİŞ olabileceği anlamına geliyor - kritik risk.
+# Kullanıcı tüm kararı bana bıraktı: sorumlu trader kararı olarak YENİ
+# POZİSYON AÇILMASI DURDURULDU (açık pozisyonların yönetimi/kapatılması
+# etkilenmedi). TRADING_AKTIF=true ile tekrar açılabilir - ama önce
+# loglama tutarsızlığının kök sebebi bulunmalı.
+TRADING_AKTIF = os.getenv("TRADING_AKTIF", "false").lower() == "true"
 
 ATR_CARPANI_SL = 2.0
 
@@ -955,6 +970,14 @@ def islem_acici_pozisyon_ac(sinyal):
     tur = sinyal.get("tur", "bilinmiyor")
     yon = sinyal_yonu(tur)
 
+    # v4.26 TRADER KARARI: PnL/log tutarsızlığı bulunduğu için yeni pozisyon
+    # açılması geçici durduruldu (bkz. TRADING_AKTIF tanımındaki not). Bu
+    # kontrol, TÜM açılış yollarının (ana tarama + websocket tetikleyici)
+    # geçtiği TEK ortak fonksiyonda - tek noktadan güvenli kapatma.
+    if not TRADING_AKTIF:
+        log.info(f"[TRADING_DURAKLI] {sym} sinyali bulundu ama TRADING_AKTIF=false, açılış atlanıyor")
+        return
+
     bakiye = gercek_bakiye_al()
     if bakiye is None or bakiye <= 0:
         tg(f"⚠️ {sym} atlandı — bakiye alınamadı")
@@ -1308,6 +1331,7 @@ if bot:
                 f"Spike üst fitil filtresi: mum aralığının %{SPIKE_UST_FITIL_MAX*100:.0f}'inden fazlası üst fitilse reddedilir\n"
                 f"Teyit kuyruğu: LONG ve SHORT sinyalleri simetrik korumalı (ters yöne dönerse iptal)\n"
                 f"Düşüş devamı (SHORT) sinyali: {'AKTİF' if DUSUS_DEVAM_AKTIF else 'KAPALI (backtest kanıtıyla, 04.08.2026 — %14 kazanma/-0.80R görüldü)'}\n"
+                f"⚠️ YENİ POZİSYON AÇILIŞI: {'AKTİF' if TRADING_AKTIF else 'DURAKLATILDI (05.08.2026 — gerçek borsa geçmişi ile panel PnL takibi arasında tutarsızlık bulundu, kök sebep araştırılıyor)'}\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin, "
                 f"{TARAMA_PARALEL_WORKER} paralel worker ile taranır\n"
@@ -1361,12 +1385,23 @@ if bot:
             coin_pnl[sym] = coin_pnl.get(sym, 0) + t["pnl"]
         siralanmis = sorted(coin_pnl.items(), key=lambda x: x[1], reverse=True)
         if siralanmis:
-            satirlar.append("\n🏆 En kazandıran coinler:")
-            for sym, pnl in siralanmis[:3]:
-                satirlar.append(f"  {sym}: {pnl:+.2f}$")
-            satirlar.append("💀 En kaybettiren coinler:")
-            for sym, pnl in siralanmis[-3:][::-1]:
-                satirlar.append(f"  {sym}: {pnl:+.2f}$")
+            kazandiranlar = [x for x in siralanmis if x[1] > 0][:3]
+            kaybettirenler = [x for x in siralanmis if x[1] < 0][-3:][::-1]
+            if kazandiranlar:
+                satirlar.append("\n🏆 En kazandıran coinler:")
+                for sym, pnl in kazandiranlar:
+                    satirlar.append(f"  {sym}: {pnl:+.2f}$")
+            # v4.26 DÜZELTME: eskiden "en düşük 3 coin" gösteriliyordu - hepsi
+            # pozitifse bile "En kaybettiren" başlığı altında yanıltıcı şekilde
+            # gösteriliyordu (kullanıcı geri bildirimi: "zararları göstermiyor,
+            # ama yine de zarar varmış gibi gösteriyor"). Artık SADECE gerçekten
+            # net negatif olan coinler bu listede yer alıyor.
+            if kaybettirenler:
+                satirlar.append("💀 En kaybettiren coinler:")
+                for sym, pnl in kaybettirenler:
+                    satirlar.append(f"  {sym}: {pnl:+.2f}$")
+            elif kazandiranlar:
+                satirlar.append("💀 Zarar eden coin yok (hepsi net pozitif)")
         return "\n".join(satirlar)
 
     def panel_risk_metni():
@@ -1539,13 +1574,14 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.23 başladı (debug loglar temizlendi, log trafiği azaltıldı) (MAX_POS={MAX_POS})\n"
-       f"v4.18: entry-kayıt bug'ı düzeltildi | spike sinyaline RSI filtresi | "
-       f"sustained sinyaline de teyit bekleme | SL tavanı %6→%3 (kaldıraç {LEV}x sabit) | "
-       f"paralel tarama ({TARAMA_PARALEL_WORKER} worker, havuz {ADAY_HAVUZU_BUYUKLUGU})\n"
+    tg(f"🚀 SCALP BOT v4.26 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
-       f"⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
+       + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
+          "borsa geçmişiyle tutarsızlık bulundu, kök sebep netleşene kadar sadece "
+          "açık pozisyon yönetimi çalışıyor. TRADING_AKTIF=true ile açılabilir.\n"
+          if not TRADING_AKTIF else "✅ Yeni pozisyon açılışı AKTİF.\n")
+       + "⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
     baslangic_uzlastirma()
     gunluk_haftalik_reset_kontrol()
