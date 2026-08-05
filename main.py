@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.31 — 05 Ağustos 2026
+SCALP BOT v4.33 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -300,6 +300,27 @@ bekleyen_sinyaller = {}  # sym -> {sinyal_fiyat, atr, skor, tur, zaman}
 # bekleyen_sinyaller'a yazıyor - thread-safety için kilit eklendi.
 bekleyen_lock = threading.Lock()
 
+# v4.33 KULLANICI TALEBİYLE: aynı coin için tekrar tekrar "⏳ sinyal bulundu"
+# mesajı gönderilmesin diye susturma mekanizması. CYS/1000RATS gibi oynak
+# coinler her 1-2 dakikada bir teyit kuyruğuna girip çıkabiliyor, her
+# seferinde Telegram mesajı ve Railway logu üretiyordu - bu da hem Telegram'ı
+# hem Railway'i gereksiz meşgul ediyordu. Artık aynı coin için bu mesaj en
+# fazla MESAJ_SUSTURMA_SN saniyede bir gönderiliyor (teyit kuyruğu mantığı
+# aynen çalışmaya devam ediyor, sadece Telegram bildirimi kısıtlanıyor).
+MESAJ_SUSTURMA_SN = 600  # aynı coin için "sinyal bulundu" mesajı en fazla 10 dakikada bir
+son_sinyal_mesaji = {}
+son_sinyal_mesaji_lock = threading.Lock()
+_nabiz_sayac = {"deger": 0}
+
+
+def sinyal_mesaji_gonder_mi(sym):
+    with son_sinyal_mesaji_lock:
+        son = son_sinyal_mesaji.get(sym, 0)
+        if time.time() - son < MESAJ_SUSTURMA_SN:
+            return False
+        son_sinyal_mesaji[sym] = time.time()
+        return True
+
 # ════════════════════════════════════════════
 # AJAN 0: WEBSOCKET GÖZCÜSÜ (v4.23 YENİ)
 # ════════════════════════════════════════════
@@ -313,7 +334,11 @@ bekleyen_lock = threading.Lock()
 # ve mesaj formatı doğrulandı) - izlenmesi gerekir, sorun çıkarsa
 # WS_GOZCU_AKTIF=false ile kapatılabilir.
 WS_GOZCU_AKTIF = os.getenv("WS_GOZCU_AKTIF", "true").lower() == "true"
-WS_HIZLI_TETIK_YUZDE = float(os.getenv("WS_HIZLI_TETIK_YUZDE", "0.02"))  # pencerede %2 hareket
+WS_HIZLI_TETIK_YUZDE = float(os.getenv("WS_HIZLI_TETIK_YUZDE", "0.012"))  # pencerede %1.2 hareket
+# v4.32 KULLANICI KARARI (05 Ağustos 2026): %2 -> %1.2. Gerekçe: durgun
+# piyasa günlerinde AJAN 0 neredeyse hiç tetiklenmiyordu. Eşik düşürüldü
+# ama bu SADECE tetikleme hassasiyetini artırıyor - RSI/üst fitil/trend
+# filtreleri hâlâ aynen uygulanıyor, güvenlik gevşetilmedi.
 WS_PENCERE_SN = int(os.getenv("WS_PENCERE_SN", "30"))  # 30 saniyelik hareket penceresi
 WS_TETIK_COOLDOWN_SN = 120  # aynı coin için art arda tetiklenmeyi önler
 WS_URL = "wss://ws.bitget.com/v2/ws/public"
@@ -400,8 +425,9 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
                                         "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
         etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
                   "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
-        tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti → {etiket} sinyali doğrulandı, "
-           f"teyit kuyruğuna alındı (normal 60sn turunu beklemeden)")
+        if sinyal_mesaji_gonder_mi(sym):
+            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti → {etiket} sinyali doğrulandı, "
+               f"teyit kuyruğuna alındı (normal 60sn turunu beklemeden)")
     except Exception as e:
         log.warning(f"[WS_TETIK] {sym}: {e}")
 
@@ -1375,7 +1401,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.31 (teyit süresi 180sn->90sn kısaltıldı; iz sürme eşiği 0.15R->0.30R geciktirildi; duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
+                f"Sürüm: v4.33 (mesaj/log trafiği azaltıldı - aynı coin 10dk'da bir bildirim, NABIZ her 5 turda bir; websocket tetik eşiği %2->%1.2 düşürüldü; teyit süresi 180sn->90sn kısaltıldı; iz sürme eşiği 0.15R->0.30R geciktirildi; duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
                 f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
                 f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1634,7 +1660,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.31 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.33 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
@@ -1803,22 +1829,25 @@ def tarama_loop():
                     etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
                               "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
                     yon_kelime = "tutuyor mu" if tur != "dusus_devam" else "düşüş devam ediyor mu"
-                    tg(f"⏳ AJAN 1: {sym} {etiket} sinyali bulundu, {CONFIRM_BEKLEME_SN//60} dakika "
-                       f"'{yon_kelime}' diye izleniyor (ters yöne dönerse iptal)")
+                    if sinyal_mesaji_gonder_mi(sym):
+                        tg(f"⏳ AJAN 1: {sym} {etiket} sinyali bulundu, {CONFIRM_BEKLEME_SN//60} dakika "
+                           f"'{yon_kelime}' diye izleniyor (ters yöne dönerse iptal)")
                     continue
 
             # v4.19 YENİ: her turda NABIZ logu - "log'da hiçbir şey yok" ile
             # "bot çalışıyor ama sinyal bulamıyor" birbirinden ayırt edilemiyordu
             # (bu turdan önce sadece sinyal bulununca/hata olunca log basılıyordu).
-            # Artık her turun sonunda kısa bir özet basılıyor - Railway
-            # loglarında bu satır düzenli aralıklarla görünmüyorsa bot gerçekten
-            # takılmış demektir, görünüyorsa bot çalışıyor ama piyasa/filtre
-            # koşulları sinyal üretmiyor demektir.
-            with bekleyen_lock:
-                kuyruk_uzunluk = len(bekleyen_sinyaller)
-            log.info(f"[NABIZ] tur tamam | havuz={len(adaylar_havuzu)} | "
-                     f"teyit_kuyrugu={kuyruk_uzunluk} | acik_pozisyon={MAX_POS - bos_slot}/{MAX_POS} | "
-                     f"acilan_bu_tur={acilan_sayisi}")
+            # v4.33 DÜZELTME: kullanıcı talebiyle her turda değil, her 5 turda
+            # bir (yaklaşık 5-8 dakikada bir) basılıyor - Railway log hacmini
+            # azaltmak için. Tarama/güvenlik mantığı HER turda aynen çalışmaya
+            # devam ediyor, sadece bu bilgi logunun sıklığı azaldı.
+            _nabiz_sayac["deger"] += 1
+            if _nabiz_sayac["deger"] % 5 == 0:
+                with bekleyen_lock:
+                    kuyruk_uzunluk = len(bekleyen_sinyaller)
+                log.info(f"[NABIZ] tur tamam | havuz={len(adaylar_havuzu)} | "
+                         f"teyit_kuyrugu={kuyruk_uzunluk} | acik_pozisyon={MAX_POS - bos_slot}/{MAX_POS} | "
+                         f"acilan_bu_tur={acilan_sayisi}")
 
             time.sleep(KONTROL_ARALIGI_SN)
         except Exception as e:
@@ -2056,7 +2085,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.31 BAŞLIYOR...")
+    print("SCALP BOT v4.33 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
