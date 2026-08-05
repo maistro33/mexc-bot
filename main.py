@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.30 — 05 Ağustos 2026
+SCALP BOT v4.31 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -289,7 +289,11 @@ gunluk_lock = threading.Lock()
 
 # v3.0: ANİ PATLAMA (ve v4.18'den itibaren SUSTAINED da) sinyali için
 # GİRİŞ TEYİDİ - sinyalden sonra fiyat kısa süre "tutuyor mu" diye izlenir.
-CONFIRM_BEKLEME_SN = 180
+CONFIRM_BEKLEME_SN = 90
+# v4.31 KULLANICI KARARI (05 Ağustos 2026): 180sn -> 90sn. Gerekçe: HOME
+# örneğinde 3 dakika beklerken fiyat zaten iyice yükselmiş, giriş "kovalama"
+# noktasından oldu. 90sn hâlâ CYS/AIO tipi "tepede yakalanma" riskine karşı
+# anlamlı bir koruma sağlıyor (sıfırlamadık) ama gecikmeyi yarıya indiriyor.
 CONFIRM_MAX_RETRACE_PCT = 0.01
 bekleyen_sinyaller = {}  # sym -> {sinyal_fiyat, atr, skor, tur, zaman}
 # v4.23 YENİ: artık hem ana tarama döngüsü hem de AJAN 0 (websocket gözcüsü)
@@ -1371,7 +1375,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.30 (iz sürme eşiği 0.15R->0.30R geciktirildi; duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
+                f"Sürüm: v4.31 (teyit süresi 180sn->90sn kısaltıldı; iz sürme eşiği 0.15R->0.30R geciktirildi; duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
                 f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
                 f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1630,7 +1634,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.30 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.31 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
@@ -2052,7 +2056,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.30 BAŞLIYOR...")
+    print("SCALP BOT v4.31 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
