@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.28 — 05 Ağustos 2026
+SCALP BOT v4.29 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -212,7 +212,7 @@ DUSUS_DEVAM_AKTIF = os.getenv("DUSUS_DEVAM_AKTIF", "false").lower() == "true"
 # POZİSYON AÇILMASI DURDURULDU (açık pozisyonların yönetimi/kapatılması
 # etkilenmedi). TRADING_AKTIF=true ile tekrar açılabilir - ama önce
 # loglama tutarsızlığının kök sebebi bulunmalı.
-TRADING_AKTIF = os.getenv("TRADING_AKTIF", "false").lower() == "true"
+TRADING_AKTIF = os.getenv("TRADING_AKTIF", "true").lower() == "true"
 
 ATR_CARPANI_SL = 2.0
 
@@ -358,6 +358,10 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
     (RSI/fitil/trend dahil TÜM filtreleri uygulayan) sinyal kontrolünü
     çalıştırır - websocket sadece TETİKLEYİCİ, filtreleri atlamıyor."""
     try:
+        # v4.29: duraklatma modunda websocket de sessiz kalsın (aynı gerekçe -
+        # bkz. tarama_loop'taki TRADING_AKTIF notu).
+        if not TRADING_AKTIF:
+            return
         with state_lock:
             if sym in trade_state:
                 return
@@ -1358,7 +1362,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.28 (iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
+                f"Sürüm: v4.29 (duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
                 f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
                 f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1617,7 +1621,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.28 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.29 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
@@ -1634,6 +1638,25 @@ def tarama_loop():
             gunluk_haftalik_reset_kontrol()
 
             if gunluk_limit_kontrolu() or haftalik_limit_kontrolu():
+                time.sleep(KONTROL_ARALIGI_SN)
+                continue
+
+            # v4.29 YENİ: TRADING_AKTIF=false iken (duraklatma modu) tarama VE
+            # teyit kuyruğu tamamen atlanıyor. Eskiden duraklatma sadece pozisyon
+            # AÇMAYI engelliyordu ama sinyal arama/teyit kuyruğu mantığı çalışmaya
+            # devam ediyordu - bu da TRADING_AKTIF=false olsa bile cooldown hiç
+            # uygulanmadığı için aynı coin'in (ör. CYS) her turda yeniden
+            # bulunup Telegram'a defalarca "⏳ teyit kuyruğunda" mesajı atmasına
+            # yol açıyordu (gerçek örnek: CYS 5+ kez art arda, 04.08.2026 gecesi).
+            # Artık duraklatma modunda tarama_loop sadece NABIZ basıp bekliyor -
+            # gerçek sessizlik. Açık pozisyon yönetimi (manage_loop) etkilenmedi.
+            if not TRADING_AKTIF:
+                with bekleyen_lock:
+                    kuyruk_uzunluk = len(bekleyen_sinyaller)
+                with state_lock:
+                    acik_poz = len(trade_state)
+                log.info(f"[NABIZ] DURAKLATILDI - tarama atlanıyor | teyit_kuyrugu={kuyruk_uzunluk} | "
+                         f"acik_pozisyon={acik_poz}/{MAX_POS}")
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
@@ -2020,7 +2043,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.28 BAŞLIYOR...")
+    print("SCALP BOT v4.29 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
