@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.26 — 05 Ağustos 2026
+SCALP BOT v4.27 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1159,12 +1159,55 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
         with state_lock:
             durum = trade_state.get(sym)
         if not gercek_pos:
+            # v4.27 KRİTİK DÜZELTME: Bu dal eskiden PnL'i HİÇ KAYDETMEDEN
+            # sessizce çıkıyordu. Senaryo: yazılım SL güvenlik ağı devreye
+            # girdiğinde, borsanın KENDİ hard-SL emri genelde bizden önce
+            # tetikleniyordu (milisaniyeler farkla) - biz "kapatmaya" geldiğimizde
+            # pozisyon ZATEN kapanmış oluyordu. Eski kod bunu "yapacak bir şey
+            # yok" sanıp trade_state'i temizliyor ama trade_log'a HİÇ
+            # yazmıyordu - gerçek kayıplar (BEAT, ACX, BIRB, HFT örnekleri)
+            # borsada gerçekleşmiş ama botun kendi kayıtlarında hiç
+            # görünmüyordu. Artık: elimizde trade_state kaydı (durum) varsa,
+            # borsadan GERÇEK SL emrinin dolum fiyatını çekip PnL'i doğru
+            # şekilde trade_log'a ve günlük/haftalık sayaçlara ekliyoruz.
             with state_lock:
                 trade_state.pop(sym, None)
             durumu_diske_yaz()
             with cooldown_lock:
                 son_kapanis_zamani[sym] = time.time()
             cooldown_diske_yaz()
+
+            if durum:
+                cikis_fiyat = None
+                if durum.get("sl_emir_id"):
+                    try:
+                        sl_detay = exchange.fetch_order(durum["sl_emir_id"], sym)
+                        gercek_sl_dolum = safe(sl_detay.get("average")) or safe(sl_detay.get("price"))
+                        if gercek_sl_dolum and gercek_sl_dolum > 0:
+                            cikis_fiyat = gercek_sl_dolum
+                    except Exception as e:
+                        log.warning(f"[KAYIP_KAPANIS_FIYATI] {sym}: SL emri dolum fiyatı alınamadı: {e}")
+                if not cikis_fiyat:
+                    try:
+                        t = exchange.fetch_ticker(sym)
+                        cikis_fiyat = safe(t["last"])
+                    except Exception:
+                        cikis_fiyat = durum.get("sl_guncel") or durum["entry"]
+                entry = durum["entry"]
+                qty = durum.get("qty_orijinal", 0)
+                kapanis_yonu = sinyal_yonu(durum.get("tur"))
+                pnl_tahmini = (cikis_fiyat - entry) * qty if kapanis_yonu == "long" else (entry - cikis_fiyat) * qty
+                global gunluk_pnl, haftalik_pnl
+                with gunluk_lock:
+                    gunluk_pnl += pnl_tahmini
+                    haftalik_pnl += pnl_tahmini
+                gunluk_haftalik_diske_yaz()
+                trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": pnl_tahmini,
+                                   "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                                   "not": f"{sebep}_borsada_onceden_kapanmis", "tur": durum.get("tur", "bilinmiyor")})
+                tg(f"ℹ️ {sym} — kontrol ettiğimizde borsada zaten kapanmıştı (muhtemelen borsanın "
+                   f"kendi SL emri önce tetiklendi). Tahmini PnL≈{pnl_tahmini:+.2f}$ kayda eklendi.")
+                return True, f"ℹ️ {sym} zaten borsada açık değilmiş — PnL≈{pnl_tahmini:+.2f}$ kaydedildi."
             return True, f"ℹ️ {sym} zaten borsada açık değilmiş, kayıt temizlendi (cooldown uygulandı)."
 
         qty = safe(gercek_pos.get("contracts"))
