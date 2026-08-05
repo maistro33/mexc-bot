@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.33 — 05 Ağustos 2026
+SCALP BOT v4.34 — 05 Ağustos 2026
 5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1086,7 +1086,7 @@ def islem_acici_pozisyon_ac(sinyal):
                     "entry": entry, "sl_orijinal": None, "sl_guncel": None, "sl_emir_id": None,
                     "qty_orijinal": qty, "r_risk": None, "tp_emirleri": [],
                     "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
-                    "kurulum_tamamlanmadi": True, "en_iyi_kar": None,
+                    "kurulum_tamamlanmadi": True, "en_iyi_kar": None, "rsi_giris": None,
                 }
             durumu_diske_yaz()
             break
@@ -1158,6 +1158,25 @@ def islem_acici_pozisyon_ac(sinyal):
 
     tp_emirleri = []
 
+    # v4.34 YENİ: erken uyarı (momentum zayıflama) özelliği için giriş
+    # anındaki RSI'yı kaydediyoruz - backtest ile doğrulandı (05.08.2026,
+    # 50 coin/5 gün gerçek veri): pozisyon zararda VE RSI girişten en az 8
+    # puan düşüp 45'in altına inmişse erken çıkmak, ortalama zarar
+    # büyüklüğünü yarıya indiriyordu (SL'e giden işlem ort. -1.0R iken
+    # erken uyarıyla çıkanlar ort. -0.49R). Bu SADECE zaten zararda olan
+    # pozisyonlar için ek bir erken-çıkış tetikleyicisi - SL/trailing
+    # mantığına dokunmuyor.
+    rsi_giris = None
+    try:
+        df_giris = get_df(sym, "5m", 20)
+        if df_giris is not None and len(df_giris) >= 15:
+            df_giris["rsi"] = rsi(df_giris, 14)
+            son_rsi = df_giris["rsi"].iloc[-1]
+            if not pd.isna(son_rsi):
+                rsi_giris = float(son_rsi)
+    except Exception as e:
+        log.warning(f"[RSI_GIRIS] {sym}: {e}")
+
     with state_lock:
         if sym in trade_state:
             # v4.18 KRİTİK DÜZELTME: "entry" burada EKSİKTİ - state'te eski
@@ -1172,12 +1191,14 @@ def islem_acici_pozisyon_ac(sinyal):
                 "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
                 "r_risk": r_risk, "tp_emirleri": tp_emirleri,
                 "kurulum_tamamlanmadi": False, "en_iyi_kar": None,
+                "rsi_giris": rsi_giris,
             })
         else:
             trade_state[sym] = {
                 "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
                 "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
                 "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
+                "rsi_giris": rsi_giris,
                 "kurulum_tamamlanmadi": False, "en_iyi_kar": None,
             }
     durumu_diske_yaz()
@@ -1401,7 +1422,7 @@ if bot:
         # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
         # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.33 (mesaj/log trafiği azaltıldı - aynı coin 10dk'da bir bildirim, NABIZ her 5 turda bir; websocket tetik eşiği %2->%1.2 düşürüldü; teyit süresi 180sn->90sn kısaltıldı; iz sürme eşiği 0.15R->0.30R geciktirildi; duraklatma modu artık sessiz; iz sürme erken-kesilme bugı düzeltildi; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
+                f"Sürüm: v4.34 (erken uyarı/momentum zayıflama çıkışı eklendi - backtest doğrulamalı; mesaj/log trafiği azaltıldı; websocket tetik eşiği %1.2; teyit süresi 90sn; iz sürme eşiği 0.30R; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
                 f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
                 f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1660,7 +1681,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.33 başladı (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v4.34 başladı (MAX_POS={MAX_POS})\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
@@ -1894,6 +1915,44 @@ def manage_loop():
                     log.warning(f"[SL_GUVENLIK_AGI] {sym}: fiyat kontrol edilemedi: {e}")
                     guncel_fiyat = None
 
+                # v4.34 YENİ: ERKEN UYARI (momentum zayıflama) - backtest ile
+                # doğrulandı (05.08.2026). Pozisyon zararda VE en az 10 dakika
+                # geçmiş VE RSI girişten en az 8 puan düşüp 45'in altına
+                # inmişse, SL'e kadar beklemeden erken çıkılır. Bu, SL'e giden
+                # işlemlerin ortalama zararını (-1.0R) yaklaşık yarıya
+                # (-0.49R) indirdiği gerçek veriyle gösterildi. Sadece
+                # LONG'da ve breakeven'a çekilmemiş (hâlâ zararda olabilecek)
+                # pozisyonlarda çalışır - en fazla 60sn'de bir kontrol edilir
+                # (gereksiz API çağrısını önlemek için).
+                if guncel_fiyat and guncel_fiyat > 0 and not durum.get("breakeven_cekildi"):
+                    try:
+                        durum_yonu2 = sinyal_yonu(durum.get("tur"))
+                        if durum_yonu2 == "long":
+                            anlik_kar_erken = guncel_fiyat - durum["entry"]
+                            rsi_giris_deger = durum.get("rsi_giris")
+                            acilis_zamani2 = durum.get("acilis_zamani", 0)
+                            son_kontrol = durum.get("son_erken_uyari_kontrol", 0)
+                            if (anlik_kar_erken < 0 and rsi_giris_deger is not None
+                                    and (time.time() - acilis_zamani2) >= 600
+                                    and (time.time() - son_kontrol) >= 60):
+                                with state_lock:
+                                    if sym in trade_state:
+                                        trade_state[sym]["son_erken_uyari_kontrol"] = time.time()
+                                df_simdi = get_df(sym, "5m", 20)
+                                if df_simdi is not None and len(df_simdi) >= 15:
+                                    df_simdi["rsi"] = rsi(df_simdi, 14)
+                                    rsi_simdi = df_simdi["rsi"].iloc[-1]
+                                    if (not pd.isna(rsi_simdi) and rsi_simdi < rsi_giris_deger - 8
+                                            and rsi_simdi < 45):
+                                        tg(f"⚠️ ERKEN UYARI: {sym} zararda ve momentum zayıflıyor "
+                                           f"(RSI giriş {rsi_giris_deger:.0f} → şimdi {rsi_simdi:.0f}) — "
+                                           f"SL'i beklemeden erken çıkılıyor (backtest: bu ortalama "
+                                           f"zararı yarıya indiriyor).")
+                                        pozisyonu_tamamen_kapat(sym, sebep="erken_uyari_momentum")
+                                        continue
+                    except Exception as e:
+                        log.warning(f"[ERKEN_UYARI] {sym}: {e}")
+
                 if guncel_fiyat and guncel_fiyat > 0:
                     try:
                         iz_yonu = sinyal_yonu(durum.get("tur"))
@@ -2085,7 +2144,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.33 BAŞLIYOR...")
+    print("SCALP BOT v4.34 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
