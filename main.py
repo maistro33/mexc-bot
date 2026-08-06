@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.12 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.13 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1800,7 +1800,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.12 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.13 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1810,14 +1810,20 @@ def tarama_loop():
           if not TRADING_AKTIF else "✅ Yeni pozisyon açılışı AKTİF.\n")
        + "⚠️ Küçük örneklemli backtest - gerçek performans garantisi yoktur.")
 
+    print("[CHECKPOINT] baslangic_uzlastirma() başlıyor", flush=True)
     baslangic_uzlastirma()
+    print("[CHECKPOINT] baslangic_uzlastirma() bitti, gunluk_haftalik_reset_kontrol() başlıyor", flush=True)
     gunluk_haftalik_reset_kontrol()
+    print("[CHECKPOINT] gunluk_haftalik_reset_kontrol() bitti, ana döngü başlıyor", flush=True)
 
     while True:
         try:
+            print("[CHECKPOINT] tur başladı", flush=True)
             gunluk_haftalik_reset_kontrol()
+            print("[CHECKPOINT] limit kontrolü yapılıyor", flush=True)
 
             if gunluk_limit_kontrolu() or haftalik_limit_kontrolu():
+                print("[CHECKPOINT] limit aşıldı, tur atlanıyor", flush=True)
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
@@ -1840,6 +1846,7 @@ def tarama_loop():
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
+            print("[CHECKPOINT] bos_slot hesaplanıyor", flush=True)
             with state_lock:
                 # v5.3: sadece "tarama" kaynaklı açık pozisyonlar sayılıyor -
                 # websocket'in kendi ayrı MAX_POS_WEBSOCKET havuzu var, ana
@@ -1847,18 +1854,23 @@ def tarama_loop():
                 tarama_acik = sum(1 for d in trade_state.values() if d.get("acilis_kaynagi", "tarama") == "tarama")
                 bos_slot = MAX_POS - tarama_acik
             if bos_slot <= 0:
+                print("[CHECKPOINT] bos_slot yok, tur atlanıyor", flush=True)
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
             btc_bullish = True
 
+            print("[CHECKPOINT] piyasa_izleyici_aday_havuzu() çağrılıyor (fetch_tickers)", flush=True)
             adaylar_havuzu = piyasa_izleyici_aday_havuzu()
+            print(f"[CHECKPOINT] aday_havuzu tamamlandı: {len(adaylar_havuzu)} coin", flush=True)
             acilan_sayisi = 0
 
             # v4.23 YENİ: AJAN 0'ın (websocket gözcüsü) dinlediği coin listesini
             # güncel aday havuzuyla senkronlar - böylece websocket sadece zaten
             # ilgilendiğimiz coinleri dinler, gereksiz genişlemez.
+            print("[CHECKPOINT] ws_abonelik_guncelle() çağrılıyor", flush=True)
             ws_abonelik_guncelle(adaylar_havuzu)
+            print("[CHECKPOINT] ws_abonelik_guncelle() bitti", flush=True)
 
             # önce bekleyen (teyit aşamasındaki) sinyalleri kontrol et
             # v4.18: artık hem spike HEM sustained sinyalleri bu kuyruktan geçiyor
@@ -1972,6 +1984,8 @@ def tarama_loop():
                     tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
                     acilis_basarisiz_cooldown_uygula(sym)
                 acilan_sayisi += 1
+
+            print(f"[CHECKPOINT] tur tamamlandı, acilan_bu_tur={acilan_sayisi}", flush=True)
 
             # v4.19 YENİ: her turda NABIZ logu - "log'da hiçbir şey yok" ile
             # "bot çalışıyor ama sinyal bulamıyor" birbirinden ayırt edilemiyordu
@@ -2241,7 +2255,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.12 BAŞLIYOR...")
+    print("SCALP BOT v5.13 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
