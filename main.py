@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v4.34 — 05 Ağustos 2026
-5m/15m/1h çoklu zaman dilimi, HEM LONG HEM SHORT (v4.7), o an pump yapan coinleri
+SCALP BOT v5.0 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
+RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri YOK - sadece
+fiyat trendi. Sinyal bulunur bulunmaz HEMEN girilir. Çıkış SL + geniş
+iz süren TP ile yönetilir (0.50R'de aktifleşir, büyük hareketlere
+nefes payı bırakmak için genişletildi).
 ════════════════════════════════════════════════════════
 ⚠️ ÖNEMLİ DÜRÜSTLÜK NOTU: HİÇBİR TP/SL AYARI KÂRI GARANTİ ETMEZ.
 Aşağıdaki ayarlar geçmiş veride (60 likit coin, 15 gün, 5m mumlar,
@@ -224,7 +228,12 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
-IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.30"))
+IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.50"))
+# v5.0 KULLANICI KARARI (06 Ağustos 2026): 0.30R -> 0.50R. Kullanıcı "iz süren
+# olsun ama nefes alsın, büyük kârı yakalasın" dedi - eşik daha da
+# genişletildi. Artık pozisyon riskin YARISI kadar kâra ulaşmadan başabaşa
+# çekilmiyor - daha fazla dalgalanma payı var, ama küçük kârlarda erken
+# kilitlenme de o kadar azalıyor (iki ucu keskin bıçak, bilinçli tercih).
 # v4.30 KULLANICI KARARI (05 Ağustos 2026): 0.15R -> 0.30R. Gerekçe: CYS ve
 # VANRY işlemlerinde iz sürme çok erken ($0.16-0.17 kârda) aktifleşiyor,
 # bu da fiyatın girişten henüz az uzaklaştığı bir anda başabaş SL'in de
@@ -392,12 +401,10 @@ def ws_abonelik_guncelle(ccxt_semboller):
 
 
 def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
-    """AJAN 0'ın hızlı hareket tespit ettiği bir coin için AJAN 1'in normal
-    (RSI/fitil/trend dahil TÜM filtreleri uygulayan) sinyal kontrolünü
-    çalıştırır - websocket sadece TETİKLEYİCİ, filtreleri atlamıyor."""
+    """AJAN 0'ın hızlı hareket tespit ettiği bir coin için AJAN 1'in trend
+    kontrolünü çalıştırır - websocket sadece TETİKLEYİCİ.
+    v5.0: teyit kuyruğu kaldırıldı, sinyal bulunursa doğrudan açılıyor."""
     try:
-        # v4.29: duraklatma modunda websocket de sessiz kalsın (aynı gerekçe -
-        # bkz. tarama_loop'taki TRADING_AKTIF notu).
         if not TRADING_AKTIF:
             return
         with state_lock:
@@ -405,9 +412,6 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
                 return
         if cooldown_da_mi(sym):
             return
-        with bekleyen_lock:
-            if sym in bekleyen_sinyaller:
-                return
         with ws_son_tetik_lock:
             son = ws_son_tetik.get(sym, 0)
             if time.time() - son < WS_TETIK_COOLDOWN_SN:
@@ -417,17 +421,17 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
         sinyal = sembol_sinyal_kontrol_tumu(sym, btc_bullish)
         if not sinyal:
             return
-        tur = sinyal.get("tur")
-        with bekleyen_lock:
-            if sym in bekleyen_sinyaller:
+        with state_lock:
+            if sym in trade_state:
                 return
-            bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
-                                        "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
-        etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
-                  "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
         if sinyal_mesaji_gonder_mi(sym):
-            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti → {etiket} sinyali doğrulandı, "
-               f"teyit kuyruğuna alındı (normal 60sn turunu beklemeden)")
+            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti — AJAN 2'ye 'hemen aç' komutu veriliyor")
+        try:
+            islem_acici_pozisyon_ac(sinyal)
+        except Exception as e:
+            log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
+            tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
+            acilis_basarisiz_cooldown_uygula(sym)
     except Exception as e:
         log.warning(f"[WS_TETIK] {sym}: {e}")
 
@@ -737,157 +741,41 @@ def piyasa_izleyici_aday_havuzu():
     return [sym for sym, _ in adaylar[:ADAY_HAVUZU_BUYUKLUGU]]
 
 
-def piyasa_izleyici_sinyal_kontrol(sym, btc_bullish):
-    """AJAN 1 - ADIM B: ani patlama (spike) sinyali.
-    v4.18: RSI aşırı-alım filtresi eklendi (CYS örneği)."""
+def piyasa_izleyici_basit_trend_sinyal(sym, btc_bullish):
+    """v5.0 KULLANICI KARARI (06 Ağustos 2026): kullanıcı talebiyle TÜM
+    RSI/ADX/hacim-spike/üst-fitil/15dk-trend/teyit-bekleme filtreleri
+    KALDIRILDI. Gerekçe: gerçek geçmiş veriyle (50 coin/5 gün) yapılan
+    karşılaştırmalı backtest'te, bu sade "sadece trend" yaklaşımı
+    +4.82R toplam verirken, RSI/ADX dahil "karmaşık" filtreli sistem
+    aynı veri setinde -12.80R vermişti. Fark filtrelerin kalitesinden
+    değil, KARMAŞIK sistemin SL'e kadar beklemesinden, basit sistemin
+    ise trend kırılınca hızlı çıkmasından kaynaklanıyordu - ama
+    kullanıcı özellikle "sadece trend, başka hiçbir şey ekleme" dedi,
+    bu yüzden giriş tarafı tamamen sadeleştirildi.
+
+    MANTIK: son 15 dakikada (3×5dk mum) fiyat RET_THRESHOLD kadar
+    yükseldiyse HEMEN gir - başka hiçbir koşul yok. Teyit beklemesi de
+    YOK (kullanıcı: "hemen gir"). Çıkış SL + iz süren TP ile yönetiliyor
+    (manage_loop) - o kısma dokunulmadı, kullanıcı "iz süren olsun ama
+    nefes alsın" dedi, zaten 0.30R'ye genişletilmişti."""
     df5 = get_df(sym, "5m", GOSTERGE_MUM_5M)
-    if df5 is None or len(df5) < 25:
+    if df5 is None or len(df5) < 20:
         return None
 
-    df5["vol_ma20"] = df5["volume"].rolling(20).mean()
-    df5["vol_ratio"] = df5["volume"] / df5["vol_ma20"].replace(0, np.nan)
     df5["ret_win"] = df5["close"].pct_change(RET_WINDOW_BARS)
     df5["atr"] = atr(df5, 14)
-    df5["rsi"] = rsi(df5, 14)
 
     row = df5.iloc[-1]
-    if pd.isna(row["vol_ratio"]) or pd.isna(row["ret_win"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
+    if pd.isna(row["ret_win"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
         return None
 
-    is_pump = row["vol_ratio"] >= VOL_SPIKE_MULT and row["ret_win"] >= RET_THRESHOLD
-    if not is_pump:
-        return None
-
-    # v4.18 YENİ: RSI aşırı-alım filtresi - CYS örneği (RSI 97.66'da giriş,
-    # saniyeler içinde SL). Spike doğası gereği ani olduğu için sustained'e
-    # (75) göre biraz daha sıkı bir tavan (70) kullanılıyor.
-    if pd.isna(row["rsi"]) or row["rsi"] >= SPIKE_RSI_TAVAN:
-        return None
-
-    # v4.22 YENİ: üst fitil (tepeden ret) filtresi - "en tepeden girme"
-    # koruması. Mum içinde fiyat tepeye çıkıp kapanıştan önce geri
-    # düşmüşse (uzun üst fitil), bu tepede satış baskısı geldiğinin
-    # işareti - sinyal reddedilir.
-    mum_araligi = row["high"] - row["low"]
-    if mum_araligi > 0:
-        ust_fitil = row["high"] - max(row["open"], row["close"])
-        ust_fitil_orani = ust_fitil / mum_araligi
-        if ust_fitil_orani > SPIKE_UST_FITIL_MAX:
-            return None
-
-    # 15m trend teyidi
-    df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
-    if df15 is None or len(df15) < 25:
-        return None
-    df15["ma20"] = df15["close"].rolling(20).mean()
-    df15["adx"] = adx(df15, 14)
-    row15 = df15.iloc[-1]
-    if pd.isna(row15["ma20"]) or pd.isna(row15["adx"]):
-        return None
-    if not (row15["close"] > row15["ma20"] and row15["adx"] >= ADX_ESIK_15M):
-        return None
-
-    if not btc_bullish:
+    if row["ret_win"] < RET_THRESHOLD:
         return None
 
     fiyat = row["close"]
     atr_val = row["atr"]
-    skor = row["ret_win"] * row["vol_ratio"]
-    return {"symbol": sym, "entry": fiyat, "atr": atr_val, "skor": skor, "tur": "spike"}
-
-
-def piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish):
-    """AJAN 1 - v1.1: 'yavaş yanan' sürdürülebilir tırmanışları yakalar."""
-    df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
-    if df15 is None or len(df15) < 30:
-        return None
-
-    df15["ma20"] = df15["close"].rolling(20).mean()
-    df15["adx"] = adx(df15, 14)
-    df15["atr"] = atr(df15, 14)
-    df15["vol_ma20"] = df15["volume"].rolling(20).mean()
-    df15["vol_ma6"] = df15["volume"].rolling(6).mean()
-    df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
-    df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
-    df15["zirve_2sa"] = df15["high"].rolling(8).max()
-    df15["rsi"] = rsi(df15, 14)
-
-    row = df15.iloc[-1]
-    if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
-        return None
-    if pd.isna(row["ret_6bar"]) or pd.isna(row["vol_ratio_sustained"]):
-        return None
-
-    trend_ok = row["close"] > row["ma20"] and row["adx"] >= SUSTAINED_ADX_ESIK
-    momentum_ok = row["ret_6bar"] >= SUSTAINED_RET_THRESHOLD
-    volume_ok = row["vol_ratio_sustained"] >= SUSTAINED_VOL_RATIO_THRESH
-    if not (trend_ok and momentum_ok and volume_ok):
-        return None
-
-    if pd.isna(row["zirve_2sa"]) or row["zirve_2sa"] <= 0:
-        return None
-    zirve_mesafe = (row["zirve_2sa"] - row["close"]) / row["zirve_2sa"]
-    if zirve_mesafe < SUSTAINED_ZIRVE_MESAFE_MIN:
-        return None
-
-    if not btc_bullish:
-        return None
-
-    if pd.isna(row["rsi"]) or row["rsi"] >= SUSTAINED_RSI_TAVAN:
-        return None
-
-    return {"symbol": sym, "entry": row["close"], "atr": row["atr"],
-            "skor": row["ret_6bar"], "tur": "sustained"}
-
-
-def piyasa_izleyici_dusus_devam_kontrol(sym):
-    """v4.5: 'coin zaten düşüyor, satıcılar çoğalıyor' - SHORT."""
-    df15 = get_df(sym, "15m", GOSTERGE_MUM_15M)
-    if df15 is None or len(df15) < 30:
-        return None
-
-    df15["ma20"] = df15["close"].rolling(20).mean()
-    df15["adx"] = adx(df15, 14)
-    df15["atr"] = atr(df15, 14)
-    df15["vol_ma20"] = df15["volume"].rolling(20).mean()
-    df15["vol_ma6"] = df15["volume"].rolling(6).mean()
-    df15["vol_ratio_sustained"] = df15["vol_ma6"] / df15["vol_ma20"].replace(0, np.nan)
-    df15["ret_6bar"] = df15["close"].pct_change(SUSTAINED_RET_WINDOW_BARS)
-    df15["dip_2sa"] = df15["low"].rolling(8).min()
-    df15["rsi"] = rsi(df15, 14)
-
-    row = df15.iloc[-1]
-    if pd.isna(row["ma20"]) or pd.isna(row["adx"]) or pd.isna(row["atr"]) or row["atr"] <= 0:
-        return None
-    if pd.isna(row["ret_6bar"]) or pd.isna(row["vol_ratio_sustained"]):
-        return None
-
-    trend_ok = row["close"] < row["ma20"] and row["adx"] >= SUSTAINED_ADX_ESIK
-    momentum_ok = row["ret_6bar"] <= -SUSTAINED_RET_THRESHOLD
-    volume_ok = row["vol_ratio_sustained"] >= SUSTAINED_VOL_RATIO_THRESH
-    if not (trend_ok and momentum_ok and volume_ok):
-        return None
-
-    dip_2sa = row["dip_2sa"]
-    if pd.isna(dip_2sa) or dip_2sa <= 0:
-        return None
-    dip_mesafe = (row["close"] - dip_2sa) / dip_2sa
-    if dip_mesafe < DUSUS_DEVAM_DIP_MESAFE_MIN:
-        return None
-
-    if pd.isna(row["open"]) or row["open"] <= 0:
-        return None
-    son_mum_ret = (row["close"] - row["open"]) / row["open"]
-    son_mum_hacim = row["volume"] / row["vol_ma20"] if row["vol_ma20"] else 0
-    capitulation_ok = son_mum_ret <= -DUSUS_DEVAM_MUM_ESIK and son_mum_hacim >= DUSUS_DEVAM_HACIM_ESIK
-    if not capitulation_ok:
-        return None
-
-    if pd.isna(row["rsi"]) or row["rsi"] <= DUSUS_DEVAM_RSI_TABAN:
-        return None
-
-    return {"symbol": sym, "entry": row["close"], "atr": row["atr"],
-            "skor": abs(row["ret_6bar"]) * row["vol_ratio_sustained"], "tur": "dusus_devam"}
+    skor = row["ret_win"]
+    return {"symbol": sym, "entry": fiyat, "atr": atr_val, "skor": skor, "tur": "basit_trend"}
 
 
 def btc_1h_bullish():
@@ -902,24 +790,10 @@ def btc_1h_bullish():
 
 
 def sembol_sinyal_kontrol_tumu(sym, btc_bullish):
-    """v4.18 YENİ: paralel tarama için yardımcı fonksiyon - bir sembol için
-    üç sinyal türünü de (spike, sustained, dusus_devam) sırayla dener,
-    ilk bulduğunu döner. ThreadPoolExecutor ile birden çok sembol için
-    aynı anda çağrılır - taramanın toplam süresini kısaltıp aynı
-    KONTROL_ARALIGI_SN içinde daha fazla coin kontrol edilmesini sağlar."""
+    """v5.0: artık tek, sade bir sinyal kontrolü var - bkz.
+    piyasa_izleyici_basit_trend_sinyal üstündeki not."""
     try:
-        sinyal = piyasa_izleyici_sinyal_kontrol(sym, btc_bullish)
-        if sinyal:
-            return sinyal
-        sinyal = piyasa_izleyici_sustained_sinyal_kontrol(sym, btc_bullish)
-        if sinyal:
-            return sinyal
-        # v4.25 TRADER KARARI: backtest kanıtına göre SHORT sinyali geçici
-        # kapalı (DUSUS_DEVAM_AKTIF=false varsayılan) - bkz. yukarıdaki not.
-        if DUSUS_DEVAM_AKTIF:
-            sinyal = piyasa_izleyici_dusus_devam_kontrol(sym)
-            if sinyal:
-                return sinyal
+        return piyasa_izleyici_basit_trend_sinyal(sym, btc_bullish)
     except Exception as e:
         log.warning(f"[PARALEL_TARAMA] {sym}: {e}")
     return None
@@ -1418,27 +1292,20 @@ if bot:
         return "\n".join(satirlar)
 
     def panel_ayarlar_metni():
-        # v4.18 DÜZELTME: eski metin "TP: tek hedef, net ≈$0.30" diyordu -
-        # ama v4.8'den beri sistem TRAILING (iz süren) TP kullanıyor, sabit
-        # dolar hedefte kapatmıyor. Artık gerçek davranış anlatılıyor.
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v4.34 (erken uyarı/momentum zayıflama çıkışı eklendi - backtest doğrulamalı; mesaj/log trafiği azaltıldı; websocket tetik eşiği %1.2; teyit süresi 90sn; iz sürme eşiği 0.30R; kapanış-loglama bug'ı düzeltildi — borsa önce kapatırsa "
-                f"artık PnL kaydediliyor; LONG/SHORT simetrik teyit; spike üst-fitil filtresi; "
-                f"SHORT sinyali backtest kanıtıyla kapalı; SL tavanı %3; paralel tarama)\n"
+                f"Sürüm: v5.0 (SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
+                f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
+                f"GİRİŞ: son {RET_WINDOW_BARS*5} dakikada fiyat %{RET_THRESHOLD*100:.0f}+ yükseldiyse "
+                f"HEMEN girilir (bekleme/teyit yok, RSI/ADX/hacim kontrolü yok)\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14), tavan %{MAX_SL_PCT*100:.0f} / taban %{MIN_SL_PCT*100:.0f}\n"
                 f"TP: İZ SÜREN (trailing) — pozisyon riskin %{IZ_SURME_R_ORANI*100:.0f}'i kadar kâra "
                 f"ulaşınca aktifleşir, SL başabaşa çekilir; sonra en iyi kârdan aynı miktar "
-                f"geri çekilirse kapanır. Sabit $ hedef YOK.\n"
-                f"Giriş teyidi: spike VE sustained sinyalleri {CONFIRM_BEKLEME_SN//60} dakika "
-                f"'tutuyor mu' diye izlenir (fiyat %{CONFIRM_MAX_RETRACE_PCT*100:.0f}'ten fazla "
-                f"geri çekilirse iptal)\n"
-                f"RSI aşırı-alım filtresi: spike ≥{SPIKE_RSI_TAVAN:.0f}, sustained ≥{SUSTAINED_RSI_TAVAN:.0f} reddedilir\n"
-                f"Spike üst fitil filtresi: mum aralığının %{SPIKE_UST_FITIL_MAX*100:.0f}'inden fazlası üst fitilse reddedilir\n"
-                f"Teyit kuyruğu: LONG ve SHORT sinyalleri simetrik korumalı (ters yöne dönerse iptal)\n"
-                f"Düşüş devamı (SHORT) sinyali: {'AKTİF' if DUSUS_DEVAM_AKTIF else 'KAPALI (backtest kanıtıyla, 04.08.2026 — %14 kazanma/-0.80R görüldü)'}\n"
-                f"⚠️ YENİ POZİSYON AÇILIŞI: {'AKTİF' if TRADING_AKTIF else 'DURAKLATILDI (05.08.2026 — gerçek borsa geçmişi ile panel PnL takibi arasında tutarsızlık bulundu, kök sebep araştırılıyor)'}\n"
+                f"geri çekilirse kapanır. Geniş tutuldu ki büyük hareketler nefes alabilsin.\n"
+                f"SHORT sinyali: KAPALI (sadece LONG)\n"
+                f"⚠️ YENİ POZİSYON AÇILIŞI: {'AKTİF' if TRADING_AKTIF else 'DURAKLATILDI'}\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin, "
                 f"{TARAMA_PARALEL_WORKER} paralel worker ile taranır\n"
@@ -1467,16 +1334,18 @@ if bot:
             return "🔬 SCALP ANALİZ\n\nHenüz kapanan işlem yok."
         satirlar = ["🔬 SCALP ANALİZ\n"]
         satirlar.append("📊 Sinyal tipi bazında:")
-        # v4.18 DÜZELTME: "dusus_devam" (düşüş devamı / SHORT) türü eksikti,
-        # bu yüzden short işlemlerin istatistiği panelde hiç görünmüyordu.
-        for tur in ["spike", "sustained", "dusus_devam"]:
+        # v5.0: artık tek tür var (basit_trend) - eski spike/sustained/
+        # dusus_devam türleri de geçmiş kayıtlarda kalmış olabilir, hepsi
+        # gösteriliyor.
+        turler = sorted(set(t.get("tur", "bilinmiyor") for t in gecmis))
+        for tur in turler:
             alt = [t for t in gecmis if t.get("tur") == tur]
             if not alt:
                 continue
             kazanan = [t for t in alt if t["pnl"] > 0]
             net = sum(t["pnl"] for t in alt)
-            tur_ad = {"spike": "Ani patlama", "sustained": "Sürdürülebilir tırmanış",
-                      "dusus_devam": "Düşüş devamı (short)"}.get(tur, tur)
+            tur_ad = {"spike": "Ani patlama (eski)", "sustained": "Sürdürülebilir tırmanış (eski)",
+                      "dusus_devam": "Düşüş devamı (eski)", "basit_trend": "Sade trend"}.get(tur, tur)
             satirlar.append(f"  {tur_ad}: {len(alt)} işlem, %{len(kazanan)/len(alt)*100:.0f} kazanma, net {net:+.2f}$")
         satirlar.append("\n🚪 Kapanış sebebi bazında:")
         for sebep in ["tum_tp_tamamlandi", "iz_suren_tp", "yazilim_sl_guvenlik_agi",
@@ -1681,8 +1550,9 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v4.34 başladı (MAX_POS={MAX_POS})\n"
-       f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN (trailing)\n"
+    tg(f"🚀 SCALP BOT v5.0 başladı (SADE MOD) (MAX_POS={MAX_POS})\n"
+       f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
+       f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
        + ("⚠️⚠️ YENİ POZİSYON AÇILIŞI DURAKLATILDI — panel PnL takibinde gerçek "
           "borsa geçmişiyle tutarsızlık bulundu, kök sebep netleşene kadar sadece "
@@ -1833,27 +1703,21 @@ def tarama_loop():
                 with state_lock:
                     if sym in trade_state:
                         continue
-                with bekleyen_lock:
-                    zaten_bekliyor = sym in bekleyen_sinyaller
-                if cooldown_da_mi(sym) or zaten_bekliyor:
+                if cooldown_da_mi(sym):
                     continue
 
-                tur = sinyal.get("tur")
-                if tur in ("spike", "sustained", "dusus_devam"):
-                    # v4.22: artık ÜÇÜ de (LONG spike, LONG sustained, SHORT
-                    # düşüş devamı) aynı teyit kuyruğundan geçiyor - kullanıcı
-                    # talebiyle "en tepeden long, en dipten short girme"
-                    # riskine karşı simetrik koruma (04 Ağustos 2026).
-                    with bekleyen_lock:
-                        bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
-                                                    "skor": sinyal["skor"], "tur": tur, "zaman": time.time()}
-                    etiket = {"spike": "ani patlama (LONG)", "sustained": "sürdürülebilir tırmanış (LONG)",
-                              "dusus_devam": "düşüş devamı (SHORT)"}.get(tur, tur)
-                    yon_kelime = "tutuyor mu" if tur != "dusus_devam" else "düşüş devam ediyor mu"
-                    if sinyal_mesaji_gonder_mi(sym):
-                        tg(f"⏳ AJAN 1: {sym} {etiket} sinyali bulundu, {CONFIRM_BEKLEME_SN//60} dakika "
-                           f"'{yon_kelime}' diye izleniyor (ters yöne dönerse iptal)")
-                    continue
+                # v5.0 KULLANICI KARARI: teyit kuyruğu (90sn bekleme) KALDIRILDI.
+                # Kullanıcı: "hemen gir kâr al çık mantığı" - sinyal bulunur
+                # bulunmaz doğrudan pozisyon açılıyor, beklemesiz.
+                if sinyal_mesaji_gonder_mi(sym):
+                    tg(f"🔍 AJAN 1: {sym} trend sinyali bulundu — AJAN 2'ye 'hemen aç' komutu veriliyor")
+                try:
+                    islem_acici_pozisyon_ac(sinyal)
+                except Exception as e:
+                    log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
+                    tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
+                    acilis_basarisiz_cooldown_uygula(sym)
+                acilan_sayisi += 1
 
             # v4.19 YENİ: her turda NABIZ logu - "log'da hiçbir şey yok" ile
             # "bot çalışıyor ama sinyal bulamıyor" birbirinden ayırt edilemiyordu
@@ -1915,43 +1779,9 @@ def manage_loop():
                     log.warning(f"[SL_GUVENLIK_AGI] {sym}: fiyat kontrol edilemedi: {e}")
                     guncel_fiyat = None
 
-                # v4.34 YENİ: ERKEN UYARI (momentum zayıflama) - backtest ile
-                # doğrulandı (05.08.2026). Pozisyon zararda VE en az 10 dakika
-                # geçmiş VE RSI girişten en az 8 puan düşüp 45'in altına
-                # inmişse, SL'e kadar beklemeden erken çıkılır. Bu, SL'e giden
-                # işlemlerin ortalama zararını (-1.0R) yaklaşık yarıya
-                # (-0.49R) indirdiği gerçek veriyle gösterildi. Sadece
-                # LONG'da ve breakeven'a çekilmemiş (hâlâ zararda olabilecek)
-                # pozisyonlarda çalışır - en fazla 60sn'de bir kontrol edilir
-                # (gereksiz API çağrısını önlemek için).
-                if guncel_fiyat and guncel_fiyat > 0 and not durum.get("breakeven_cekildi"):
-                    try:
-                        durum_yonu2 = sinyal_yonu(durum.get("tur"))
-                        if durum_yonu2 == "long":
-                            anlik_kar_erken = guncel_fiyat - durum["entry"]
-                            rsi_giris_deger = durum.get("rsi_giris")
-                            acilis_zamani2 = durum.get("acilis_zamani", 0)
-                            son_kontrol = durum.get("son_erken_uyari_kontrol", 0)
-                            if (anlik_kar_erken < 0 and rsi_giris_deger is not None
-                                    and (time.time() - acilis_zamani2) >= 600
-                                    and (time.time() - son_kontrol) >= 60):
-                                with state_lock:
-                                    if sym in trade_state:
-                                        trade_state[sym]["son_erken_uyari_kontrol"] = time.time()
-                                df_simdi = get_df(sym, "5m", 20)
-                                if df_simdi is not None and len(df_simdi) >= 15:
-                                    df_simdi["rsi"] = rsi(df_simdi, 14)
-                                    rsi_simdi = df_simdi["rsi"].iloc[-1]
-                                    if (not pd.isna(rsi_simdi) and rsi_simdi < rsi_giris_deger - 8
-                                            and rsi_simdi < 45):
-                                        tg(f"⚠️ ERKEN UYARI: {sym} zararda ve momentum zayıflıyor "
-                                           f"(RSI giriş {rsi_giris_deger:.0f} → şimdi {rsi_simdi:.0f}) — "
-                                           f"SL'i beklemeden erken çıkılıyor (backtest: bu ortalama "
-                                           f"zararı yarıya indiriyor).")
-                                        pozisyonu_tamamen_kapat(sym, sebep="erken_uyari_momentum")
-                                        continue
-                    except Exception as e:
-                        log.warning(f"[ERKEN_UYARI] {sym}: {e}")
+                # v5.0 KULLANICI KARARI: RSI tabanlı "erken uyarı" mekanizması
+                # KALDIRILDI - kullanıcı "sadece trend, başka hiçbir şey
+                # ekleme" dedi. Çıkış artık sadece SL + iz süren TP.
 
                 if guncel_fiyat and guncel_fiyat > 0:
                     try:
@@ -2144,7 +1974,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v4.34 BAŞLIYOR...")
+    print("SCALP BOT v5.0 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
