@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.1 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.2 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -163,7 +163,12 @@ SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC"
 # ── SİNYAL PARAMETRELERİ (backtest doğrulamalı, bkz. üstteki not) ──
 VOL_SPIKE_MULT = 5.0        # 5m hacim, 20-bar ortalamasının kaç katı olmalı
 RET_WINDOW_BARS = 3         # kaç 5m bar'lık getiriye bakılıyor (3x5dk=15dk)
-RET_THRESHOLD = 0.03        # %3.0 hareket eşiği (v3.4: %2.5'ten yükseltildi)
+RET_THRESHOLD = 0.015       # v5.2 KULLANICI KARARI (06.08.2026): %3->%1.5.
+# Gerekçe: kullanıcı girişlerin dibe daha yakın olmasını istedi. Gerçek
+# veriyle (30 coin/5gün) test edildi: %1.5 eşik, %3'e göre HEM daha çok
+# işlem (605 vs 261) HEM daha yüksek kazanma oranı (%42.1 vs %39.5) HEM
+# daha yüksek toplam getiri (+43.27R vs +26.58R) verdi - "daha fazla
+# yalancı sinyal gelir" beklentisi bu veri setinde doğrulanmadı.
 ADX_ESIK_15M = 15
 COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "4"))
 MAX_HOLD_SAAT = 3.0
@@ -1328,7 +1333,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.1 (MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.2 (giriş eşiği %3->%1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1585,7 +1590,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.1 başladı (SADE MOD) (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v5.2 başladı (SADE MOD) (MAX_POS={MAX_POS})\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2009,7 +2014,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.1 BAŞLIYOR...")
+    print("SCALP BOT v5.2 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
