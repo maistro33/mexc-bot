@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.2 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.3 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -271,6 +271,11 @@ LEV_HAM_DEGER = os.getenv("LEV")
 LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10  # kullanıcı talebiyle 10x SABİT KALIYOR
 RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
 MAX_POS = int(os.getenv("MAX_POS", "2"))
+# v5.3 KULLANICI KARARI (06.08.2026): AJAN 0 (websocket) için AYRI bir slot
+# havuzu - artık ana tarama (AJAN 1) ile aynı MAX_POS'u paylaşmıyor, kendi
+# bağımsız MAX_POS_WEBSOCKET limitine sahip. Toplamda aynı anda en fazla
+# MAX_POS + MAX_POS_WEBSOCKET pozisyon açık olabilir.
+MAX_POS_WEBSOCKET = int(os.getenv("MAX_POS_WEBSOCKET", "2"))
 GUNLUK_ZARAR_LIMIT_PCT = 0.15
 # v4.21 KULLANICI TALEBİYLE: günlük zarar limiti artık taramayı DURDURMUYOR.
 # GUNLUK_ZARAR_LIMIT_PCT değeri panelde bilgi amaçlı gösterilmeye devam ediyor,
@@ -298,7 +303,9 @@ state_lock = threading.Lock()
 # fonksiyonunun KENDİSİ, çağrıldığı yerden bağımsız olarak MAX_POS'u kontrol
 # ediyor ve atomik olarak bir "rezervasyon" alıyor - iki thread aynı anda
 # son slotu görüp ikisi de açamaz.
-acilis_rezervasyonlari = set()
+# v5.3: artık sym -> kaynak ("tarama" ya da "websocket") eşleşmesi tutuyor,
+# ki her kaynağın kendi bağımsız slot limitini doğru sayabilelim.
+acilis_rezervasyonlari = {}
 trade_log = []
 log_lock = threading.Lock()
 son_kapanis_zamani = {}
@@ -443,7 +450,7 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
         if sinyal_mesaji_gonder_mi(sym):
             tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti — AJAN 2'ye 'hemen aç' komutu veriliyor")
         try:
-            islem_acici_pozisyon_ac(sinyal)
+            islem_acici_pozisyon_ac(sinyal, kaynak="websocket")
         except Exception as e:
             log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
             tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
@@ -896,7 +903,7 @@ def sinyal_yonu(tur):
     return "short" if tur == "dusus_devam" else "long"
 
 
-def islem_acici_pozisyon_ac(sinyal):
+def islem_acici_pozisyon_ac(sinyal, kaynak="tarama"):
     sym = sinyal["symbol"]
     entry = sinyal["entry"]
     atr_val = sinyal["atr"]
@@ -911,25 +918,30 @@ def islem_acici_pozisyon_ac(sinyal):
         log.info(f"[TRADING_DURAKLI] {sym} sinyali bulundu ama TRADING_AKTIF=false, açılış atlanıyor")
         return
 
-    # v5.1 KRİTİK DÜZELTME: MAX_POS'u burada, TEK ortak açılış noktasında
-    # atomik olarak kontrol edip rezerve ediyoruz - bkz. yukarıdaki
-    # acilis_rezervasyonlari tanımındaki not. Ana tarama VE websocket
-    # tetikleyicisi artık ikisi de bu kontrolden geçmek zorunda.
+    # v5.3 KULLANICI KARARI: AJAN 0 (websocket) artık AYRI bir slot havuzuna
+    # sahip (MAX_POS_WEBSOCKET) - ana taramanın (MAX_POS) slotlarıyla
+    # yarışmıyor. Her kaynağın kendi limiti, o kaynağın açtığı gerçek
+    # pozisyonlar + o kaynağın bekleyen rezervasyonları toplamıyla kontrol
+    # ediliyor (v5.1'deki race-condition düzeltmesiyle aynı mantık, sadece
+    # artık kaynak bazlı ayrıştırılmış).
+    limit = MAX_POS_WEBSOCKET if kaynak == "websocket" else MAX_POS
     with state_lock:
-        toplam_dolu = len(trade_state) + len(acilis_rezervasyonlari)
-        if sym not in trade_state and toplam_dolu >= MAX_POS:
-            log.info(f"[MAX_POS_DOLU] {sym} sinyali bulundu ama {toplam_dolu}/{MAX_POS} slot dolu, açılış atlanıyor")
+        ayni_kaynak_acik = sum(1 for d in trade_state.values() if d.get("acilis_kaynagi", "tarama") == kaynak)
+        ayni_kaynak_rezerve = sum(1 for k in acilis_rezervasyonlari.values() if k == kaynak)
+        toplam_dolu = ayni_kaynak_acik + ayni_kaynak_rezerve
+        if sym not in trade_state and toplam_dolu >= limit:
+            log.info(f"[MAX_POS_DOLU] {sym} sinyali bulundu ama [{kaynak}] {toplam_dolu}/{limit} slot dolu, açılış atlanıyor")
             return
-        acilis_rezervasyonlari.add(sym)
+        acilis_rezervasyonlari[sym] = kaynak
 
     try:
-        _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon)
+        _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon, kaynak)
     finally:
         with state_lock:
-            acilis_rezervasyonlari.discard(sym)
+            acilis_rezervasyonlari.pop(sym, None)
 
 
-def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon):
+def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon, kaynak="tarama"):
     """v5.1: islem_acici_pozisyon_ac'ın MAX_POS rezervasyonu dışındaki asıl
     gövdesi - fonksiyon adı değişti ama mantık aynı, sadece MAX_POS
     kontrolünün her zaman (rezervasyon serbest bırakılsa bile) çalışmasını
@@ -1001,6 +1013,7 @@ def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon):
                     "qty_orijinal": qty, "r_risk": None, "tp_emirleri": [],
                     "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
                     "kurulum_tamamlanmadi": True, "en_iyi_kar": None, "rsi_giris": None,
+                    "acilis_kaynagi": kaynak,
                 }
             durumu_diske_yaz()
             break
@@ -1112,7 +1125,7 @@ def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon):
                 "entry": entry, "sl_orijinal": sl, "sl_guncel": sl, "sl_emir_id": sl_emir_id,
                 "qty_orijinal": qty, "r_risk": r_risk, "tp_emirleri": tp_emirleri,
                 "acilis_zamani": time.time(), "breakeven_cekildi": False, "tur": tur,
-                "rsi_giris": rsi_giris,
+                "rsi_giris": rsi_giris, "acilis_kaynagi": kaynak,
                 "kurulum_tamamlanmadi": False, "en_iyi_kar": None,
             }
     durumu_diske_yaz()
@@ -1328,15 +1341,15 @@ if bot:
         with gunluk_lock:
             satirlar.append(f"\n📅 Bugün: {gunluk_pnl:+.2f}$ | 📆 Bu hafta: {haftalik_pnl:+.2f}$")
         with state_lock:
-            satirlar.append(f"\n📈 Açık pozisyon: {len(trade_state)}/{MAX_POS}")
+            satirlar.append(f"\n📈 Açık pozisyon: {len(trade_state)}/{MAX_POS + MAX_POS_WEBSOCKET} (tarama:{MAX_POS}, websocket:{MAX_POS_WEBSOCKET})")
         return "\n".join(satirlar)
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.2 (giriş eşiği %3->%1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.3 (AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
-                f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
+                f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
                 f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
                 f"GİRİŞ: son {RET_WINDOW_BARS*5} dakikada fiyat %{RET_THRESHOLD*100:.0f}+ yükseldiyse "
                 f"HEMEN girilir (bekleme/teyit yok, RSI/ADX/hacim kontrolü yok)\n"
@@ -1590,7 +1603,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.2 başladı (SADE MOD) (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v5.3 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1626,12 +1639,16 @@ def tarama_loop():
                 with state_lock:
                     acik_poz = len(trade_state)
                 log.info(f"[NABIZ] DURAKLATILDI - tarama atlanıyor | teyit_kuyrugu={kuyruk_uzunluk} | "
-                         f"acik_pozisyon={acik_poz}/{MAX_POS}")
+                         f"acik_pozisyon={acik_poz}/{MAX_POS + MAX_POS_WEBSOCKET}")
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
             with state_lock:
-                bos_slot = MAX_POS - len(trade_state)
+                # v5.3: sadece "tarama" kaynaklı açık pozisyonlar sayılıyor -
+                # websocket'in kendi ayrı MAX_POS_WEBSOCKET havuzu var, ana
+                # taramanın bos_slot hesabını etkilemiyor.
+                tarama_acik = sum(1 for d in trade_state.values() if d.get("acilis_kaynagi", "tarama") == "tarama")
+                bos_slot = MAX_POS - tarama_acik
             if bos_slot <= 0:
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
@@ -1771,7 +1788,7 @@ def tarama_loop():
                 with bekleyen_lock:
                     kuyruk_uzunluk = len(bekleyen_sinyaller)
                 log.info(f"[NABIZ] tur tamam | havuz={len(adaylar_havuzu)} | "
-                         f"teyit_kuyrugu={kuyruk_uzunluk} | acik_pozisyon={MAX_POS - bos_slot}/{MAX_POS} | "
+                         f"teyit_kuyrugu={kuyruk_uzunluk} | acik_pozisyon(tarama)={MAX_POS - bos_slot}/{MAX_POS} | "
                          f"acilan_bu_tur={acilan_sayisi}")
 
             time.sleep(KONTROL_ARALIGI_SN)
@@ -2014,7 +2031,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.2 BAŞLIYOR...")
+    print("SCALP BOT v5.3 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
