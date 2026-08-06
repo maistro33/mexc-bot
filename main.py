@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.9 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.10 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1229,7 +1229,8 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
                 gunluk_haftalik_diske_yaz()
                 trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": pnl_tahmini,
                                    "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                                   "not": f"{sebep}_borsada_onceden_kapanmis", "tur": durum.get("tur", "bilinmiyor")})
+                                   "not": f"{sebep}_borsada_onceden_kapanmis", "tur": durum.get("tur", "bilinmiyor"),
+                                   "kaynak": durum.get("acilis_kaynagi", "bilinmiyor")})
                 tg(f"ℹ️ {sym} — kontrol ettiğimizde borsada zaten kapanmıştı (muhtemelen borsanın "
                    f"kendi SL emri önce tetiklendi). Tahmini PnL≈{pnl_tahmini:+.2f}$ kayda eklendi.")
                 return True, f"ℹ️ {sym} zaten borsada açık değilmiş — PnL≈{pnl_tahmini:+.2f}$ kaydedildi."
@@ -1272,7 +1273,8 @@ def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
         pnl = (cikis_fiyat - entry_fiyat) * qty if pozisyon_yonu == "long" else (entry_fiyat - cikis_fiyat) * qty
         trade_log_kaydet({"symbol": sym, "entry": entry_fiyat, "exit": cikis_fiyat, "pnl": pnl,
                            "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "not": sebep,
-                           "tur": (durum or {}).get("tur", "bilinmiyor")})
+                           "tur": (durum or {}).get("tur", "bilinmiyor"),
+                           "kaynak": (durum or {}).get("acilis_kaynagi", "bilinmiyor")})
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
@@ -1380,7 +1382,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.9 (elle kapatma sonrası tekrar açılma race-condition'ı düzeltildi; max tutma süresi 3sa->12sa büyütüldü; pozisyon kontrol sıklığı 10sn->3sn, iz sürme kaymasını azaltır; kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.10 (i015flemler art0131k a00e70131l0131015f kayna011f0131n0131 -tarama/websocket- kaydediyor; elle kapatma sonrası tekrar açılma race-condition'ı düzeltildi; max tutma süresi 3sa->12sa büyütüldü; pozisyon kontrol sıklığı 10sn->3sn, iz sürme kaymasını azaltır; kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1435,6 +1437,23 @@ if bot:
             tur_ad = {"spike": "Ani patlama (eski)", "sustained": "Sürdürülebilir tırmanış (eski)",
                       "dusus_devam": "Düşüş devamı (eski)", "basit_trend": "Sade trend"}.get(tur, tur)
             satirlar.append(f"  {tur_ad}: {len(alt)} işlem, %{len(kazanan)/len(alt)*100:.0f} kazanma, net {net:+.2f}$")
+
+        # v5.10 YENİ: kullanıcı "AJAN 0 (websocket) işlemleri daha mı iyi?"
+        # diye sordu - eskiden bu soruyu cevaplayacak veri hiç tutulmuyordu.
+        # Artık her işlem hangi ajan tarafından açıldığını (tarama/websocket)
+        # kaydediyor, burada karşılaştırmalı gösteriliyor.
+        satirlar.append("\n🤖 Açılış kaynağına göre (AJAN 1 tarama vs AJAN 0 websocket):")
+        kaynaklar = sorted(set(t.get("kaynak", "bilinmiyor") for t in gecmis))
+        for kaynak in kaynaklar:
+            alt = [t for t in gecmis if t.get("kaynak") == kaynak]
+            if not alt:
+                continue
+            kazanan = [t for t in alt if t["pnl"] > 0]
+            net = sum(t["pnl"] for t in alt)
+            kaynak_ad = {"tarama": "AJAN 1 (tarama)", "websocket": "AJAN 0 (websocket)"}.get(kaynak, kaynak)
+            satirlar.append(f"  {kaynak_ad}: {len(alt)} işlem, %{len(kazanan)/len(alt)*100:.0f} kazanma, "
+                             f"net {net:+.2f}$, ort {net/len(alt):+.3f}$/işlem")
+
         satirlar.append("\n🚪 Kapanış sebebi bazında:")
         # v5.6 DÜZELTME: eskiden sabit bir liste taranıyordu - v4.27'de eklenen
         # "_borsada_onceden_kapanmis" ekli sebep isimleri (borsa bizden önce
@@ -1631,7 +1650,8 @@ def baslangic_uzlastirma():
                 gunluk_haftalik_diske_yaz()
                 trade_log_kaydet({"symbol": sym, "entry": entry, "exit": guncel_fiyat, "pnl": pnl_tahmini,
                                    "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                                   "not": "uzlastirma_tahmini", "tur": durum.get("tur", "bilinmiyor")})
+                                   "not": "uzlastirma_tahmini", "tur": durum.get("tur", "bilinmiyor"),
+                                   "kaynak": durum.get("acilis_kaynagi", "bilinmiyor")})
                 tg(f"ℹ️ Uzlaştırma: {sym} bot çalışmazken kapanmış - ÇOK KABA tahmini PnL≈{pnl_tahmini:+.2f}$ "
                    f"kaydedildi. KESİN TUTAR İÇİN BORSA POZİSYON GEÇMİŞİNİ KONTROL ET.")
             with cooldown_lock:
@@ -1644,7 +1664,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.9 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.10 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2024,7 +2044,8 @@ def manage_loop():
                             sebep_etiket = "SL_ilk_TPden_once"
                         trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat,
                                            "pnl": pnl_tahmini, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                                           "not": sebep_etiket, "tur": durum2.get("tur", "bilinmiyor")})
+                                           "not": sebep_etiket, "tur": durum2.get("tur", "bilinmiyor"),
+                                           "kaynak": durum2.get("acilis_kaynagi", "bilinmiyor")})
                         tg(f"✅ {sym} pozisyonu tamamen kapandı [{sebep_etiket}] (tahmini PnL≈{pnl_tahmini:+.2f}$ — "
                            f"komisyon dahil değil, kesin tutar borsa Pozisyon Geçmişi'nden teyit edilmeli)")
                     continue
@@ -2084,7 +2105,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.9 BAŞLIYOR...")
+    print("SCALP BOT v5.10 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
