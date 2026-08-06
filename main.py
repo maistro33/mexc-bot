@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.14 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.15 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -542,9 +542,12 @@ def ws_erken_tetik_isle(sym, tetik_fiyat):
 
 def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
     """AJAN 0'ın hızlı hareket tespit ettiği bir coin için AJAN 1'in trend
-    kontrolünü çalıştırır. v5.11: kısa (20sn) bir 'tutuyor mu' teyidi var -
-    tam tepede yakalanma riskini azaltır, ama AJAN 1'in 90sn'sinden çok
-    daha kısa olduğu için hız avantajı büyük ölçüde korunuyor."""
+    kontrolünü çalıştırır. v5.15 KULLANICI KARARI (06.08.2026): kullanıcı
+    "her şeye zıplıyor, teyitli yapsın, garanti giriş" dedi - artık AJAN 0
+    da AJAN 1 ile AYNI 'devam teyidi' kuyruğuna giriyor (sinyal mumundan
+    SONRAKİ mum da yükselirse gir, dönerse hiç girme). Eski 20sn kısa
+    retrace-teyidi bununla değiştirildi - hız feda edildi, giriş kalitesi
+    öncelikli hale getirildi (kullanıcının bilinçli tercihi)."""
     try:
         if not TRADING_AKTIF:
             return
@@ -563,44 +566,16 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
         if not sinyal:
             return
 
-        # v5.11 YENİ: AJAN 1'e göre çok daha kısa (20sn) bir "tutuyor mu"
-        # kontrolü - TRADOOR örneğindeki gibi spike'ın tam tepesinde girmeyi
-        # engellemek için. AJAN 0'ın hız avantajı büyük ölçüde korunuyor
-        # (20sn, AJAN 1'in 90sn'sine göre çok kısa).
-        sinyal_fiyat = sinyal["entry"]
-        if sinyal_mesaji_gonder_mi(sym):
-            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti, {WS_CONFIRM_BEKLEME_SN}sn "
-               f"'tutuyor mu' diye kısa kontrol yapılıyor")
-        time.sleep(WS_CONFIRM_BEKLEME_SN)
-        with state_lock:
-            if sym in trade_state:
+        with bekleyen_lock:
+            if sym in bekleyen_sinyaller:
                 return
-        if cooldown_da_mi(sym):
-            return
-        try:
-            t = exchange.fetch_ticker(sym)
-            guncel_fiyat = safe(t["last"])
-        except Exception:
-            return
-        if guncel_fiyat <= 0:
-            return
-        ters_hareket = (sinyal_fiyat - guncel_fiyat) / sinyal_fiyat
-        if ters_hareket > WS_CONFIRM_MAX_RETRACE_PCT:
-            log.info(f"[WS_TEYIT_IPTAL] {sym} kısa teyitte tepe yakalama şüphesi, iptal edildi")
-            return
-        sinyal["entry"] = guncel_fiyat  # güncel fiyattan gir, SL/qty ona göre hesaplansın
-
-        with state_lock:
-            if sym in trade_state:
-                return
+            bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
+                                        "skor": sinyal["skor"], "tur": sinyal["tur"],
+                                        "tetik_ts": sinyal["tetik_ts"], "zaman": time.time(),
+                                        "kaynak": "websocket"}
         if sinyal_mesaji_gonder_mi(sym):
-            tg(f"✅ AJAN 0: {sym} kısa teyit geçti — AJAN 2'ye 'şimdi aç' komutu veriliyor")
-        try:
-            islem_acici_pozisyon_ac(sinyal, kaynak="websocket")
-        except Exception as e:
-            log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
-            tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
-            acilis_basarisiz_cooldown_uygula(sym)
+            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti, bir sonraki mumun da "
+               f"yükselmesi bekleniyor (devam teyidi - garanti giriş)")
     except Exception as e:
         log.warning(f"[WS_TETIK] {sym}: {e}")
 
@@ -1519,7 +1494,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.14 (AJAN 1'e devam teyidi eklendi - sonraki mum d00f6nerse girmiyor, backtest'te toplam getiriyi art0131rd0131; deploy sonrası [WS_ABONE] gelmeme sorunu için checkpoint teşhis logları eklendi; işlemler artık açılış kaynağını -tarama/websocket- kaydediyor; elle kapatma sonrası tekrar açılma race-condition'ı düzeltildi; max tutma süresi 3sa->12sa büyütüldü; pozisyon kontrol sıklığı 10sn->3sn, iz sürme kaymasını azaltır; kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.15 (AJAN 0 art0131k AJAN 1 ile ayn0131 devam teyidi kuyru011funu kullan0131yor - h0131z yerine garanti giri015f; 0130Z S00dcRME AYNI KALDI (0.50R/0.30R); AJAN 1'e devam teyidi eklendi - sonraki mum d00f6nerse girmiyor, backtest'te toplam getiriyi art0131rd0131; deploy sonrası [WS_ABONE] gelmeme sorunu için checkpoint teşhis logları eklendi; işlemler artık açılış kaynağını -tarama/websocket- kaydediyor; elle kapatma sonrası tekrar açılma race-condition'ı düzeltildi; max tutma süresi 3sa->12sa büyütüldü; pozisyon kontrol sıklığı 10sn->3sn, iz sürme kaymasını azaltır; kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1804,7 +1779,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.14 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.15 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1886,11 +1861,15 @@ def tarama_loop():
             # toplamı birlikte iyileştiren tek değişiklik. SADECE AJAN 1
             # (tarama) için - AJAN 0 (websocket) kendi hızlı 20sn teyidini
             # koruyor, buna dokunulmadı.
+            # v5.15: kuyruk artık HEM tarama HEM websocket kaynaklı sinyalleri
+            # içeriyor - bu yüzden döngü artık sadece tarama'nın bos_slot'una
+            # göre KESİLMİYOR (öyle olsaydı tarama slotları doluyken
+            # websocket'in kendi boş slotu olsa bile işlenmezdi). Gerçek
+            # slot/kaynak kontrolü zaten islem_acici_pozisyon_ac() içinde
+            # kaynak bazlı atomik olarak yapılıyor (bkz. v5.3 notu).
             with bekleyen_lock:
                 kuyruk_semboller = list(bekleyen_sinyaller.keys())
             for sym in kuyruk_semboller:
-                if acilan_sayisi >= bos_slot:
-                    break
                 with bekleyen_lock:
                     p = bekleyen_sinyaller.get(sym)
                 if p is None:
@@ -1916,11 +1895,13 @@ def tarama_loop():
                         continue
                 if cooldown_da_mi(sym):
                     continue
+                kaynak = p.get("kaynak", "tarama")
+                ajan_etiket = "AJAN 0 (websocket)" if kaynak == "websocket" else "AJAN 1"
                 if sinyal_mesaji_gonder_mi(sym):
-                    tg(f"✅ AJAN 1: {sym} devam teyidi geçti (sonraki mum da yükseldi) — AJAN 2'ye 'şimdi aç' komutu veriliyor")
+                    tg(f"✅ {ajan_etiket}: {sym} devam teyidi geçti (sonraki mum da yükseldi) — AJAN 2'ye 'şimdi aç' komutu veriliyor")
                 try:
                     islem_acici_pozisyon_ac({"symbol": sym, "entry": float(son_mum["close"]), "atr": p["atr"],
-                                              "skor": p["skor"], "tur": p["tur"]})
+                                              "skor": p["skor"], "tur": p["tur"]}, kaynak=kaynak)
                 except Exception as e:
                     log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
                     tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
@@ -2251,7 +2232,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.14 BAŞLIYOR...")
+    print("SCALP BOT v5.15 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
