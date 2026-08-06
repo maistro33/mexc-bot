@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.3 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.4 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -234,6 +234,15 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
 IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.50"))
+# v5.4 KULLANICI KARARI (06 Ağustos 2026): aktifleşme (0.50R) ile geri çekme
+# payı ARTIK AYRI parametreler. Eskiden ikisi de aynı IZ_SURME_R_ORANI'yi
+# kullanıyordu - bu da "aktifleşme geç olsun (nefes alsın)" ile "aktifleştikten
+# sonra az geri versin" isteklerini AYNI ANDA karşılayamıyordu (tek kadran).
+# Backtest (30 coin/5 gün): geri çekme payı 0.50R'den 0.30R'ye indirilince
+# toplam getiri neredeyse aynı kaldı (+27.97R vs +28.09R) ama kazanma oranı
+# arttı (%44.9 vs %41.7) - kullanıcının "kâr çok geri veriyor" hissini
+# karşılayan, veri destekli bir orta yol.
+IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.30"))
 # v5.0 KULLANICI KARARI (06 Ağustos 2026): 0.30R -> 0.50R. Kullanıcı "iz süren
 # olsun ama nefes alsın, büyük kârı yakalasın" dedi - eşik daha da
 # genişletildi. Artık pozisyon riskin YARISI kadar kâra ulaşmadan başabaşa
@@ -1133,8 +1142,9 @@ def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon, kaynak="tarama"):
     tur_etiket = "ani patlama" if tur == "spike" else ("sürdürülebilir tırmanış" if tur == "sustained" else ("düşüş devamı" if tur == "dusus_devam" else tur))
     _risk_dolar_giris = r_risk * qty
     _iz_esik_giris = _risk_dolar_giris * IZ_SURME_R_ORANI if _risk_dolar_giris > 0 else HEDEF_NET_KAR_USDT
-    tp_ozet = (f"TP: İZ SÜREN — ${_iz_esik_giris:.2f} kârda aktifleşir (0.15R), "
-               f"en iyi kârdan ${_iz_esik_giris:.2f} geri çekilirse kapanır")
+    _gc_esik_giris = _risk_dolar_giris * IZ_SURME_GERI_COKME_ORANI if _risk_dolar_giris > 0 else HEDEF_NET_KAR_USDT
+    tp_ozet = (f"TP: İZ SÜREN — ${_iz_esik_giris:.2f} kârda aktifleşir ({IZ_SURME_R_ORANI:.2f}R), "
+               f"en iyi kârdan ${_gc_esik_giris:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.2f}R)")
     yon_etiket = "LONG" if yon == "long" else "SHORT"
     yon_emoji = "📈" if yon == "long" else "📉"
     tg(f"{yon_emoji} SCALP POZİSYON: {sym} {yon_etiket} [{tur_etiket}]\n"
@@ -1346,7 +1356,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.3 (AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.4 (iz sürme geri-çekme pay0131 ayr0131 ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1355,8 +1365,9 @@ if bot:
                 f"HEMEN girilir (bekleme/teyit yok, RSI/ADX/hacim kontrolü yok)\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14), tavan %{MAX_SL_PCT*100:.0f} / taban %{MIN_SL_PCT*100:.0f}\n"
                 f"TP: İZ SÜREN (trailing) — pozisyon riskin %{IZ_SURME_R_ORANI*100:.0f}'i kadar kâra "
-                f"ulaşınca aktifleşir, SL başabaşa çekilir; sonra en iyi kârdan aynı miktar "
-                f"geri çekilirse kapanır. Geniş tutuldu ki büyük hareketler nefes alabilsin.\n"
+                f"ulaşınca aktifleşir, SL başabaşa çekilir; sonra en iyi kârdan riskin "
+                f"%{IZ_SURME_GERI_COKME_ORANI*100:.0f}'i kadar geri çekilirse kapanır "
+                f"(aktifleşme geniş - nefes payı; geri çekme dar - kâr daha sıkı korunur)\n"
                 f"SHORT sinyali: KAPALI (sadece LONG)\n"
                 f"⚠️ YENİ POZİSYON AÇILIŞI: {'AKTİF' if TRADING_AKTIF else 'DURAKLATILDI'}\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1603,7 +1614,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.3 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.4 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1850,6 +1861,11 @@ def manage_loop():
                         r_risk_fiyat = durum.get("r_risk") or 0
                         risk_dolar_iz = r_risk_fiyat * qty_iz
                         iz_esik = risk_dolar_iz * IZ_SURME_R_ORANI if risk_dolar_iz > 0 else HEDEF_NET_KAR_USDT
+                        # v5.4: geri çekme payı artık AYRI ve daha dar (0.30R)
+                        # - aktifleşme (iz_esik, 0.50R) hâlâ geniş, nefes payı
+                        # koruyor, ama bir kez aktifleştikten sonra kâr daha
+                        # sıkı korunuyor (bkz. IZ_SURME_GERI_COKME_ORANI notu).
+                        gc_esik = risk_dolar_iz * IZ_SURME_GERI_COKME_ORANI if risk_dolar_iz > 0 else HEDEF_NET_KAR_USDT
                         # v4.28 KRİTİK DÜZELTME: eskiden bu blok SADECE
                         # anlik_kar >= iz_esik iken çalışıyordu. Yani iz sürme
                         # aktifleştikten SONRA fiyat sert düşüp anlik_kar eşiğin
@@ -1886,7 +1902,7 @@ def manage_loop():
                                         durum["breakeven_cekildi"] = True
                                     durumu_diske_yaz()
                                     tg(f"🔒 {sym} — iz sürme AKTİFLEŞTİ (${anlik_kar:.2f} kâr, eşik≈${iz_esik:.2f}), SL başabaşa çekildi. "
-                                       f"Fiyat lehte gittikçe takip edecek, en iyi kârdan ${iz_esik:.2f} "
+                                       f"Fiyat lehte gittikçe takip edecek, en iyi kârdan ${gc_esik:.2f} "
                                        f"geri çekilirse kapanacak.")
                                 except Exception as e:
                                     log.warning(f"[IZ_SURME_BASABAS] {sym}: yeni SL yerleştirilemedi: {e}")
@@ -1897,9 +1913,9 @@ def manage_loop():
                                 with state_lock:
                                     durum["en_iyi_kar"] = anlik_kar
                                 durumu_diske_yaz()
-                            elif anlik_kar <= en_iyi_kar - iz_esik:
+                            elif anlik_kar <= en_iyi_kar - gc_esik:
                                 tg(f"🎯 İZ SÜREN TP: {sym} en iyi kâr ${en_iyi_kar:.2f} idi, "
-                                   f"${iz_esik:.2f} geri çekildi (${anlik_kar:.2f}) — kapatılıyor.")
+                                   f"${gc_esik:.2f} geri çekildi (${anlik_kar:.2f}) — kapatılıyor.")
                                 pozisyonu_tamamen_kapat(sym, sebep="iz_suren_tp")
                                 continue
                     except Exception as e:
@@ -2031,7 +2047,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.3 BAŞLIYOR...")
+    print("SCALP BOT v5.4 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
