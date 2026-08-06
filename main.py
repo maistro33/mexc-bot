@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.4 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.5 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -170,7 +170,14 @@ RET_THRESHOLD = 0.015       # v5.2 KULLANICI KARARI (06.08.2026): %3->%1.5.
 # daha yüksek toplam getiri (+43.27R vs +26.58R) verdi - "daha fazla
 # yalancı sinyal gelir" beklentisi bu veri setinde doğrulanmadı.
 ADX_ESIK_15M = 15
-COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "4"))
+COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "0.25"))
+# v5.5 KULLANICI DENEYİ (06.08.2026): 4 saat -> 15 dakika (0.25 saat).
+# ⚠️ DÜRÜSTLÜK NOTU: backtest (30 coin/5 gün) aslında 4 saatin daha iyi
+# sonuç verdiğini gösterdi (+30.01R, %47.5 kazanma) - 15 dakika daha düşük
+# çıktı (+22.03R, %44.9 kazanma). Kullanıcı buna rağmen canlıda denemek
+# istedi - bu bilinçli bir deney, veri kanıtlı bir iyileştirme DEĞİL.
+# Birkaç saat sonra gerçek sonuçlarla 4 saate dönüp dönmeyeceğimize karar
+# verilecek.
 MAX_HOLD_SAAT = 3.0
 
 # v1.1: SÜRDÜRÜLEBİLİR TIRMANIŞ sinyali
@@ -1614,7 +1621,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.4 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.5 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2047,7 +2054,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.4 BAŞLIYOR...")
+    print("SCALP BOT v5.5 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
