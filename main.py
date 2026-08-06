@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.0 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.1 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -283,6 +283,17 @@ GUNLUK_PATH = os.getenv("GUNLUK_PATH", "/data/scalp_gunluk.json")
 
 trade_state = {}
 state_lock = threading.Lock()
+# v5.1 KRİTİK DÜZELTME: MAX_POS sınırı eskiden SADECE tarama_loop'un kendi
+# bos_slot sayacında kontrol ediliyordu. Ama websocket tetikleyicisi (AJAN 0)
+# AYRI bir thread'de bağımsız çalışıyor - ana taramanın "2 slot doldu"
+# hesabından habersiz, kendi başına islem_acici_pozisyon_ac() çağırabiliyordu.
+# Sonuç: ana tarama tam MAX_POS kadar pozisyon açarken, TAM O SIRADA
+# websocket üçüncü bir pozisyon daha açabiliyordu (gerçek örnek: kullanıcı
+# "aynı anda 3 işlem açtı" bildirdi, 06.08.2026). Artık islem_acici_pozisyon_ac
+# fonksiyonunun KENDİSİ, çağrıldığı yerden bağımsız olarak MAX_POS'u kontrol
+# ediyor ve atomik olarak bir "rezervasyon" alıyor - iki thread aynı anda
+# son slotu görüp ikisi de açamaz.
+acilis_rezervasyonlari = set()
 trade_log = []
 log_lock = threading.Lock()
 son_kapanis_zamani = {}
@@ -895,6 +906,30 @@ def islem_acici_pozisyon_ac(sinyal):
         log.info(f"[TRADING_DURAKLI] {sym} sinyali bulundu ama TRADING_AKTIF=false, açılış atlanıyor")
         return
 
+    # v5.1 KRİTİK DÜZELTME: MAX_POS'u burada, TEK ortak açılış noktasında
+    # atomik olarak kontrol edip rezerve ediyoruz - bkz. yukarıdaki
+    # acilis_rezervasyonlari tanımındaki not. Ana tarama VE websocket
+    # tetikleyicisi artık ikisi de bu kontrolden geçmek zorunda.
+    with state_lock:
+        toplam_dolu = len(trade_state) + len(acilis_rezervasyonlari)
+        if sym not in trade_state and toplam_dolu >= MAX_POS:
+            log.info(f"[MAX_POS_DOLU] {sym} sinyali bulundu ama {toplam_dolu}/{MAX_POS} slot dolu, açılış atlanıyor")
+            return
+        acilis_rezervasyonlari.add(sym)
+
+    try:
+        _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon)
+    finally:
+        with state_lock:
+            acilis_rezervasyonlari.discard(sym)
+
+
+def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon):
+    """v5.1: islem_acici_pozisyon_ac'ın MAX_POS rezervasyonu dışındaki asıl
+    gövdesi - fonksiyon adı değişti ama mantık aynı, sadece MAX_POS
+    kontrolünün her zaman (rezervasyon serbest bırakılsa bile) çalışmasını
+    garanti etmek için ayrı fonksiyona taşındı (try/finally netliği için)."""
+
     bakiye = gercek_bakiye_al()
     if bakiye is None or bakiye <= 0:
         tg(f"⚠️ {sym} atlandı — bakiye alınamadı")
@@ -1293,7 +1328,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.0 (SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.1 (MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS}\n"
@@ -1550,7 +1585,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.0 başladı (SADE MOD) (MAX_POS={MAX_POS})\n"
+    tg(f"🚀 SCALP BOT v5.1 başladı (SADE MOD) (MAX_POS={MAX_POS})\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1974,7 +2009,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.0 BAŞLIYOR...")
+    print("SCALP BOT v5.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
