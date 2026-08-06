@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.6 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.9 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -178,7 +178,13 @@ COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "0.25"))
 # istedi - bu bilinçli bir deney, veri kanıtlı bir iyileştirme DEĞİL.
 # Birkaç saat sonra gerçek sonuçlarla 4 saate dönüp dönmeyeceğimize karar
 # verilecek.
-MAX_HOLD_SAAT = 3.0
+MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "12"))
+# v5.8 KULLANICI KARARI (06.08.2026): 3sa -> 12sa. Gerekçe: "en iyi kârı
+# kaçırmamak, kasayı büyütmek" hedefiyle test edildi (35 coin/6 gün) - 3
+# saatlik zorla kapatma iyi giden trendleri erken kesiyordu. 6/12/24sa/
+# sınırsız hepsi 3sa'den belirgin daha iyi çıktı (+17-18.5R vs +13.18R) ve
+# kendi aralarında tutarlıydı (bugünkü diğer testler gibi çelişmedi) - 12sa
+# en iyisiydi ve zorla kapanan işlem sayısı da (5) makul seviyedeydi.
 
 # v1.1: SÜRDÜRÜLEBİLİR TIRMANIŞ sinyali
 SUSTAINED_RET_WINDOW_BARS = 6   # 15m x 6 = 1.5 saat
@@ -934,6 +940,17 @@ def islem_acici_pozisyon_ac(sinyal, kaynak="tarama"):
         log.info(f"[TRADING_DURAKLI] {sym} sinyali bulundu ama TRADING_AKTIF=false, açılış atlanıyor")
         return
 
+    # v5.9 KRİTİK DÜZELTME: gerçek örnek - kullanıcı BLESS'i elle kapattı,
+    # bot neredeyse aynı anda BLESS'i tekrar açtı. Sebep: cooldown_da_mi()
+    # kontrolü sinyal ilk tespit edildiğinde (dakikalar önce, veri çekme
+    # başlamadan önce) yapılıyordu - eğer o anda pozisyon HÂLÂ açıksa
+    # (henüz elle kapatılmamışsa) kontrol geçiyor, ama gerçek açılışa kadar
+    # geçen sürede (ağ çağrıları vb.) pozisyon kapanıp cooldown'a girebiliyor.
+    # Artık açılışın KESİNLEŞTİĞİ en son an burada, TEKRAR kontrol ediliyor.
+    if cooldown_da_mi(sym):
+        log.info(f"[COOLDOWN_SON_KONTROL] {sym} açılış anında cooldown'a girmiş, iptal ediliyor")
+        return
+
     # v5.3 KULLANICI KARARI: AJAN 0 (websocket) artık AYRI bir slot havuzuna
     # sahip (MAX_POS_WEBSOCKET) - ana taramanın (MAX_POS) slotlarıyla
     # yarışmıyor. Her kaynağın kendi limiti, o kaynağın açtığı gerçek
@@ -1363,7 +1380,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.6 (kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.9 (elle kapatma sonrası tekrar açılma race-condition'ı düzeltildi; max tutma süresi 3sa->12sa büyütüldü; pozisyon kontrol sıklığı 10sn->3sn, iz sürme kaymasını azaltır; kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1627,7 +1644,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.6 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.9 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1828,7 +1845,7 @@ def manage_loop():
             with state_lock:
                 semboller = list(trade_state.keys())
             if not semboller:
-                time.sleep(10)
+                time.sleep(3)
                 continue
 
             for sym in semboller:
@@ -2053,14 +2070,21 @@ def manage_loop():
                 elif degisti:
                     durumu_diske_yaz()
 
-            time.sleep(10)
+            # v5.7 KULLANICI KARARI (06.08.2026): 10sn -> 3sn. Gerekçe: BTW
+            # örneğinde "en iyi kâr $0.32, gerçekleşen $0.1857" arasında
+            # beklenenden (~$0.11 geri çekme payı) biraz fazla fark vardı -
+            # 10sn'lik kontrol aralığında fiyatın karar anıyla gerçek market
+            # emri dolumu arasında kayması (slippage) buna katkıda bulunuyor.
+            # Kontrol sıklığını artırmak bu gecikmeyi azaltır - strateji
+            # mantığına dokunmuyor, sadece tepki hızını artırıyor.
+            time.sleep(3)
         except Exception as e:
             log.error(f"[MANAGE] {e}")
-            time.sleep(10)
+            time.sleep(3)
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.6 BAŞLIYOR...")
+    print("SCALP BOT v5.9 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
