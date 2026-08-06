@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.5 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.6 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1363,7 +1363,7 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.4 (iz sürme geri-çekme pay0131 ayr0131 ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.6 (kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1419,8 +1419,14 @@ if bot:
                       "dusus_devam": "Düşüş devamı (eski)", "basit_trend": "Sade trend"}.get(tur, tur)
             satirlar.append(f"  {tur_ad}: {len(alt)} işlem, %{len(kazanan)/len(alt)*100:.0f} kazanma, net {net:+.2f}$")
         satirlar.append("\n🚪 Kapanış sebebi bazında:")
-        for sebep in ["tum_tp_tamamlandi", "iz_suren_tp", "yazilim_sl_guvenlik_agi",
-                      "SL_basabasta_TP1_sonrasi", "SL_ilk_TPden_once", "max_hold_timeout", "manuel"]:
+        # v5.6 DÜZELTME: eskiden sabit bir liste taranıyordu - v4.27'de eklenen
+        # "_borsada_onceden_kapanmis" ekli sebep isimleri (borsa bizden önce
+        # kapattığında) bu listede olmadığı için panelde hiç görünmüyordu
+        # (gerçek örnek: COTI, 06.08.2026). Artık gerçek kayıtlarda bulunan
+        # TÜM sebepler otomatik toplanıp gösteriliyor, hiçbiri kaçmıyor.
+        tum_sebepler = sorted(set(t.get("not", "bilinmiyor") for t in gecmis),
+                               key=lambda s: -sum(1 for t in gecmis if t.get("not") == s))
+        for sebep in tum_sebepler:
             alt = [t for t in gecmis if t.get("not") == sebep]
             if not alt:
                 continue
@@ -1621,7 +1627,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.5 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.6 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2054,7 +2060,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.5 BAŞLIYOR...")
+    print("SCALP BOT v5.6 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
