@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.10 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.11 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -395,6 +395,15 @@ WS_HIZLI_TETIK_YUZDE = float(os.getenv("WS_HIZLI_TETIK_YUZDE", "0.012"))  # penc
 # filtreleri hâlâ aynen uygulanıyor, güvenlik gevşetilmedi.
 WS_PENCERE_SN = int(os.getenv("WS_PENCERE_SN", "30"))  # 30 saniyelik hareket penceresi
 WS_TETIK_COOLDOWN_SN = 120  # aynı coin için art arda tetiklenmeyi önler
+# v5.11 KULLANICI KARARI (06.08.2026): TRADOOR örneği - AJAN 0, tam bir
+# spike'ın tepesinde giriş yapmıştı (0.7144 girdi, günün zirvesi 0.7147).
+# Sadece AJAN 0 için kısa bir teyit bekleme eklendi - AJAN 1'in 90sn'lik
+# bekleyen_sinyaller kuyruğuna EKLENMEDİ çünkü o kuyruk sadece 60sn'lik ana
+# tur döngüsünde kontrol ediliyor, bu da AJAN 0'ın hız avantajını yok
+# ederdi. Bunun yerine websocket'in kendi thread'i içinde KISA (AJAN 1'den
+# daha kısa, hız avantajı büyük ölçüde korunuyor) bir bekleme var.
+WS_CONFIRM_BEKLEME_SN = 20
+WS_CONFIRM_MAX_RETRACE_PCT = 0.008
 WS_URL = "wss://ws.bitget.com/v2/ws/public"
 
 ws_fiyat_takip = {}   # bitget_instId -> [(ts, fiyat), ...] kısa rolling buffer
@@ -447,8 +456,9 @@ def ws_abonelik_guncelle(ccxt_semboller):
 
 def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
     """AJAN 0'ın hızlı hareket tespit ettiği bir coin için AJAN 1'in trend
-    kontrolünü çalıştırır - websocket sadece TETİKLEYİCİ.
-    v5.0: teyit kuyruğu kaldırıldı, sinyal bulunursa doğrudan açılıyor."""
+    kontrolünü çalıştırır. v5.11: kısa (20sn) bir 'tutuyor mu' teyidi var -
+    tam tepede yakalanma riskini azaltır, ama AJAN 1'in 90sn'sinden çok
+    daha kısa olduğu için hız avantajı büyük ölçüde korunuyor."""
     try:
         if not TRADING_AKTIF:
             return
@@ -466,11 +476,39 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
         sinyal = sembol_sinyal_kontrol_tumu(sym, btc_bullish)
         if not sinyal:
             return
+
+        # v5.11 YENİ: AJAN 1'e göre çok daha kısa (20sn) bir "tutuyor mu"
+        # kontrolü - TRADOOR örneğindeki gibi spike'ın tam tepesinde girmeyi
+        # engellemek için. AJAN 0'ın hız avantajı büyük ölçüde korunuyor
+        # (20sn, AJAN 1'in 90sn'sine göre çok kısa).
+        sinyal_fiyat = sinyal["entry"]
+        if sinyal_mesaji_gonder_mi(sym):
+            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti, {WS_CONFIRM_BEKLEME_SN}sn "
+               f"'tutuyor mu' diye kısa kontrol yapılıyor")
+        time.sleep(WS_CONFIRM_BEKLEME_SN)
+        with state_lock:
+            if sym in trade_state:
+                return
+        if cooldown_da_mi(sym):
+            return
+        try:
+            t = exchange.fetch_ticker(sym)
+            guncel_fiyat = safe(t["last"])
+        except Exception:
+            return
+        if guncel_fiyat <= 0:
+            return
+        ters_hareket = (sinyal_fiyat - guncel_fiyat) / sinyal_fiyat
+        if ters_hareket > WS_CONFIRM_MAX_RETRACE_PCT:
+            log.info(f"[WS_TEYIT_IPTAL] {sym} kısa teyitte tepe yakalama şüphesi, iptal edildi")
+            return
+        sinyal["entry"] = guncel_fiyat  # güncel fiyattan gir, SL/qty ona göre hesaplansın
+
         with state_lock:
             if sym in trade_state:
                 return
         if sinyal_mesaji_gonder_mi(sym):
-            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti — AJAN 2'ye 'hemen aç' komutu veriliyor")
+            tg(f"✅ AJAN 0: {sym} kısa teyit geçti — AJAN 2'ye 'şimdi aç' komutu veriliyor")
         try:
             islem_acici_pozisyon_ac(sinyal, kaynak="websocket")
         except Exception as e:
@@ -1664,7 +1702,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.10 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.11 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2105,7 +2143,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.10 BAŞLIYOR...")
+    print("SCALP BOT v5.11 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
