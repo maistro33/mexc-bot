@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.11 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.12 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -394,16 +394,27 @@ WS_HIZLI_TETIK_YUZDE = float(os.getenv("WS_HIZLI_TETIK_YUZDE", "0.012"))  # penc
 # ama bu SADECE tetikleme hassasiyetini artırıyor - RSI/üst fitil/trend
 # filtreleri hâlâ aynen uygulanıyor, güvenlik gevşetilmedi.
 WS_PENCERE_SN = int(os.getenv("WS_PENCERE_SN", "30"))  # 30 saniyelik hareket penceresi
-WS_TETIK_COOLDOWN_SN = 120  # aynı coin için art arda tetiklenmeyi önler
-# v5.11 KULLANICI KARARI (06.08.2026): TRADOOR örneği - AJAN 0, tam bir
-# spike'ın tepesinde giriş yapmıştı (0.7144 girdi, günün zirvesi 0.7147).
-# Sadece AJAN 0 için kısa bir teyit bekleme eklendi - AJAN 1'in 90sn'lik
-# bekleyen_sinyaller kuyruğuna EKLENMEDİ çünkü o kuyruk sadece 60sn'lik ana
-# tur döngüsünde kontrol ediliyor, bu da AJAN 0'ın hız avantajını yok
-# ederdi. Bunun yerine websocket'in kendi thread'i içinde KISA (AJAN 1'den
-# daha kısa, hız avantajı büyük ölçüde korunuyor) bir bekleme var.
+WS_TETIK_COOLDOWN_SN = 900  # v5.12: 120sn->900sn (15dk) - kullanıcı talebiyle
+# COOLDOWN_SAAT (15dk) ile tutarlı hale getirildi, aynı coin AJAN 0
+# tarafından art arda tekrar tekrar denenmesin diye.
 WS_CONFIRM_BEKLEME_SN = 20
 WS_CONFIRM_MAX_RETRACE_PCT = 0.008
+
+# v5.12 DENEYSEL (06.08.2026, kullanıcı talebi): "erken yakalama" - normal
+# AJAN 0 eşiği (%1.2/30sn) zaten kısmen oluşmuş bir hareketi bekliyor. Bu,
+# çok daha KÜÇÜK ve KISA bir sıçramayı (12sn'de %0.5) "bir şey başlıyor
+# olabilir" sinyali sayıp, normal 20sn yerine sadece 5sn'lik kısa kontrolle
+# giriyor. ⚠️ DÜRÜSTLÜK NOTU: bu mum-içi/saniye seviyesinde bir mekanizma,
+# elimizdeki 5dk'lık mum verisiyle BACKTEST EDİLEMEZ - sadece canlıda
+# izlenip birkaç gün sonra karar verilecek bir deney. Ayrı "tur" etiketiyle
+# (erken_yakalama) kaydediliyor ki normal AJAN 0 işlemlerinden panel'de
+# ayırt edilebilsin.
+WS_ERKEN_AKTIF = os.getenv("WS_ERKEN_AKTIF", "true").lower() == "true"
+WS_ERKEN_ESIK_YUZDE = float(os.getenv("WS_ERKEN_ESIK_YUZDE", "0.005"))  # %0.5
+WS_ERKEN_PENCERE_SN = int(os.getenv("WS_ERKEN_PENCERE_SN", "12"))
+WS_ERKEN_CONFIRM_BEKLEME_SN = int(os.getenv("WS_ERKEN_CONFIRM_BEKLEME_SN", "5"))
+ws_erken_son_tetik = {}
+ws_erken_son_tetik_lock = threading.Lock()
 WS_URL = "wss://ws.bitget.com/v2/ws/public"
 
 ws_fiyat_takip = {}   # bitget_instId -> [(ts, fiyat), ...] kısa rolling buffer
@@ -452,6 +463,81 @@ def ws_abonelik_guncelle(ccxt_semboller):
         log.info(f"[WS_ABONE] {len(yeni)} yeni coin'e abone olundu (toplam {len(ws_abone_semboller)})")
     except Exception as e:
         log.warning(f"[WS_ABONE] gönderilemedi: {e}")
+
+
+def ws_erken_tetik_isle(sym, tetik_fiyat):
+    """v5.12 DENEYSEL: erken yakalama - normal sinyal kontrolünü (5dk mum,
+    %1.5/15dk şartı) ATLAR, doğrudan güncel fiyat + taze ATR ile SL hesaplar.
+    Amaç: dev bir mumun TAM ORTASINDA/TEPESİNDE değil, BAŞLANGICINDA
+    yakalamak. Sadece kısa (5sn) bir 'tutuyor mu' kontrolü var.
+    ⚠️ Bu, normal AJAN 0'dan daha az doğrulanmış bir sinyal - backtest
+    edilemedi, sadece canlı veriyle değerlendirilecek (tur=erken_yakalama
+    etiketiyle panel'de ayrı takip ediliyor)."""
+    try:
+        if not TRADING_AKTIF or not WS_ERKEN_AKTIF:
+            return
+        with state_lock:
+            if sym in trade_state:
+                return
+        if cooldown_da_mi(sym):
+            return
+        with ws_erken_son_tetik_lock:
+            son = ws_erken_son_tetik.get(sym, 0)
+            if time.time() - son < WS_TETIK_COOLDOWN_SN:
+                return
+            ws_erken_son_tetik[sym] = time.time()
+        # aynı coin normal AJAN 0 tarafından da işleniyor olabilir - onunla
+        # da çakışmasın diye aynı tetik-cooldown haritasını da kontrol/set et
+        with ws_son_tetik_lock:
+            son2 = ws_son_tetik.get(sym, 0)
+            if time.time() - son2 < WS_TETIK_COOLDOWN_SN:
+                return
+            ws_son_tetik[sym] = time.time()
+
+        df = get_df(sym, "5m", 20)
+        if df is None or len(df) < 15:
+            return
+        atr_val = atr(df, 14).iloc[-1]
+        if pd.isna(atr_val) or atr_val <= 0:
+            return
+
+        if sinyal_mesaji_gonder_mi(sym):
+            tg(f"🌱 AJAN 0 (erken yakalama - DENEYSEL): {sym} çok küçük/hızlı bir sıçrama tespit etti "
+               f"(≈%{WS_ERKEN_ESIK_YUZDE*100:.1f}, {WS_ERKEN_PENCERE_SN}sn'de), {WS_ERKEN_CONFIRM_BEKLEME_SN}sn "
+               f"kısa kontrol yapılıyor")
+        time.sleep(WS_ERKEN_CONFIRM_BEKLEME_SN)
+        with state_lock:
+            if sym in trade_state:
+                return
+        if cooldown_da_mi(sym):
+            return
+        try:
+            t = exchange.fetch_ticker(sym)
+            guncel_fiyat = safe(t["last"])
+        except Exception:
+            return
+        if guncel_fiyat <= 0:
+            return
+        ters_hareket = (tetik_fiyat - guncel_fiyat) / tetik_fiyat
+        if ters_hareket > WS_CONFIRM_MAX_RETRACE_PCT:
+            log.info(f"[WS_ERKEN_IPTAL] {sym} kısa teyitte tersine döndü, iptal edildi")
+            return
+
+        sinyal = {"symbol": sym, "entry": guncel_fiyat, "atr": float(atr_val),
+                  "skor": 0.0, "tur": "erken_yakalama"}
+        with state_lock:
+            if sym in trade_state:
+                return
+        if sinyal_mesaji_gonder_mi(sym):
+            tg(f"✅ AJAN 0 (erken yakalama): {sym} kısa teyit geçti — AJAN 2'ye 'şimdi aç' komutu veriliyor")
+        try:
+            islem_acici_pozisyon_ac(sinyal, kaynak="websocket")
+        except Exception as e:
+            log.error(f"[ISLEM_ACICI_BEKLENMEYEN_HATA] {sym}: {e}")
+            tg(f"🚨 {sym} açılışında beklenmeyen hata oluştu, cooldown'a alındı: {e}")
+            acilis_basarisiz_cooldown_uygula(sym)
+    except Exception as e:
+        log.warning(f"[WS_ERKEN_TETIK] {sym}: {e}")
 
 
 def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
@@ -554,15 +640,27 @@ def ws_on_message(ws, message):
             if len(buf) < 2:
                 return
             eski_fiyat = buf[0][1]
+            # v5.12 YENİ: erken yakalama için kısa pencereli (WS_ERKEN_PENCERE_SN)
+            # alt kümeyi de burada, aynı kilit altında hesaplıyoruz.
+            erken_kesim = simdi - WS_ERKEN_PENCERE_SN
+            erken_buf = [p for p in buf if p[0] >= erken_kesim]
+            erken_eski_fiyat = erken_buf[0][1] if len(erken_buf) >= 2 else None
         if eski_fiyat <= 0:
             return
         degisim = abs(fiyat - eski_fiyat) / eski_fiyat
-        if degisim < WS_HIZLI_TETIK_YUZDE:
-            return
         ccxt_sym = bitget_inst_to_ccxt(inst_id)
         if not ccxt_sym:
             return
-        _ws_tetik_havuzu.submit(ws_hizli_tetik_isle, ccxt_sym, True, None)
+        if degisim >= WS_HIZLI_TETIK_YUZDE:
+            _ws_tetik_havuzu.submit(ws_hizli_tetik_isle, ccxt_sym, True, None)
+            return
+        # v5.12 DENEYSEL: normal eşik karşılanmadıysa, çok daha küçük/kısa
+        # bir "erken yakalama" eşiğini dene - bkz. yukarıdaki WS_ERKEN_AKTIF
+        # tanımındaki dürüstlük notu (backtest edilemez, sadece canlı deney).
+        if WS_ERKEN_AKTIF and erken_eski_fiyat and erken_eski_fiyat > 0:
+            erken_degisim = (fiyat - erken_eski_fiyat) / erken_eski_fiyat  # SADECE yukarı yön
+            if erken_degisim >= WS_ERKEN_ESIK_YUZDE:
+                _ws_tetik_havuzu.submit(ws_erken_tetik_isle, ccxt_sym, fiyat)
     except Exception as e:
         log.warning(f"[WS_MESAJ] {e}")
 
@@ -1702,7 +1800,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.11 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.12 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2143,7 +2241,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.11 BAŞLIYOR...")
+    print("SCALP BOT v5.12 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
