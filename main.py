@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.15 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.16 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -310,6 +310,11 @@ KONTROL_ARALIGI_SN = 60
 
 TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/scalp_state.json")
 COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/scalp_cooldown.json")
+# v5.16 KULLANICI KARARI (06.08.2026): kullanıcı kontrollü kalıcı coin
+# engelleme listesi - "bir coin bana sürekli zarar ettiriyor, onu bloke
+# edebilmem lazım" isteği üzerine. /blokla ve /blokkaldir komutlarıyla
+# yönetiliyor, diske kalıcı yazılıyor (bot yeniden başlasa bile kaybolmaz).
+BLOKE_PATH = os.getenv("BLOKE_PATH", "/data/scalp_bloke.json")
 TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/scalp_log.json")
 GUNLUK_PATH = os.getenv("GUNLUK_PATH", "/data/scalp_gunluk.json")
 
@@ -332,6 +337,10 @@ trade_log = []
 log_lock = threading.Lock()
 son_kapanis_zamani = {}
 cooldown_lock = threading.Lock()
+
+# v5.16: kullanıcı kontrollü kalıcı coin engelleme listesi (bkz. BLOKE_PATH notu)
+bloke_coinler = set()
+bloke_lock = threading.Lock()
 
 gunluk_pnl = 0.0
 gunluk_baslangic_bakiye = None
@@ -743,6 +752,25 @@ def cooldown_diskten_yukle():
     son_kapanis_zamani = guvenli_oku(COOLDOWN_PATH, {})
 
 
+def bloke_diske_yaz():
+    with bloke_lock:
+        veri = sorted(bloke_coinler)
+    atomik_yaz(BLOKE_PATH, veri)
+
+
+def bloke_diskten_yukle():
+    global bloke_coinler
+    bloke_coinler = set(guvenli_oku(BLOKE_PATH, []))
+
+
+def coin_bloke_mi(sym):
+    """sym: 'COTI/USDT:USDT' gibi tam sembol. Sadece taban ismine (COTI)
+    göre kontrol eder - kullanıcının 'bu coin'i engelle' isteğiyle uyumlu."""
+    baz = sym.split("/")[0].upper()
+    with bloke_lock:
+        return baz in bloke_coinler
+
+
 def trade_log_kaydet(kayit):
     with log_lock:
         trade_log.append(kayit)
@@ -1050,6 +1078,13 @@ def islem_acici_pozisyon_ac(sinyal, kaynak="tarama"):
     # geçtiği TEK ortak fonksiyonda - tek noktadan güvenli kapatma.
     if not TRADING_AKTIF:
         log.info(f"[TRADING_DURAKLI] {sym} sinyali bulundu ama TRADING_AKTIF=false, açılış atlanıyor")
+        return
+
+    # v5.16 KULLANICI KARARI: kullanıcı kontrollü coin engelleme - burada,
+    # TEK ortak açılış noktasında kontrol ediliyor ki hangi ajan (tarama/
+    # websocket/erken yakalama) tetiklerse tetiklesin kesin işlesin.
+    if coin_bloke_mi(sym):
+        log.info(f"[COIN_BLOKE] {sym} kullanıcı tarafından engellenmiş, açılış atlanıyor")
         return
 
     # v5.9 KRİTİK DÜZELTME: gerçek örnek - kullanıcı BLESS'i elle kapattı,
@@ -1494,7 +1529,9 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.15 (AJAN 0 art0131k AJAN 1 ile ayn0131 devam teyidi kuyru011funu kullan0131yor - h0131z yerine garanti giri015f; 0130Z S00dcRME AYNI KALDI (0.50R/0.30R); AJAN 1'e devam teyidi eklendi - sonraki mum d00f6nerse girmiyor, backtest'te toplam getiriyi art0131rd0131; deploy sonrası [WS_ABONE] gelmeme sorunu için checkpoint teşhis logları eklendi; işlemler artık açılış kaynağını -tarama/websocket- kaydediyor; elle kapatma sonrası tekrar açılma race-condition'ı düzeltildi; max tutma süresi 3sa->12sa büyütüldü; pozisyon kontrol sıklığı 10sn->3sn, iz sürme kaymasını azaltır; kapanış sebebi paneli artık hiçbir kaydı kaçırmıyor; cooldown 15dk (deney); iz sürme geri-çekme payı ayrı ve dar - 0.30R; AJAN 0 için ayrı slot havuzu; giriş eşiği %1.5; MAX_POS race-condition düzeltildi; SADE MOD - kullanıcı kararı, 06.08.2026) — "
+                f"Sürüm: v5.16 (panelde 'Coin Engelle' bölümü eklendi - kullanıcı kontrollü kalıcı "
+                f"engelleme; AJAN 0 artık AJAN 1 ile aynı devam teyidi kuyruğunu kullanıyor; İZ SÜRME "
+                f"0.50R/0.30R; giriş eşiği %1.5; SADE MOD, 06.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1663,11 +1700,46 @@ if bot:
             telebot.types.InlineKeyboardButton("🔬 Analiz", callback_data="panel_analiz"),
         )
         markup.row(telebot.types.InlineKeyboardButton("📉 Risk Durumu", callback_data="panel_risk"))
+        markup.row(telebot.types.InlineKeyboardButton("🚫 Coin Engelle", callback_data="panel_bloke"))
         markup.row(telebot.types.InlineKeyboardButton("🔄 Yenile", callback_data="panel_ana"))
         return markup
 
     def geri_butonu():
         markup = telebot.types.InlineKeyboardMarkup()
+        markup.row(telebot.types.InlineKeyboardButton("⬅️ Menüye Dön", callback_data="panel_ana"))
+        return markup
+
+    def panel_bloke_metni():
+        with bloke_lock:
+            bloke_liste = sorted(bloke_coinler)
+        satirlar = ["🚫 COIN ENGELLEME\n"]
+        if bloke_liste:
+            satirlar.append("Şu an engelli coinler (aşağıdan kaldırabilirsin):")
+            satirlar.append(", ".join(bloke_liste))
+        else:
+            satirlar.append("Şu an engelli coin yok.")
+        satirlar.append("\nAşağıdaki listeden (açık pozisyonlar + son işlem yapılan "
+                         "coinler) birine dokunarak engelleyebilir ya da engeli kaldırabilirsin.")
+        return "\n".join(satirlar)
+
+    def panel_bloke_klavye():
+        with bloke_lock:
+            bloke_liste = sorted(bloke_coinler)
+        with state_lock:
+            acik_bazlar = sorted({s.split("/")[0].upper() for s in trade_state.keys()})
+        with log_lock:
+            son_islemler = list(trade_log)[-15:]
+        gecmis_bazlar = sorted({t["symbol"].split("/")[0].upper() for t in son_islemler})
+        adaylar = sorted(set(acik_bazlar) | set(gecmis_bazlar))
+
+        markup = telebot.types.InlineKeyboardMarkup()
+        if bloke_liste:
+            for baz in bloke_liste:
+                markup.row(telebot.types.InlineKeyboardButton(f"✅ {baz} - engeli kaldır", callback_data=f"blokkaldir_{baz}"))
+        for baz in adaylar:
+            if baz in bloke_liste:
+                continue
+            markup.row(telebot.types.InlineKeyboardButton(f"🚫 {baz} - engelle", callback_data=f"blokla_{baz}"))
         markup.row(telebot.types.InlineKeyboardButton("⬅️ Menüye Dön", callback_data="panel_ana"))
         return markup
 
@@ -1692,7 +1764,7 @@ if bot:
         bot.send_message(msg.chat.id, "🔄 Panel istatistikleri sıfırlandı (trade_log, günlük/haftalık PnL). "
                                         "Açık pozisyonlar ve risk mekanizmaları etkilenmedi.")
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("panel_"))
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(("panel_", "blokla_", "blokkaldir_")))
     def panel_buton_yaniti(call):
         if not yetkili_mi(call):
             try: bot.answer_callback_query(call.id)
@@ -1712,6 +1784,24 @@ if bot:
                 bot.edit_message_text(panel_analiz_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             elif veri == "panel_risk":
                 bot.edit_message_text(panel_risk_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            elif veri == "panel_bloke":
+                bot.edit_message_text(panel_bloke_metni(), call.message.chat.id, call.message.message_id, reply_markup=panel_bloke_klavye())
+            elif veri.startswith("blokla_"):
+                baz = veri[len("blokla_"):]
+                with bloke_lock:
+                    bloke_coinler.add(baz)
+                bloke_diske_yaz()
+                bot.answer_callback_query(call.id, f"{baz} engellendi")
+                bot.edit_message_text(panel_bloke_metni(), call.message.chat.id, call.message.message_id, reply_markup=panel_bloke_klavye())
+                return
+            elif veri.startswith("blokkaldir_"):
+                baz = veri[len("blokkaldir_"):]
+                with bloke_lock:
+                    bloke_coinler.discard(baz)
+                bloke_diske_yaz()
+                bot.answer_callback_query(call.id, f"{baz} engeli kaldırıldı")
+                bot.edit_message_text(panel_bloke_metni(), call.message.chat.id, call.message.message_id, reply_markup=panel_bloke_klavye())
+                return
             bot.answer_callback_query(call.id)
         except Exception as e:
             if "message is not modified" not in str(e):
@@ -1779,7 +1869,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.15 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.16 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2232,9 +2322,10 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.15 BAŞLIYOR...")
+    print("SCALP BOT v5.16 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
+    bloke_diskten_yukle()
     trade_log_yukle()
     gunluk_haftalik_diskten_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
