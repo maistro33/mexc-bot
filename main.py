@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.17 — 07 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.20 — 07 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -595,13 +595,18 @@ def ws_hizli_tetik_isle(sym, btc_bullish, havuz):
         with bekleyen_lock:
             if sym in bekleyen_sinyaller:
                 return
+            # v5.20 KULLANICI KARARI (07.08.2026): "AJAN 0 teyit kalitesini
+            # düzelt" isteği - AJAN 0'ın kazanma oranı AJAN 1'den belirgin
+            # düşük çıkıyordu (bkz. panel kaynak kırılımı). AJAN 0 artık TEK
+            # değil, İKİ ardışık mumun da yükselmesini istiyor (gereken_teyit=2)
+            # - AJAN 1 zaten iyi çalıştığı için tek mumda kalıyor (gereken_teyit=1).
             bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
                                         "skor": sinyal["skor"], "tur": sinyal["tur"],
                                         "tetik_ts": sinyal["tetik_ts"], "zaman": time.time(),
-                                        "kaynak": "websocket"}
+                                        "kaynak": "websocket", "gecen_teyit": 0, "gereken_teyit": 2}
         if sinyal_mesaji_gonder_mi(sym):
-            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti, bir sonraki mumun da "
-               f"yükselmesi bekleniyor (devam teyidi - garanti giriş)")
+            tg(f"⚡ AJAN 0 (websocket): {sym} hızlı hareket tespit etti, 2 ardışık mumun da "
+               f"yükselmesi bekleniyor (güçlendirilmiş devam teyidi)")
     except Exception as e:
         log.warning(f"[WS_TETIK] {sym}: {e}")
 
@@ -1560,9 +1565,11 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.17 (SL tavanı %3->%5; iz sürme geç kilitleniyor (0.70R/0.40R) - büyük "
-                f"kârı erken kesmiyor; $1 sabit marjin modu; 'Coin Engelle' bölümü; AJAN 0 devam "
-                f"teyitli; giriş eşiği %1.5; SADE MOD, 07.08.2026) — "
+                f"Sürüm: v5.20 (AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda kal\u0131yor; "
+                f"/sifirla komutu tamamen kald\u0131r\u0131ld\u0131 - otomatik g\u00fcn/hafta s\u0131f\u0131rlamas\u0131 ba\u011f\u0131ms\u0131z \u00e7al\u0131\u015f\u0131yor; "
+                f"kal\u0131c\u0131 performans istatistikleri birikiyor; SL tavan\u0131 %3->%5; iz s\u00fcrme ge\u00e7 kilitleniyor "
+                f"(0.70R/0.40R); $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f e\u015fi\u011fi %1.5; "
+                f"SADE MOD, 07.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1780,20 +1787,22 @@ if bot:
             return
         bot.send_message(msg.chat.id, panel_ozet_metni(), reply_markup=ana_menu_klavye())
 
-    @bot.message_handler(commands=["sifirla"])
-    def sifirla_komutu(msg):
+    # v5.19 KULLANICI KARARI (07.08.2026): /sifirla komutu tamamen kaldırıldı
+    # - kullanıcı artık manuel limit sıfırlamayı kullanmak istemiyor. Otomatik
+    # gün/hafta sıfırlaması (gunluk_haftalik_reset_kontrol) bağımsız çalışmaya
+    # devam ediyor, bot süresiz kilitli kalmaz - sadece manuel erken sıfırlama
+    # imkânı kaldırıldı.
+
+    @bot.message_handler(commands=["sifirlagecmis"])
+    def sifirlagecmis_komutu(msg):
         if not yetkili_mi(msg):
             return
-        global trade_log, gunluk_pnl, haftalik_pnl
+        global trade_log
         with state_lock:
             trade_log = []
         atomik_yaz(TRADE_LOG_PATH, [])
-        with gunluk_lock:
-            gunluk_pnl = 0.0
-            haftalik_pnl = 0.0
-        gunluk_haftalik_diske_yaz()
-        bot.send_message(msg.chat.id, "🔄 Panel istatistikleri sıfırlandı (trade_log, günlük/haftalık PnL). "
-                                        "Açık pozisyonlar ve risk mekanizmaları etkilenmedi.")
+        bot.send_message(msg.chat.id, "🗑️ Tüm işlem geçmişi silindi. Bu geri alınamaz - "
+                                        "panel analizindeki kalıcı istatistikler sıfırdan başlıyor.")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith(("panel_", "blokla_", "blokkaldir_")))
     def panel_buton_yaniti(call):
@@ -1900,7 +1909,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.17 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.20 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -1996,7 +2005,10 @@ def tarama_loop():
                 if p is None:
                     continue
                 # 10 dakikadan eski kalmış (nadiren olur) - bayat, at
-                if (time.time() - p["zaman"]) > 600:
+                # v5.20: bayat sayma süresi 600sn->900sn - AJAN 0 artık 2 mum
+                # (en fazla ~10dk) bekleyebiliyor, 600sn'lik eski sınır bunu
+                # tam ortasında kesebilirdi.
+                if (time.time() - p["zaman"]) > 900:
                     with bekleyen_lock:
                         bekleyen_sinyaller.pop(sym, None)
                     continue
@@ -2006,11 +2018,27 @@ def tarama_loop():
                 son_mum = df5_confirm.iloc[-1]
                 if int(son_mum["ts"]) <= p["tetik_ts"]:
                     continue  # henüz yeni mum kapanmamış, beklemeye devam
+
+                gereken = p.get("gereken_teyit", 1)
+                if son_mum["close"] < p["sinyal_fiyat"]:
+                    with bekleyen_lock:
+                        bekleyen_sinyaller.pop(sym, None)
+                    log.info(f"[DEVAM_TEYIDI_IPTAL] {sym} mum döndü ({p.get('gecen_teyit',0)+1}. teyit mumunda), giriş iptal edildi")
+                    continue
+
+                gecen = p.get("gecen_teyit", 0) + 1
+                if gecen < gereken:
+                    # bu mum teyit etti ama yeterli sayıya ulaşmadı - kuyrukta
+                    # kalıp bir SONRAKİ mumu bekleyecek (v5.20: AJAN 0 için 2
+                    # ardışık mum şartı).
+                    with bekleyen_lock:
+                        if sym in bekleyen_sinyaller:
+                            bekleyen_sinyaller[sym]["gecen_teyit"] = gecen
+                            bekleyen_sinyaller[sym]["tetik_ts"] = int(son_mum["ts"])
+                    continue
+
                 with bekleyen_lock:
                     bekleyen_sinyaller.pop(sym, None)
-                if son_mum["close"] < p["sinyal_fiyat"]:
-                    log.info(f"[DEVAM_TEYIDI_IPTAL] {sym} sonraki mumda döndü, giriş iptal edildi")
-                    continue
                 with state_lock:
                     if sym in trade_state:
                         continue
@@ -2019,7 +2047,7 @@ def tarama_loop():
                 kaynak = p.get("kaynak", "tarama")
                 ajan_etiket = "AJAN 0 (websocket)" if kaynak == "websocket" else "AJAN 1"
                 if sinyal_mesaji_gonder_mi(sym):
-                    tg(f"✅ {ajan_etiket}: {sym} devam teyidi geçti (sonraki mum da yükseldi) — AJAN 2'ye 'şimdi aç' komutu veriliyor")
+                    tg(f"✅ {ajan_etiket}: {sym} devam teyidi geçti ({gecen}/{gereken} mum) — AJAN 2'ye 'şimdi aç' komutu veriliyor")
                 try:
                     islem_acici_pozisyon_ac({"symbol": sym, "entry": float(son_mum["close"]), "atr": p["atr"],
                                               "skor": p["skor"], "tur": p["tur"]}, kaynak=kaynak)
@@ -2079,7 +2107,8 @@ def tarama_loop():
                         continue
                     bekleyen_sinyaller[sym] = {"sinyal_fiyat": sinyal["entry"], "atr": sinyal["atr"],
                                                 "skor": sinyal["skor"], "tur": sinyal["tur"],
-                                                "tetik_ts": sinyal["tetik_ts"], "zaman": time.time()}
+                                                "tetik_ts": sinyal["tetik_ts"], "zaman": time.time(),
+                                                "kaynak": "tarama", "gecen_teyit": 0, "gereken_teyit": 1}
                 if sinyal_mesaji_gonder_mi(sym):
                     tg(f"🔍 AJAN 1: {sym} trend sinyali bulundu, bir sonraki mumun da yükselmesi bekleniyor (devam teyidi)")
 
@@ -2353,7 +2382,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.17 BAŞLIYOR...")
+    print("SCALP BOT v5.20 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
