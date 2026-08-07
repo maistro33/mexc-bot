@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.16 — 06 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.17 — 07 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -241,12 +241,23 @@ ATR_CARPANI_SL = 2.0
 # v4.18 DEĞİŞTİ: %6 -> %3. Kaldıraç 10x sabit kalıyor (kullanıcı talebi),
 # ama SL mesafesi tavanı daraltıldı ki ATR şiştiğinde ROI kaybı %60'a
 # değil ~%30'a çıksın. Bkz. yukarıdaki v4.18 değişiklik notu (madde 4).
-MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.03"))
+MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.05"))
+# v5.17 KULLANICI KARARI (07.08.2026): %3->%5. Backtest (35 coin/6 gün,
+# devam teyitli girişlerle): %3 SL çok sık "kısa dalgalanmayla" tetiklenip
+# asıl trendin devam edeceği işlemleri erken kapatıyordu - %5'e
+# genişletince kazanma oranı %43.6->%47.0'a çıktı, toplam -4.17R->+12.90R'a
+# döndü. Kullanıcı $1 marjinle çalışacağı için ($10 notional, 10x) mutlak
+# dolar riski hâlâ küçük (~$0.50/işlem) - genişletmenin bedeli düşük.
 MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
-IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.50"))
+IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.70"))
+# v5.17 KULLANICI KARARI: 0.50R->0.70R. Kullanıcı "iz sürme büyük kârı
+# erken kapatmasın" dedi. %5 SL tabanıyla test edildi: 0.70R/0.40R
+# kombinasyonu dengeli çıktı (+11.39R, %41.7 kazanma) - çok geç kilitleme
+# (1.0R) daha yüksek toplam verse de kazanma oranını çok düşürüyordu
+# (%35.7), o yüzden orta yol seçildi.
 # v5.4 KULLANICI KARARI (06 Ağustos 2026): aktifleşme (0.50R) ile geri çekme
 # payı ARTIK AYRI parametreler. Eskiden ikisi de aynı IZ_SURME_R_ORANI'yi
 # kullanıyordu - bu da "aktifleşme geç olsun (nefes alsın)" ile "aktifleştikten
@@ -255,7 +266,9 @@ IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.50"))
 # toplam getiri neredeyse aynı kaldı (+27.97R vs +28.09R) ama kazanma oranı
 # arttı (%44.9 vs %41.7) - kullanıcının "kâr çok geri veriyor" hissini
 # karşılayan, veri destekli bir orta yol.
-IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.30"))
+IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.40"))
+# v5.17 KULLANICI KARARI: 0.30R->0.40R - aktifleşme eşiğiyle (0.70R) birlikte
+# test edilip seçildi, bkz. IZ_SURME_R_ORANI notundaki gerekçe.
 # v5.0 KULLANICI KARARI (06 Ağustos 2026): 0.30R -> 0.50R. Kullanıcı "iz süren
 # olsun ama nefes alsın, büyük kârı yakalasın" dedi - eşik daha da
 # genişletildi. Artık pozisyon riskin YARISI kadar kâra ulaşmadan başabaşa
@@ -292,6 +305,10 @@ GOSTERGE_MUM_15M = 40
 LEV_HAM_DEGER = os.getenv("LEV")
 LEV = int(LEV_HAM_DEGER) if LEV_HAM_DEGER else 10  # kullanıcı talebiyle 10x SABİT KALIYOR
 RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
+# v5.17 KULLANICI KARARI: sabit dolar marjin modu - 0 ise kapalı (eski
+# risk-yüzdesi bazlı boyutlandırma kullanılır), pozitif bir sayı verilirse
+# (örn. "1") her işlem o kadar sabit marjinle açılır, bakiyeden bağımsız.
+SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "1"))
 MAX_POS = int(os.getenv("MAX_POS", "2"))
 # v5.3 KULLANICI KARARI (06.08.2026): AJAN 0 (websocket) için AYRI bir slot
 # havuzu - artık ana tarama (AJAN 1) ile aynı MAX_POS'u paylaşmıyor, kendi
@@ -1159,12 +1176,22 @@ def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon, kaynak="tarama"):
 
     LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
 
+    # v5.17 KULLANICI KARARI (07.08.2026): "$1 marjinle deneyelim" isteği -
+    # SABIT_MARJIN_USDT ayarlanmışsa, risk-yüzdesi bazlı boyutlandırma
+    # yerine SABİT bir marjin kullanılıyor (notional = marjin x kaldıraç).
+    # Böylece bakiye ne olursa olsun her işlem aynı küçük, sabit dolar
+    # riskini taşıyor - hem uzun süre gerçek veri toplamayı hem de düşük
+    # stresle öğrenmeyi sağlıyor.
+    if SABIT_MARJIN_USDT > 0:
+        notional = SABIT_MARJIN_USDT * LEV_KULLANILAN
+        risk_dolar = notional * sl_mesafe_pct
+
     qty = None
     for deneme in range(5):
         gereken_marj = notional / LEV_KULLANILAN
         MAX_MARJ_PCT = 0.25 if MAX_POS <= 1 else 0.15
         notional_bu_deneme = notional
-        if gereken_marj > bakiye * MAX_MARJ_PCT:
+        if SABIT_MARJIN_USDT <= 0 and gereken_marj > bakiye * MAX_MARJ_PCT:
             notional_bu_deneme = bakiye * MAX_MARJ_PCT * LEV_KULLANILAN
         amount = notional_bu_deneme / entry
         try:
@@ -1318,10 +1345,14 @@ def _islem_acici_pozisyon_ac_ic(sym, entry, atr_val, tur, yon, kaynak="tarama"):
                f"en iyi kârdan ${_gc_esik_giris:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.2f}R)")
     yon_etiket = "LONG" if yon == "long" else "SHORT"
     yon_emoji = "📈" if yon == "long" else "📉"
+    if SABIT_MARJIN_USDT > 0:
+        risk_ozet = f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: sabit ${SABIT_MARJIN_USDT:.2f} | Risk≈${risk_dolar:.2f}"
+    else:
+        risk_ozet = f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)"
     tg(f"{yon_emoji} SCALP POZİSYON: {sym} {yon_etiket} [{tur_etiket}]\n"
        f"Giriş≈{entry:.6f} | SL:{sl:.6f} (2×ATR, tavan %{MAX_SL_PCT*100:.0f})\n"
        f"{tp_ozet}\n"
-       f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Risk≈${risk_dolar:.2f} (bakiyenin ~%{RISK_PCT_BAKIYE*100:.0f}'i)")
+       f"{risk_ozet}")
 
 
 def pozisyonu_tamamen_kapat(sym, sebep="manuel"):
@@ -1529,13 +1560,13 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.16 (panelde 'Coin Engelle' bölümü eklendi - kullanıcı kontrollü kalıcı "
-                f"engelleme; AJAN 0 artık AJAN 1 ile aynı devam teyidi kuyruğunu kullanıyor; İZ SÜRME "
-                f"0.50R/0.30R; giriş eşiği %1.5; SADE MOD, 06.08.2026) — "
+                f"Sürüm: v5.17 (SL tavanı %3->%5; iz sürme geç kilitleniyor (0.70R/0.40R) - büyük "
+                f"kârı erken kesmiyor; $1 sabit marjin modu; 'Coin Engelle' bölümü; AJAN 0 devam "
+                f"teyitli; giriş eşiği %1.5; SADE MOD, 07.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
-                f"İşlem başına risk: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i\n"
+                f"İşlem başına risk: {'sabit $' + format(SABIT_MARJIN_USDT, '.2f') + ' marjin' if SABIT_MARJIN_USDT > 0 else 'bakiyenin %' + format(RISK_PCT_BAKIYE*100, '.0f')}\n"
                 f"GİRİŞ: son {RET_WINDOW_BARS*5} dakikada fiyat %{RET_THRESHOLD*100:.0f}+ yükseldiyse "
                 f"HEMEN girilir (bekleme/teyit yok, RSI/ADX/hacim kontrolü yok)\n"
                 f"SL: {ATR_CARPANI_SL}x ATR(5m,14), tavan %{MAX_SL_PCT*100:.0f} / taban %{MIN_SL_PCT*100:.0f}\n"
@@ -1869,7 +1900,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.16 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.17 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2322,7 +2353,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.16 BAŞLIYOR...")
+    print("SCALP BOT v5.17 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
