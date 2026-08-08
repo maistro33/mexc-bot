@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.20 — 07 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.21 — 08 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -323,6 +323,13 @@ GUNLUK_ZARAR_LIMIT_PCT = 0.15
 # Haftalık limit (%25) hâlâ aktif - son çare fren olarak duruyor.
 GUNLUK_LIMIT_AKTIF = False
 HAFTALIK_ZARAR_LIMIT_PCT = float(os.getenv("HAFTALIK_ZARAR_LIMIT_PCT", "0.25"))
+# v5.21 KULLANICI KARARI (08.08.2026): haftalık limit de kapatıldı - $1 sabit
+# marjinle çalışıldığı için (bkz. SABIT_MARJIN_USDT) tek işlemdeki mutlak
+# dolar riski zaten çok küçük, limitin sürekli taramayı durdurup manuel
+# müdahale gerektirmesi (özellikle /sifirla kaldırıldıktan sonra) faydadan
+# çok sürtünme yaratıyordu. HAFTALIK_ZARAR_LIMIT_PCT değeri panelde bilgi
+# amaçlı gösterilmeye devam ediyor, ama artık taramayı DURDURMUYOR.
+HAFTALIK_LIMIT_AKTIF = False
 KONTROL_ARALIGI_SN = 60
 
 TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/scalp_state.json")
@@ -1060,6 +1067,8 @@ def gunluk_limit_kontrolu():
 
 
 def haftalik_limit_kontrolu():
+    if not HAFTALIK_LIMIT_AKTIF:
+        return False
     with gunluk_lock:
         if haftalik_baslangic_bakiye is None:
             return False
@@ -1565,11 +1574,12 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.20 (AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda kal\u0131yor; "
+                f"Sürüm: v5.21 (g\u00fcnl\u00fck+haftal\u0131k zarar limiti tamamen kapat\u0131ld\u0131 - art\u0131k taramay\u0131 durdurmuyor; "
+                f"AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda kal\u0131yor; "
                 f"/sifirla komutu tamamen kald\u0131r\u0131ld\u0131 - otomatik g\u00fcn/hafta s\u0131f\u0131rlamas\u0131 ba\u011f\u0131ms\u0131z \u00e7al\u0131\u015f\u0131yor; "
                 f"kal\u0131c\u0131 performans istatistikleri birikiyor; SL tavan\u0131 %3->%5; iz s\u00fcrme ge\u00e7 kilitleniyor "
                 f"(0.70R/0.40R); $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f e\u015fi\u011fi %1.5; "
-                f"SADE MOD, 07.08.2026) — "
+                f"SADE MOD, 08.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1586,7 +1596,8 @@ if bot:
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin, "
                 f"{TARAMA_PARALEL_WORKER} paralel worker ile taranır\n"
-                f"Günlük zarar limiti: %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f} | Haftalık: %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f}\n"
+                f"Günlük zarar limiti: %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f} (KAPALI - taramayı durdurmuyor) | "
+                f"Haftalık: %{HAFTALIK_ZARAR_LIMIT_PCT*100:.0f} (KAPALI - taramayı durdurmuyor)\n"
                 f"Tarama aralığı: {KONTROL_ARALIGI_SN}sn")
 
     def panel_gecmis_metni():
@@ -1909,7 +1920,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.20 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.21 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2382,7 +2393,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.20 BAŞLIYOR...")
+    print("SCALP BOT v5.21 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
