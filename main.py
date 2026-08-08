@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.21 — 08 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.22 — 08 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -252,7 +252,13 @@ MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.02"))
 
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
-IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.70"))
+IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "1.0"))
+# v5.22 KULLANICI KARARI (08.08.2026): 0.70R->1.0R. Kullanıcı "büyük kârı
+# takip etsin, erken kapanmasın" dedi - dün test ettiğimiz 4 seçenekten
+# (0.50/0.30, 0.70/0.40, 1.0/0.5) orta yolu (0.70/0.40) seçmiştim ama
+# kullanıcının asıl istediği en agresif/en geç kilitlenen seçenekmiş
+# (1.0R/0.5R, backtest'te en yüksek toplam +13.58R ama düşük kazanma
+# oranı %35.7 vermişti - bilerek kabul edildi).
 # v5.17 KULLANICI KARARI: 0.50R->0.70R. Kullanıcı "iz sürme büyük kârı
 # erken kapatmasın" dedi. %5 SL tabanıyla test edildi: 0.70R/0.40R
 # kombinasyonu dengeli çıktı (+11.39R, %41.7 kazanma) - çok geç kilitleme
@@ -266,7 +272,9 @@ IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.70"))
 # toplam getiri neredeyse aynı kaldı (+27.97R vs +28.09R) ama kazanma oranı
 # arttı (%44.9 vs %41.7) - kullanıcının "kâr çok geri veriyor" hissini
 # karşılayan, veri destekli bir orta yol.
-IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.40"))
+IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.5"))
+# v5.22 KULLANICI KARARI: 0.40R->0.5R, IZ_SURME_R_ORANI notundaki gerekçeyle
+# birlikte seçildi (dün test edilen 1.0R/0.5R kombinasyonu).
 # v5.17 KULLANICI KARARI: 0.30R->0.40R - aktifleşme eşiğiyle (0.70R) birlikte
 # test edilip seçildi, bkz. IZ_SURME_R_ORANI notundaki gerekçe.
 # v5.0 KULLANICI KARARI (06 Ağustos 2026): 0.30R -> 0.50R. Kullanıcı "iz süren
@@ -1574,12 +1582,12 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.21 (g\u00fcnl\u00fck+haftal\u0131k zarar limiti tamamen kapat\u0131ld\u0131 - art\u0131k taramay\u0131 durdurmuyor; "
-                f"AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda kal\u0131yor; "
-                f"/sifirla komutu tamamen kald\u0131r\u0131ld\u0131 - otomatik g\u00fcn/hafta s\u0131f\u0131rlamas\u0131 ba\u011f\u0131ms\u0131z \u00e7al\u0131\u015f\u0131yor; "
-                f"kal\u0131c\u0131 performans istatistikleri birikiyor; SL tavan\u0131 %3->%5; iz s\u00fcrme ge\u00e7 kilitleniyor "
-                f"(0.70R/0.40R); $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f e\u015fi\u011fi %1.5; "
-                f"SADE MOD, 08.08.2026) — "
+                f"Sürüm: v5.22 (iz s\u00fcrme daha da ge\u00e7 kilitleniyor - 0.70R/0.40R yerine 1.0R/0.5R, b\u00fcy\u00fck "
+                f"k\u00e2r\u0131 daha \u00e7ok takip ediyor; g\u00fcnl\u00fck+haftal\u0131k zarar limiti tamamen kapat\u0131ld\u0131 - art\u0131k "
+                f"taramay\u0131 durdurmuyor; AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda "
+                f"kal\u0131yor; /sifirla komutu tamamen kald\u0131r\u0131ld\u0131; kal\u0131c\u0131 performans istatistikleri "
+                f"birikiyor; SL tavan\u0131 %3->%5; $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f "
+                f"e\u015fi\u011fi %1.5; SADE MOD, 08.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1920,7 +1928,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.21 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.22 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2393,7 +2401,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.21 BAŞLIYOR...")
+    print("SCALP BOT v5.22 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
