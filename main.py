@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.22 — 08 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.23 — 09 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -1582,12 +1582,13 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.22 (iz s\u00fcrme daha da ge\u00e7 kilitleniyor - 0.70R/0.40R yerine 1.0R/0.5R, b\u00fcy\u00fck "
-                f"k\u00e2r\u0131 daha \u00e7ok takip ediyor; g\u00fcnl\u00fck+haftal\u0131k zarar limiti tamamen kapat\u0131ld\u0131 - art\u0131k "
-                f"taramay\u0131 durdurmuyor; AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda "
-                f"kal\u0131yor; /sifirla komutu tamamen kald\u0131r\u0131ld\u0131; kal\u0131c\u0131 performans istatistikleri "
-                f"birikiyor; SL tavan\u0131 %3->%5; $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f "
-                f"e\u015fi\u011fi %1.5; SADE MOD, 08.08.2026) — "
+                f"Sürüm: v5.23 (/veri komutu eklendi - t\u00fcm i\u015flem ge\u00e7mi\u015fini JSON olarak d\u0131\u015fa aktar\u0131r, "
+                f"ger\u00e7ek analiz i\u00e7in; iz s\u00fcrme daha da ge\u00e7 kilitleniyor - 1.0R/0.5R, b\u00fcy\u00fck k\u00e2r\u0131 daha \u00e7ok "
+                f"takip ediyor; g\u00fcnl\u00fck+haftal\u0131k zarar limiti tamamen kapat\u0131ld\u0131 - art\u0131k taramay\u0131 "
+                f"durdurmuyor; AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda kal\u0131yor; "
+                f"/sifirla komutu tamamen kald\u0131r\u0131ld\u0131; kal\u0131c\u0131 performans istatistikleri birikiyor; "
+                f"SL tavan\u0131 %3->%5; $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f e\u015fi\u011fi %1.5; "
+                f"SADE MOD, 09.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1823,6 +1824,30 @@ if bot:
         bot.send_message(msg.chat.id, "🗑️ Tüm işlem geçmişi silindi. Bu geri alınamaz - "
                                         "panel analizindeki kalıcı istatistikler sıfırdan başlıyor.")
 
+    @bot.message_handler(commands=["veri"])
+    def veri_komutu(msg):
+        # v5.23 KULLANICI KARARI (09.08.2026): "gerçek veriye şimdi bakabilir
+        # miyiz" isteği - sadece OKUMA/dışa aktarma, hiçbir trading mantığına
+        # dokunmuyor. trade_log'u JSON dosyası olarak gönderir, kullanıcı bunu
+        # Claude'a yükleyip gerçek istatistiksel analiz yaptırabilir.
+        if not yetkili_mi(msg):
+            return
+        with state_lock:
+            veri = list(trade_log)
+        if not veri:
+            bot.send_message(msg.chat.id, "Henüz kapanan işlem yok.")
+            return
+        try:
+            import io
+            dosya_icerik = json.dumps(veri, ensure_ascii=False, indent=2)
+            dosya = io.BytesIO(dosya_icerik.encode("utf-8"))
+            dosya.name = f"trade_log_{time.strftime('%Y%m%d_%H%M%S')}.json"
+            bot.send_document(msg.chat.id, dosya,
+                               caption=f"📦 {len(veri)} işlemlik tam geçmiş - JSON formatında.")
+        except Exception as e:
+            log.error(f"[VERI_KOMUTU] {e}")
+            bot.send_message(msg.chat.id, f"⚠️ Veri dışa aktarılamadı: {e}")
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith(("panel_", "blokla_", "blokkaldir_")))
     def panel_buton_yaniti(call):
         if not yetkili_mi(call):
@@ -1928,7 +1953,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.22 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.23 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2401,7 +2426,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.22 BAŞLIYOR...")
+    print("SCALP BOT v5.23 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
