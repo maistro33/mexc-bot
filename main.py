@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SCALP BOT v5.23 — 09 Ağustos 2026 (SADE MOD - kullanıcı kararı)
+SCALP BOT v5.24 — 10 Ağustos 2026 (SADE MOD - kullanıcı kararı)
 5m çoklu zaman dilimi, SADECE LONG, o an fiyatı %3+ yükselen coinleri
 DİNAMİK olarak bulur (sabit coin listesi YOK — her taramada borsanın
 TAMAMI taranır, RWA/tokenize hisse ve durgun majörler hariç).
@@ -428,7 +428,15 @@ def sinyal_mesaji_gonder_mi(sym):
 # ⚠️ Bu websocket bağlantısı canlı ortamda test edilmedi (sadece bağlantı
 # ve mesaj formatı doğrulandı) - izlenmesi gerekir, sorun çıkarsa
 # WS_GOZCU_AKTIF=false ile kapatılabilir.
-WS_GOZCU_AKTIF = os.getenv("WS_GOZCU_AKTIF", "true").lower() == "true"
+# v5.24 KULLANICI KARARI (10.08.2026): AJAN 0 (websocket) net negatif
+# çıktı (-$0.51/40 işlem, bkz. /panel Analiz kaynak kırılımı) - AJAN 1
+# (tarama) tek başına net +$3.97/162 işlem veriyordu. Kullanıcı iki
+# kaynağın karışık gelmesinin gerçek edge analizini zorlaştırdığını,
+# önce AJAN 1'in tek başına 100-150+ işlemlik temiz bir örneklemini
+# görmek istediğini belirtti. Varsayılan artık KAPALI - istenirse
+# Railway'de WS_GOZCU_AKTIF=true ortam değişkeniyle tekrar açılabilir,
+# kod silinmedi.
+WS_GOZCU_AKTIF = os.getenv("WS_GOZCU_AKTIF", "false").lower() == "true"
 WS_HIZLI_TETIK_YUZDE = float(os.getenv("WS_HIZLI_TETIK_YUZDE", "0.012"))  # pencerede %1.2 hareket
 # v4.32 KULLANICI KARARI (05 Ağustos 2026): %2 -> %1.2. Gerekçe: durgun
 # piyasa günlerinde AJAN 0 neredeyse hiç tetiklenmiyordu. Eşik düşürüldü
@@ -1582,13 +1590,15 @@ if bot:
 
     def panel_ayarlar_metni():
         return ("⚙️ SCALP BOT AYARLARI\n\n"
-                f"Sürüm: v5.23 (/veri komutu eklendi - t\u00fcm i\u015flem ge\u00e7mi\u015fini JSON olarak d\u0131\u015fa aktar\u0131r, "
-                f"ger\u00e7ek analiz i\u00e7in; iz s\u00fcrme daha da ge\u00e7 kilitleniyor - 1.0R/0.5R, b\u00fcy\u00fck k\u00e2r\u0131 daha \u00e7ok "
-                f"takip ediyor; g\u00fcnl\u00fck+haftal\u0131k zarar limiti tamamen kapat\u0131ld\u0131 - art\u0131k taramay\u0131 "
-                f"durdurmuyor; AJAN 0 art\u0131k 2 ard\u0131\u015f\u0131k mum teyidi istiyor - AJAN 1 tek mumda kal\u0131yor; "
-                f"/sifirla komutu tamamen kald\u0131r\u0131ld\u0131; kal\u0131c\u0131 performans istatistikleri birikiyor; "
-                f"SL tavan\u0131 %3->%5; $1 sabit marjin modu; 'Coin Engelle' b\u00f6l\u00fcm\u00fc; giri\u015f e\u015fi\u011fi %1.5; "
-                f"SADE MOD, 09.08.2026) — "
+                f"Sürüm: v5.24 (AJAN 0/websocket varsay\u0131lan KAPALI - kaynak k\u0131r\u0131l\u0131m\u0131nda net "
+                f"negatif \u00e7\u0131kt\u0131, AJAN 1 tek ba\u015f\u0131na temiz \u00f6rneklem toplans\u0131n diye; Coin Engelle "
+                f"paneli art\u0131k son 15 i\u015flem yerine T\u00dcM ge\u00e7mi\u015fteki en k\u00f6t\u00fc net PnL'li coinleri g\u00f6steriyor; "
+                f"/blokla ve /blokkaldir yazarak-komutlar\u0131 eklendi - buton listesine ba\u011f\u0131ml\u0131 kalmadan "
+                f"herhangi bir coin do\u011frudan engellenebilir/kald\u0131r\u0131labilir; "
+                f"/veri komutu (09.08.2026) - t\u00fcm i\u015flem ge\u00e7mi\u015fini JSON olarak d\u0131\u015fa aktar\u0131r; "
+                f"iz s\u00fcrme 1.0R/0.5R; g\u00fcnl\u00fck+haftal\u0131k zarar limiti kapal\u0131; /sifirla kald\u0131r\u0131ld\u0131; "
+                f"SL tavan\u0131 %5; $1 sabit marjin modu; giri\u015f e\u015fi\u011fi %1.5; "
+                f"SADE MOD, 10.08.2026) — "
                 f"RSI/ADX/hacim-spike/üst-fitil/teyit-bekleme filtreleri KALDIRILDI. "
                 f"Sadece fiyat trendi ile hemen giriş, SL + geniş iz süren TP ile çıkış.\n"
                 f"Kaldıraç: {LEV}x (sabit) | MAX_POS: {MAX_POS} (tarama) + {MAX_POS_WEBSOCKET} (websocket, ayrı havuz)\n"
@@ -1781,23 +1791,53 @@ if bot:
         return "\n".join(satirlar)
 
     def panel_bloke_klavye():
+        # v5.24 KULLANICI KARARI (10.08.2026): eskiden sadece SON 15 kapanan
+        # işlemin coinleri buton olarak listeleniyordu - kullanıcı gerçek
+        # veriyle (POWER, ARC, C98, 1000CAT) net-negatif olduğunu tespit
+        # ettiği coinleri panelde bulamadı, çünkü onlar az işlem gördükleri
+        # (3-6 işlem) için son-15 penceresinin dışında kalmışlardı. Artık
+        # TÜM geçmiş taranıyor ve coin bazında net PnL hesaplanıp EN ÇOK
+        # ZARAR ETTİRENLER en üstte gösteriliyor - kullanıcının asıl
+        # ihtiyacı olan "hangi coin bana zarar veriyor" sorusuna doğrudan
+        # cevap veriyor, sadece "son 15'te hangi coin geçti" değil.
         with bloke_lock:
             bloke_liste = sorted(bloke_coinler)
         with state_lock:
             acik_bazlar = sorted({s.split("/")[0].upper() for s in trade_state.keys()})
         with log_lock:
-            son_islemler = list(trade_log)[-15:]
-        gecmis_bazlar = sorted({t["symbol"].split("/")[0].upper() for t in son_islemler})
-        adaylar = sorted(set(acik_bazlar) | set(gecmis_bazlar))
+            tum_islemler = list(trade_log)
+
+        coin_pnl = {}
+        coin_sayi = {}
+        for t in tum_islemler:
+            baz = t["symbol"].split("/")[0].upper()
+            coin_pnl[baz] = coin_pnl.get(baz, 0.0) + t["pnl"]
+            coin_sayi[baz] = coin_sayi.get(baz, 0) + 1
+        # en kötüden en iyiye sırala - en çok zarar ettirenler üstte çıksın
+        gecmis_bazlar_sirali = [baz for baz, _ in sorted(coin_pnl.items(), key=lambda x: x[1])]
 
         markup = telebot.types.InlineKeyboardMarkup()
         if bloke_liste:
             for baz in bloke_liste:
                 markup.row(telebot.types.InlineKeyboardButton(f"✅ {baz} - engeli kaldır", callback_data=f"blokkaldir_{baz}"))
-        for baz in adaylar:
+        # önce açık pozisyonlar (her zaman üstte, engellenebilir olsun diye)
+        for baz in acik_bazlar:
             if baz in bloke_liste:
                 continue
             markup.row(telebot.types.InlineKeyboardButton(f"🚫 {baz} - engelle", callback_data=f"blokla_{baz}"))
+        # sonra TÜM geçmişten, en kötü net PnL'den başlayarak (en fazla 40 buton -
+        # Telegram mesaj/klavye boyutu sınırlarını aşmamak için)
+        gosterilen = 0
+        for baz in gecmis_bazlar_sirali:
+            if baz in bloke_liste or baz in acik_bazlar:
+                continue
+            pnl = coin_pnl[baz]
+            sayi = coin_sayi[baz]
+            etiket = f"🚫 {baz} ({pnl:+.2f}$/{sayi}) - engelle"
+            markup.row(telebot.types.InlineKeyboardButton(etiket, callback_data=f"blokla_{baz}"))
+            gosterilen += 1
+            if gosterilen >= 40:
+                break
         markup.row(telebot.types.InlineKeyboardButton("⬅️ Menüye Dön", callback_data="panel_ana"))
         return markup
 
@@ -1847,6 +1887,43 @@ if bot:
         except Exception as e:
             log.error(f"[VERI_KOMUTU] {e}")
             bot.send_message(msg.chat.id, f"⚠️ Veri dışa aktarılamadı: {e}")
+
+    # v5.24 KULLANICI KARARI (10.08.2026): panel butonundaki coin engelleme
+    # listesi (son 15 işlem + açık pozisyonlar) kullanıcının aradığı bazı
+    # coinleri (POWER, ARC, C98, 1000CAT) göstermiyordu, çünkü onlar az
+    # işlem gördükleri için o pencerenin dışında kalmışlardı. Panel listesi
+    # artık genişletildi (bkz. panel_bloke_klavye) ama buna EK olarak, hangi
+    # coin panelde görünürse görünsün, doğrudan yazarak da engelleyip
+    # kaldırabilmek için bu iki komut eklendi - buton listesine bağımlı değil.
+    @bot.message_handler(commands=["blokla"])
+    def blokla_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        parca = msg.text.replace("/blokla", "", 1).strip().upper()
+        if not parca:
+            bot.send_message(msg.chat.id, "Kullanım: /blokla COIN_ADI (örnek: /blokla POWER)")
+            return
+        with bloke_lock:
+            bloke_coinler.add(parca)
+        bloke_diske_yaz()
+        bot.send_message(msg.chat.id, f"🚫 {parca} engellendi. Kaldırmak için: /blokkaldir {parca}")
+
+    @bot.message_handler(commands=["blokkaldir"])
+    def blokkaldir_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        parca = msg.text.replace("/blokkaldir", "", 1).strip().upper()
+        if not parca:
+            bot.send_message(msg.chat.id, "Kullanım: /blokkaldir COIN_ADI (örnek: /blokkaldir POWER)")
+            return
+        with bloke_lock:
+            vardi = parca in bloke_coinler
+            bloke_coinler.discard(parca)
+        bloke_diske_yaz()
+        if vardi:
+            bot.send_message(msg.chat.id, f"✅ {parca} engeli kaldırıldı.")
+        else:
+            bot.send_message(msg.chat.id, f"ℹ️ {parca} zaten engelli değildi.")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith(("panel_", "blokla_", "blokkaldir_")))
     def panel_buton_yaniti(call):
@@ -1953,7 +2030,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SCALP BOT v5.23 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SCALP BOT v5.24 başladı (SADE MOD) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: sadece fiyat trendi (%{RET_THRESHOLD*100:.0f}+/{RET_WINDOW_BARS*5}dk), hemen açılır\n"
        f"SL={ATR_CARPANI_SL}x ATR (tavan %{MAX_SL_PCT*100:.0f}) | TP: İZ SÜREN, {IZ_SURME_R_ORANI*100:.0f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2426,7 +2503,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SCALP BOT v5.23 BAŞLIYOR...")
+    print("SCALP BOT v5.24 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
