@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SWING REVERSAL BOT v1.1 — 11 Ağustos 2026
+SWING REVERSAL BOT v1.2 — 11 Ağustos 2026
 "Düşükten al, yüksekten sat" — SADECE FİYAT AKSİYONU.
 Hiçbir indikatör yok (RSI/ADX/MACD/hacim YOK). Mantık:
   - LONG: fiyat son LOOKBACK mumun EN DÜŞÜĞÜNÜ yaptı, sonra
@@ -26,6 +26,22 @@ v1.1 DEĞİŞİKLİKLER:
   - Coin engelleme eklendi (scalp_bot v5.24 ile aynı mekanizma):
     /blokla, /blokkaldir, /blokeliste komutları - kalıcı diske
     kaydediliyor, pozisyon açma noktasında kontrol ediliyor.
+
+v1.2 DEĞİŞİKLİKLER (kritik düzeltmeler, gerçek örnek: GUN/USDT
+11.08.2026 - pozisyon Cross modda açıldı ve kâr olmasına rağmen
+bot -$1 kayıp olarak kaydetti):
+  - PnL artık ASLA tahmin/varsayım ile hesaplanmıyor - kapanan
+    pozisyon için önce TP dolum kaydına, o da yoksa borsanın
+    GERÇEK işlem geçmişine (fetch_my_trades) bakılıp gerçek
+    çıkış fiyatı bulunuyor. Eski "TP dolmadıysa likidasyon
+    varsay, PnL=-marjin yaz" mantığı tamamen kaldırıldı.
+  - Pozisyon açıldıktan hemen sonra GERÇEKTEN izole modda
+    olduğu borsadan doğrulanıyor (set_margin_mode çağrısı
+    hata vermeden de sessizce başarısız olabiliyor). Değilse
+    pozisyon ANINDA kapatılıp işlem iptal sayılıyor - "kayıp
+    en fazla ~$1" garantisi artık gerçekten korunuyor.
+  - /sifirlagecmis komutu eklendi - işlem geçmişini sıfırlar,
+    güncel gerçek bakiyeyi gösterir.
 ════════════════════════════════════════════════════════
 """
 
@@ -454,6 +470,30 @@ def _pozisyon_ac_ic(sym, entry, yon, swing_nokta):
     except Exception:
         gercek_pos = None
 
+    # KRİTİK GÜVENLİK KONTROLÜ: set_margin_mode çağrısı exception fırlatmasa
+    # bile GERÇEKTEN izole moda geçtiğini borsadan doğrulamadan devam etmiyoruz.
+    # Gerçek örnek (11.08.2026): GUN/USDT işlemi hiçbir hata vermeden Cross
+    # modda açıldı - "kayıp en fazla ~$1" garantimiz sessizce geçersiz kaldı.
+    # Artık pozisyon açıldıktan hemen sonra marjin modu kontrol ediliyor;
+    # izole değilse pozisyon DERHAL piyasa fiyatından kapatılıp işlem iptal
+    # sayılıyor - riski garanti edemediğimiz bir pozisyonu açık bırakmıyoruz.
+    if gercek_pos:
+        gercek_marjin_modu = str(gercek_pos.get("marginMode") or gercek_pos.get("info", {}).get("marginMode") or "").lower()
+        if gercek_marjin_modu and gercek_marjin_modu != "isolated":
+            log.error(f"[MARJIN_DOGRULAMA_BASARISIZ] {sym}: pozisyon '{gercek_marjin_modu}' modunda açıldı (izole değil) - güvenlik amaçlı kapatılıyor")
+            try:
+                kapatma_yonu_acil = "sell" if yon == "long" else "buy"
+                gercek_qty = safe(gercek_pos.get("contracts"))
+                exchange.create_market_order(sym, kapatma_yonu_acil, gercek_qty, params={"reduceOnly": True})
+                tg(f"🚨 {sym} '{gercek_marjin_modu}' modunda açılmıştı (izole değil) - kayıp garantisi "
+                   f"sağlanamadığı için pozisyon HEMEN kapatıldı. Bu coin'de marjin modu değişimi neden "
+                   f"başarısız oldu, borsa panelinden kontrol etmen gerekebilir.")
+            except Exception as e:
+                tg(f"🚨🚨 KRİTİK: {sym} yanlış marjin modunda açıldı VE güvenlik kapatması da başarısız "
+                   f"oldu: {e}\nLÜTFEN HEMEN BORSAYA GİRİP MANUEL KONTROL ET.")
+            acilis_basarisiz_cooldown_uygula(sym)
+            return
+
     if gercek_pos and safe(gercek_pos.get("entryPrice")) > 0:
         entry = safe(gercek_pos.get("entryPrice"))
 
@@ -660,6 +700,24 @@ if bot:
             satirlar.append(f"\nAçık pozisyon: {len(trade_state)}/{MAX_POS}")
         bot.send_message(msg.chat.id, "\n".join(satirlar))
 
+    @bot.message_handler(commands=["sifirlagecmis"])
+    def sifirlagecmis_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global trade_log
+        with log_lock:
+            trade_log = []
+        atomik_yaz(TRADE_LOG_PATH, [])
+        try:
+            bakiye_bilgi = exchange.fetch_balance()
+            usdt = bakiye_bilgi.get("USDT", {})
+            toplam = safe(usdt.get("total", 0)) or safe(usdt.get("free", 0))
+            bakiye_metni = f" Güncel bakiye: {toplam:.2f}$."
+        except Exception:
+            bakiye_metni = ""
+        bot.send_message(msg.chat.id, f"🗑️ İşlem geçmişi tamamen sıfırlandı, istatistikler yeniden birikmeye "
+                                        f"başlayacak.{bakiye_metni} Bu işlem geri alınamaz.")
+
     @bot.message_handler(commands=["veri"])
     def veri_komutu(msg):
         if not yetkili_mi(msg):
@@ -760,16 +818,24 @@ def manage_loop():
                     log.warning(f"[MANAGE] {sym}: {e}")
                     continue
                 if not gercek_pos:
-                    # Pozisyon borsada artık yok - ya TP emri doldu, ya da
-                    # (hard SL emri hiç konmadığı için) izole marjin
-                    # LİKİDE ETTİ. TP dolum kaydı varsa "tp_dolu", yoksa
-                    # "izole_marjin_likidasyonu" olarak etiketleniyor.
+                    # Pozisyon borsada artık yok. Üç ihtimal var: TP emri
+                    # doldu, kullanıcı manuel kapattı, ya da izole marjin
+                    # likide etti. ÖNCEKİ HATA: TP dolmadıysa direkt
+                    # "likidasyon" varsayılıp PnL sabit -$1 yazılıyordu -
+                    # kullanıcı manuel kapattığında bu YANLIŞ (gerçek sonuç
+                    # kâr bile olsa kayıp olarak kaydediliyordu). Artık gerçek
+                    # çıkış fiyatı ÖNCE borsanın kendi işlem geçmişinden
+                    # (fetch_my_trades) çekiliyor - hiçbir zaman tahmin/varsayım
+                    # yapılmıyor, sadece gerçek veri bulunamazsa son çare
+                    # ticker fiyatına düşülüyor.
                     entry = durum["entry"]
                     qty = durum.get("qty", 0)
                     yon = durum.get("yon", "long")
                     cikis_fiyat = None
-                    sebep_etiket = "izole_marjin_likidasyonu"
+                    sebep_etiket = "kapanis_nedeni_belirsiz"
                     tp_id = durum.get("tp_emir_id")
+
+                    # 1) TP emri gerçekten dolmuş mu diye borsadan sor
                     if tp_id:
                         try:
                             detay = exchange.fetch_order(tp_id, sym)
@@ -778,21 +844,42 @@ def manage_loop():
                                 if dolum > 0:
                                     cikis_fiyat = dolum
                                     sebep_etiket = "tp_dolu"
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.warning(f"[TP_KONTROL] {sym}: {e}")
+
+                    # 2) TP dolmadıysa, borsanın GERÇEK işlem geçmişinden
+                    # (fetch_my_trades) o coin için en son kapatma işlemini
+                    # bul - manuel kapatma, likidasyon veya SL fark etmeksizin
+                    # gerçek dolum fiyatını verir, tahmin değil.
+                    if not cikis_fiyat:
+                        try:
+                            son_islemler = exchange.fetch_my_trades(sym, limit=10)
+                            kapanis_zamani_ms = durum["acilis_zamani"] * 1000
+                            # açılıştan SONRAKİ işlemler arasında en sonuncusu
+                            adaylar = [tr for tr in son_islemler if tr.get("timestamp", 0) > kapanis_zamani_ms]
+                            if adaylar:
+                                son_islem = max(adaylar, key=lambda tr: tr.get("timestamp", 0))
+                                dolum = safe(son_islem.get("price"))
+                                if dolum > 0:
+                                    cikis_fiyat = dolum
+                                    sebep_etiket = "manuel_veya_likidasyon"
+                        except Exception as e:
+                            log.warning(f"[ISLEM_GECMISI] {sym}: {e}")
+
+                    # 3) Son çare - gerçek veri hiç bulunamadıysa ticker fiyatı
+                    # (bu durumda gerçek kapanış anını tam yakalamayabilir,
+                    # ama en azından KAYIP VARSAYIMI yapılmıyor)
                     if not cikis_fiyat:
                         try:
                             t = exchange.fetch_ticker(sym)
                             cikis_fiyat = safe(t["last"])
+                            if sebep_etiket == "kapanis_nedeni_belirsiz":
+                                sebep_etiket = "kapanis_nedeni_belirsiz_ticker_fiyati"
                         except Exception:
                             cikis_fiyat = entry
+                            sebep_etiket = "kapanis_nedeni_belirsiz_veri_yok"
+
                     pnl = (cikis_fiyat - entry) * qty if yon == "long" else (entry - cikis_fiyat) * qty
-                    if sebep_etiket == "izole_marjin_likidasyonu":
-                        # likidasyonda gerçek kayıp marjine yakındır - tahmini
-                        # PnL yerine marjini kayıp olarak kaydetmek daha
-                        # doğru bir yaklaşım (ticker fiyatı likidasyon anını
-                        # tam yakalamayabilir)
-                        pnl = -SABIT_MARJIN_USDT
                     if tp_id:
                         try:
                             exchange.cancel_order(tp_id, sym)
@@ -807,8 +894,13 @@ def manage_loop():
                     with cooldown_lock:
                         son_kapanis_zamani[sym] = time.time()
                     cooldown_diske_yaz()
-                    etiket_emoji = "🎯" if sebep_etiket == "tp_dolu" else "💥"
-                    etiket_metin = "TP'ye ulaştı" if sebep_etiket == "tp_dolu" else "izole marjin likide oldu"
+                    etiket_haritasi = {
+                        "tp_dolu": ("🎯", "TP'ye ulaştı"),
+                        "manuel_veya_likidasyon": ("ℹ️", "manuel kapatıldı ya da likide oldu (gerçek borsa fiyatıyla hesaplandı)"),
+                        "kapanis_nedeni_belirsiz_ticker_fiyati": ("⚠️", "kapanış nedeni belirlenemedi, güncel fiyatla tahmin edildi"),
+                        "kapanis_nedeni_belirsiz_veri_yok": ("🚨", "kapanış nedeni VE fiyatı belirlenemedi, giriş fiyatıyla kayıtlandı - manuel kontrol et"),
+                    }
+                    etiket_emoji, etiket_metin = etiket_haritasi.get(sebep_etiket, ("ℹ️", sebep_etiket))
                     tg(f"{etiket_emoji} {sym} kapandı ({etiket_metin}) | PnL≈{pnl:+.2f}$")
             time.sleep(5)
         except Exception as e:
@@ -840,7 +932,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SWING REVERSAL BOT v1.1 başladı\n"
+    tg(f"🚀 SWING REVERSAL BOT v1.2 başladı\n"
        f"Mantık: dip/tepe + dönüş onayı (indikatörsüz, sadece fiyat)\n"
        f"LOOKBACK={LOOKBACK} mum (5m) | SL: swing±%{SL_BUFFER_PCT*100:.1f} (taban %{MIN_SL_PCT*100:.0f}/tavan %{MAX_SL_PCT*100:.0f}) | TP: {TP_R_ORANI}R\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
@@ -899,7 +991,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("SWING REVERSAL BOT v1.1 BAŞLIYOR...")
+    print("SWING REVERSAL BOT v1.2 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
