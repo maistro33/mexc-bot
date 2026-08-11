@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SWING REVERSAL BOT v1.0 — 11 Ağustos 2026
+SWING REVERSAL BOT v1.1 — 11 Ağustos 2026
 "Düşükten al, yüksekten sat" — SADECE FİYAT AKSİYONU.
 Hiçbir indikatör yok (RSI/ADX/MACD/hacim YOK). Mantık:
   - LONG: fiyat son LOOKBACK mumun EN DÜŞÜĞÜNÜ yaptı, sonra
@@ -18,6 +18,14 @@ işlemde simetrik sonuç verdi (+%3.34 kazanç / -%3.44 kayıp,
 gerçek edge yoktu). Bu YENİ ve FARKLI bir hipotez (tersine
 dönüş yakalamak, trend kovalamak değil) - performansı sadece
 canlı veri toplayarak öğreneceğiz.
+
+v1.1 DEĞİŞİKLİKLER:
+  - Hard SL emri kaldırıldı, İZOLE MARJİN kullanılıyor - kayıp
+    en kötü ihtimalle marjine (~$1) yakın kalıyor, fiyat
+    seviyesi bazlı SL yok.
+  - Coin engelleme eklendi (scalp_bot v5.24 ile aynı mekanizma):
+    /blokla, /blokkaldir, /blokeliste komutları - kalıcı diske
+    kaydediliyor, pozisyon açma noktasında kontrol ediliyor.
 ════════════════════════════════════════════════════════
 """
 
@@ -832,7 +840,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SWING REVERSAL BOT v1.0 başladı\n"
+    tg(f"🚀 SWING REVERSAL BOT v1.1 başladı\n"
        f"Mantık: dip/tepe + dönüş onayı (indikatörsüz, sadece fiyat)\n"
        f"LOOKBACK={LOOKBACK} mum (5m) | SL: swing±%{SL_BUFFER_PCT*100:.1f} (taban %{MIN_SL_PCT*100:.0f}/tavan %{MAX_SL_PCT*100:.0f}) | TP: {TP_R_ORANI}R\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
@@ -891,7 +899,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("SWING REVERSAL BOT v1.0 BAŞLIYOR...")
+    print("SWING REVERSAL BOT v1.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
