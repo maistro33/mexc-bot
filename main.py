@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SWING BOT v6.1 — 11 Ağustos 2026
+SWING BOT v6.2 — 11 Ağustos 2026
 KULLANICI TALİMATI: v5.24 scalp_bot mimarisi (panel, tüm komutlar,
 coin engelleme, iz süren TP, dosya yapısı) BİREBİR KORUNUYOR - SADECE
 sinyal tespiti ve SL hesaplama mantığı değişti.
@@ -206,7 +206,11 @@ SHORT_AKTIF = os.getenv("SHORT_AKTIF", "false").lower() == "true"
 # genişletince kazanma oranı %43.6->%47.0'a çıktı, toplam -4.17R->+12.90R'a
 # döndü. Kullanıcı $1 marjinle çalışacağı için ($10 notional, 10x) mutlak
 # dolar riski hâlâ küçük (~$0.50/işlem) - genişletmenin bedeli düşük.
-MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.03"))
+MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.05"))
+# KULLANICI KARARI (11.08.2026): gerçek işlemde (MAVUSDT) SL tabana (%3)
+# çekilmiş durumda görüldü, kullanıcı bunun normal piyasa gürültüsüyle
+# bile tetiklenebilecek kadar dar olduğunu belirtti. Taban %3'ten %5'e
+# çıkarıldı - dar swing noktalarında SL artık en az %5 mesafede kalacak.
 
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 HEDEF_NET_KAR_USDT = float(os.getenv("HEDEF_NET_KAR_USDT", "0.30"))
@@ -1861,6 +1865,83 @@ if bot:
         bot.send_message(msg.chat.id, "🗑️ Tüm işlem geçmişi silindi. Bu geri alınamaz - "
                                         "panel analizindeki kalıcı istatistikler sıfırdan başlıyor.")
 
+    @bot.message_handler(commands=["slguncelle"])
+    def slguncelle_komutu(msg):
+        # KULLANICI KARARI (11.08.2026): MIN_SL_PCT %3'ten %5'e çıkarıldı
+        # (gerçek işlemde - MAVUSDT - SL'in tabana çekilip çok dar kaldığı,
+        # normal piyasa gürültüsüyle bile tetiklenebileceği görüldü). Ama bu
+        # değişiklik SADECE YENİ açılacak pozisyonlara otomatik uygulanır -
+        # o an açık olan pozisyonların SL'i eski (dar) mesafede kalmaya
+        # devam eder. Bu komut, henüz breakeven'e çekilmemiş (iz sürme
+        # aktifleşmemiş) açık pozisyonların SL'ini GÜNCEL MIN_SL_PCT'e göre
+        # yeniden hesaplayıp borsadaki SL emrini iptal edip yenisini koyar.
+        # SADECE GENİŞLETİR - zaten MIN_SL_PCT'ten geniş olan SL'lere
+        # dokunmaz, iz sürme aktifleşmiş (breakeven_cekildi=True) pozisyonlara
+        # da dokunmaz (kâr koruması bozulmasın diye).
+        if not yetkili_mi(msg):
+            return
+        with state_lock:
+            durumlar = dict(trade_state)
+        if not durumlar:
+            bot.send_message(msg.chat.id, "Açık pozisyon yok.")
+            return
+
+        guncellenen = []
+        atlanan = []
+        for sym, durum in durumlar.items():
+            if durum.get("breakeven_cekildi"):
+                atlanan.append(f"{sym} (iz sürme aktif, dokunulmadı)")
+                continue
+
+            entry = durum["entry"]
+            yon = sinyal_yonu(durum.get("tur"))
+            sl_guncel = durum.get("sl_guncel")
+            if sl_guncel is None:
+                atlanan.append(f"{sym} (SL bilgisi yok)")
+                continue
+
+            mevcut_mesafe = abs(entry - sl_guncel) / entry
+            if mevcut_mesafe >= MIN_SL_PCT:
+                atlanan.append(f"{sym} (zaten %{mevcut_mesafe*100:.1f}, geniş)")
+                continue
+
+            yeni_sl = entry * (1 - MIN_SL_PCT) if yon == "long" else entry * (1 + MIN_SL_PCT)
+            try:
+                if durum.get("sl_emir_id"):
+                    try:
+                        exchange.cancel_order(durum["sl_emir_id"], sym)
+                    except Exception as e:
+                        log.warning(f"[SLGUNCELLE_IPTAL] {sym}: {e}")
+
+                pozlar = exchange.fetch_positions([sym])
+                gercek_pos = next((p for p in pozlar if safe(p.get("contracts")) > 0), None)
+                if not gercek_pos:
+                    atlanan.append(f"{sym} (borsada pozisyon bulunamadı)")
+                    continue
+                qty = safe(gercek_pos.get("contracts"))
+                yeni_sl_fiyat = float(exchange.price_to_precision(sym, yeni_sl))
+                kapatma_yonu = "sell" if yon == "long" else "buy"
+                yeni_emir = exchange.create_order(sym, "market", kapatma_yonu, qty, None,
+                                                   {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
+                with state_lock:
+                    if sym in trade_state:
+                        trade_state[sym]["sl_guncel"] = yeni_sl_fiyat
+                        trade_state[sym]["sl_emir_id"] = yeni_emir.get("id")
+                durumu_diske_yaz()
+                guncellenen.append(f"{sym}: %{mevcut_mesafe*100:.1f} → %{MIN_SL_PCT*100:.1f} "
+                                    f"(SL: {sl_guncel:.6f} → {yeni_sl_fiyat:.6f})")
+            except Exception as e:
+                atlanan.append(f"{sym} (hata: {e})")
+
+        satirlar = ["🔧 SL GÜNCELLEME SONUCU\n"]
+        if guncellenen:
+            satirlar.append("✅ Genişletilenler:")
+            satirlar.extend(f"  {s}" for s in guncellenen)
+        if atlanan:
+            satirlar.append("\nℹ️ Atlananlar:")
+            satirlar.extend(f"  {s}" for s in atlanan)
+        bot.send_message(msg.chat.id, "\n".join(satirlar))
+
     @bot.message_handler(commands=["veri"])
     def veri_komutu(msg):
         # v5.23 KULLANICI KARARI (09.08.2026): "gerçek veriye şimdi bakabilir
@@ -2027,7 +2108,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SWING BOT v6.1 başladı (v5.24 mimarisi + swing dip/tepe sinyali) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SWING BOT v6.2 başladı (v5.24 mimarisi + swing dip/tepe sinyali) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: dip/tepe + dönüş onayı (LOOKBACK={LOOKBACK} mum, indikatörsüz), hemen açılır\n"
        f"SL: swing noktası bazlı, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f} | TP: İZ SÜREN, {IZ_SURME_R_ORANI:.1f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2500,7 +2581,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SWING BOT v6.1 BAŞLIYOR...")
+    print("SWING BOT v6.2 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
