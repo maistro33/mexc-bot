@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SWING BOT v6.2 — 11 Ağustos 2026
+SWING BOT v6.3 — 11 Ağustos 2026
 KULLANICI TALİMATI: v5.24 scalp_bot mimarisi (panel, tüm komutlar,
 coin engelleme, iz süren TP, dosya yapısı) BİREBİR KORUNUYOR - SADECE
 sinyal tespiti ve SL hesaplama mantığı değişti.
@@ -1128,6 +1128,21 @@ def islem_acici_pozisyon_ac(sinyal, kaynak="tarama"):
         log.info(f"[COOLDOWN_SON_KONTROL] {sym} açılış anında cooldown'a girmiş, iptal ediliyor")
         return
 
+    # KRİTİK GÜVENLİK DÜZELTMESİ (11.08.2026): gerçek örnek - 1000RATS
+    # işlemi beklenenin (~$10 notional) neredeyse İKİ KATI (~$20 notional,
+    # 507 adet) büyüklükte açıldı. Kök sebep: aşağıdaki MAX_POS_DOLU kontrolü
+    # SADECE "sym not in trade_state VE slot dolu" durumunda reddediyordu -
+    # eğer sym zaten trade_state'teyse (pozisyon zaten açıksa) bu kontrol
+    # hiç tetiklenmiyor, kod pozisyonu SESSİZCE TEKRAR açmaya devam
+    # edebiliyordu (örn. iki farklı sinyal kaynağının aynı anda aynı
+    # sembolü yakalaması gibi bir yarış durumunda). Artık DOĞRUDAN ve
+    # KOŞULSUZ bir koruma var - sembol zaten açıksa (veya rezerve edilmişse)
+    # bu fonksiyon başka hiçbir kontrole bakmadan hemen çıkıyor.
+    with state_lock:
+        if sym in trade_state or sym in acilis_rezervasyonlari:
+            log.warning(f"[CIFT_GIRIS_ENGELLENDI] {sym} zaten açık/rezerve, ikinci açılış reddedildi (kaynak={kaynak})")
+            return
+
     # v5.3 KULLANICI KARARI: AJAN 0 (websocket) artık AYRI bir slot havuzuna
     # sahip (MAX_POS_WEBSOCKET) - ana taramanın (MAX_POS) slotlarıyla
     # yarışmıyor. Her kaynağın kendi limiti, o kaynağın açtığı gerçek
@@ -1136,10 +1151,16 @@ def islem_acici_pozisyon_ac(sinyal, kaynak="tarama"):
     # artık kaynak bazlı ayrıştırılmış).
     limit = MAX_POS_WEBSOCKET if kaynak == "websocket" else MAX_POS
     with state_lock:
+        # Yukarıdaki kesin kontrolden SONRA bile (iki thread arasındaki çok
+        # kısa pencerede) tekrar bir yarış oluşmasın diye state_lock altında
+        # SON bir kez daha kontrol ediliyor - atomik "kontrol + rezervasyon".
+        if sym in trade_state or sym in acilis_rezervasyonlari:
+            log.warning(f"[CIFT_GIRIS_ENGELLENDI_SON] {sym} lock altında tekrar bulundu, açılış reddedildi")
+            return
         ayni_kaynak_acik = sum(1 for d in trade_state.values() if d.get("acilis_kaynagi", "tarama") == kaynak)
         ayni_kaynak_rezerve = sum(1 for k in acilis_rezervasyonlari.values() if k == kaynak)
         toplam_dolu = ayni_kaynak_acik + ayni_kaynak_rezerve
-        if sym not in trade_state and toplam_dolu >= limit:
+        if toplam_dolu >= limit:
             log.info(f"[MAX_POS_DOLU] {sym} sinyali bulundu ama [{kaynak}] {toplam_dolu}/{limit} slot dolu, açılış atlanıyor")
             return
         acilis_rezervasyonlari[sym] = kaynak
@@ -2108,7 +2129,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SWING BOT v6.2 başladı (v5.24 mimarisi + swing dip/tepe sinyali) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SWING BOT v6.3 başladı (v5.24 mimarisi + swing dip/tepe sinyali) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: dip/tepe + dönüş onayı (LOOKBACK={LOOKBACK} mum, indikatörsüz), hemen açılır\n"
        f"SL: swing noktası bazlı, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f} | TP: İZ SÜREN, {IZ_SURME_R_ORANI:.1f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2581,7 +2602,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SWING BOT v6.2 BAŞLIYOR...")
+    print("SWING BOT v6.3 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
