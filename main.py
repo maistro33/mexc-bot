@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SWING BOT v6.0 — 11 Ağustos 2026
+SWING BOT v6.1 — 11 Ağustos 2026
 KULLANICI TALİMATI: v5.24 scalp_bot mimarisi (panel, tüm komutlar,
 coin engelleme, iz süren TP, dosya yapısı) BİREBİR KORUNUYOR - SADECE
 sinyal tespiti ve SL hesaplama mantığı değişti.
@@ -191,6 +191,15 @@ SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "0.015"))
 # güvenlik tavanı olarak kalıyor (aşılamayacak mutlak üst sınır).
 MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.09"))
 TARGET_MAX_LOSS_USDT = float(os.getenv("TARGET_MAX_LOSS_USDT", "0.90"))
+
+# KULLANICI KARARI (11.08.2026): backtest (50 coin, 10 gün, gerçek Bitget
+# verisi) SHORT (tepe dönüşü) sinyalinin net negatif olduğunu gösterdi
+# (1256 işlem, %39.2 kazanma, net -$87.60), LONG (dip dönüşü) ise pozitifti
+# (857 işlem, %49.5 kazanma, net +$21.53). Canlı veri de aynı yönde
+# ilerliyordu. SHORT sinyali varsayılan olarak KAPATILDI - kod silinmedi,
+# SHORT_AKTIF=true ile tekrar açılabilir (örn. ileride farklı bir piyasa
+# rejiminde tekrar denenmek istenirse).
+SHORT_AKTIF = os.getenv("SHORT_AKTIF", "false").lower() == "true"
 # v5.17 KULLANICI KARARI (07.08.2026): %3->%5. Backtest (35 coin/6 gün,
 # devam teyitli girişlerle): %3 SL çok sık "kısa dalgalanmayla" tetiklenip
 # asıl trendin devam edeceği işlemleri erken kapatıyordu - %5'e
@@ -985,9 +994,14 @@ def btc_1h_bullish():
 
 def sembol_sinyal_kontrol_tumu(sym, btc_bullish):
     """Artık swing dip/tepe sinyali - bkz. piyasa_izleyici_swing_sinyal
-    üstündeki not."""
+    üstündeki not. SHORT_AKTIF=false ise (varsayılan, backtest kararı)
+    swing_tepe (SHORT) sinyalleri burada elenir - tek ortak filtre noktası,
+    hangi ajan (tarama/websocket) çağırırsa çağırsın işler."""
     try:
-        return piyasa_izleyici_swing_sinyal(sym, btc_bullish)
+        sinyal = piyasa_izleyici_swing_sinyal(sym, btc_bullish)
+        if sinyal and sinyal.get("tur") == "swing_tepe" and not SHORT_AKTIF:
+            return None
+        return sinyal
     except Exception as e:
         log.warning(f"[PARALEL_TARAMA] {sym}: {e}")
     return None
@@ -1590,8 +1604,9 @@ if bot:
                 f"ulaşınca aktifleşir, SL başabaşa çekilir; sonra en iyi kârdan riskin "
                 f"%{IZ_SURME_GERI_COKME_ORANI*100:.0f}'i kadar geri çekilirse kapanır "
                 f"(aktifleşme geniş - nefes payı; geri çekme dar - kâr daha sıkı korunur)\n"
-                f"SHORT sinyali: AÇIK (tepe dönüşü) - backtest'te LONG'dan daha zayıf çıktı "
-                f"(bkz. /panel Analiz), izlemeye devam ediliyor\n"
+                f"SHORT sinyali (tepe dönüşü): {'AÇIK' if SHORT_AKTIF else 'KAPALI'} - backtest (50 coin/10 gün) "
+                f"1256 işlemde %39.2 kazanma, net -$87.60 gösterdi (LONG: 857 işlem, %49.5, net +$21.53) - "
+                f"kullanıcı kararıyla kapatıldı, SHORT_AKTIF=true ile tekrar açılabilir\n"
                 f"⚠️ YENİ POZİSYON AÇILIŞI: {'AKTİF' if TRADING_AKTIF else 'DURAKLATILDI'}\n"
                 f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
                 f"Aday havuzu: her turda en canlı {ADAY_HAVUZU_BUYUKLUGU} coin, "
@@ -2012,7 +2027,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SWING BOT v6.0 başladı (v5.24 mimarisi + swing dip/tepe sinyali) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
+    tg(f"🚀 SWING BOT v6.1 başladı (v5.24 mimarisi + swing dip/tepe sinyali) (MAX_POS={MAX_POS}+{MAX_POS_WEBSOCKET} websocket)\n"
        f"Giriş: dip/tepe + dönüş onayı (LOOKBACK={LOOKBACK} mum, indikatörsüz), hemen açılır\n"
        f"SL: swing noktası bazlı, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f} | TP: İZ SÜREN, {IZ_SURME_R_ORANI:.1f}R'de aktifleşir\n"
        f"Coin cooldown: {COOLDOWN_SAAT} saat\n"
@@ -2485,7 +2500,7 @@ def manage_loop():
 
 
 if __name__ == "__main__":
-    print("SWING BOT v6.0 BAŞLIYOR...")
+    print("SWING BOT v6.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
