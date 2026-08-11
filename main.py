@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-SWING REVERSAL BOT v1.2 — 11 Ağustos 2026
+SWING REVERSAL BOT v1.4 — 11 Ağustos 2026
 "Düşükten al, yüksekten sat" — SADECE FİYAT AKSİYONU.
 Hiçbir indikatör yok (RSI/ADX/MACD/hacim YOK). Mantık:
   - LONG: fiyat son LOOKBACK mumun EN DÜŞÜĞÜNÜ yaptı, sonra
@@ -38,10 +38,29 @@ bot -$1 kayıp olarak kaydetti):
   - Pozisyon açıldıktan hemen sonra GERÇEKTEN izole modda
     olduğu borsadan doğrulanıyor (set_margin_mode çağrısı
     hata vermeden de sessizce başarısız olabiliyor). Değilse
-    pozisyon ANINDA kapatılıp işlem iptal sayılıyor - "kayıp
-    en fazla ~$1" garantisi artık gerçekten korunuyor.
-  - /sifirlagecmis komutu eklendi - işlem geçmişini sıfırlar,
-    güncel gerçek bakiyeyi gösterir.
+    pozisyon ANINDA kapatılıp işlem iptal sayılıyor.
+
+v1.3 DEĞİŞİKLİKLER (kullanıcı kararı, 11.08.2026): izole marjin
+denemesi TERK EDİLDİ - Bitget bu hesapta/coinlerde tutarlı biçimde
+Cross'ta bırakıyordu, bu da pozisyonların sürekli güvenlik amaçlı
+anında açılıp kapanmasına yol açtı (TIA/NEAR/WLFI/SKYAI örnekleri).
+  - CROSS modda kalınıyor, hard SL emri geri getirildi - ama
+    kasıtlı GENİŞ: TARGET_MAX_LOSS_USDT (~$0.90) hedefine göre
+    hesaplanıyor, likidasyona (10x'te ~%10) hiç yaklaşmadan
+    marjinin çoğunu (ama tamamını değil) kaybedecek şekilde.
+  - Sabit TP yerine İZ SÜREN (trailing) TP eklendi - scalp_bot
+    v5.24 ile aynı mantık: IZ_SURME_R_ORANI (varsayılan 1.0R)
+    kârda aktifleşir, IZ_SURME_GERI_COKME_ORANI (varsayılan
+    0.5R) kadar geri çekilirse kapanır. Bilerek GENİŞ tutuldu -
+    küçük dalgalanma pozisyonu erken kapatmasın diye.
+  - manage_loop'ta hem TP hem SL emri ayrı ayrı borsadan
+    doğrulanıyor (scalp_bot v5.24 ile aynı desen), hiçbiri
+    varsayılmıyor.
+
+v1.4 DEĞİŞİKLİKLER: coin tarama/evren mantığı scalp_bot v5.24
+ile birebir aynı hale getirildi - ADAY_HAVUZU_BUYUKLUGU varsayılanı
+100 (80 değil), market bilgisi 1 saatlik önbellekle çekiliyor
+(market_bilgisi_al), her taramada tekrar tekrar sorgulanmıyor.
 ════════════════════════════════════════════════════════
 """
 
@@ -113,12 +132,30 @@ LOOKBACK = int(os.getenv("LOOKBACK", "20"))
 SL_BUFFER_PCT = float(os.getenv("SL_BUFFER_PCT", "0.015"))
 # swing noktasının %1.5 ötesine SL konur (ekstra güvenlik payı)
 MAX_SL_PCT = float(os.getenv("MAX_SL_PCT", "0.08"))
-# SL çok uzaklaşırsa (oynak coin) tavan - "geniş ama sınırsız değil"
+# SL çok uzaklaşırsa (oynak coin) tavan - artık TARGET_MAX_LOSS_USDT ile
+# hesaplanan hedef tavan bunun yerine geçiyor, bu sadece yedek/referans
 MIN_SL_PCT = float(os.getenv("MIN_SL_PCT", "0.03"))
 # SL çok dar olursa (durgun coin) taban - normal gürültüyle erken çıkmasın
 
+# KULLANICI KARARI (11.08.2026): izole marjin denemesi terk edildi (Bitget
+# tutarlı biçimde Cross'ta bırakıyordu). CROSS modda kalınıyor, hard SL emri
+# geri getirildi - ama kasıtlı olarak ÇOK GENİŞ: 10x kaldıraçta likidasyon
+# ~%10 fiyat hareketinde gerçekleşir, SL bunun HEMEN öncesinde (hedef ~$0.90
+# kayıpta, marjinin ~%90'ı) tetiklenecek şekilde hesaplanıyor - likidasyona
+# hiç yaklaşmadan, marjinin neredeyse tamamı ama tamamı değil kaybediliyor.
+TARGET_MAX_LOSS_USDT = float(os.getenv("TARGET_MAX_LOSS_USDT", "0.90"))
+
 TP_R_ORANI = float(os.getenv("TP_R_ORANI", "1.5"))
-# basit sabit TP - riskin 1.5 katı kârda kapan (trailing kademe YOK, "basit etkili")
+# basit sabit TP - riskin 1.5 katı kârda kapan (IZ_SURME_AKTIF=false ise kullanılır)
+
+# KULLANICI KARARI (11.08.2026): sabit TP yerine İZ SÜREN (trailing) TP -
+# scalp_bot v5.24 ile aynı mantık. Pozisyon riskin (SL mesafesinin)
+# IZ_SURME_R_ORANI katı kadar kâra ulaşınca aktifleşir (statik TP emri iptal
+# edilir), sonra en iyi kârdan IZ_SURME_GERI_COKME_ORANI kadar geri çekilirse
+# kapanır. Amaç: büyük hareketleri sabit 1.5R'de kesmeden daha çok yakalamak.
+IZ_SURME_AKTIF = os.getenv("IZ_SURME_AKTIF", "true").lower() == "true"
+IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "1.0"))
+IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.5"))
 
 COOLDOWN_SAAT = float(os.getenv("COOLDOWN_SAAT", "1.0"))
 MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "24"))
@@ -128,7 +165,7 @@ SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "1"))
 MAX_POS = int(os.getenv("MAX_POS", "2"))
 # kullanıcı Railway'den ayarlayacak
 
-ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "80"))
+ADAY_HAVUZU_BUYUKLUGU = int(os.getenv("ADAY_HAVUZU_BUYUKLUGU", "100"))
 TARAMA_PARALEL_WORKER = int(os.getenv("TARAMA_PARALEL_WORKER", "5"))
 KONTROL_ARALIGI_SN = 60
 GOSTERGE_MUM_5M = LOOKBACK + 10
@@ -260,17 +297,28 @@ def cooldown_da_mi(sym):
 # ════════════════════════════════════════════
 # ADAY HAVUZU
 # ════════════════════════════════════════════
+# v5.24 ile aynı önbellekleme mekanizması - market bilgisi 1 saatte bir
+# yenileniyor, her taramada tekrar tekrar çekilmiyor (gereksiz API çağrısı)
+_market_cache = {"markets": None, "ts": 0}
+
+
+def market_bilgisi_al():
+    if _market_cache["markets"] is None or (time.time() - _market_cache["ts"]) > 3600:
+        try:
+            _market_cache["markets"] = exchange.load_markets()
+            _market_cache["ts"] = time.time()
+        except Exception as e:
+            log.warning(f"[MARKET_BILGI] {e}")
+    return _market_cache["markets"] or {}
+
+
 def aday_havuzu():
     try:
         tickers = exchange.fetch_tickers()
     except Exception as e:
         log.warning(f"[TICKERS] {e}")
         return []
-    markets = None
-    try:
-        markets = exchange.load_markets()
-    except Exception:
-        pass
+    markets = market_bilgisi_al()
     adaylar = []
     for sym, t in tickers.items():
         if not sym.endswith("/USDT:USDT"):
@@ -278,10 +326,9 @@ def aday_havuzu():
         base = sym.split("/")[0]
         if base in SLUGGISH_BASE:
             continue
-        if markets:
-            m = markets.get(sym)
-            if m and m.get("info", {}).get("isRwa") == "YES":
-                continue
+        m = markets.get(sym)
+        if m and m.get("info", {}).get("isRwa") == "YES":
+            continue
         vol = t.get("quoteVolume") or 0
         if vol < 300000:
             continue
@@ -348,7 +395,7 @@ def gercek_bakiye_al():
 
 def sembol_max_kaldirac(sym, istenen_lev):
     try:
-        markets = exchange.load_markets()
+        markets = market_bilgisi_al()
         m = markets.get(sym)
         if not m:
             return istenen_lev
@@ -402,41 +449,41 @@ def _pozisyon_ac_ic(sym, entry, yon, swing_nokta):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    # KULLANICI KARARI: hard SL emri yerine İZOLE MARJİN kullanılıyor.
-    # Mantık: izole modda pozisyon başına ayrılan marjin ($1) borsa
-    # tarafından kilitlenir - pozisyon o marjinin tamamını (yaklaşık)
-    # kaybedince borsa OTOMATİK likide eder. Yani "SL" artık bir fiyat
-    # seviyesi değil, marjinin kendisi - kayıp yaklaşık $1'i (+ küçük
-    # likidasyon ücreti) aşamaz, fiyat ne kadar aleyhe giderse gitsin.
-    # ⚠️ DÜRÜSTLÜK NOTU: bu TAM OLARAK $1.00 garantisi değil - likidasyon
-    # ücreti ve (pozisyon uzun süre açık kalırsa) funding oranı küçük bir
-    # ek maliyet oluşturabilir, ama kayıp pratikte marjine çok yakın kalır.
-    # Ayrıca artık fiyat bazlı bir SL emri YOK - pozisyon likide olana ya
-    # da TP'ye ulaşana ya da MAX_HOLD_SAAT dolup manuel kapanana kadar
-    # açık kalabilir.
-    try:
-        exchange.set_margin_mode("isolated", sym)
-    except Exception as e:
-        log.warning(f"[MARJIN_MODU] {sym}: izole moda geçilemedi (görmezden geliniyor, muhtemelen zaten izole): {e}")
-
-    # TP hesaplaması için hâlâ bir referans "risk" mesafesine ihtiyaç var -
-    # swing noktası bu referansı veriyor (SL emri konmasa da TP oranı bu
-    # mesafeye göre hesaplanıyor), taban/tavan sınırları koruma amaçlı.
+    # KULLANICI KARARI (11.08.2026): İzole marjin denemesi terk edildi -
+    # set_margin_mode çağrısı bu hesapta/coinlerde tutarlı biçimde sessizce
+    # başarısız oluyordu (borsa Cross'ta bırakıyordu), bu da pozisyonların
+    # sürekli güvenlik amaçlı anında açılıp kapanmasına yol açtı. Artık
+    # CROSS modda kalınıyor ve kayıp sınırı yine HARD SL EMRİ ile
+    # sağlanıyor - ama SL kasıtlı olarak ÇOK GENİŞ tutuluyor (bkz.
+    # TARGET_MAX_LOSS_USDT), amaç likidasyona (%~10 hareket) hiç
+    # yaklaşmadan, yaklaşık $0.90 kayıpta (marjinin çoğu ama tamamı değil)
+    # pozisyonu kapatmak.
     if yon == "long":
-        sl_referans = swing_nokta * (1 - SL_BUFFER_PCT)
-        sl_mesafe_pct = (entry - sl_referans) / entry
-        sl_mesafe_pct = max(MIN_SL_PCT, min(MAX_SL_PCT, sl_mesafe_pct))
+        sl_swing = swing_nokta * (1 - SL_BUFFER_PCT)
     else:
-        sl_referans = swing_nokta * (1 + SL_BUFFER_PCT)
-        sl_mesafe_pct = (sl_referans - entry) / entry
-        sl_mesafe_pct = max(MIN_SL_PCT, min(MAX_SL_PCT, sl_mesafe_pct))
+        sl_swing = swing_nokta * (1 + SL_BUFFER_PCT)
+
+    LEV_ON = sembol_max_kaldirac(sym, LEV)
+    notional_on = SABIT_MARJIN_USDT * LEV_ON
+    # hedef dolar kayba karşılık gelen fiyat yüzdesi - likidasyondan (%~1/LEV)
+    # önce kapanması için bu hesaplanan tavanın altında kalmalı
+    hedef_sl_pct = TARGET_MAX_LOSS_USDT / notional_on if notional_on > 0 else MAX_SL_PCT
+
+    if yon == "long":
+        sl_mesafe_pct = (entry - sl_swing) / entry
+        sl_mesafe_pct = max(MIN_SL_PCT, min(hedef_sl_pct, sl_mesafe_pct))
+        sl = entry * (1 - sl_mesafe_pct)
+    else:
+        sl_mesafe_pct = (sl_swing - entry) / entry
+        sl_mesafe_pct = max(MIN_SL_PCT, min(hedef_sl_pct, sl_mesafe_pct))
+        sl = entry * (1 + sl_mesafe_pct)
 
     if sl_mesafe_pct <= 0:
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
-    notional = SABIT_MARJIN_USDT * LEV_KULLANILAN
+    LEV_KULLANILAN = LEV_ON
+    notional = notional_on
     amount = notional / entry
 
     try:
@@ -470,62 +517,70 @@ def _pozisyon_ac_ic(sym, entry, yon, swing_nokta):
     except Exception:
         gercek_pos = None
 
-    # KRİTİK GÜVENLİK KONTROLÜ: set_margin_mode çağrısı exception fırlatmasa
-    # bile GERÇEKTEN izole moda geçtiğini borsadan doğrulamadan devam etmiyoruz.
-    # Gerçek örnek (11.08.2026): GUN/USDT işlemi hiçbir hata vermeden Cross
-    # modda açıldı - "kayıp en fazla ~$1" garantimiz sessizce geçersiz kaldı.
-    # Artık pozisyon açıldıktan hemen sonra marjin modu kontrol ediliyor;
-    # izole değilse pozisyon DERHAL piyasa fiyatından kapatılıp işlem iptal
-    # sayılıyor - riski garanti edemediğimiz bir pozisyonu açık bırakmıyoruz.
-    if gercek_pos:
-        gercek_marjin_modu = str(gercek_pos.get("marginMode") or gercek_pos.get("info", {}).get("marginMode") or "").lower()
-        if gercek_marjin_modu and gercek_marjin_modu != "isolated":
-            log.error(f"[MARJIN_DOGRULAMA_BASARISIZ] {sym}: pozisyon '{gercek_marjin_modu}' modunda açıldı (izole değil) - güvenlik amaçlı kapatılıyor")
-            try:
-                kapatma_yonu_acil = "sell" if yon == "long" else "buy"
-                gercek_qty = safe(gercek_pos.get("contracts"))
-                exchange.create_market_order(sym, kapatma_yonu_acil, gercek_qty, params={"reduceOnly": True})
-                tg(f"🚨 {sym} '{gercek_marjin_modu}' modunda açılmıştı (izole değil) - kayıp garantisi "
-                   f"sağlanamadığı için pozisyon HEMEN kapatıldı. Bu coin'de marjin modu değişimi neden "
-                   f"başarısız oldu, borsa panelinden kontrol etmen gerekebilir.")
-            except Exception as e:
-                tg(f"🚨🚨 KRİTİK: {sym} yanlış marjin modunda açıldı VE güvenlik kapatması da başarısız "
-                   f"oldu: {e}\nLÜTFEN HEMEN BORSAYA GİRİP MANUEL KONTROL ET.")
-            acilis_basarisiz_cooldown_uygula(sym)
-            return
-
     if gercek_pos and safe(gercek_pos.get("entryPrice")) > 0:
         entry = safe(gercek_pos.get("entryPrice"))
+        sl = entry * (1 - sl_mesafe_pct) if yon == "long" else entry * (1 + sl_mesafe_pct)
 
-    sl_referans_gercek = entry * (1 - sl_mesafe_pct) if yon == "long" else entry * (1 + sl_mesafe_pct)
-    r_risk = abs(entry - sl_referans_gercek)
+    r_risk = abs(entry - sl)
     tp = entry + r_risk * TP_R_ORANI if yon == "long" else entry - r_risk * TP_R_ORANI
     kapatma_yonu = "sell" if yon == "long" else "buy"
 
-    # Hard SL emri KONMUYOR (kullanıcı kararı) - izole marjin likidasyonu
-    # kayıp sınırı görevi görüyor. Sadece TP emri konuyor.
+    sl_emir_id = None
+    sl_fiyat = float(exchange.price_to_precision(sym, sl))
+    for deneme in range(3):
+        try:
+            sl_emri = exchange.create_order(sym, "market", kapatma_yonu, qty, None,
+                                             {"reduceOnly": True, "stopLossPrice": sl_fiyat})
+            sl_emir_id = sl_emri.get("id")
+            if sl_emir_id:
+                break
+        except Exception as e:
+            log.warning(f"[SL] {sym} deneme {deneme+1}/3: {e}")
+        time.sleep(0.5)
+
+    if not sl_emir_id:
+        tg(f"🚨 {sym} SL yerleştirilemedi, güvenlik amaçlı kapatılıyor.")
+        try:
+            exchange.create_market_order(sym, kapatma_yonu, qty, params={"reduceOnly": True})
+        except Exception:
+            pass
+        acilis_basarisiz_cooldown_uygula(sym)
+        return
+
     tp_emir_id = None
     tp_fiyat = float(exchange.price_to_precision(sym, tp))
-    try:
-        tp_emri = exchange.create_order(sym, "limit", kapatma_yonu, qty, tp_fiyat,
-                                         {"reduceOnly": True})
-        tp_emir_id = tp_emri.get("id")
-    except Exception as e:
-        log.warning(f"[TP] {sym}: {e}")
+    if not IZ_SURME_AKTIF:
+        # eski davranış: sabit TP limit emri (IZ_SURME_AKTIF=false ise)
+        try:
+            tp_emri = exchange.create_order(sym, "limit", kapatma_yonu, qty, tp_fiyat,
+                                             {"reduceOnly": True})
+            tp_emir_id = tp_emri.get("id")
+        except Exception as e:
+            log.warning(f"[TP] {sym}: {e}")
 
     with state_lock:
         trade_state[sym] = {
-            "entry": entry, "sl_referans": sl_referans_gercek, "tp": tp,
-            "sl_emir_id": None, "tp_emir_id": tp_emir_id,
+            "entry": entry, "sl_referans": sl, "tp": tp,
+            "sl_emir_id": sl_emir_id, "tp_emir_id": tp_emir_id,
             "qty": qty, "yon": yon, "acilis_zamani": time.time(),
+            "r_risk": r_risk, "en_iyi_kar": None, "iz_surme_aktiflesti": False,
         }
     durumu_diske_yaz()
 
     yon_etiket = "LONG (dipten)" if yon == "long" else "SHORT (tepeden)"
-    tg(f"📈 SWING POZİSYON: {sym} {yon_etiket} [İZOLE MARJİN]\n"
-       f"Giriş≈{entry:.6f} | TP:{tp_fiyat:.6f} ({TP_R_ORANI}R)\n"
-       f"Hard SL YOK - izole marjin likidasyonu kayıp sınırı: en kötü ihtimalle ≈${SABIT_MARJIN_USDT:.2f} kayıp\n"
-       f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
+    if IZ_SURME_AKTIF:
+        risk_dolar = r_risk * qty
+        iz_esik = risk_dolar * IZ_SURME_R_ORANI
+        gc_esik = risk_dolar * IZ_SURME_GERI_COKME_ORANI
+        tg(f"📈 SWING POZİSYON: {sym} {yon_etiket} [CROSS]\n"
+           f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe_pct*100:.1f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f})\n"
+           f"TP: İZ SÜREN — ${iz_esik:.2f} kârda aktifleşir ({IZ_SURME_R_ORANI:.1f}R), "
+           f"en iyi kârdan ${gc_esik:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.1f}R)\n"
+           f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
+    else:
+        tg(f"📈 SWING POZİSYON: {sym} {yon_etiket} [CROSS]\n"
+           f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe_pct*100:.1f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f}) | TP:{tp_fiyat:.6f} ({TP_R_ORANI}R)\n"
+           f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
 
 
 def pozisyonu_kapat(sym, sebep="manuel"):
@@ -817,6 +872,51 @@ def manage_loop():
                 except Exception as e:
                     log.warning(f"[MANAGE] {sym}: {e}")
                     continue
+
+                # İZ SÜREN TP TAKİBİ (kullanıcı kararı - sabit TP yerine).
+                # Pozisyon hâlâ açıksa ve iz sürme aktifse, kâr belirli bir
+                # eşiğe (IZ_SURME_R_ORANI, GENİŞ - varsayılan 1.0R, geç
+                # aktifleşir, erken/gereksiz kapanmayı önler) ulaşana kadar
+                # dokunulmuyor. Aktifleştikten sonra en iyi kâr takip edilir,
+                # sadece en iyi kârdan GENİŞ bir pay (IZ_SURME_GERI_COKME_ORANI,
+                # varsayılan 0.5R) geri çekilirse kapatılır - küçük dalgalanma
+                # pozisyonu erken kapatmasın diye bilerek geniş tutuldu.
+                if gercek_pos and IZ_SURME_AKTIF and safe(gercek_pos.get("contracts")) > 0:
+                    try:
+                        entry_iz = durum["entry"]
+                        qty_iz = durum.get("qty", 0)
+                        yon_iz = durum.get("yon", "long")
+                        r_risk_fiyat = durum.get("r_risk") or 0
+                        if r_risk_fiyat > 0 and qty_iz > 0:
+                            t = exchange.fetch_ticker(sym)
+                            guncel_fiyat = safe(t["last"])
+                            if guncel_fiyat > 0:
+                                anlik_kar = (guncel_fiyat - entry_iz) * qty_iz if yon_iz == "long" else (entry_iz - guncel_fiyat) * qty_iz
+                                risk_dolar = r_risk_fiyat * qty_iz
+                                iz_esik = risk_dolar * IZ_SURME_R_ORANI
+                                gc_esik = risk_dolar * IZ_SURME_GERI_COKME_ORANI
+                                en_iyi_kar = durum.get("en_iyi_kar")
+
+                                if anlik_kar >= iz_esik or durum.get("iz_surme_aktiflesti"):
+                                    if anlik_kar >= iz_esik and not durum.get("iz_surme_aktiflesti"):
+                                        with state_lock:
+                                            durum["iz_surme_aktiflesti"] = True
+                                        durumu_diske_yaz()
+                                        tg(f"🔒 {sym} — iz sürme AKTİFLEŞTİ (${anlik_kar:.2f} kâr, eşik≈${iz_esik:.2f}). "
+                                           f"Fiyat lehte gittikçe takip edecek, en iyi kârdan ${gc_esik:.2f} "
+                                           f"geri çekilirse kapanacak.")
+                                    if en_iyi_kar is None or anlik_kar > en_iyi_kar:
+                                        with state_lock:
+                                            durum["en_iyi_kar"] = anlik_kar
+                                        durumu_diske_yaz()
+                                    elif en_iyi_kar is not None and anlik_kar <= en_iyi_kar - gc_esik:
+                                        tg(f"🎯 İZ SÜREN TP: {sym} en iyi kâr ${en_iyi_kar:.2f} idi, "
+                                           f"${gc_esik:.2f} geri çekildi (${anlik_kar:.2f}) — kapatılıyor.")
+                                        pozisyonu_kapat(sym, sebep="iz_suren_tp")
+                                        continue
+                    except Exception as e:
+                        log.warning(f"[IZ_SURME] {sym}: {e}")
+
                 if not gercek_pos:
                     # Pozisyon borsada artık yok. Üç ihtimal var: TP emri
                     # doldu, kullanıcı manuel kapattı, ya da izole marjin
@@ -834,6 +934,7 @@ def manage_loop():
                     cikis_fiyat = None
                     sebep_etiket = "kapanis_nedeni_belirsiz"
                     tp_id = durum.get("tp_emir_id")
+                    sl_id = durum.get("sl_emir_id")
 
                     # 1) TP emri gerçekten dolmuş mu diye borsadan sor
                     if tp_id:
@@ -847,22 +948,35 @@ def manage_loop():
                         except Exception as e:
                             log.warning(f"[TP_KONTROL] {sym}: {e}")
 
-                    # 2) TP dolmadıysa, borsanın GERÇEK işlem geçmişinden
-                    # (fetch_my_trades) o coin için en son kapatma işlemini
-                    # bul - manuel kapatma, likidasyon veya SL fark etmeksizin
-                    # gerçek dolum fiyatını verir, tahmin değil.
+                    # 2) TP dolmadıysa, SL emri gerçekten dolmuş mu diye sor
+                    # (scalp_bot v5.24 ile aynı desen - iki emir de ayrı ayrı
+                    # borsadan doğrulanıyor, hiçbiri varsayılmıyor)
+                    if not cikis_fiyat and sl_id:
+                        try:
+                            detay = exchange.fetch_order(sl_id, sym)
+                            if detay.get("status") in ("closed", "filled"):
+                                dolum = safe(detay.get("average")) or safe(detay.get("price"))
+                                if dolum > 0:
+                                    cikis_fiyat = dolum
+                                    sebep_etiket = "sl_dolu"
+                        except Exception as e:
+                            log.warning(f"[SL_KONTROL] {sym}: {e}")
+
+                    # 3) Ne TP ne SL dolum kaydı bulunamadıysa (manuel kapatma,
+                    # borsa taraflı erken tetikleme, vb.) borsanın GERÇEK işlem
+                    # geçmişinden (fetch_my_trades) en son kapatma işlemini bul.
+                    # Hiçbir zaman tahmin/varsayım yapılmıyor.
                     if not cikis_fiyat:
                         try:
                             son_islemler = exchange.fetch_my_trades(sym, limit=10)
                             kapanis_zamani_ms = durum["acilis_zamani"] * 1000
-                            # açılıştan SONRAKİ işlemler arasında en sonuncusu
                             adaylar = [tr for tr in son_islemler if tr.get("timestamp", 0) > kapanis_zamani_ms]
                             if adaylar:
                                 son_islem = max(adaylar, key=lambda tr: tr.get("timestamp", 0))
                                 dolum = safe(son_islem.get("price"))
                                 if dolum > 0:
                                     cikis_fiyat = dolum
-                                    sebep_etiket = "manuel_veya_likidasyon"
+                                    sebep_etiket = "manuel_veya_borsa_taraflı"
                         except Exception as e:
                             log.warning(f"[ISLEM_GECMISI] {sym}: {e}")
 
@@ -932,7 +1046,7 @@ def baslangic_uzlastirma():
 
 
 def tarama_loop():
-    tg(f"🚀 SWING REVERSAL BOT v1.2 başladı\n"
+    tg(f"🚀 SWING REVERSAL BOT v1.4 başladı\n"
        f"Mantık: dip/tepe + dönüş onayı (indikatörsüz, sadece fiyat)\n"
        f"LOOKBACK={LOOKBACK} mum (5m) | SL: swing±%{SL_BUFFER_PCT*100:.1f} (taban %{MIN_SL_PCT*100:.0f}/tavan %{MAX_SL_PCT*100:.0f}) | TP: {TP_R_ORANI}R\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
@@ -991,7 +1105,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("SWING REVERSAL BOT v1.2 BAŞLIYOR...")
+    print("SWING REVERSAL BOT v1.4 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
