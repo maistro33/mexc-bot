@@ -289,15 +289,15 @@ HAFTALIK_ZARAR_LIMIT_PCT = float(os.getenv("HAFTALIK_ZARAR_LIMIT_PCT", "0.25"))
 HAFTALIK_LIMIT_AKTIF = False
 KONTROL_ARALIGI_SN = 60
 
-TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/swing_state.json")
-COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/swing_cooldown.json")
+TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/swing2_state.json")
+COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/swing2_cooldown.json")
 # v5.16 KULLANICI KARARI (06.08.2026): kullanıcı kontrollü kalıcı coin
 # engelleme listesi - "bir coin bana sürekli zarar ettiriyor, onu bloke
 # edebilmem lazım" isteği üzerine. /blokla ve /blokkaldir komutlarıyla
 # yönetiliyor, diske kalıcı yazılıyor (bot yeniden başlasa bile kaybolmaz).
-BLOKE_PATH = os.getenv("BLOKE_PATH", "/data/swing_bloke.json")
-TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/swing_log.json")
-GUNLUK_PATH = os.getenv("GUNLUK_PATH", "/data/swing_gunluk.json")
+BLOKE_PATH = os.getenv("BLOKE_PATH", "/data/swing2_bloke.json")
+TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/swing2_log.json")
+GUNLUK_PATH = os.getenv("GUNLUK_PATH", "/data/swing2_gunluk.json")
 
 trade_state = {}
 state_lock = threading.Lock()
