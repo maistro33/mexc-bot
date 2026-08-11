@@ -118,6 +118,11 @@ state_lock = threading.Lock()
 acilis_rezervasyonlari = {}
 trade_log = []
 log_lock = threading.Lock()
+
+# Coin engelleme - scalp_bot v5.24'teki aynı mekanizma
+BLOKE_PATH = os.getenv("BLOKE_PATH", "/data/swing_bloke.json")
+bloke_coinler = set()
+bloke_lock = threading.Lock()
 son_kapanis_zamani = {}
 cooldown_lock = threading.Lock()
 
@@ -175,6 +180,23 @@ def trade_log_kaydet(kayit):
 def trade_log_yukle():
     global trade_log
     trade_log = guvenli_oku(TRADE_LOG_PATH, [])
+
+
+def bloke_diske_yaz():
+    with bloke_lock:
+        veri = sorted(bloke_coinler)
+    atomik_yaz(BLOKE_PATH, veri)
+
+
+def bloke_diskten_yukle():
+    global bloke_coinler
+    bloke_coinler = set(guvenli_oku(BLOKE_PATH, []))
+
+
+def coin_bloke_mi(sym):
+    baz = sym.split("/")[0].upper()
+    with bloke_lock:
+        return baz in bloke_coinler
 
 
 def safe(x):
@@ -325,6 +347,12 @@ def pozisyon_ac(sinyal):
     entry = sinyal["entry"]
     yon = sinyal["yon"]
     swing_nokta = sinyal["swing_nokta"]
+
+    # scalp_bot v5.24'teki aynı mekanizma: kullanıcı kontrollü kalıcı
+    # coin engelleme - tek ortak açılış noktasında kontrol ediliyor.
+    if coin_bloke_mi(sym):
+        log.info(f"[COIN_BLOKE] {sym} kullanıcı tarafından engellenmiş, açılış atlanıyor")
+        return
 
     with state_lock:
         if sym in trade_state:
@@ -642,6 +670,49 @@ if bot:
         except Exception as e:
             bot.send_message(msg.chat.id, f"⚠️ Hata: {e}")
 
+    # scalp_bot v5.24'teki aynı coin engelleme mekanizması - buton listesine
+    # bağımlı kalmadan doğrudan yazarak engelleyip kaldırabilmek için.
+    @bot.message_handler(commands=["blokla"])
+    def blokla_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        parca = msg.text.replace("/blokla", "", 1).strip().upper()
+        if not parca:
+            bot.send_message(msg.chat.id, "Kullanım: /blokla COIN_ADI (örnek: /blokla POWER)")
+            return
+        with bloke_lock:
+            bloke_coinler.add(parca)
+        bloke_diske_yaz()
+        bot.send_message(msg.chat.id, f"🚫 {parca} engellendi. Kaldırmak için: /blokkaldir {parca}")
+
+    @bot.message_handler(commands=["blokkaldir"])
+    def blokkaldir_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        parca = msg.text.replace("/blokkaldir", "", 1).strip().upper()
+        if not parca:
+            bot.send_message(msg.chat.id, "Kullanım: /blokkaldir COIN_ADI (örnek: /blokkaldir POWER)")
+            return
+        with bloke_lock:
+            vardi = parca in bloke_coinler
+            bloke_coinler.discard(parca)
+        bloke_diske_yaz()
+        if vardi:
+            bot.send_message(msg.chat.id, f"✅ {parca} engeli kaldırıldı.")
+        else:
+            bot.send_message(msg.chat.id, f"ℹ️ {parca} zaten engelli değildi.")
+
+    @bot.message_handler(commands=["blokeliste"])
+    def blokeliste_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        with bloke_lock:
+            liste = sorted(bloke_coinler)
+        if liste:
+            bot.send_message(msg.chat.id, "🚫 Engelli coinler:\n" + ", ".join(liste))
+        else:
+            bot.send_message(msg.chat.id, "Şu an engelli coin yok.")
+
 
 def telebot_polling_baslat():
     if not bot:
@@ -824,6 +895,7 @@ if __name__ == "__main__":
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     trade_log_yukle()
+    bloke_diskten_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
