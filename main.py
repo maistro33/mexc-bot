@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v1.0 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
+LIVE BOT v1.1 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
 12 Ağustos 2026
 
 KULLANICI KARARI: paper_bot.py (v1.8) haftalarca sanal test edilecekti,
@@ -267,17 +267,28 @@ def sembol_max_kaldirac(sym, istenen_lev):
 
 
 def aday_havuzu():
+    # KRİTİK DÜZELTME (12.08.2026): tokenize hisse senetleri (AST SpaceMobile,
+    # Lumentum Holdings vb. - RWA/gerçek dünya varlıkları) botun pozisyon
+    # açtığı coin evrenine yanlışlıkla dahil olmuştu. Eski scalp_bot/swing_bot
+    # bunları özellikle (isRwa=="YES" kontrolüyle) eliyordu, ama live_bot.py
+    # basitleştirilirken bu filtre atlanmıştı. Hisseler borsa saatleri,
+    # after-hours işlem gibi kripto'dan tamamen farklı dinamiklere sahip -
+    # strateji bunlar üzerinde hiç test edilmedi. Şimdi geri eklendi.
     try:
         tickers = exchange.fetch_tickers()
     except Exception as e:
         log.warning(f"[TICKERS] {e}")
         return []
+    markets = market_bilgisi_al()
     adaylar = []
     for sym, t in tickers.items():
         if not sym.endswith("/USDT:USDT"):
             continue
         base = sym.split("/")[0]
         if base in SLUGGISH_BASE:
+            continue
+        m = markets.get(sym)
+        if m and m.get("info", {}).get("isRwa") == "YES":
             continue
         vol = t.get("quoteVolume") or 0
         if vol < 300000:
@@ -1021,7 +1032,7 @@ def manage_loop():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v1.0 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
+    tg(f"🚀 LIVE BOT v1.1 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, tavan %{MAX_SL_PCT*100:.0f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n\n"
@@ -1073,7 +1084,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v1.0 BAŞLIYOR...")
+    print("LIVE BOT v1.1 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
