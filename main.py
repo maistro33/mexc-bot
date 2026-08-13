@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v1.1 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
+LIVE BOT v1.3 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
 12 Ağustos 2026
 
 KULLANICI KARARI: paper_bot.py (v1.8) haftalarca sanal test edilecekti,
@@ -105,6 +105,17 @@ KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 COOLDOWN_SAAT = 1.0
 MAX_HOLD_SAAT = 24
 KONTROL_ARALIGI_SN = 60
+TREND_KONTROL_ARALIGI_SN = int(os.getenv("TREND_KONTROL_ARALIGI_SN", "900"))
+# KULLANICI KARARI (12.08.2026): açık pozisyonların üst trend (4H+1H) uyumu
+# 15 dakikada bir yeniden kontrol ediliyor - çok sık olursa (örn. her 60sn)
+# gereksiz API çağrısı ve MA'nın henüz anlamlı değişmediği yanlış pozitifler
+# artar, çok seyrek olursa (örn. 1 saat) koruma geç kalır. 15dk dengeli bir
+# orta yol - 4H/1H mumların doğası gereği zaten yavaş değişen bir sinyal.
+TREND_TERS_TEYIT_SAYISI = int(os.getenv("TREND_TERS_TEYIT_SAYISI", "2"))
+# KULLANICI KARARI (12.08.2026): "trend geri dönebilir, tek seferlik
+# titremeyle hemen kapatma" isteğiyle - artık ters trend TEK kontrolde değil,
+# art arda bu kadar kontrolde (varsayılan 2 = ~30dk) teyit edilirse kapanır.
+# Ara sırada trend eski yönüne dönerse sayaç sıfırlanır.
 ADAY_HAVUZU_BUYUKLUGU = 80
 
 TRADE_STATE_PATH = os.getenv("TRADE_STATE_PATH", "/data/live_state.json")
@@ -983,6 +994,58 @@ def manage_loop():
                     gercek_pozisyon_kapat(sym, "max_hold_timeout")
                     continue
 
+                # KULLANICI KARARI (12.08.2026): gerçek örnek - VIRTUAL LONG
+                # pozisyonu -%51 ROE'ye kadar gitti (SL geniş olduğu için
+                # henüz tetiklenmemişti), kullanıcı "piyasa yön değiştirdiyse
+                # SL'i beklemeden çıkılsın" istedi. Artık pozisyon açıkken de
+                # giriş anındaki AYNI 4H+1H uyum kontrolü periyodik olarak
+                # (TREND_KONTROL_ARALIGI_SN'de bir) tekrar çalıştırılıyor -
+                # üst trend pozisyonun TERSİNE döndüyse (4H VE 1H ikisi de
+                # ters yönde uyumluysa) SL'e kadar beklemeden kapatılıyor.
+                # KULLANICI KARARI (12.08.2026): "hemen kapatırsa trend geri
+                # dönebilir, tek seferlik titremeyle çıkmayalım" isteğiyle -
+                # artık TEK tespitte değil, art arda TREND_TERS_TEYIT_SAYISI
+                # kontrolde (varsayılan 2 = 30dk) AYNI ters yön teyit
+                # edilirse kapatılıyor. Trend tekrar eski yönüne dönerse
+                # sayaç sıfırlanıyor - "birkaç kez ardışık teyit istiyoruz,
+                # tek anlık dalgalanmaya güvenmiyoruz" mantığı.
+                # ⚠️ Bu hâlâ gecikmeli (lagging) bir sinyal - MA20 bazlı
+                # trend dönüşü zaten bir miktar hareket olduktan sonra fark
+                # edilir, "en tepeden/dipten" çıkış garanti etmez, ama SL'in
+                # tamamını bekletmekten daha iyi bir koruma sağlar.
+                son_kontrol = durum.get("son_trend_kontrol", 0)
+                if time.time() - son_kontrol >= TREND_KONTROL_ARALIGI_SN:
+                    try:
+                        df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
+                        df_1h = get_df(sym, "1h", MA_PERIYOT + 5)
+                        y4h = trend_yonu(df_4h)
+                        y1h = trend_yonu(df_1h)
+                        ters_yon = "dusus" if durum["yon"] == "long" else "yukselis"
+                        ters_tespit = (y4h is not None and y1h is not None and
+                                       y4h == y1h and y4h == ters_yon)
+
+                        with state_lock:
+                            if sym not in trade_state:
+                                continue
+                            trade_state[sym]["son_trend_kontrol"] = time.time()
+                            if ters_tespit:
+                                trade_state[sym]["ters_trend_sayisi"] = trade_state[sym].get("ters_trend_sayisi", 0) + 1
+                                sayac = trade_state[sym]["ters_trend_sayisi"]
+                            else:
+                                trade_state[sym]["ters_trend_sayisi"] = 0
+                                sayac = 0
+
+                        if ters_tespit and sayac >= TREND_TERS_TEYIT_SAYISI:
+                            tg(f"⚠️ {sym} — üst trend (4H+1H) {sayac} kontrol boyunca ardışık "
+                               f"tersine döndü ({y4h}), pozisyon SL beklenmeden kapatılıyor.")
+                            gercek_pozisyon_kapat(sym, "trend_degisti")
+                            continue
+                        elif ters_tespit:
+                            tg(f"👀 {sym} — üst trend tersine dönmüş görünüyor ({y4h}), "
+                               f"{sayac}/{TREND_TERS_TEYIT_SAYISI} teyit - henüz kapatılmadı, izleniyor.")
+                    except Exception as e:
+                        log.warning(f"[TREND_KONTROL] {sym}: {e}")
+
                 yon = durum["yon"]
                 sl_vuruldu = (guncel <= durum["sl"]) if yon == "long" else (guncel >= durum["sl"])
                 if sl_vuruldu:
@@ -1032,7 +1095,7 @@ def manage_loop():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v1.1 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
+    tg(f"🚀 LIVE BOT v1.3 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, tavan %{MAX_SL_PCT*100:.0f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n\n"
@@ -1084,7 +1147,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v1.1 BAŞLIYOR...")
+    print("LIVE BOT v1.3 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
