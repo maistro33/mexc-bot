@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v1.3 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
+LIVE BOT v1.4 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
 12 Ağustos 2026
 
 KULLANICI KARARI: paper_bot.py (v1.8) haftalarca sanal test edilecekti,
@@ -1035,6 +1035,14 @@ def manage_loop():
                                 trade_state[sym]["ters_trend_sayisi"] = 0
                                 sayac = 0
 
+                        # ŞEFFAFLIK İÇİN (kullanıcı talebiyle, 12.08.2026):
+                        # önceden bu kontrol sadece HATA olduğunda log basıyordu,
+                        # başarılı her çalışmada sessizdi - kullanıcı "gerçekten
+                        # çalışıyor mu" diye emin olamıyordu. Artık her kontrolde
+                        # (sonuç ne olursa olsun) görünür bir log satırı basılıyor.
+                        log.info(f"[TREND_KONTROL] {sym} yon={durum['yon']} 4h={y4h} 1h={y1h} "
+                                 f"ters_tespit={ters_tespit} sayac={sayac}/{TREND_TERS_TEYIT_SAYISI}")
+
                         if ters_tespit and sayac >= TREND_TERS_TEYIT_SAYISI:
                             tg(f"⚠️ {sym} — üst trend (4H+1H) {sayac} kontrol boyunca ardışık "
                                f"tersine döndü ({y4h}), pozisyon SL beklenmeden kapatılıyor.")
@@ -1044,7 +1052,7 @@ def manage_loop():
                             tg(f"👀 {sym} — üst trend tersine dönmüş görünüyor ({y4h}), "
                                f"{sayac}/{TREND_TERS_TEYIT_SAYISI} teyit - henüz kapatılmadı, izleniyor.")
                     except Exception as e:
-                        log.warning(f"[TREND_KONTROL] {sym}: {e}")
+                        log.warning(f"[TREND_KONTROL_HATA] {sym}: {e}")
 
                 yon = durum["yon"]
                 sl_vuruldu = (guncel <= durum["sl"]) if yon == "long" else (guncel >= durum["sl"])
@@ -1095,7 +1103,7 @@ def manage_loop():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v1.3 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
+    tg(f"🚀 LIVE BOT v1.4 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, tavan %{MAX_SL_PCT*100:.0f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n\n"
@@ -1147,7 +1155,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v1.3 BAŞLIYOR...")
+    print("LIVE BOT v1.4 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
