@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v1.4 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
+LIVE BOT v1.5 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
 12 Ağustos 2026
 
 KULLANICI KARARI: paper_bot.py (v1.8) haftalarca sanal test edilecekti,
@@ -112,6 +112,14 @@ TREND_KONTROL_ARALIGI_SN = int(os.getenv("TREND_KONTROL_ARALIGI_SN", "900"))
 # artar, çok seyrek olursa (örn. 1 saat) koruma geç kalır. 15dk dengeli bir
 # orta yol - 4H/1H mumların doğası gereği zaten yavaş değişen bir sinyal.
 TREND_TERS_TEYIT_SAYISI = int(os.getenv("TREND_TERS_TEYIT_SAYISI", "2"))
+# KULLANICI KARARI (14.08.2026): gerçek log'larda görüldü - 4H ve 1H'nin
+# İKİSİNİN BİRDEN aynı anda ters dönmesini bekleyen kural çok temkinliydi;
+# sık sık sadece BİRİ tersine dönüyordu (örn. NOT'ta 1H düşüşe döndü ama
+# 4H hâlâ yükselişte kaldı) ve bu hiç sayılmıyordu. Artık KISMİ dönüş
+# (sadece 4H VEYA sadece 1H tersine) de takip ediliyor - ama daha temkinli,
+# daha uzun bir teyit süresiyle (TAM dönüşten daha fazla ardışık kontrol
+# istiyor, çünkü tek zaman diliminin dönmesi daha zayıf/gürültülü bir sinyal).
+TREND_TERS_TEYIT_KISMI_SAYISI = int(os.getenv("TREND_TERS_TEYIT_KISMI_SAYISI", "4"))
 # KULLANICI KARARI (12.08.2026): "trend geri dönebilir, tek seferlik
 # titremeyle hemen kapatma" isteğiyle - artık ters trend TEK kontrolde değil,
 # art arda bu kadar kontrolde (varsayılan 2 = ~30dk) teyit edilirse kapanır.
@@ -1013,6 +1021,17 @@ def manage_loop():
                 # trend dönüşü zaten bir miktar hareket olduktan sonra fark
                 # edilir, "en tepeden/dipten" çıkış garanti etmez, ama SL'in
                 # tamamını bekletmekten daha iyi bir koruma sağlar.
+                #
+                # v1.5 KULLANICI KARARI (14.08.2026): gerçek loglarda görüldü -
+                # "4H VE 1H ikisi birden aynı anda tersine dönmeli" kuralı çok
+                # temkindiydi, sık sık sadece BİRİ dönüyordu (örn. NOT'ta 1H
+                # düşüşe döndü, 4H hâlâ yükselişteydi) ve hiç sayılmıyordu.
+                # Artık İKİ KADEMELİ: TAM dönüş (4H+1H ikisi) eskisi gibi
+                # TREND_TERS_TEYIT_SAYISI (2=30dk) kontrolde kapatır. KISMİ
+                # dönüş (sadece biri) daha zayıf/gürültülü bir sinyal olduğu
+                # için daha UZUN, TREND_TERS_TEYIT_KISMI_SAYISI (4=60dk)
+                # kontrol istiyor - erken uyarı kaybedilmiyor ama whipsaw
+                # riski de artırılmıyor.
                 son_kontrol = durum.get("son_trend_kontrol", 0)
                 if time.time() - son_kontrol >= TREND_KONTROL_ARALIGI_SN:
                     try:
@@ -1021,36 +1040,56 @@ def manage_loop():
                         y4h = trend_yonu(df_4h)
                         y1h = trend_yonu(df_1h)
                         ters_yon = "dusus" if durum["yon"] == "long" else "yukselis"
-                        ters_tespit = (y4h is not None and y1h is not None and
-                                       y4h == y1h and y4h == ters_yon)
+                        tam_ters = (y4h is not None and y1h is not None and
+                                    y4h == y1h and y4h == ters_yon)
+                        kismi_ters = (not tam_ters and
+                                      ((y4h is not None and y4h == ters_yon) or
+                                       (y1h is not None and y1h == ters_yon)))
 
                         with state_lock:
                             if sym not in trade_state:
                                 continue
                             trade_state[sym]["son_trend_kontrol"] = time.time()
-                            if ters_tespit:
+                            if tam_ters:
                                 trade_state[sym]["ters_trend_sayisi"] = trade_state[sym].get("ters_trend_sayisi", 0) + 1
-                                sayac = trade_state[sym]["ters_trend_sayisi"]
+                                trade_state[sym]["kismi_ters_sayisi"] = 0
+                                sayac_tam = trade_state[sym]["ters_trend_sayisi"]
+                                sayac_kismi = 0
+                            elif kismi_ters:
+                                trade_state[sym]["kismi_ters_sayisi"] = trade_state[sym].get("kismi_ters_sayisi", 0) + 1
+                                trade_state[sym]["ters_trend_sayisi"] = 0
+                                sayac_kismi = trade_state[sym]["kismi_ters_sayisi"]
+                                sayac_tam = 0
                             else:
                                 trade_state[sym]["ters_trend_sayisi"] = 0
-                                sayac = 0
+                                trade_state[sym]["kismi_ters_sayisi"] = 0
+                                sayac_tam = 0
+                                sayac_kismi = 0
 
                         # ŞEFFAFLIK İÇİN (kullanıcı talebiyle, 12.08.2026):
                         # önceden bu kontrol sadece HATA olduğunda log basıyordu,
-                        # başarılı her çalışmada sessizdi - kullanıcı "gerçekten
-                        # çalışıyor mu" diye emin olamıyordu. Artık her kontrolde
+                        # başarılı her çalışmada sessizdi. Artık her kontrolde
                         # (sonuç ne olursa olsun) görünür bir log satırı basılıyor.
                         log.info(f"[TREND_KONTROL] {sym} yon={durum['yon']} 4h={y4h} 1h={y1h} "
-                                 f"ters_tespit={ters_tespit} sayac={sayac}/{TREND_TERS_TEYIT_SAYISI}")
+                                 f"tam_ters={tam_ters} sayac_tam={sayac_tam}/{TREND_TERS_TEYIT_SAYISI} "
+                                 f"kismi_ters={kismi_ters} sayac_kismi={sayac_kismi}/{TREND_TERS_TEYIT_KISMI_SAYISI}")
 
-                        if ters_tespit and sayac >= TREND_TERS_TEYIT_SAYISI:
-                            tg(f"⚠️ {sym} — üst trend (4H+1H) {sayac} kontrol boyunca ardışık "
-                               f"tersine döndü ({y4h}), pozisyon SL beklenmeden kapatılıyor.")
+                        if tam_ters and sayac_tam >= TREND_TERS_TEYIT_SAYISI:
+                            tg(f"⚠️ {sym} — üst trend (4H+1H İKİSİ) {sayac_tam} kontrol boyunca "
+                               f"ardışık tersine döndü, pozisyon SL beklenmeden kapatılıyor.")
                             gercek_pozisyon_kapat(sym, "trend_degisti")
                             continue
-                        elif ters_tespit:
-                            tg(f"👀 {sym} — üst trend tersine dönmüş görünüyor ({y4h}), "
-                               f"{sayac}/{TREND_TERS_TEYIT_SAYISI} teyit - henüz kapatılmadı, izleniyor.")
+                        elif kismi_ters and sayac_kismi >= TREND_TERS_TEYIT_KISMI_SAYISI:
+                            tg(f"⚠️ {sym} — üst trend KISMEN (4H:{y4h}/1H:{y1h}) {sayac_kismi} kontrol "
+                               f"boyunca ardışık tersine döndü, pozisyon SL beklenmeden kapatılıyor.")
+                            gercek_pozisyon_kapat(sym, "trend_kismi_degisti")
+                            continue
+                        elif tam_ters:
+                            tg(f"👀 {sym} — üst trend TAMAMEN tersine dönmüş görünüyor (4H+1H), "
+                               f"{sayac_tam}/{TREND_TERS_TEYIT_SAYISI} teyit - henüz kapatılmadı, izleniyor.")
+                        elif kismi_ters:
+                            tg(f"👀 {sym} — üst trend KISMEN tersine dönmüş görünüyor (4H:{y4h}/1H:{y1h}), "
+                               f"{sayac_kismi}/{TREND_TERS_TEYIT_KISMI_SAYISI} teyit - henüz kapatılmadı, izleniyor.")
                     except Exception as e:
                         log.warning(f"[TREND_KONTROL_HATA] {sym}: {e}")
 
@@ -1103,7 +1142,7 @@ def manage_loop():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v1.4 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
+    tg(f"🚀 LIVE BOT v1.5 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, tavan %{MAX_SL_PCT*100:.0f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n\n"
@@ -1155,7 +1194,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v1.4 BAŞLIYOR...")
+    print("LIVE BOT v1.5 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
