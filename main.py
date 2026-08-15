@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v1.5 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
+LIVE BOT v1.6 — Çoklu Zaman Dilimi Trend Uyumu (GERÇEK PARA)
 12 Ağustos 2026
 
 KULLANICI KARARI: paper_bot.py (v1.8) haftalarca sanal test edilecekti,
@@ -100,7 +100,16 @@ MIN_SL_PCT = 0.05
 MAX_SL_PCT = 0.09
 TARGET_MAX_LOSS_USDT = float(os.getenv("TARGET_MAX_LOSS_USDT", "0.90"))
 IZ_SURME_R_ORANI = 1.0
-IZ_SURME_GERI_COKME_ORANI = 0.5
+IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.3"))
+# KULLANICI KARARI (14.08.2026): 0.5'ten 0.3'e indirildi. Gerçek işlemlerde
+# gözlemlendi - pozisyon $0.96 kâra kadar çıkıp $0.48'e (yarısı) kadar geri
+# verildikten sonra kapanıyordu, kullanıcı bunun çok fazla kâr geri verdiğini
+# düşündü. SL zaten sabit/geniş kalıyor (iz sürme aktifleşince SL'e
+# dokunulmuyor) - yani bu değişiklik KAYIP riskini artırmıyor, sadece
+# kazanan işlemlerde daha fazlasını kilitliyor. Bedeli: kısa bir geri
+# çekilme sonrası fiyat tekrar yükselirse o ek hareketi kaçırma riski
+# artar - ama backtest'te iz süren TP zaten %97-100 kazanma oranıyla
+# çalıştığı için bu riskin düşük olduğu değerlendirildi.
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 COOLDOWN_SAAT = 1.0
 MAX_HOLD_SAAT = 24
@@ -1142,7 +1151,7 @@ def manage_loop():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v1.5 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
+    tg(f"🚀 LIVE BOT v1.6 başladı — GERÇEK PARA (4H+1H+15m uyumu)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, tavan %{MAX_SL_PCT*100:.0f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n\n"
@@ -1194,7 +1203,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v1.5 BAŞLIYOR...")
+    print("LIVE BOT v1.6 BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
