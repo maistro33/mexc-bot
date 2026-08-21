@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v2.0 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
-14 Ağustos 2026
+LIVE BOT v2.1 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
+14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1 güncellemesi)
+
+v2.1 YENİ (21.08.2026, kullanıcı kararıyla): 
+  1) TEMKİNLİ MOD — BTC'nin kendi 1D+4H trendi ikisi de düşüşe dönerse
+     MAX_POS geçici olarak yarıya iner (açık pozisyonlar etkilenmez).
+  2) İZLEME LİSTESİ AJANI — paper_bot_v2'de test edildi, genel taramanın
+     (en hareketli 80 coin) kaçırabileceği "sessiz" (büyük hareket
+     olmadan 1D+4H'ye uyan) coinleri ayrı bir listede (max 10) izler.
 
 KULLANICI KARARI: Eski live_bot (v1.7, 4H+1H+15m, LONG+SHORT) durduruldu.
 Onun yerine, paper_bot_v2'de (sanal) test edilen ve daha güçlü çekirdek
@@ -126,6 +133,28 @@ COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/live2_cooldown.json")
 TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/live2_log.json")
 BLOKE_PATH = os.getenv("BLOKE_PATH", "/data/live2_bloke.json")
 
+# TEMKİNLİ MOD (21.08.2026 kararı): BTC'nin kendi 1D+4H trendi İKİSİ DE
+# düşüşe dönerse, yeni işlem açmayı DURDURMUYORUZ (bir altcoin BTC'den
+# bağımsız gerçekten güçlü olabilir - daha önce test ettik, coin'leri
+# tamamen engellemek yanlış çıkmıştı) - onun yerine AYNI ANDA AÇIK
+# TUTULABİLECEK POZİSYON SAYISINI yarıya indiriyoruz. Kanıtlanmış
+# mekanizmalara (SL, iz süren TP, giriş kuralları) dokunmuyor, sadece
+# "aynı anda kaç bahis açık" sorusuna temkinli cevap veriyor.
+TEMKINLI_MOD_AKTIF = os.getenv("TEMKINLI_MOD_AKTIF", "true").lower() == "true"
+BTC_REJIM_KONTROL_ARALIGI_SN = int(os.getenv("BTC_REJIM_KONTROL_ARALIGI_SN", "900"))
+_btc_rejim_durumu = {"temkinli": False, "son_kontrol": 0}
+
+# İZLEME LİSTESİ AJANI (21.08.2026 kararı): paper_bot_v2'de test edildi,
+# yapısal olarak doğru çalıştığı (bir gerçek sinyal üretti: MET) görüldü.
+# Genel tarama listesi (en hareketli ADAY_HAVUZU_BUYUKLUGU coin) sessizce
+# (büyük fiyat hareketi olmadan) 1D+4H uyumuna erişen coinleri kaçırabilir.
+# Bu ajan 2/3 uyumlu coinleri ayrı, sabit bir listede tutup her turda TAM
+# kontrol eder. ⚠️ Henüz haftalarca test edilmedi, kullanıcı kararıyla
+# doğrudan gerçek paraya eklendi.
+IZLEME_LISTESI_BOYUTU = int(os.getenv("IZLEME_LISTESI_BOYUTU", "10"))
+IZLEME_TARAMA_ARALIGI_SN = int(os.getenv("IZLEME_TARAMA_ARALIGI_SN", "900"))
+IZLEME_MAX_YAS_SAAT = float(os.getenv("IZLEME_MAX_YAS_SAAT", "24"))
+
 trade_state = {}
 state_lock = threading.Lock()
 acilis_rezervasyonlari = {}
@@ -135,6 +164,10 @@ son_kapanis_zamani = {}
 cooldown_lock = threading.Lock()
 bloke_coinler = set()
 bloke_lock = threading.Lock()
+
+izleme_listesi = {}  # sym -> {"eklenme_zamani": ts}
+izleme_lock = threading.Lock()
+_son_izleme_taramasi = {"ts": 0}
 
 
 def atomik_yaz(path, veri):
@@ -311,6 +344,85 @@ def aday_havuzu():
     return [sym for sym, _ in adaylar[:ADAY_HAVUZU_BUYUKLUGU]]
 
 
+def genis_evren_listesi():
+    """İZLEME LİSTESİ AJANI: aday_havuzu() sadece 'en hareketli'
+    ADAY_HAVUZU_BUYUKLUGU coini döner - skoru 24h fiyat değişimine dayalı.
+    Bir coin BÜYÜK bir hareket yapmadan sessizce 1D+4H+1H uyumuna
+    erişiyorsa düşük skor alıp bu listeden dışarıda kalabilir. Bu fonksiyon
+    hacim filtresi DIŞINDA hiçbir skor/sıralama uygulamadan TÜM uygun
+    coinleri döner."""
+    try:
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        log.warning(f"[TICKERS_GENIS] {e}")
+        return []
+    markets = market_bilgisi_al()
+    tumu = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT:USDT"):
+            continue
+        base = sym.split("/")[0]
+        if base in SLUGGISH_BASE:
+            continue
+        m = markets.get(sym)
+        if m and m.get("info", {}).get("isRwa") == "YES":
+            continue
+        vol = t.get("quoteVolume") or 0
+        if vol < 300000:
+            continue
+        tumu.append(sym)
+    return tumu
+
+
+def iki_uzerinden_uc_kontrol(sym):
+    """İZLEME LİSTESİ AJANI: sadece 1D+4H kontrol eder (1H'ye BAKMAZ) -
+    amaç 'neredeyse hazır' (2/3 uyumlu) coinleri ucuz bir kontrolle tespit
+    edip izleme listesine almak. 1H onayı ayrıca, tam sinyal fonksiyonunda
+    (ucyon_sinyal) kontrol edilir."""
+    df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
+    df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
+    yon_1d = trend_yonu(df_1d)
+    yon_4h = trend_yonu(df_4h)
+    return yon_1d == "yukselis" and yon_4h == "yukselis"
+
+
+def btc_temkinli_mod_mu():
+    """TEMKİNLİ MOD: BTC'nin kendi 1D+4H trendi İKİSİ DE düşüşteyse True
+    döner. 15dk'da bir güncellenir (önbellekli), gereksiz API çağrısı
+    yapılmasın diye."""
+    if time.time() - _btc_rejim_durumu["son_kontrol"] < BTC_REJIM_KONTROL_ARALIGI_SN:
+        return _btc_rejim_durumu["temkinli"]
+    try:
+        df_1d = get_df("BTC/USDT:USDT", "1d", MA_PERIYOT + 10)
+        df_4h = get_df("BTC/USDT:USDT", "4h", MA_PERIYOT + 5)
+        y1d = trend_yonu(df_1d)
+        y4h = trend_yonu(df_4h)
+        yeni_durum = (y1d == "dusus" and y4h == "dusus")
+    except Exception as e:
+        log.warning(f"[BTC_REJIM] {e}")
+        return _btc_rejim_durumu["temkinli"]
+
+    onceki = _btc_rejim_durumu["temkinli"]
+    _btc_rejim_durumu["temkinli"] = yeni_durum
+    _btc_rejim_durumu["son_kontrol"] = time.time()
+    if yeni_durum != onceki:
+        if yeni_durum:
+            tg("⚠️ BTC 1D+4H düşüşe döndü — TEMKİNLİ MOD aktif, "
+               "MAX_POS geçici olarak yarıya indi. Açık pozisyonlar etkilenmez.")
+        else:
+            tg("✅ BTC 1D+4H yeniden yükselişte — TEMKİNLİ MOD kapandı, "
+               "MAX_POS normale döndü.")
+    return yeni_durum
+
+
+def efektif_max_pos():
+    if not TEMKINLI_MOD_AKTIF:
+        return MAX_POS
+    if btc_temkinli_mod_mu():
+        return max(1, MAX_POS // 2)
+    return MAX_POS
+
+
 # ════════════════════════════════════════════
 # ÜÇLÜ ZAMAN DİLİMİ UYUM SİNYALİ (1D+4H+1H) + SADECE LONG
 # ════════════════════════════════════════════
@@ -372,7 +484,7 @@ def gercek_pozisyon_ac(sinyal):
     with state_lock:
         if sym in trade_state or sym in acilis_rezervasyonlari:
             return
-        if len(trade_state) + len(acilis_rezervasyonlari) >= MAX_POS:
+        if len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
             return
         acilis_rezervasyonlari[sym] = True
 
@@ -481,8 +593,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     tg(f"📈 GERÇEK POZİSYON: {sym} LONG\n"
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f})\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
-       f"TP: İZ SÜREN — ${iz_esik:.2f} kârda aktifleşir (1.0R), en iyi kârdan "
-       f"${gc_esik:.2f} geri çekilirse kapanır (0.5R)\n"
+       f"TP: İZ SÜREN — ${iz_esik:.2f} kârda aktifleşir ({IZ_SURME_R_ORANI:.1f}R), en iyi kârdan "
+       f"${gc_esik:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.1f}R)\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
 
 
@@ -1038,12 +1150,114 @@ def manage_loop():
             time.sleep(5)
 
 
+def izleme_listesi_guncelle():
+    """İZLEME LİSTESİ AJANI: geniş evreni tarar, sadece 1D+4H uyumlu (2/3)
+    olanları listeye ekler. Zaten pozisyonu açık ya da cooldown'da olan
+    coinler atlanır."""
+    if time.time() - _son_izleme_taramasi["ts"] < IZLEME_TARAMA_ARALIGI_SN:
+        return
+    _son_izleme_taramasi["ts"] = time.time()
+
+    try:
+        genis_liste = genis_evren_listesi()
+    except Exception as e:
+        log.warning(f"[IZLEME_TARAMA] {e}")
+        return
+
+    with izleme_lock:
+        mevcut = set(izleme_listesi.keys())
+    with state_lock:
+        acik = set(trade_state.keys())
+
+    adaylar = [s for s in genis_liste if s not in mevcut and s not in acik and not cooldown_da_mi(s)]
+    if not adaylar:
+        return
+
+    eklenen = 0
+    with ThreadPoolExecutor(max_workers=6) as havuz:
+        gelecekler = {havuz.submit(iki_uzerinden_uc_kontrol, sym): sym for sym in adaylar}
+        for gelecek in as_completed(gelecekler):
+            sym = gelecekler[gelecek]
+            try:
+                uyumlu = gelecek.result()
+            except Exception as e:
+                log.warning(f"[IZLEME_KONTROL] {sym}: {e}")
+                continue
+            if not uyumlu:
+                continue
+            with izleme_lock:
+                if sym in izleme_listesi:
+                    continue
+                if len(izleme_listesi) >= IZLEME_LISTESI_BOYUTU:
+                    en_eski = min(izleme_listesi.items(), key=lambda kv: kv[1]["eklenme_zamani"])
+                    izleme_listesi.pop(en_eski[0], None)
+                izleme_listesi[sym] = {"eklenme_zamani": time.time()}
+                eklenen += 1
+    if eklenen:
+        log.info(f"[IZLEME_LISTESI] {eklenen} yeni coin eklendi, liste boyutu={len(izleme_listesi)}")
+
+
+def izleme_listesi_kontrol():
+    """İzleme listesindeki her coin için TAM sinyal kontrolü (ucyon_sinyal
+    - 1D+4H+1H+15m, hepsi sıfırdan yeniden doğrulanır) yapılır. 1D/4H
+    uyumunu kaybetmiş ya da bayatlamış kayıtlar temizlenir."""
+    with izleme_lock:
+        izlenenler = dict(izleme_listesi)
+    if not izlenenler:
+        return 0
+
+    acilanlar = 0
+    for sym, kayit in izlenenler.items():
+        with state_lock:
+            if sym in trade_state or len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
+                continue
+        if cooldown_da_mi(sym):
+            with izleme_lock:
+                izleme_listesi.pop(sym, None)
+            continue
+
+        yas_saat = (time.time() - kayit["eklenme_zamani"]) / 3600
+        if yas_saat > IZLEME_MAX_YAS_SAAT:
+            with izleme_lock:
+                izleme_listesi.pop(sym, None)
+            log.info(f"[IZLEME_LISTESI] {sym} bayatladı ({yas_saat:.1f}sa), listeden çıkarıldı")
+            continue
+
+        try:
+            sinyal = ucyon_sinyal(sym)
+        except Exception as e:
+            log.warning(f"[IZLEME_SINYAL] {sym}: {e}")
+            continue
+
+        if sinyal:
+            with izleme_lock:
+                izleme_listesi.pop(sym, None)
+            with state_lock:
+                if sym in trade_state or len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
+                    continue
+            log.info(f"[IZLEME_LISTESI] {sym} tam uyuma ulaştı (1D+4H+1H+15m), pozisyon açılıyor")
+            gercek_pozisyon_ac(sinyal)
+            acilanlar += 1
+        else:
+            try:
+                if not iki_uzerinden_uc_kontrol(sym):
+                    with izleme_lock:
+                        izleme_listesi.pop(sym, None)
+            except Exception:
+                pass
+    return acilanlar
+
+
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v2.0 başladı — GERÇEK PARA (1D+4H+1H uyum, LONG-only)\n"
+    tg(f"🚀 LIVE BOT v2.1 başladı — GERÇEK PARA (1D+4H+1H uyum, LONG-only)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n"
-       f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı - önceki testlerde net zarar verdi)'}\n\n"
+       f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı - önceki testlerde net zarar verdi)'}\n"
+       f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} — BTC 1D+4H düşüşe dönerse "
+       f"MAX_POS geçici yarıya iner (açık pozisyonlar etkilenmez)\n"
+       f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir "
+       f"genişletiliyor — paper modda test edildi, ⚠️ henüz haftalarca doğrulanmadı\n\n"
        f"Paper testinde çekirdek strateji: +$17.61/25 işlem (+$0.70/işlem ort.)\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
@@ -1051,8 +1265,23 @@ def tarama_loop():
 
     while True:
         try:
+            emp = efektif_max_pos()
             with state_lock:
-                bos_slot = MAX_POS - len(trade_state) - len(acilis_rezervasyonlari)
+                bos_slot = emp - len(trade_state) - len(acilis_rezervasyonlari)
+            if bos_slot <= 0:
+                time.sleep(KONTROL_ARALIGI_SN)
+                continue
+
+            try:
+                izleme_listesi_guncelle()
+                izleme_acilan = izleme_listesi_kontrol()
+            except Exception as e:
+                log.warning(f"[IZLEME_GENEL] {e}")
+                izleme_acilan = 0
+
+            emp = efektif_max_pos()
+            with state_lock:
+                bos_slot = emp - len(trade_state) - len(acilis_rezervasyonlari)
             if bos_slot <= 0:
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
@@ -1080,12 +1309,16 @@ def tarama_loop():
                             continue
                         if sinyal:
                             with state_lock:
-                                if sym in trade_state or len(trade_state) + len(acilis_rezervasyonlari) >= MAX_POS:
+                                if sym in trade_state or len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
                                     continue
                             gercek_pozisyon_ac(sinyal)
                             bulunan += 1
 
-            log.info(f"[NABIZ] tur tamam | havuz={len(adaylar)} | bulunan={bulunan} | acik={MAX_POS-bos_slot}/{MAX_POS}")
+            with izleme_lock:
+                izleme_boyut = len(izleme_listesi)
+            log.info(f"[NABIZ] tur tamam | havuz={len(adaylar)} | bulunan={bulunan} | "
+                     f"izleme_acilan={izleme_acilan} | izleme_liste={izleme_boyut}/{IZLEME_LISTESI_BOYUTU} | "
+                     f"acik={emp-bos_slot}/{emp} (max_pos_normal={MAX_POS})")
             time.sleep(KONTROL_ARALIGI_SN)
         except Exception as e:
             log.error(f"[TARAMA] {e}")
@@ -1093,7 +1326,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v2.0 (1D+4H+1H, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v2.1 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
