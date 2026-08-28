@@ -763,9 +763,15 @@ def panel_ozet_metni():
 
 
 def panel_ayarlar_metni():
+    temkinli = btc_temkinli_mod_mu() if TEMKINLI_MOD_AKTIF else False
+    with izleme_lock:
+        izleme_boyut = len(izleme_listesi)
+        izleme_coinler = sorted(s.split("/")[0] for s in izleme_listesi.keys())
+    izleme_satiri = f"  Şu an listede: {', '.join(izleme_coinler)}" if izleme_coinler else "  Şu an liste boş"
     return ("⚙️ LIVE BOT v2 AYARLARI\n\n"
-            "Sürüm: v2.0 (eski live_bot v1.7'nin yerine geçti - 1D+4H+1H "
-            "uyum + LONG-only, paper_bot_v2'de test edilen daha güçlü strateji)\n\n"
+            "Sürüm: v2.1 (eski live_bot v1.7'nin yerine geçti - 1D+4H+1H "
+            "uyum + LONG-only, paper_bot_v2'de test edilen daha güçlü strateji + "
+            "temkinli mod + izleme listesi ajanı)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
             "Strateji: Üçlü zaman dilimi trend uyumu\n"
             "  1) 1D trend YUKARI olmalı\n"
@@ -773,12 +779,19 @@ def panel_ayarlar_metni():
             "  3) 1H trend YUKARI olmalı\n"
             "  4) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)\n\n"
             f"Kaldıraç: {LEV}x | Marjin: sabit ${SABIT_MARJIN_USDT:.2f}\n"
-            f"MAX_POS: {MAX_POS}\n"
+            f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n"
             f"SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f}\n"
             f"TP: İZ SÜREN — {IZ_SURME_R_ORANI:.1f}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI:.1f}R geri çekilme\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
             f"  Eski live_bot'ta VE paper_bot_v2'de gerçek/sanal veriyle test "
             f"edildi, İKİSİNDE DE net zarar verdiği görüldü - varsayılan kapalı.\n\n"
+            f"🌡️ TEMKİNLİ MOD: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'}\n"
+            f"  Şu anki durum: {'⚠️ DEVREDE (BTC 1D+4H düşüşte, MAX_POS yarıya indi)' if temkinli else '✅ pasif (BTC 1D+4H yükselişte/karışık, MAX_POS normal)'}\n\n"
+            f"👁️ İZLEME LİSTESİ AJANI: max {IZLEME_LISTESI_BOYUTU} coin, "
+            f"{IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n"
+            f"  Genel taramanın (en hareketli {ADAY_HAVUZU_BUYUKLUGU} coin) kaçırabileceği "
+            f"sessizce 1D+4H uyumuna erişen coinleri ayrıca izler.\n"
+            f"{izleme_satiri} ({izleme_boyut}/{IZLEME_LISTESI_BOYUTU})\n\n"
             "⚠️ Bu strateji paper modda ~69 işlemle test edildi (çekirdek: "
             "+$17.61/25 işlem), gerçek parada sıfırdan başlıyor.")
 
