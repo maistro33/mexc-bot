@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v2.1 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
+LIVE BOT v2.2 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
 14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1 güncellemesi)
 
 v2.1 YENİ (21.08.2026, kullanıcı kararıyla): 
@@ -111,11 +111,23 @@ SL_BUFFER_PCT = 0.015
 MIN_SL_PCT = 0.05
 TARGET_MAX_LOSS_USDT = float(os.getenv("TARGET_MAX_LOSS_USDT", "0.90"))
 MAX_SL_PCT_TAVAN = TARGET_MAX_LOSS_USDT / NOTIONAL
-IZ_SURME_R_ORANI = 1.0
-IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.3"))
+# KULLANICI KARARI (22.08.2026): "bazı coinler kâra geçiyor sonra birden
+# düşüyor, sürekli kâr alan hızlı çıkan bot olsun" isteğiyle - iz sürme
+# eşiği 1.0R'den 0.4R'ye indirildi (çok daha erken aktifleşir, kâr çok
+# daha küçük bir hareketten sonra kilitlenmeye başlar) VE geri çekilme
+# payı 0.3R'den 0.15R'ye indirildi (aktifleştikten sonra çok daha az kâr
+# geri verip hızlı çıkar). Bedeli: büyük trend hareketlerinde daha erken
+# çıkıp potansiyel ek kârı kaçırma riski artar - ama kullanıcı "büyük
+# hareket kaçırmaktansa elimdeki kârı koru" tercihini bilinçli yaptı.
+IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.4"))
+IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.15"))
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 COOLDOWN_SAAT = 1.0
-MAX_HOLD_SAAT = 24
+# KULLANICI KARARI (22.08.2026): 24 saatten 8 saate indirildi - pozisyonlar
+# "saatlerce" beklemeden, daha hızlı karar (SL/iz süren TP'ye ulaşamazsa
+# zorla kapanış) verilsin diye. Bedeli: yavaş gelişen ama sonunda kârlı
+# olabilecek bazı hareketler daha erken zorla kapatılabilir.
+MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "8"))
 KONTROL_ARALIGI_SN = 60
 ADAY_HAVUZU_BUYUKLUGU = 80
 
@@ -1262,7 +1274,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v2.1 başladı — GERÇEK PARA (1D+4H+1H uyum, LONG-only)\n"
+    tg(f"🚀 LIVE BOT v2.2 başladı — GERÇEK PARA (1D+4H+1H uyum, LONG-only)\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
        f"SL taban %{MIN_SL_PCT*100:.0f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f} | "
        f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n"
@@ -1339,7 +1351,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v2.1 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
+    print("LIVE BOT v2.2 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
