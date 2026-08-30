@@ -2,14 +2,24 @@
 """
 ════════════════════════════════════════════════════════
 LIVE BOT v2.2 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
-14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1 güncellemesi)
+14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2)
 
-v2.1 YENİ (21.08.2026, kullanıcı kararıyla): 
+v2.1 (21.08.2026, kullanıcı kararıyla):
   1) TEMKİNLİ MOD — BTC'nin kendi 1D+4H trendi ikisi de düşüşe dönerse
      MAX_POS geçici olarak yarıya iner (açık pozisyonlar etkilenmez).
   2) İZLEME LİSTESİ AJANI — paper_bot_v2'de test edildi, genel taramanın
      (en hareketli 80 coin) kaçırabileceği "sessiz" (büyük hareket
      olmadan 1D+4H'ye uyan) coinleri ayrı bir listede (max 10) izler.
+
+v2.2 (22.08.2026, kullanıcı kararıyla): "bazı coinler kâra geçiyor sonra
+birden düşüyor, sürekli kâr alan hızlı çıkan bot olsun, saatlerce
+beklenmesin" isteğiyle:
+  - İz sürme aktifleşme eşiği 1.0R'den 0.4R'ye indirildi
+  - Geri çekilme payı 0.3R'den 0.15R'ye indirildi
+  - Max tutma süresi 24 saatten 8 saate indirildi
+  Bedeli: büyük/yavaş gelişen trend hareketlerinde daha erken çıkıp
+  potansiyel ek kârı kaçırma riski artar - kullanıcı bu takası bilerek
+  kabul etti (kârı erken koru > büyük hareketi tam yakala).
 
 KULLANICI KARARI: Eski live_bot (v1.7, 4H+1H+15m, LONG+SHORT) durduruldu.
 Onun yerine, paper_bot_v2'de (sanal) test edilen ve daha güçlü çekirdek
@@ -33,7 +43,7 @@ MANTIK:
   5) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)
 
 Çıkış: SL (swing bazlı, geniş, hedef ~$0.90 kayıp) + İZ SÜREN TP
-(1.0R aktifleşme, 0.5R geri çekilme).
+(v2.2: 0.4R aktifleşme, 0.15R geri çekilme - hızlı kâr kilitleme modu).
 
 ⚠️ DÜRÜSTLÜK NOTU: Bu strateji paper modda ~69 işlemlik veriyle test
 edildi, gerçek parada henüz sıfırdan başlıyor. Paper performansı gerçek
@@ -605,8 +615,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     tg(f"📈 GERÇEK POZİSYON: {sym} LONG\n"
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f})\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
-       f"TP: İZ SÜREN — ${iz_esik:.2f} kârda aktifleşir ({IZ_SURME_R_ORANI:.1f}R), en iyi kârdan "
-       f"${gc_esik:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.1f}R)\n"
+       f"TP: İZ SÜREN — ${iz_esik:.2f} kârda aktifleşir ({IZ_SURME_R_ORANI:.2f}R), en iyi kârdan "
+       f"${gc_esik:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.2f}R)\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
 
 
@@ -781,9 +791,9 @@ def panel_ayarlar_metni():
         izleme_coinler = sorted(s.split("/")[0] for s in izleme_listesi.keys())
     izleme_satiri = f"  Şu an listede: {', '.join(izleme_coinler)}" if izleme_coinler else "  Şu an liste boş"
     return ("⚙️ LIVE BOT v2 AYARLARI\n\n"
-            "Sürüm: v2.1 (eski live_bot v1.7'nin yerine geçti - 1D+4H+1H "
+            "Sürüm: v2.2 (eski live_bot v1.7'nin yerine geçti - 1D+4H+1H "
             "uyum + LONG-only, paper_bot_v2'de test edilen daha güçlü strateji + "
-            "temkinli mod + izleme listesi ajanı)\n\n"
+            "temkinli mod + izleme listesi ajanı + hızlı kâr al ayarları)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
             "Strateji: Üçlü zaman dilimi trend uyumu\n"
             "  1) 1D trend YUKARI olmalı\n"
@@ -793,7 +803,7 @@ def panel_ayarlar_metni():
             f"Kaldıraç: {LEV}x | Marjin: sabit ${SABIT_MARJIN_USDT:.2f}\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n"
             f"SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f}\n"
-            f"TP: İZ SÜREN — {IZ_SURME_R_ORANI:.1f}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI:.1f}R geri çekilme\n\n"
+            f"TP: İZ SÜREN — {IZ_SURME_R_ORANI:.2f}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI:.2f}R geri çekilme\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
             f"  Eski live_bot'ta VE paper_bot_v2'de gerçek/sanal veriyle test "
             f"edildi, İKİSİNDE DE net zarar verdiği görüldü - varsayılan kapalı.\n\n"
