@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v2.2 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
+LIVE BOT v3.0 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
 14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2)
 
 v2.1 (21.08.2026, kullanıcı kararıyla):
@@ -42,8 +42,8 @@ MANTIK:
   4) Üçü uyumlu değilse sinyal YOK
   5) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)
 
-Çıkış: SL (swing bazlı, geniş, hedef ~$0.90 kayıp) + İZ SÜREN TP
-(v2.2: 0.4R aktifleşme, 0.15R geri çekilme - hızlı kâr kilitleme modu).
+Çıkış: SL (swing bazlı, taban %5) + SABİT %5 HEDEF (v3.0: iz sürme
+KALDIRILDI, hedefe değer değmez hemen kapanır - "hızlı gir çık" modu).
 
 ⚠️ DÜRÜSTLÜK NOTU: Bu strateji paper modda ~69 işlemlik veriyle test
 edildi, gerçek parada henüz sıfırdan başlıyor. Paper performansı gerçek
@@ -110,7 +110,7 @@ def yetkili_mi(msg_or_call):
 SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC", "BCH"}
 
 # ── GERÇEK işlem parametreleri ──
-SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "1.0"))
+SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
 LEV = 10
 NOTIONAL = SABIT_MARJIN_USDT * LEV
 MAX_POS = int(os.getenv("MAX_POS", "3"))
@@ -121,23 +121,28 @@ SL_BUFFER_PCT = 0.015
 MIN_SL_PCT = 0.05
 TARGET_MAX_LOSS_USDT = float(os.getenv("TARGET_MAX_LOSS_USDT", "0.90"))
 MAX_SL_PCT_TAVAN = TARGET_MAX_LOSS_USDT / NOTIONAL
-# KULLANICI KARARI (22.08.2026): "bazı coinler kâra geçiyor sonra birden
-# düşüyor, sürekli kâr alan hızlı çıkan bot olsun" isteğiyle - iz sürme
-# eşiği 1.0R'den 0.4R'ye indirildi (çok daha erken aktifleşir, kâr çok
-# daha küçük bir hareketten sonra kilitlenmeye başlar) VE geri çekilme
-# payı 0.3R'den 0.15R'ye indirildi (aktifleştikten sonra çok daha az kâr
-# geri verip hızlı çıkar). Bedeli: büyük trend hareketlerinde daha erken
-# çıkıp potansiyel ek kârı kaçırma riski artar - ama kullanıcı "büyük
-# hareket kaçırmaktansa elimdeki kârı koru" tercihini bilinçli yaptı.
-IZ_SURME_R_ORANI = float(os.getenv("IZ_SURME_R_ORANI", "0.4"))
-IZ_SURME_GERI_COKME_ORANI = float(os.getenv("IZ_SURME_GERI_COKME_ORANI", "0.15"))
+
+# ════════════════════════════════════════════
+# KULLANICI KARARI (01.09.2026): FIRSATÇI STRATEJİYE GEÇİŞ
+# ════════════════════════════════════════════
+# Eski mantık (iz süren TP, 0.4R/0.15R) paper'da SL kayıplarının kârın
+# önemli kısmını götürdüğü gözlemlendi. Kullanıcı isteğiyle SABİT, HIZLI
+# hedefe geçildi - fiyat hedefe değer değmez HEMEN kapanır, iz sürme YOK.
+# Bu, önce paper_bot_firsatci'de test edildi (backtest: 573 işlem, %64.4
+# kazanma, net +$58.10 / $1 marjin ölçeğinde, 78 coin ~14 gün) - canlı
+# paper testinde de (27 işlem) tutarlı pozitif sonuç verdi.
+GIRIS_MAX_DIP_MESAFE = float(os.getenv("GIRIS_MAX_DIP_MESAFE", "0.02"))
+# KULLANICI KARARI (01.09.2026, "vur kaç" için daha isabetli giriş):
+# backtest'te test edildi - giriş fiyatı swing dipten en fazla %2
+# uzaklaşmış olmalı (geç girişler reddediliyor). Sonuç: SL kayıp oranı
+# %4.9'dan %1.5'e düştü (78 coin/~14 gün backtest'inde).
+HIZLI_HEDEF_PCT = float(os.getenv("HIZLI_HEDEF_PCT", "0.05"))
+# Sabit çıkış hedefi - iz sürme YOK, hedefe değer değmez hemen kapanır.
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 COOLDOWN_SAAT = 1.0
-# KULLANICI KARARI (22.08.2026): 24 saatten 8 saate indirildi - pozisyonlar
-# "saatlerce" beklemeden, daha hızlı karar (SL/iz süren TP'ye ulaşamazsa
-# zorla kapanış) verilsin diye. Bedeli: yavaş gelişen ama sonunda kârlı
-# olabilecek bazı hareketler daha erken zorla kapatılabilir.
-MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "8"))
+# KULLANICI KARARI (01.09.2026): fırsatçı stratejide 4 saat - "hızlı gir
+# çık, bekleme yok" isteğine uygun, kararsız pozisyonlar hızlı kapanır.
+MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "4"))
 KONTROL_ARALIGI_SN = 60
 ADAY_HAVUZU_BUYUKLUGU = 80
 
@@ -482,6 +487,15 @@ def ucyon_sinyal(sym):
     yukari_kapandi = son_mum["close"] > son_mum["open"]
 
     if dip_yakin and yukari_kapandi and son_mum["close"] > swing_low:
+        # KULLANICI KARARI (01.09.2026, "vur kaç" için daha isabetli giriş):
+        # backtest'te test edildi - giriş fiyatı swing dipten çok
+        # uzaklaşmışsa (geç giriş) sinyal reddediliyor. Sonuç: SL kayıp
+        # oranı %4.9'dan %1.5'e düştü, işlem başına ortalama kâr arttı
+        # (+$0.1014 -> +$0.1082, %2 mesafe filtresiyle, 78 coin/~14 gün
+        # backtest'inde).
+        dip_mesafe = (son_mum["close"] - swing_low) / swing_low
+        if dip_mesafe > GIRIS_MAX_DIP_MESAFE:
+            return None
         return {"symbol": sym, "entry": float(son_mum["close"]), "swing_nokta": float(swing_low),
                 "1d": yon_1d, "4h": yon_4h, "1h": yon_1h}
     return None
@@ -577,6 +591,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         log.warning(f"[GERCEK_POZ] {sym}: {e}")
 
     r_risk = abs(entry - sl)
+    tp = entry * (1 + HIZLI_HEDEF_PCT)
 
     sl_emir_id = None
     sl_fiyat = float(exchange.price_to_precision(sym, sl))
@@ -602,21 +617,17 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
 
     with state_lock:
         trade_state[sym] = {
-            "entry": entry, "sl": sl, "sl_emir_id": sl_emir_id, "yon": "long", "qty": qty,
-            "r_risk": r_risk, "acilis_zamani": time.time(), "en_iyi_kar": None, "iz_aktif": False,
+            "entry": entry, "sl": sl, "tp": tp, "sl_emir_id": sl_emir_id, "yon": "long", "qty": qty,
+            "r_risk": r_risk, "acilis_zamani": time.time(),
             "1d": sinyal["1d"], "4h": sinyal["4h"], "1h": sinyal["1h"], "notional": notional,
             "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
         }
     durumu_diske_yaz()
 
-    risk_dolar = r_risk * qty
-    iz_esik = risk_dolar * IZ_SURME_R_ORANI
-    gc_esik = risk_dolar * IZ_SURME_GERI_COKME_ORANI
-    tg(f"📈 GERÇEK POZİSYON: {sym} LONG\n"
-       f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f})\n"
+    tg(f"📈 GERÇEK POZİSYON (fırsatçı): {sym} LONG\n"
+       f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
-       f"TP: İZ SÜREN — ${iz_esik:.2f} kârda aktifleşir ({IZ_SURME_R_ORANI:.2f}R), en iyi kârdan "
-       f"${gc_esik:.2f} geri çekilirse kapanır ({IZ_SURME_GERI_COKME_ORANI:.2f}R)\n"
+       f"⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
 
 
@@ -790,20 +801,27 @@ def panel_ayarlar_metni():
         izleme_boyut = len(izleme_listesi)
         izleme_coinler = sorted(s.split("/")[0] for s in izleme_listesi.keys())
     izleme_satiri = f"  Şu an listede: {', '.join(izleme_coinler)}" if izleme_coinler else "  Şu an liste boş"
-    return ("⚙️ LIVE BOT v2 AYARLARI\n\n"
-            "Sürüm: v2.2 (eski live_bot v1.7'nin yerine geçti - 1D+4H+1H "
-            "uyum + LONG-only, paper_bot_v2'de test edilen daha güçlü strateji + "
-            "temkinli mod + izleme listesi ajanı + hızlı kâr al ayarları)\n\n"
+    return ("⚙️ LIVE BOT v3 (FIRSATÇI) AYARLARI\n\n"
+            "Sürüm: v3.0 (01.09.2026 - fırsatçı stratejiye geçiş: sabit hızlı "
+            "hedef + dip mesafesi filtresi ile daha isabetli giriş)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
-            "Strateji: Üçlü zaman dilimi trend uyumu\n"
+            "Giriş: Üçlü zaman dilimi trend uyumu + dip yakınlığı\n"
             "  1) 1D trend YUKARI olmalı\n"
             "  2) 4H trend YUKARI olmalı\n"
             "  3) 1H trend YUKARI olmalı\n"
-            "  4) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)\n\n"
+            "  4) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)\n"
+            f"  5) Giriş fiyatı dipten en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzak olmalı "
+            f"(geç girişler reddedilir - backtest: SL oranı %4.9→%1.5)\n\n"
+            "⚡ ÇIKIŞ (iz sürme YOK, sabit hedef):\n"
+            f"  TP: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
+            f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}\n"
+            f"  Max tutma: {MAX_HOLD_SAAT:.0f} saat (bekleme yok, hızlı karar)\n\n"
             f"Kaldıraç: {LEV}x | Marjin: sabit ${SABIT_MARJIN_USDT:.2f}\n"
-            f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n"
-            f"SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f}\n"
-            f"TP: İZ SÜREN — {IZ_SURME_R_ORANI:.2f}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI:.2f}R geri çekilme\n\n"
+            f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
+            "📊 BACKTEST (78 coin/~14 gün, $1 marjin ölçeğinde, komisyon dahil):\n"
+            "  %2 dip mesafesi filtresiyle: 403 işlem, %68.2 kazanma, net +$43.61\n"
+            "  (filtresiz: 573 işlem, %64.4 kazanma, net +$58.10 - filtre daha az "
+            "işlemle daha isabetli sonuç veriyor, SL oranı çok azaldı)\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
             f"  Eski live_bot'ta VE paper_bot_v2'de gerçek/sanal veriyle test "
             f"edildi, İKİSİNDE DE net zarar verdiği görüldü - varsayılan kapalı.\n\n"
@@ -875,15 +893,12 @@ def panel_risk_metni():
             entry = d["entry"]
             pnl_pct = (guncel - entry) / entry * 100
             anlik_kar = pnl_pct / 100 * d.get("notional", NOTIONAL)
-            iz_durum = "🔒 aktif" if d.get("iz_aktif") else "🔓 pasif"
-            en_iyi = d.get("en_iyi_kar")
-            en_iyi_metin = f", en iyi: {en_iyi:+.2f}$" if en_iyi is not None else ""
             sure_dk = (time.time() - d["acilis_zamani"]) / 60
+            kalan_dk = MAX_HOLD_SAAT * 60 - sure_dk
             satirlar.append(f"{sym} LONG (1D:{d.get('1d')}/4H:{d.get('4h')}/1H:{d.get('1h')})\n"
                              f"  Giriş:{entry:.6f} Şimdi:{guncel:.6f} (%{pnl_pct:+.2f})\n"
-                             f"  Anlık PnL: {anlik_kar:+.2f}$ | SL:{d['sl']:.6f}\n"
-                             f"  İz sürme: {iz_durum}{en_iyi_metin}\n"
-                             f"  Açık süre: {sure_dk:.0f} dk")
+                             f"  Anlık PnL: {anlik_kar:+.2f}$ | SL:{d['sl']:.6f} | TP:{d.get('tp',0):.6f}\n"
+                             f"  Açık süre: {sure_dk:.0f} dk | Max tutmaya kalan: {max(0,kalan_dk):.0f} dk")
         except Exception:
             satirlar.append(f"{sym} (fiyat alınamadı)")
     return "\n".join(satirlar)
@@ -1142,26 +1157,23 @@ def manage_loop():
                     gercek_pozisyon_kapat(sym, "sl")
                     continue
 
-                entry = durum["entry"]
-                r_risk = durum["r_risk"]
-                poz_notional = durum.get("notional", NOTIONAL)
-                anlik_kar = (guncel - entry) / entry * poz_notional
-                risk_usdt = (r_risk / entry) * poz_notional
-                iz_esik = risk_usdt * IZ_SURME_R_ORANI
-                gc_esik = risk_usdt * IZ_SURME_GERI_COKME_ORANI
-
-                en_iyi = None
-                if anlik_kar >= iz_esik or durum["iz_aktif"]:
-                    with state_lock:
-                        if sym in trade_state:
-                            trade_state[sym]["iz_aktif"] = True
-                            en_iyi = trade_state[sym]["en_iyi_kar"]
-                            if en_iyi is None or anlik_kar > en_iyi:
-                                trade_state[sym]["en_iyi_kar"] = anlik_kar
-                                en_iyi = anlik_kar
-                    if en_iyi is not None and anlik_kar <= en_iyi - gc_esik:
-                        gercek_pozisyon_kapat(sym, "iz_suren_tp")
-                        continue
+                # FIRSATÇI ÇIKIŞ (01.09.2026 kararı): sabit hedef, iz
+                # sürme YOK. Fiyat TP'ye değer değmez hemen kapanır -
+                # "bekleme yok, hızlı kâr al" isteğine uygun.
+                # GÜVENLİK: durum.get("tp") kullanılıyor (doğrudan
+                # durum["tp"] DEĞİL) - eğer diskte v3.0'dan ÖNCE açılmış,
+                # "tp" alanı olmayan eski bir pozisyon kalmışsa, KeyError
+                # ile çökmek yerine güvenlik amaçlı hemen piyasa
+                # fiyatından kapatılır (belirsiz/eski bir pozisyonu açık
+                # bırakmaktansa).
+                tp = durum.get("tp")
+                if tp is None:
+                    log.warning(f"[ESKI_POZISYON] {sym} 'tp' alanı yok (v3.0 öncesi kalıntı olabilir) - güvenlik amaçlı kapatılıyor")
+                    gercek_pozisyon_kapat(sym, "eski_format_guvenlik_kapanisi")
+                    continue
+                if guncel >= tp:
+                    gercek_pozisyon_kapat(sym, "hizli_tp")
+                    continue
 
                 # borsada pozisyon hâlâ var mı diye doğrula (SL borsada
                 # bizden önce tetiklenmiş olabilir)
@@ -1284,16 +1296,19 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"🚀 LIVE BOT v2.2 başladı — GERÇEK PARA (1D+4H+1H uyum, LONG-only)\n"
+    tg(f"⚡ LIVE BOT v3 (FIRSATÇI) başladı — GERÇEK PARA\n"
        f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
-       f"SL taban %{MIN_SL_PCT*100:.0f}, hedef kayıp≈${TARGET_MAX_LOSS_USDT:.2f} | "
-       f"TP: iz süren, {IZ_SURME_R_ORANI}R aktifleşme, {IZ_SURME_GERI_COKME_ORANI}R geri çekilme\n"
+       f"Giriş: 1D+4H+1H uyum + swing dip, dipten en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzaklık\n"
+       f"⚡ ÇIKIŞ: SABİT %{HIZLI_HEDEF_PCT*100:.1f} hedef - hemen kapanır, iz sürme YOK\n"
+       f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat (bekleme yok)\n"
        f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı - önceki testlerde net zarar verdi)'}\n"
        f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} — BTC 1D+4H düşüşe dönerse "
        f"MAX_POS geçici yarıya iner (açık pozisyonlar etkilenmez)\n"
-       f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir "
-       f"genişletiliyor — paper modda test edildi, ⚠️ henüz haftalarca doğrulanmadı\n\n"
-       f"Paper testinde çekirdek strateji: +$17.61/25 işlem (+$0.70/işlem ort.)\n\n"
+       f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
+       f"Backtest (%2 dip mesafesi filtresiyle): 403 işlem, %68.2 kazanma, net +$43.61 "
+       f"($1 marjin ölçeğinde, 78 coin/~14 gün)\n"
+       f"⚠️ Bu strateji önce paper_bot_firsatci'de test edildi, sınırlı örneklemle "
+       f"(27 işlem) pozitif sonuç verdi - gerçek parada sıfırdan başlıyor.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
     baslangic_uzlastirma()
@@ -1361,7 +1376,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v2.2 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
+    print("LIVE BOT v3.0 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
