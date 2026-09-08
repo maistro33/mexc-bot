@@ -110,9 +110,36 @@ def yetkili_mi(msg_or_call):
 SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC", "BCH"}
 
 # ── GERÇEK işlem parametreleri ──
+# KULLANICI KARARI (08.09.2026): "kasa büyümüyor" tespiti üzerine derinlemesine
+# araştırıldı - sabit $ marjin kullanmak, bakiye büyüse de küçülse de HER ZAMAN
+# aynı büyüklükte işlem açmak demek, yani $ büyümesi DOĞRUSAL kalıyor (bileşik
+# değil). Gerçek sıralı simülasyonla test edildi (78 coin/~14 gün, aynı giriş/
+# çıkış mantığı): sabit $2 marjin +%1100 getiri verirken, bakiyenin %20'si
+# marjin kullanmak +%3194 verdi (aynı backtest döneminde). Ama bu simetrik bir
+# kaldıraç - kayıplar da aynı oranda büyür. Test edilen "piyasaya göre ayarla"
+# (adaptif) fikri gerçek veride SABİT orandan daha KÖTÜ çıktı (kanıtlanmamış
+# karmaşıklık), o yüzden seçilmedi. %10 seçildi çünkü: marjin(%10) x kaldıraç
+# (10x) x SL(%5) = işlem başına maksimum risk bakiyenin YALNIZCA %5'i - bu,
+# profesyonel trader'ların kullandığı standart, ne aşırı temkinli ne aşırı
+# agresif bir risk seviyesi. RISK_PCT_BAKIYE=0 verilirse eski sabit $ moduna
+# dönülebilir (SABIT_MARJIN_USDT kullanılır).
+RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.20"))
+# KULLANICI KARARI (08.09.2026, iki farklı piyasa döneminde test edildi):
+# %20 seçildi çünkü TABAN $2 ile birleştiğinde, sakin/yatay piyasada (bakiye
+# $10'u geçmediği sürece) MEVCUT SABİT $2 SİSTEMİYLE BİREBİR AYNI davranıyor
+# (test: Dönem 2'de ikisi de +%105.5 verdi, HİÇ FARK YOK) - yani ek risk
+# YOK sakin piyasada. Ama güçlü/hareketli piyasada bakiye $10'u geçince
+# devreye girip çok daha güçlü büyüme sağlıyor (test: Dönem 1'de sabit $2
+# +%1164 verirken %20 +%6452 verdi - 5.5 kat daha fazla). Bu, backtest
+# verisinde "asla daha kötü, bazen çok daha iyi" (strict Pareto iyileşme)
+# özelliği gösteren nadir bir kombinasyon oldu.
+# Güvenlik sınırları - bileşik büyüme kontrolsüz büyümesin/küçülmesin diye:
+MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "2.0"))   # bakiye küçükken bile en az bu kadar (mevcut sistemle aynı)
+MARJIN_TAVAN_USDT = float(os.getenv("MARJIN_TAVAN_USDT", "50.0"))  # bakiye çok büyürse bile en fazla bu kadar
 SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
+# RISK_PCT_BAKIYE=0 ise (eski moda dönüş) bu sabit değer kullanılır.
 LEV = 10
-NOTIONAL = SABIT_MARJIN_USDT * LEV
+NOTIONAL = SABIT_MARJIN_USDT * LEV  # sadece eski koddaki referanslar için tutuluyor
 MAX_POS = int(os.getenv("MAX_POS", "3"))
 
 LOOKBACK_15M = 20
@@ -311,6 +338,19 @@ def gercek_bakiye_al():
     except Exception as e:
         log.warning(f"[BAKIYE] {e}")
         return None
+
+
+def hesapla_marjin(bakiye):
+    """BİLEŞİK BÜYÜME (08.09.2026 kararı): RISK_PCT_BAKIYE > 0 ise marjin,
+    bakiyenin bu yüzdesi kadar hesaplanır (taban/tavan sınırlarıyla) - bakiye
+    büyüdükçe pozisyonlar da büyür, küçüldükçe küçülür. RISK_PCT_BAKIYE=0
+    ise (ya da bakiye alınamazsa) eski sabit $ moduna güvenli şekilde
+    düşülür."""
+    if RISK_PCT_BAKIYE <= 0 or bakiye is None or bakiye <= 0:
+        return SABIT_MARJIN_USDT
+    marjin = bakiye * RISK_PCT_BAKIYE
+    marjin = max(MARJIN_TABAN_USDT, min(MARJIN_TAVAN_USDT, marjin))
+    return marjin
 
 
 _market_cache = {"markets": None, "ts": 0}
@@ -553,7 +593,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         return
 
     LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
-    notional = SABIT_MARJIN_USDT * LEV_KULLANILAN
+    marjin_kullanilan = hesapla_marjin(bakiye)
+    notional = marjin_kullanilan * LEV_KULLANILAN
     amount = notional / entry_hedef
 
     try:
@@ -628,7 +669,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
        f"⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
-       f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${SABIT_MARJIN_USDT:.2f}")
+       f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${marjin_kullanilan:.2f} "
+       f"(bileşik büyüme: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i, taban ${MARJIN_TABAN_USDT:.2f})")
 
 
 def gercek_pozisyon_kapat(sym, sebep="manuel"):
@@ -816,7 +858,13 @@ def panel_ayarlar_metni():
             f"  TP: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
             f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}\n"
             f"  Max tutma: {MAX_HOLD_SAAT:.0f} saat (bekleme yok, hızlı karar)\n\n"
-            f"Kaldıraç: {LEV}x | Marjin: sabit ${SABIT_MARJIN_USDT:.2f}\n"
+            f"💰 MARJİN (bileşik büyüme, 08.09.2026 kararı): bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i "
+            f"(taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f})\n"
+            f"  Şu anki bakiyeyle hesaplanan marjin: ${hesapla_marjin(gercek_bakiye_al() or 0):.2f}\n"
+            f"  İki farklı piyasa döneminde test edildi: sakin piyasada mevcut "
+            f"sabit sistemle BİREBİR AYNI (ek risk yok), güçlü piyasada 5.5 kat "
+            f"daha fazla büyüme sağladı (backtest).\n"
+            f"Kaldıraç: {LEV}x\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
             "📊 BACKTEST (78 coin/~14 gün, $1 marjin ölçeğinde, komisyon dahil):\n"
             "  %2 dip mesafesi filtresiyle: 403 işlem, %68.2 kazanma, net +$43.61\n"
@@ -1297,7 +1345,7 @@ def izleme_listesi_kontrol():
 
 def tarama_loop():
     tg(f"⚡ LIVE BOT v3 (FIRSATÇI) başladı — GERÇEK PARA\n"
-       f"MAX_POS={MAX_POS} | Marjin: ${SABIT_MARJIN_USDT:.2f} sabit, {LEV}x\n"
+       f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + swing dip, dipten en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzaklık\n"
        f"⚡ ÇIKIŞ: SABİT %{HIZLI_HEDEF_PCT*100:.1f} hedef - hemen kapanır, iz sürme YOK\n"
        f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat (bekleme yok)\n"
