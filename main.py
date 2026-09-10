@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v3.1 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
+LIVE BOT v3.3 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
 14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2)
 
 v2.1 (21.08.2026, kullanıcı kararıyla):
@@ -163,6 +163,13 @@ GIRIS_MAX_DIP_MESAFE = float(os.getenv("GIRIS_MAX_DIP_MESAFE", "0.02"))
 # backtest'te test edildi - giriş fiyatı swing dipten en fazla %2
 # uzaklaşmış olmalı (geç girişler reddediliyor). Sonuç: SL kayıp oranı
 # %4.9'dan %1.5'e düştü (78 coin/~14 gün backtest'inde).
+MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
+# KULLANICI KARARI (08.09.2026, "derin düşün" isteğiyle bulundu): sadece
+# "4H yükselişte mi" (evet/hayır) değil, "NE KADAR güçlü yükselişte"
+# filtresi eklendi - fiyat 4H MA20'den en az %2 uzakta olmalı. Backtest'te
+# kazanma oranı %66.5'ten %72.1'e çıktı, ortalama işlem kazancı %29 arttı
+# (+$0.150 -> +$0.193, 78 coin/~14 gün backtest'inde). İşlem sayısı biraz
+# azalır (daha seçici) ama toplam net kâr korunur/artar.
 HIZLI_HEDEF_PCT = float(os.getenv("HIZLI_HEDEF_PCT", "0.05"))
 # Sabit çıkış hedefi - iz sürme YOK, hedefe değer değmez hemen kapanır.
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
@@ -509,6 +516,22 @@ def trend_yonu(df, periyot=MA_PERIYOT):
     return "yukselis" if fiyat > ma else "dusus"
 
 
+def trend_gucu_pct(df, periyot=MA_PERIYOT):
+    """Fiyatın MA'dan yüzde kaç uzakta olduğunu hesaplar. KULLANICI KARARI
+    (08.09.2026, 'derin düşün' isteğiyle bulundu): sadece 'yukselis mi'
+    (evet/hayır) yeterli değil - NE KADAR güçlü yükselişte olduğu da önemli.
+    Backtest'te test edildi: 4H trend gücü >= %2 filtresi eklenince kazanma
+    oranı %66.5'ten %72.1'e çıktı, ortalama işlem kazancı %29 arttı
+    (+$0.150 -> +$0.193, 78 coin/~14 gün backtest'inde)."""
+    if df is None or len(df) < periyot + 1:
+        return None
+    ma = df["close"].rolling(periyot).mean().iloc[-1]
+    fiyat = df["close"].iloc[-1]
+    if pd.isna(ma) or ma == 0:
+        return None
+    return (fiyat - ma) / ma * 100
+
+
 def ucyon_sinyal(sym):
     df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
     df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
@@ -520,6 +543,11 @@ def ucyon_sinyal(sym):
     yon_1h = trend_yonu(df_1h)
     if yon_1d != "yukselis" or yon_4h != "yukselis" or yon_1h != "yukselis":
         return None
+
+    guc_4h = trend_gucu_pct(df_4h)
+    if guc_4h is None or guc_4h < MIN_4H_TREND_GUCU_PCT:
+        return None
+
     if df_15m is None or len(df_15m) < LOOKBACK_15M + 2:
         return None
 
@@ -690,9 +718,17 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
             with state_lock:
                 trade_state.pop(sym, None)
             durumu_diske_yaz()
-            with cooldown_lock:
-                son_kapanis_zamani[sym] = time.time()
-            cooldown_diske_yaz()
+            # KULLANICI KARARI (08.09.2026, "derin düşün" isteğiyle bulundu):
+            # backtest'te test edildi - sadece SL sonrası bekleme uygulamak,
+            # kazanç/nötr (hizli_tp/max_hold) sonrası HEMEN tekrar girebilmek
+            # net kârı %3.5 artırdı (78 coin/~14 gün backtest'inde, +$53.24 ->
+            # +$55.11). Mantık: max_hold ile nötr kapanan bir pozisyon genelde
+            # "trend hâlâ geçerli ama henüz hedefe ulaşmadı" demek, o coin'i
+            # 1 saat dışlamak devam eden hareketi kaçırabilir.
+            if sebep == "sl":
+                with cooldown_lock:
+                    son_kapanis_zamani[sym] = time.time()
+                cooldown_diske_yaz()
             if durum:
                 _kapanis_kaydet_gercek_veriyle(sym, durum, sebep)
             return True, "kapatildi"
@@ -731,9 +767,13 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
-        with cooldown_lock:
-            son_kapanis_zamani[sym] = time.time()
-        cooldown_diske_yaz()
+        # KULLANICI KARARI (08.09.2026): sadece SL sonrası bekleme uygulanır
+        # (bkz. yukarıdaki açıklama) - kazanç/nötr kapanışlarda hemen tekrar
+        # girilebilir.
+        if sebep == "sl":
+            with cooldown_lock:
+                son_kapanis_zamani[sym] = time.time()
+            cooldown_diske_yaz()
         tg(f"{'🟢' if pnl>=0 else '🔴'} GERÇEK kapandı: {sym} [{sebep}] PnL≈{pnl:+.2f}$")
         return True, f"✅ {sym} kapatıldı | PnL≈{pnl:+.2f}$"
     except Exception as e:
@@ -853,9 +893,10 @@ def panel_ayarlar_metni():
             "Sürüm: v3.1 (01.09.2026 fırsatçı stratejiye geçiş + 08.09.2026 "
             "bileşik büyüme marjin sistemi ve 8 saat max tutma güncellemesi)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
-            "Giriş: Üçlü zaman dilimi trend uyumu + dip yakınlığı\n"
+            "Giriş: Üçlü zaman dilimi trend uyumu + trend gücü + dip yakınlığı\n"
             "  1) 1D trend YUKARI olmalı\n"
-            "  2) 4H trend YUKARI olmalı\n"
+            f"  2) 4H trend YUKARI olmalı VE en az %{MIN_4H_TREND_GUCU_PCT:.1f} güçte olmalı "
+            f"(MA20'den uzaklık - backtest: kazanma %66.5→%72.1)\n"
             "  3) 1H trend YUKARI olmalı\n"
             "  4) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)\n"
             f"  5) Giriş fiyatı dipten en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzak olmalı "
@@ -1430,7 +1471,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v3.1 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
+    print("LIVE BOT v3.3 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
