@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v3.3 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
+LIVE BOT v3.4 — 1D+4H+1H Uyum + LONG+SHORT (GERÇEK PARA)
 14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2)
 
 v2.1 (21.08.2026, kullanıcı kararıyla):
@@ -458,12 +458,18 @@ def iki_uzerinden_uc_kontrol(sym):
     """İZLEME LİSTESİ AJANI: sadece 1D+4H kontrol eder (1H'ye BAKMAZ) -
     amaç 'neredeyse hazır' (2/3 uyumlu) coinleri ucuz bir kontrolle tespit
     edip izleme listesine almak. 1H onayı ayrıca, tam sinyal fonksiyonunda
-    (ucyon_sinyal) kontrol edilir."""
+    (ucyon_sinyal) kontrol edilir. 10.09.2026: LONG+SHORT desteği - ikisi
+    de aynı yönde (yükseliş VEYA düşüş) olması yeterli, hangi yön olduğu
+    ayrıca döndürülür."""
     df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
     df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
     yon_1d = trend_yonu(df_1d)
     yon_4h = trend_yonu(df_4h)
-    return yon_1d == "yukselis" and yon_4h == "yukselis"
+    if yon_1d == "yukselis" and yon_4h == "yukselis":
+        return True
+    if yon_1d == "dusus" and yon_4h == "dusus":
+        return True
+    return False
 
 
 def btc_temkinli_mod_mu():
@@ -533,21 +539,35 @@ def trend_gucu_pct(df, periyot=MA_PERIYOT):
 
 
 def ucyon_sinyal(sym):
+    """KULLANICI KARARI (10.09.2026): piyasa rejimi değişince (çoğu coin
+    düşüşte), taze veriyle backtest edildi - SHORT ayna görüntüsü test
+    edildiğinde LONG'dan daha yüksek kazanma oranı (%74.5 vs %59.6) verdi.
+    Artık coin kendi 1D+4H+1H uyumuna göre LONG ya da SHORT sinyali
+    üretebiliyor - hangisi piyasada geçerliyse o taranıyor."""
     df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
     df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
     df_1h = get_df(sym, "1h", MA_PERIYOT + 5)
-    df_15m = get_df(sym, "15m", LOOKBACK_15M + 5)
 
     yon_1d = trend_yonu(df_1d)
     yon_4h = trend_yonu(df_4h)
     yon_1h = trend_yonu(df_1h)
-    if yon_1d != "yukselis" or yon_4h != "yukselis" or yon_1h != "yukselis":
-        return None
-
     guc_4h = trend_gucu_pct(df_4h)
-    if guc_4h is None or guc_4h < MIN_4H_TREND_GUCU_PCT:
-        return None
 
+    if yon_1d == "yukselis" and yon_4h == "yukselis" and yon_1h == "yukselis":
+        if guc_4h is None or guc_4h < MIN_4H_TREND_GUCU_PCT:
+            return None
+        return _ucyon_sinyal_yon(sym, "long", yon_1d, yon_4h, yon_1h)
+
+    if yon_1d == "dusus" and yon_4h == "dusus" and yon_1h == "dusus":
+        if guc_4h is None or guc_4h > -MIN_4H_TREND_GUCU_PCT:
+            return None
+        return _ucyon_sinyal_yon(sym, "short", yon_1d, yon_4h, yon_1h)
+
+    return None
+
+
+def _ucyon_sinyal_yon(sym, yon, yon_1d, yon_4h, yon_1h):
+    df_15m = get_df(sym, "15m", LOOKBACK_15M + 5)
     if df_15m is None or len(df_15m) < LOOKBACK_15M + 2:
         return None
 
@@ -555,24 +575,30 @@ def ucyon_sinyal(sym):
     son_mum = df_15m.iloc[-1]
     son_3_idx = pencere.index[-3:]
 
-    swing_low = pencere["low"].min()
-    dip_idx = pencere["low"].idxmin()
-    dip_yakin = dip_idx in son_3_idx
-    yukari_kapandi = son_mum["close"] > son_mum["open"]
+    if yon == "long":
+        swing_nokta = pencere["low"].min()
+        ext_idx = pencere["low"].idxmin()
+        tetik_yakin = ext_idx in son_3_idx
+        kapanis_uygun = son_mum["close"] > son_mum["open"]
+        gecerli = tetik_yakin and kapanis_uygun and son_mum["close"] > swing_nokta
+        mesafe = (son_mum["close"] - swing_nokta) / swing_nokta if gecerli else None
+    else:
+        swing_nokta = pencere["high"].max()
+        ext_idx = pencere["high"].idxmax()
+        tetik_yakin = ext_idx in son_3_idx
+        kapanis_uygun = son_mum["close"] < son_mum["open"]
+        gecerli = tetik_yakin and kapanis_uygun and son_mum["close"] < swing_nokta
+        mesafe = (swing_nokta - son_mum["close"]) / swing_nokta if gecerli else None
 
-    if dip_yakin and yukari_kapandi and son_mum["close"] > swing_low:
-        # KULLANICI KARARI (01.09.2026, "vur kaç" için daha isabetli giriş):
-        # backtest'te test edildi - giriş fiyatı swing dipten çok
-        # uzaklaşmışsa (geç giriş) sinyal reddediliyor. Sonuç: SL kayıp
-        # oranı %4.9'dan %1.5'e düştü, işlem başına ortalama kâr arttı
-        # (+$0.1014 -> +$0.1082, %2 mesafe filtresiyle, 78 coin/~14 gün
-        # backtest'inde).
-        dip_mesafe = (son_mum["close"] - swing_low) / swing_low
-        if dip_mesafe > GIRIS_MAX_DIP_MESAFE:
-            return None
-        return {"symbol": sym, "entry": float(son_mum["close"]), "swing_nokta": float(swing_low),
-                "1d": yon_1d, "4h": yon_4h, "1h": yon_1h}
-    return None
+    if not gecerli:
+        return None
+    # KULLANICI KARARI (01.09.2026, "vur kaç" için daha isabetli giriş):
+    # backtest'te test edildi - giriş fiyatı swing noktadan çok
+    # uzaklaşmışsa (geç giriş) sinyal reddediliyor.
+    if mesafe > GIRIS_MAX_DIP_MESAFE:
+        return None
+    return {"symbol": sym, "entry": float(son_mum["close"]), "swing_nokta": float(swing_nokta),
+            "yon": yon, "1d": yon_1d, "4h": yon_4h, "1h": yon_1h}
 
 
 # ════════════════════════════════════════════
@@ -615,12 +641,19 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
+    yon = sinyal.get("yon", "long")
+    long_mu = (yon == "long")
     entry_hedef = sinyal["entry"]
     swing_nokta = sinyal["swing_nokta"]
 
-    sl = swing_nokta * (1 - SL_BUFFER_PCT)
-    sl_mesafe = max(MIN_SL_PCT, min(MAX_SL_PCT_TAVAN, (entry_hedef - sl) / entry_hedef))
-    sl = entry_hedef * (1 - sl_mesafe)
+    if long_mu:
+        sl = swing_nokta * (1 - SL_BUFFER_PCT)
+        sl_mesafe = max(MIN_SL_PCT, min(MAX_SL_PCT_TAVAN, (entry_hedef - sl) / entry_hedef))
+        sl = entry_hedef * (1 - sl_mesafe)
+    else:
+        sl = swing_nokta * (1 + SL_BUFFER_PCT)
+        sl_mesafe = max(MIN_SL_PCT, min(MAX_SL_PCT_TAVAN, (sl - entry_hedef) / entry_hedef))
+        sl = entry_hedef * (1 + sl_mesafe)
 
     if sl_mesafe <= 0:
         acilis_basarisiz_cooldown_uygula(sym)
@@ -647,8 +680,11 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     except Exception as e:
         log.warning(f"[KALDIRAC] {sym}: {e}")
 
+    acilis_yonu = "buy" if long_mu else "sell"
+    kapanis_yonu = "sell" if long_mu else "buy"
+
     try:
-        exchange.create_market_order(sym, "buy", qty)
+        exchange.create_market_order(sym, acilis_yonu, qty)
     except Exception as e:
         tg(f"⚠️ {sym} giriş emri başarısız: {e}")
         acilis_basarisiz_cooldown_uygula(sym)
@@ -661,18 +697,18 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         gercek_pos = next((p for p in pozlar if safe(p.get("contracts")) > 0), None)
         if gercek_pos and safe(gercek_pos.get("entryPrice")) > 0:
             entry = safe(gercek_pos.get("entryPrice"))
-            sl = entry * (1 - sl_mesafe)
+            sl = entry * (1 - sl_mesafe) if long_mu else entry * (1 + sl_mesafe)
     except Exception as e:
         log.warning(f"[GERCEK_POZ] {sym}: {e}")
 
     r_risk = abs(entry - sl)
-    tp = entry * (1 + HIZLI_HEDEF_PCT)
+    tp = entry * (1 + HIZLI_HEDEF_PCT) if long_mu else entry * (1 - HIZLI_HEDEF_PCT)
 
     sl_emir_id = None
     sl_fiyat = float(exchange.price_to_precision(sym, sl))
     for deneme in range(3):
         try:
-            sl_emri = exchange.create_order(sym, "market", "sell", qty, None,
+            sl_emri = exchange.create_order(sym, "market", kapanis_yonu, qty, None,
                                              {"reduceOnly": True, "stopLossPrice": sl_fiyat})
             sl_emir_id = sl_emri.get("id")
             if sl_emir_id:
@@ -684,7 +720,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     if not sl_emir_id:
         tg(f"🚨 {sym} SL yerleştirilemedi, güvenlik amaçlı kapatılıyor.")
         try:
-            exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+            exchange.create_market_order(sym, kapanis_yonu, qty, params={"reduceOnly": True})
         except Exception:
             pass
         acilis_basarisiz_cooldown_uygula(sym)
@@ -692,14 +728,15 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
 
     with state_lock:
         trade_state[sym] = {
-            "entry": entry, "sl": sl, "tp": tp, "sl_emir_id": sl_emir_id, "yon": "long", "qty": qty,
+            "entry": entry, "sl": sl, "tp": tp, "sl_emir_id": sl_emir_id, "yon": yon, "qty": qty,
             "r_risk": r_risk, "acilis_zamani": time.time(),
             "1d": sinyal["1d"], "4h": sinyal["4h"], "1h": sinyal["1h"], "notional": notional,
             "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
         }
     durumu_diske_yaz()
 
-    tg(f"📈 GERÇEK POZİSYON (fırsatçı): {sym} LONG\n"
+    yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
+    tg(f"📈 GERÇEK POZİSYON (fırsatçı): {sym} {yon_emoji}\n"
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
        f"⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
@@ -735,6 +772,9 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
 
         qty = safe(gercek_pos.get("contracts"))
         entry_fiyat = safe(gercek_pos.get("entryPrice"))
+        yon_kayitli = (durum or {}).get("yon", "long")
+        long_mu = (yon_kayitli == "long")
+        kapanis_yonu = "sell" if long_mu else "buy"
 
         if durum and durum.get("sl_emir_id"):
             try:
@@ -742,7 +782,7 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
             except Exception:
                 pass
 
-        kapama_emri = exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+        kapama_emri = exchange.create_market_order(sym, kapanis_yonu, qty, params={"reduceOnly": True})
         time.sleep(1)
         cikis_fiyat = None
         try:
@@ -759,9 +799,9 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
             except Exception:
                 cikis_fiyat = entry_fiyat
 
-        pnl = (cikis_fiyat - entry_fiyat) * qty
+        pnl = (cikis_fiyat - entry_fiyat) * qty if long_mu else (entry_fiyat - cikis_fiyat) * qty
         trade_log_kaydet({"symbol": sym, "entry": entry_fiyat, "exit": cikis_fiyat, "pnl": pnl,
-                           "yon": "long", "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                           "yon": yon_kayitli, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                            "not": sebep, "1d": (durum or {}).get("1d"), "4h": (durum or {}).get("4h"),
                            "1h": (durum or {}).get("1h")})
         with state_lock:
@@ -815,9 +855,10 @@ def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
         except Exception:
             cikis_fiyat = entry
 
-    pnl = (cikis_fiyat - entry) * qty
+    long_mu = durum.get("yon", "long") == "long"
+    pnl = (cikis_fiyat - entry) * qty if long_mu else (entry - cikis_fiyat) * qty
     trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": pnl,
-                       "yon": "long", "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                       "yon": durum.get("yon", "long"), "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                        "not": sebep, "1d": durum.get("1d"), "4h": durum.get("4h"), "1h": durum.get("1h")})
     tg(f"{'🟢' if pnl>=0 else '🔴'} GERÇEK kapandı: {sym} [{sebep}] PnL≈{pnl:+.2f}$ (borsada önceden kapanmış)")
 
@@ -843,7 +884,8 @@ def panel_ozet_metni():
             guncel = safe(t["last"])
             entry = d["entry"]
             poz_notional = d.get("notional", NOTIONAL)
-            anlik = (guncel - entry) / entry * poz_notional
+            long_mu = d.get("yon", "long") == "long"
+            anlik = (guncel - entry) / entry * poz_notional if long_mu else (entry - guncel) / entry * poz_notional
             gerceklesmeyen_net += anlik
             acik_detay.append((sym, anlik))
         except Exception:
@@ -851,7 +893,7 @@ def panel_ozet_metni():
 
     satirlar = [
         "💵 LIVE BOT v2 — CANLI ÖZET",
-        "(GERÇEK PARA, 1D+4H+1H LONG-only)",
+        "(GERÇEK PARA, 1D+4H+1H LONG+SHORT)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
     ]
@@ -890,17 +932,19 @@ def panel_ayarlar_metni():
         izleme_coinler = sorted(s.split("/")[0] for s in izleme_listesi.keys())
     izleme_satiri = f"  Şu an listede: {', '.join(izleme_coinler)}" if izleme_coinler else "  Şu an liste boş"
     return ("⚙️ LIVE BOT v3 (FIRSATÇI) AYARLARI\n\n"
-            "Sürüm: v3.3 (01.09.2026 fırsatçı stratejiye geçiş → 08.09.2026: "
-            "bileşik büyüme marjin, 8 saat max tutma, akıllı cooldown [sadece "
-            "SL sonrası bekleme], trend gücü filtresi)\n\n"
+            "Sürüm: v3.4 (01.09.2026 fırsatçı geçiş → 08.09.2026 bileşik "
+            "büyüme/8sa/akıllı cooldown/trend gücü → 10.09.2026: LONG+SHORT "
+            "desteği eklendi - taze veriyle backtest edildi, piyasa düşüş "
+            "eğilimindeyken SHORT %74.5 kazanma gösterdi vs LONG %59.6. Coin "
+            "kendi 1D+4H+1H uyumuna göre yön seçiyor)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
-            "Giriş: Üçlü zaman dilimi trend uyumu + trend gücü + dip yakınlığı\n"
-            "  1) 1D trend YUKARI olmalı\n"
-            f"  2) 4H trend YUKARI olmalı VE en az %{MIN_4H_TREND_GUCU_PCT:.1f} güçte olmalı "
+            "Giriş: Üçlü zaman dilimi trend uyumu + trend gücü + dip/tepe yakınlığı\n"
+            "  1) 1D, 4H, 1H üçü de AYNI yönde olmalı (hepsi YUKARI -> LONG, "
+            "hepsi AŞAĞI -> SHORT)\n"
+            f"  2) 4H trend en az %{MIN_4H_TREND_GUCU_PCT:.1f} güçte olmalı "
             f"(MA20'den uzaklık - backtest: kazanma %66.5→%72.1)\n"
-            "  3) 1H trend YUKARI olmalı\n"
-            "  4) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)\n"
-            f"  5) Giriş fiyatı dipten en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzak olmalı "
+            "  3) 15m'de swing dip/tepe + dönüş onayı gerekli\n"
+            f"  4) Giriş fiyatı swing noktadan en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzak olmalı "
             f"(geç girişler reddedilir - backtest: SL oranı %4.9→%1.5)\n\n"
             "⚡ ÇIKIŞ (iz sürme YOK, sabit hedef):\n"
             f"  TP: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
@@ -940,7 +984,8 @@ def panel_gecmis_metni():
     satirlar = ["📜 SON 15 İŞLEM\n"]
     for t in list(reversed(gecmis))[:15]:
         emoji = "🟢" if t["pnl"] >= 0 else "🔴"
-        satirlar.append(f"{emoji} {t['symbol'].split('/')[0]} LONG {t['pnl']:+.2f}$ "
+        yon_etiket = "LONG" if t.get("yon", "long") == "long" else "SHORT"
+        satirlar.append(f"{emoji} {t['symbol'].split('/')[0]} {yon_etiket} {t['pnl']:+.2f}$ "
                          f"[{t.get('not','?')}]\n   {t['zaman']} | 1D:{t.get('1d','?')}/4H:{t.get('4h','?')}/1H:{t.get('1h','?')}")
     return "\n".join(satirlar)
 
@@ -987,11 +1032,13 @@ def panel_risk_metni():
             t = exchange.fetch_ticker(sym)
             guncel = safe(t["last"])
             entry = d["entry"]
-            pnl_pct = (guncel - entry) / entry * 100
+            long_mu = d.get("yon", "long") == "long"
+            yon_etiket = "LONG" if long_mu else "SHORT"
+            pnl_pct = (guncel - entry) / entry * 100 if long_mu else (entry - guncel) / entry * 100
             anlik_kar = pnl_pct / 100 * d.get("notional", NOTIONAL)
             sure_dk = (time.time() - d["acilis_zamani"]) / 60
             kalan_dk = MAX_HOLD_SAAT * 60 - sure_dk
-            satirlar.append(f"{sym} LONG (1D:{d.get('1d')}/4H:{d.get('4h')}/1H:{d.get('1h')})\n"
+            satirlar.append(f"{sym} {yon_etiket} (1D:{d.get('1d')}/4H:{d.get('4h')}/1H:{d.get('1h')})\n"
                              f"  Giriş:{entry:.6f} Şimdi:{guncel:.6f} (%{pnl_pct:+.2f})\n"
                              f"  Anlık PnL: {anlik_kar:+.2f}$ | SL:{d['sl']:.6f} | TP:{d.get('tp',0):.6f}\n"
                              f"  Açık süre: {sure_dk:.0f} dk | Max tutmaya kalan: {max(0,kalan_dk):.0f} dk")
@@ -1204,9 +1251,15 @@ def manage_loop():
                     gercek_pozisyon_kapat(sym, "max_hold_timeout")
                     continue
 
+                yon_kayitli = durum.get("yon", "long")
+                long_mu = (yon_kayitli == "long")
+                aranan_yon = "yukselis" if long_mu else "dusus"
+
                 # TREND DÖNÜŞ AJANI - varsayılan KAPALI (kullanıcı kararı,
                 # hem eski live_bot'ta hem paper_bot_v2'de net zarar verdiği
                 # görüldü). TREND_AJANI_AKTIF=true ile tekrar açılabilir.
+                # 10.09.2026: SHORT desteği eklenince yön-farkında hâle
+                # getirildi (aranan_yon LONG'da "yukselis", SHORT'ta "dusus").
                 if TREND_AJANI_AKTIF:
                     son_kontrol = durum.get("son_trend_kontrol", 0)
                     if time.time() - son_kontrol >= TREND_KONTROL_ARALIGI_SN:
@@ -1214,7 +1267,7 @@ def manage_loop():
                             y1d = trend_yonu(get_df(sym, "1d", MA_PERIYOT + 10))
                             y4h = trend_yonu(get_df(sym, "4h", MA_PERIYOT + 5))
                             y1h = trend_yonu(get_df(sym, "1h", MA_PERIYOT + 5))
-                            bozuk_sayisi = sum(1 for y in (y1d, y4h, y1h) if y != "yukselis")
+                            bozuk_sayisi = sum(1 for y in (y1d, y4h, y1h) if y != aranan_yon)
                             tam_ters = bozuk_sayisi >= 2
                             kismi_ters = bozuk_sayisi == 1
 
@@ -1249,7 +1302,11 @@ def manage_loop():
                         except Exception as e:
                             log.warning(f"[TREND_KONTROL_HATA] {sym}: {e}")
 
-                if guncel <= durum["sl"]:
+                # KULLANICI KARARI (10.09.2026): SHORT desteği eklendi - SL/TP
+                # karşılaştırması yöne göre TERS çalışır (LONG'da SL aşağıda/
+                # TP yukarıda, SHORT'ta SL yukarıda/TP aşağıda).
+                sl_tetiklendi = (guncel <= durum["sl"]) if long_mu else (guncel >= durum["sl"])
+                if sl_tetiklendi:
                     gercek_pozisyon_kapat(sym, "sl")
                     continue
 
@@ -1267,7 +1324,8 @@ def manage_loop():
                     log.warning(f"[ESKI_POZISYON] {sym} 'tp' alanı yok (v3.0 öncesi kalıntı olabilir) - güvenlik amaçlı kapatılıyor")
                     gercek_pozisyon_kapat(sym, "eski_format_guvenlik_kapanisi")
                     continue
-                if guncel >= tp:
+                tp_tetiklendi = (guncel >= tp) if long_mu else (guncel <= tp)
+                if tp_tetiklendi:
                     gercek_pozisyon_kapat(sym, "hizli_tp")
                     continue
 
@@ -1392,19 +1450,19 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v3 (FIRSATÇI) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v3.4 (FIRSATÇI, LONG+SHORT) başladı — GERÇEK PARA\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
-       f"Giriş: 1D+4H+1H uyum + swing dip, dipten en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzaklık\n"
+       f"Giriş: 1D+4H+1H uyum (LONG ya da SHORT) + swing dip/tepe, en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzaklık\n"
        f"⚡ ÇIKIŞ: SABİT %{HIZLI_HEDEF_PCT*100:.1f} hedef - hemen kapanır, iz sürme YOK\n"
        f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat (bekleme yok)\n"
        f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı - önceki testlerde net zarar verdi)'}\n"
        f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} — BTC 1D+4H düşüşe dönerse "
        f"MAX_POS geçici yarıya iner (açık pozisyonlar etkilenmez)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"Backtest (%2 dip mesafesi filtresiyle): 403 işlem, %68.2 kazanma, net +$43.61 "
-       f"($1 marjin ölçeğinde, 78 coin/~14 gün)\n"
-       f"⚠️ Bu strateji önce paper_bot_firsatci'de test edildi, sınırlı örneklemle "
-       f"(27 işlem) pozitif sonuç verdi - gerçek parada sıfırdan başlıyor.\n\n"
+       f"⚠️ YENİ (10.09.2026): SHORT desteği eklendi. Taze veriyle backtest edildi "
+       f"(piyasa düşüş eğilimindeyken): LONG 322 işlem %59.6 kazanma, SHORT 145 "
+       f"işlem %74.5 kazanma. Bu, SADECE backtest sonucu - canlı parada ilk kez "
+       f"deneniyor, hiç paper testi yapılmadı.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
     baslangic_uzlastirma()
@@ -1472,7 +1530,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v3.3 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
+    print("LIVE BOT v3.4 (1D+4H+1H, LONG+SHORT, temkinli mod + izleme listesi) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
