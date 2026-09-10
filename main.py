@@ -890,8 +890,9 @@ def panel_ayarlar_metni():
         izleme_coinler = sorted(s.split("/")[0] for s in izleme_listesi.keys())
     izleme_satiri = f"  Şu an listede: {', '.join(izleme_coinler)}" if izleme_coinler else "  Şu an liste boş"
     return ("⚙️ LIVE BOT v3 (FIRSATÇI) AYARLARI\n\n"
-            "Sürüm: v3.1 (01.09.2026 fırsatçı stratejiye geçiş + 08.09.2026 "
-            "bileşik büyüme marjin sistemi ve 8 saat max tutma güncellemesi)\n\n"
+            "Sürüm: v3.3 (01.09.2026 fırsatçı stratejiye geçiş → 08.09.2026: "
+            "bileşik büyüme marjin, 8 saat max tutma, akıllı cooldown [sadece "
+            "SL sonrası bekleme], trend gücü filtresi)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
             "Giriş: Üçlü zaman dilimi trend uyumu + trend gücü + dip yakınlığı\n"
             "  1) 1D trend YUKARI olmalı\n"
