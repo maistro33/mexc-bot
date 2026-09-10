@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v3.0 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
+LIVE BOT v3.1 — 1D+4H+1H Uyum + SADECE LONG (GERÇEK PARA)
 14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2)
 
 v2.1 (21.08.2026, kullanıcı kararıyla):
@@ -167,9 +167,15 @@ HIZLI_HEDEF_PCT = float(os.getenv("HIZLI_HEDEF_PCT", "0.05"))
 # Sabit çıkış hedefi - iz sürme YOK, hedefe değer değmez hemen kapanır.
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 COOLDOWN_SAAT = 1.0
-# KULLANICI KARARI (01.09.2026): fırsatçı stratejide 4 saat - "hızlı gir
-# çık, bekleme yok" isteğine uygun, kararsız pozisyonlar hızlı kapanır.
-MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "4"))
+# KULLANICI KARARI (08.09.2026): 4 saatten 8 saate çıkarıldı. Backtest testi
+# (1,2,3,4,6,8 saat karşılaştırıldı): kısa tutma süresi "hizli_tp" (garanti
+# kazanç) kategorisinin payını küçültüyor çünkü bazı coinler %5 hedefe
+# ulaşmak için 4 saatten fazla zaman istiyor - erken kesince bu kazançları
+# kaçırıyorduk. 8 saatte ortalama işlem kazancı +$0.108'den +$0.150'ye
+# çıktı (%39 artış, 78 coin/~14 gün backtest'inde). Kullanıcının ilk
+# sezgisi ("kararsız pozisyonları erken kes") mantıklı görünüyordu ama
+# gerçek veri tersini gösterdi - sabırlı olmak daha iyi çalıştı.
+MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "8"))
 KONTROL_ARALIGI_SN = 60
 ADAY_HAVUZU_BUYUKLUGU = 80
 
@@ -844,8 +850,8 @@ def panel_ayarlar_metni():
         izleme_coinler = sorted(s.split("/")[0] for s in izleme_listesi.keys())
     izleme_satiri = f"  Şu an listede: {', '.join(izleme_coinler)}" if izleme_coinler else "  Şu an liste boş"
     return ("⚙️ LIVE BOT v3 (FIRSATÇI) AYARLARI\n\n"
-            "Sürüm: v3.0 (01.09.2026 - fırsatçı stratejiye geçiş: sabit hızlı "
-            "hedef + dip mesafesi filtresi ile daha isabetli giriş)\n\n"
+            "Sürüm: v3.1 (01.09.2026 fırsatçı stratejiye geçiş + 08.09.2026 "
+            "bileşik büyüme marjin sistemi ve 8 saat max tutma güncellemesi)\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
             "Giriş: Üçlü zaman dilimi trend uyumu + dip yakınlığı\n"
             "  1) 1D trend YUKARI olmalı\n"
@@ -1424,7 +1430,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v3.0 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
+    print("LIVE BOT v3.1 (1D+4H+1H, LONG-only, temkinli mod + izleme listesi) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
