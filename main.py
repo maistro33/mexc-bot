@@ -1,8 +1,42 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.0 — Kendi Stratejim: Çift Trend Gücü + Kısmi Kâr Alma (GERÇEK PARA)
-14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2)
+LIVE BOT v3.6 — 1D+4H+1H Uyum + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
+14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2) → 14 Eylül 2026 (v3.6)
+
+v3.6 (14.09.2026, kullanıcı kararıyla — GERÇEK VERİ ANALİZİNE DAYALI):
+  161 gerçek işlemlik canlı log analiz edildi. Sonuç:
+    - hizli_tp (19 işlem): net +18.17$, %100 kazanma → giriş YÖNÜ doğru,
+      ama bu YALNIZCA işlemlerin %12'sinde gerçekleşiyor.
+    - max_hold_timeout (128 işlem, toplamın %80'i): net -7.11$, %44 kazanma
+      → botun asıl kanaması burada. 1D+4H+1H uyumu tek başına yeterince
+      ayrıştırıcı değil, çok sık oluşan düşük-bilgi-değerli bir durum.
+    - sl + sl_borsada_onceden (14 işlem): net -13.84$, %0 kazanma → nadir
+      ama sert kayıplar (genelde önceden aşırı pompalanmış coinlerde).
+  Net: -2.78$ / 161 işlem.
+
+  Bu bulguya dayanarak İKİ YENİ FİLTRE eklendi (giriş sinyalini daha
+  seçici hale getirmek için, backtest'e değil canlı veriye dayalı):
+
+  1) HACİM TEYİDİ: sinyal anındaki 15m mumun hacmi, önceki 20 mumun
+     ortalamasının en az HACIM_TEYIT_KATSAYI katı olmalı. Amaç: "sessiz"
+     (gerçek alım ilgisi olmayan) fiyat hareketlerini elemek - bunlar
+     genelde ne hedefe ulaşıyor ne net ters dönüyor, sadece max_hold'a
+     kadar sürünüp hafif eksi kapanıyor (log'daki 128 işlemin çoğu bu).
+
+  2) PUMP FİLTRESİ (coin zaten aşırı pompalanmışsa LONG girişi reddet):
+     24 saatlik değişim PUMP_FILTRE_ESIK_PCT üzerindeyse giriş yapılmaz.
+     Log'daki en sert SL kayıplarının (CATI, PROS, ZEN, DOOD, BR, PIEVERSE)
+     ortak paterni: coin zaten güçlü yükselmişken girilmiş, hemen ardından
+     sert geri çekilme SL'i tetiklemiş - klasik "tepede giriş" riski.
+
+  Her iki eşik de (HACIM_TEYIT_KATSAYI=1.5, PUMP_FILTRE_ESIK_PCT=15.0)
+  ilk tahmin değerleridir - birkaç günlük canlı veriyle (panel_analiz)
+  gözden geçirilmesi gerekir.
+
+  API YÜKÜNÜ ARTIRMAMAK İÇİN: pump filtresi ayrı fetch_ticker çağrısı
+  yapmıyor, aday_havuzu()'nun zaten çektiği fetch_tickers() sonucunu
+  kısa süreliğine (TICKER_CACHE_SN) önbellekleyip oradan okuyor.
 
 v2.1 (21.08.2026, kullanıcı kararıyla):
   1) TEMKİNLİ MOD — BTC'nin kendi 1D+4H trendi ikisi de düşüşe dönerse
@@ -23,17 +57,11 @@ beklenmesin" isteğiyle:
 
 KULLANICI KARARI: Eski live_bot (v1.7, 4H+1H+15m, LONG+SHORT) durduruldu.
 Onun yerine, paper_bot_v2'de (sanal) test edilen ve daha güçlü çekirdek
-performans gösteren strateji gerçek paraya alındı:
-
-KARŞILAŞTIRMA (trend dönüş ajanı hariç, sadece çekirdek strateji):
-  Eski (4H+1H, LONG+SHORT): +$6.34 net / 49 işlem = +$0.13/işlem
-  Yeni (1D+4H+1H, LONG-only): +$17.61 net / 25 işlem = +$0.70/işlem
-  -> Yeni strateji işlem başına ~5.4 KAT daha karlı (paper modda ölçüldü)
+performans gösteren strateji gerçek paraya alındı.
 
 TREND DÖNÜŞ AJANI (hem eski live_bot'ta hem paper_bot_v2'de test edildi,
-İKİSİNDE DE net zarar verdiği görüldü: live_bot -$3.90/-$8.98,
-paper_bot_v2 -$2.80/-$8.98) - KULLANICI KARARIYLA VARSAYILAN KAPALI.
-Kod silinmedi, TREND_AJANI_AKTIF=true ile tekrar açılabilir.
+İKİSİNDE DE net zarar verdiği görüldü) - KULLANICI KARARIYLA VARSAYILAN
+KAPALI. Kod silinmedi, TREND_AJANI_AKTIF=true ile tekrar açılabilir.
 
 MANTIK:
   1) 1D trend YUKARI olmalı (20 periyot MA)
@@ -41,13 +69,16 @@ MANTIK:
   3) 1H trend YUKARI olmalı
   4) Üçü uyumlu değilse sinyal YOK
   5) 15m'de swing dip + dönüş onayı → LONG (SADECE LONG)
+  6) [v3.6 YENİ] Hacim teyidi: son mum hacmi ortalamanın üstünde olmalı
+  7) [v3.6 YENİ] Pump filtresi: coin 24s'te aşırı pompalanmışsa reddet
 
 Çıkış: SL (swing bazlı, taban %5) + SABİT %5 HEDEF (v3.0: iz sürme
 KALDIRILDI, hedefe değer değmez hemen kapanır - "hızlı gir çık" modu).
 
-⚠️ DÜRÜSTLÜK NOTU: Bu strateji paper modda ~69 işlemlik veriyle test
-edildi, gerçek parada henüz sıfırdan başlıyor. Paper performansı gerçek
-paraya birebir aktarılacağının garantisi yok - izlemeye devam edilecek.
+⚠️ DÜRÜSTLÜK NOTU: v3.6'daki iki yeni filtre, 161 işlemlik GERÇEK canlı
+veri analizine dayanıyor (backtest'e değil). Ama bu filtrelerin kendisi
+henüz canlıda test edilmedi - etkilerini görmek için birkaç günlük yeni
+veri toplanıp panel_analiz ile tekrar değerlendirilmesi gerekir.
 ════════════════════════════════════════════════════════
 """
 
@@ -110,34 +141,10 @@ def yetkili_mi(msg_or_call):
 SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC", "BCH"}
 
 # ── GERÇEK işlem parametreleri ──
-# KULLANICI KARARI (08.09.2026): "kasa büyümüyor" tespiti üzerine derinlemesine
-# araştırıldı - sabit $ marjin kullanmak, bakiye büyüse de küçülse de HER ZAMAN
-# aynı büyüklükte işlem açmak demek, yani $ büyümesi DOĞRUSAL kalıyor (bileşik
-# değil). Gerçek sıralı simülasyonla test edildi (78 coin/~14 gün, aynı giriş/
-# çıkış mantığı): sabit $2 marjin +%1100 getiri verirken, bakiyenin %20'si
-# marjin kullanmak +%3194 verdi (aynı backtest döneminde). Ama bu simetrik bir
-# kaldıraç - kayıplar da aynı oranda büyür. Test edilen "piyasaya göre ayarla"
-# (adaptif) fikri gerçek veride SABİT orandan daha KÖTÜ çıktı (kanıtlanmamış
-# karmaşıklık), o yüzden seçilmedi. %10 seçildi çünkü: marjin(%10) x kaldıraç
-# (10x) x SL(%5) = işlem başına maksimum risk bakiyenin YALNIZCA %5'i - bu,
-# profesyonel trader'ların kullandığı standart, ne aşırı temkinli ne aşırı
-# agresif bir risk seviyesi. RISK_PCT_BAKIYE=0 verilirse eski sabit $ moduna
-# dönülebilir (SABIT_MARJIN_USDT kullanılır).
 RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.20"))
-# KULLANICI KARARI (08.09.2026, iki farklı piyasa döneminde test edildi):
-# %20 seçildi çünkü TABAN $2 ile birleştiğinde, sakin/yatay piyasada (bakiye
-# $10'u geçmediği sürece) MEVCUT SABİT $2 SİSTEMİYLE BİREBİR AYNI davranıyor
-# (test: Dönem 2'de ikisi de +%105.5 verdi, HİÇ FARK YOK) - yani ek risk
-# YOK sakin piyasada. Ama güçlü/hareketli piyasada bakiye $10'u geçince
-# devreye girip çok daha güçlü büyüme sağlıyor (test: Dönem 1'de sabit $2
-# +%1164 verirken %20 +%6452 verdi - 5.5 kat daha fazla). Bu, backtest
-# verisinde "asla daha kötü, bazen çok daha iyi" (strict Pareto iyileşme)
-# özelliği gösteren nadir bir kombinasyon oldu.
-# Güvenlik sınırları - bileşik büyüme kontrolsüz büyümesin/küçülmesin diye:
-MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "2.0"))   # bakiye küçükken bile en az bu kadar (mevcut sistemle aynı)
-MARJIN_TAVAN_USDT = float(os.getenv("MARJIN_TAVAN_USDT", "50.0"))  # bakiye çok büyürse bile en fazla bu kadar
+MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "2.0"))
+MARJIN_TAVAN_USDT = float(os.getenv("MARJIN_TAVAN_USDT", "50.0"))
 SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
-# RISK_PCT_BAKIYE=0 ise (eski moda dönüş) bu sabit değer kullanılır.
 LEV = 10
 NOTIONAL = SABIT_MARJIN_USDT * LEV  # sadece eski koddaki referanslar için tutuluyor
 MAX_POS = int(os.getenv("MAX_POS", "3"))
@@ -152,59 +159,48 @@ MAX_SL_PCT_TAVAN = TARGET_MAX_LOSS_USDT / NOTIONAL
 # ════════════════════════════════════════════
 # KULLANICI KARARI (01.09.2026): FIRSATÇI STRATEJİYE GEÇİŞ
 # ════════════════════════════════════════════
-# Eski mantık (iz süren TP, 0.4R/0.15R) paper'da SL kayıplarının kârın
-# önemli kısmını götürdüğü gözlemlendi. Kullanıcı isteğiyle SABİT, HIZLI
-# hedefe geçildi - fiyat hedefe değer değmez HEMEN kapanır, iz sürme YOK.
-# Bu, önce paper_bot_firsatci'de test edildi (backtest: 573 işlem, %64.4
-# kazanma, net +$58.10 / $1 marjin ölçeğinde, 78 coin ~14 gün) - canlı
-# paper testinde de (27 işlem) tutarlı pozitif sonuç verdi.
 GIRIS_MAX_DIP_MESAFE = float(os.getenv("GIRIS_MAX_DIP_MESAFE", "0.02"))
-# KULLANICI KARARI (01.09.2026, "vur kaç" için daha isabetli giriş):
-# backtest'te test edildi - giriş fiyatı swing dipten en fazla %2
-# uzaklaşmış olmalı (geç girişler reddediliyor). Sonuç: SL kayıp oranı
-# %4.9'dan %1.5'e düştü (78 coin/~14 gün backtest'inde).
 MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
-# KULLANICI KARARI (08.09.2026, "derin düşün" isteğiyle bulundu): sadece
-# "4H yükselişte mi" (evet/hayır) değil, "NE KADAR güçlü yükselişte"
-# filtresi eklendi - fiyat 4H MA20'den en az %2 uzakta olmalı. Backtest'te
-# kazanma oranı %66.5'ten %72.1'e çıktı, ortalama işlem kazancı %29 arttı
-# (+$0.150 -> +$0.193, 78 coin/~14 gün backtest'inde). İşlem sayısı biraz
-# azalır (daha seçici) ama toplam net kâr korunur/artar.
-MIN_1D_TREND_GUCU_PCT = float(os.getenv("MIN_1D_TREND_GUCU_PCT", "1.0"))
-# KULLANICI KARARI (12.09.2026, "kendin bir strateji tasarla" isteğiyle
-# eklendi): 1D'de de trend gücü kontrolü - "büyük resmin de kararlı olması"
-# fikri. Backtest (27 coin, ~6 hafta): 244 işlem, %67.6 kazanma, +$24.33.
-# ⚠️ KULLANICI KARARI (12.09.2026): Bu strateji sadece paper'da 18-20
-# işlemle test edilmişken (normalde beklenen 80-100 eşiği KARŞILANMADAN),
-# kullanıcının AÇIK isteği ve bilinçli riski ile gerçek paraya taşındı.
-
-# KISMİ KÂR ALMA (12.09.2026, "kendi stratejim" ile birlikte): pozisyonun
-# yarısı küçük bir hedefte hemen kapanır, kalan yarısı daha büyük bir
-# hedefi bekler.
-KISMI_KAPAMA_ORANI = float(os.getenv("KISMI_KAPAMA_ORANI", "0.5"))
-KISMI_HEDEF_PCT = float(os.getenv("KISMI_HEDEF_PCT", "0.02"))
 HIZLI_HEDEF_PCT = float(os.getenv("HIZLI_HEDEF_PCT", "0.05"))
-# Bu artık "kalan pozisyonun" hedefi - kısmi kapamadan sonra kalan yarı
-# için. İz sürme YOK, hedefe değer değmez hemen kapanır.
 SHORT_AKTIF = os.getenv("SHORT_AKTIF", "false").lower() == "true"
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
 COOLDOWN_SAAT = 1.0
-# KULLANICI KARARI (08.09.2026): 4 saatten 8 saate çıkarıldı. Backtest testi
-# (1,2,3,4,6,8 saat karşılaştırıldı): kısa tutma süresi "hizli_tp" (garanti
-# kazanç) kategorisinin payını küçültüyor çünkü bazı coinler %5 hedefe
-# ulaşmak için 4 saatten fazla zaman istiyor - erken kesince bu kazançları
-# kaçırıyorduk. 8 saatte ortalama işlem kazancı +$0.108'den +$0.150'ye
-# çıktı (%39 artış, 78 coin/~14 gün backtest'inde). Kullanıcının ilk
-# sezgisi ("kararsız pozisyonları erken kes") mantıklı görünüyordu ama
-# gerçek veri tersini gösterdi - sabırlı olmak daha iyi çalıştı.
 MAX_HOLD_SAAT = float(os.getenv("MAX_HOLD_SAAT", "8"))
 KONTROL_ARALIGI_SN = 60
 ADAY_HAVUZU_BUYUKLUGU = 80
 
-# TREND DÖNÜŞ AJANI - KULLANICI KARARI (14.08.2026): hem eski live_bot'ta
-# hem paper_bot_v2'de gerçek/sanal veri ile test edildi, İKİSİNDE DE net
-# zarar verdiği görüldü. Varsayılan KAPALI - kod silinmedi,
-# TREND_AJANI_AKTIF=true ortam değişkeniyle tekrar açılabilir.
+# ════════════════════════════════════════════
+# v3.6 YENİ: HACİM TEYİDİ + PUMP FİLTRESİ
+# ════════════════════════════════════════════
+# KULLANICI KARARI (14.09.2026, 161 işlemlik gerçek canlı veri analiziyle
+# bulundu): işlemlerin %80'i (128/161) max_hold_timeout ile kapanıyor ve
+# bu grup net zarar veriyor (-7.11$, %44 kazanma). 1D+4H+1H uyumu tek
+# başına yeterince ayrıştırıcı değil. Hacim teyidi eklenerek "gerçek bir
+# hareketin başında mıyız yoksa durgun/sessiz bir yükselişte mi
+# sıkışacağız" ayrımı yapılmaya çalışılıyor.
+# ⚠️ Bu eşik canlıda henüz test edilmedi - ilk tahmin değeri. Birkaç
+# günlük veri sonrası panel_analiz ile gözden geçirilmeli.
+HACIM_TEYIT_AKTIF = os.getenv("HACIM_TEYIT_AKTIF", "true").lower() == "true"
+HACIM_TEYIT_KATSAYI = float(os.getenv("HACIM_TEYIT_KATSAYI", "1.5"))
+HACIM_TEYIT_PERIYOT = int(os.getenv("HACIM_TEYIT_PERIYOT", "20"))
+
+# KULLANICI KARARI (14.09.2026, aynı analiz): en sert SL kayıplarının
+# (CATI, PROS, ZEN, DOOD, BR, PIEVERSE - toplam ~14 işlem, -13.84$) ortak
+# paterni: coin girişten önce zaten güçlü pompalanmıştı, hemen ardından
+# sert geri çekilme SL'i tetikledi. Pump filtresi bu "tepede giriş"
+# riskini azaltmaya çalışıyor.
+# ⚠️ Bu eşik de canlıda henüz test edilmedi - ilk tahmin değeri.
+PUMP_FILTRE_AKTIF = os.getenv("PUMP_FILTRE_AKTIF", "true").lower() == "true"
+PUMP_FILTRE_ESIK_PCT = float(os.getenv("PUMP_FILTRE_ESIK_PCT", "15.0"))
+
+# API yükünü artırmamak için: aday_havuzu()'nun zaten çektiği
+# fetch_tickers() sonucu kısa süreliğine önbelleklenir, pump_coin_mu()
+# bu önbellekten okur (ekstra API çağrısı yapmaz).
+TICKER_CACHE_SN = 30
+_ticker_cache = {"veri": {}, "ts": 0}
+
+# TREND DÖNÜŞ AJANI - varsayılan KAPALI (kullanıcı kararı, hem eski
+# live_bot'ta hem paper_bot_v2'de net zarar verdiği görüldü).
 TREND_AJANI_AKTIF = os.getenv("TREND_AJANI_AKTIF", "false").lower() == "true"
 TREND_KONTROL_ARALIGI_SN = int(os.getenv("TREND_KONTROL_ARALIGI_SN", "900"))
 TREND_TERS_TEYIT_SAYISI = int(os.getenv("TREND_TERS_TEYIT_SAYISI", "2"))
@@ -215,24 +211,12 @@ COOLDOWN_PATH = os.getenv("COOLDOWN_PATH", "/data/live2_cooldown.json")
 TRADE_LOG_PATH = os.getenv("TRADE_LOG_PATH", "/data/live2_log.json")
 BLOKE_PATH = os.getenv("BLOKE_PATH", "/data/live2_bloke.json")
 
-# TEMKİNLİ MOD (21.08.2026 kararı): BTC'nin kendi 1D+4H trendi İKİSİ DE
-# düşüşe dönerse, yeni işlem açmayı DURDURMUYORUZ (bir altcoin BTC'den
-# bağımsız gerçekten güçlü olabilir - daha önce test ettik, coin'leri
-# tamamen engellemek yanlış çıkmıştı) - onun yerine AYNI ANDA AÇIK
-# TUTULABİLECEK POZİSYON SAYISINI yarıya indiriyoruz. Kanıtlanmış
-# mekanizmalara (SL, iz süren TP, giriş kuralları) dokunmuyor, sadece
-# "aynı anda kaç bahis açık" sorusuna temkinli cevap veriyor.
+# TEMKİNLİ MOD (21.08.2026 kararı)
 TEMKINLI_MOD_AKTIF = os.getenv("TEMKINLI_MOD_AKTIF", "true").lower() == "true"
 BTC_REJIM_KONTROL_ARALIGI_SN = int(os.getenv("BTC_REJIM_KONTROL_ARALIGI_SN", "900"))
 _btc_rejim_durumu = {"temkinli": False, "son_kontrol": 0}
 
-# İZLEME LİSTESİ AJANI (21.08.2026 kararı): paper_bot_v2'de test edildi,
-# yapısal olarak doğru çalıştığı (bir gerçek sinyal üretti: MET) görüldü.
-# Genel tarama listesi (en hareketli ADAY_HAVUZU_BUYUKLUGU coin) sessizce
-# (büyük fiyat hareketi olmadan) 1D+4H uyumuna erişen coinleri kaçırabilir.
-# Bu ajan 2/3 uyumlu coinleri ayrı, sabit bir listede tutup her turda TAM
-# kontrol eder. ⚠️ Henüz haftalarca test edilmedi, kullanıcı kararıyla
-# doğrudan gerçek paraya eklendi.
+# İZLEME LİSTESİ AJANI (21.08.2026 kararı)
 IZLEME_LISTESI_BOYUTU = int(os.getenv("IZLEME_LISTESI_BOYUTU", "10"))
 IZLEME_TARAMA_ARALIGI_SN = int(os.getenv("IZLEME_TARAMA_ARALIGI_SN", "900"))
 IZLEME_MAX_YAS_SAAT = float(os.getenv("IZLEME_MAX_YAS_SAAT", "24"))
@@ -369,11 +353,6 @@ def gercek_bakiye_al():
 
 
 def hesapla_marjin(bakiye):
-    """BİLEŞİK BÜYÜME (08.09.2026 kararı): RISK_PCT_BAKIYE > 0 ise marjin,
-    bakiyenin bu yüzdesi kadar hesaplanır (taban/tavan sınırlarıyla) - bakiye
-    büyüdükçe pozisyonlar da büyür, küçüldükçe küçülür. RISK_PCT_BAKIYE=0
-    ise (ya da bakiye alınamazsa) eski sabit $ moduna güvenli şekilde
-    düşülür."""
     if RISK_PCT_BAKIYE <= 0 or bakiye is None or bakiye <= 0:
         return SABIT_MARJIN_USDT
     marjin = bakiye * RISK_PCT_BAKIYE
@@ -408,13 +387,23 @@ def sembol_max_kaldirac(sym, istenen_lev):
         return istenen_lev
 
 
-def aday_havuzu():
-    # RWA (tokenize hisse senedi) filtresi - live_bot v1.1'de eklenen
-    # kritik düzeltme buraya da taşındı.
+def guncel_tickerlari_al():
+    """v3.6 YENİ: fetch_tickers() sonucunu kısa süreliğine önbellekler.
+    aday_havuzu() ve pump_coin_mu() aynı önbelleği paylaşır - böylece
+    pump filtresi eklenmesi ekstra API çağrısı yaratmaz."""
+    if time.time() - _ticker_cache["ts"] < TICKER_CACHE_SN and _ticker_cache["veri"]:
+        return _ticker_cache["veri"]
     try:
-        tickers = exchange.fetch_tickers()
+        _ticker_cache["veri"] = exchange.fetch_tickers()
+        _ticker_cache["ts"] = time.time()
     except Exception as e:
         log.warning(f"[TICKERS] {e}")
+    return _ticker_cache["veri"]
+
+
+def aday_havuzu():
+    tickers = guncel_tickerlari_al()
+    if not tickers:
         return []
     markets = market_bilgisi_al()
     adaylar = []
@@ -440,16 +429,8 @@ def aday_havuzu():
 
 
 def genis_evren_listesi():
-    """İZLEME LİSTESİ AJANI: aday_havuzu() sadece 'en hareketli'
-    ADAY_HAVUZU_BUYUKLUGU coini döner - skoru 24h fiyat değişimine dayalı.
-    Bir coin BÜYÜK bir hareket yapmadan sessizce 1D+4H+1H uyumuna
-    erişiyorsa düşük skor alıp bu listeden dışarıda kalabilir. Bu fonksiyon
-    hacim filtresi DIŞINDA hiçbir skor/sıralama uygulamadan TÜM uygun
-    coinleri döner."""
-    try:
-        tickers = exchange.fetch_tickers()
-    except Exception as e:
-        log.warning(f"[TICKERS_GENIS] {e}")
+    tickers = guncel_tickerlari_al()
+    if not tickers:
         return []
     markets = market_bilgisi_al()
     tumu = []
@@ -469,28 +450,45 @@ def genis_evren_listesi():
     return tumu
 
 
-def iki_uzerinden_uc_kontrol(sym):
-    """İZLEME LİSTESİ AJANI: sadece 1D+4H kontrol eder (1H'ye BAKMAZ) -
-    amaç 'neredeyse hazır' (2/3 uyumlu) coinleri ucuz bir kontrolle tespit
-    edip izleme listesine almak. 1H onayı ayrıca, tam sinyal fonksiyonunda
-    (ucyon_sinyal) kontrol edilir. KULLANICI KARARI (11.09.2026): SHORT
-    kapalıyken düşüş uyumlu coinleri listeye eklemenin anlamı yok (zaten
-    ucyon_sinyal'de reddedilecekler) - SHORT_AKTIF kontrolü eklendi."""
-    df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
-    df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
-    yon_1d = trend_yonu(df_1d)
-    yon_4h = trend_yonu(df_4h)
-    if yon_1d == "yukselis" and yon_4h == "yukselis":
+def pump_coin_mu(sym):
+    """v3.6 YENİ: coin son 24 saatte PUMP_FILTRE_ESIK_PCT üzerinde
+    yükselmişse True döner - bu coinlere LONG girişi reddedilir.
+    KULLANICI KARARI (14.09.2026, gerçek veri analiziyle bulundu): en
+    sert SL kayıplarının ortak paterni, coin zaten aşırı pompalanmışken
+    girilmiş olmasıydı (tepe civarında giriş -> sert geri çekilme).
+    API yükü YOK: guncel_tickerlari_al() önbelleğinden okur, ekstra
+    fetch_ticker çağrısı yapmaz."""
+    if not PUMP_FILTRE_AKTIF:
+        return False
+    tickers = guncel_tickerlari_al()
+    t = tickers.get(sym)
+    if not t:
+        return False
+    chg = t.get("percentage")
+    if chg is None:
+        return False
+    return chg > PUMP_FILTRE_ESIK_PCT
+
+
+def hacim_teyit_var_mi(df_15m, periyot=HACIM_TEYIT_PERIYOT):
+    """v3.6 YENİ: son 15m mumun hacmi, önceki `periyot` mumun ortalama
+    hacminin en az HACIM_TEYIT_KATSAYI katı olmalı. KULLANICI KARARI
+    (14.09.2026, gerçek veri analiziyle bulundu): işlemlerin %80'i
+    max_hold_timeout ile (hafif eksi) kapanıyordu - bunların çoğu muhtemelen
+    'sessiz', gerçek alım ilgisi olmayan fiyat hareketleriydi. Hacim teyidi
+    bu sessiz sinyalleri elemeye çalışır."""
+    if not HACIM_TEYIT_AKTIF:
         return True
-    if SHORT_AKTIF and yon_1d == "dusus" and yon_4h == "dusus":
-        return True
-    return False
+    if df_15m is None or len(df_15m) < periyot + 1:
+        return False
+    ort_hacim = df_15m["volume"].iloc[-(periyot + 1):-1].mean()
+    son_hacim = df_15m["volume"].iloc[-1]
+    if pd.isna(ort_hacim) or ort_hacim <= 0:
+        return False
+    return son_hacim >= ort_hacim * HACIM_TEYIT_KATSAYI
 
 
 def btc_temkinli_mod_mu():
-    """TEMKİNLİ MOD: BTC'nin kendi 1D+4H trendi İKİSİ DE düşüşteyse True
-    döner. 15dk'da bir güncellenir (önbellekli), gereksiz API çağrısı
-    yapılmasın diye."""
     if time.time() - _btc_rejim_durumu["son_kontrol"] < BTC_REJIM_KONTROL_ARALIGI_SN:
         return _btc_rejim_durumu["temkinli"]
     try:
@@ -538,12 +536,6 @@ def trend_yonu(df, periyot=MA_PERIYOT):
 
 
 def trend_gucu_pct(df, periyot=MA_PERIYOT):
-    """Fiyatın MA'dan yüzde kaç uzakta olduğunu hesaplar. KULLANICI KARARI
-    (08.09.2026, 'derin düşün' isteğiyle bulundu): sadece 'yukselis mi'
-    (evet/hayır) yeterli değil - NE KADAR güçlü yükselişte olduğu da önemli.
-    Backtest'te test edildi: 4H trend gücü >= %2 filtresi eklenince kazanma
-    oranı %66.5'ten %72.1'e çıktı, ortalama işlem kazancı %29 arttı
-    (+$0.150 -> +$0.193, 78 coin/~14 gün backtest'inde)."""
     if df is None or len(df) < periyot + 1:
         return None
     ma = df["close"].rolling(periyot).mean().iloc[-1]
@@ -554,12 +546,6 @@ def trend_gucu_pct(df, periyot=MA_PERIYOT):
 
 
 def ucyon_sinyal(sym):
-    """KULLANICI KARARI (12.09.2026): "kendi stratejim" adıyla paper'da
-    (18-20 işlem, kısa süre) test edilen strateji, KULLANICI'nın açık
-    isteği ve bilinçli riskiyle gerçek paraya taşındı - normalde
-    beklediğimiz 80-100 işlem/birkaç hafta eşiği KARŞILANMADAN. Kullanıcı
-    riski kabul ettiğini açıkça belirtti. Yeni eklenen: 4H'ye ek olarak
-    1D'de de trend GÜCÜ kontrolü (sadece yön değil)."""
     df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
     df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
     df_1h = get_df(sym, "1h", MA_PERIYOT + 5)
@@ -568,12 +554,9 @@ def ucyon_sinyal(sym):
     yon_4h = trend_yonu(df_4h)
     yon_1h = trend_yonu(df_1h)
     guc_4h = trend_gucu_pct(df_4h)
-    guc_1d = trend_gucu_pct(df_1d)
 
     if yon_1d == "yukselis" and yon_4h == "yukselis" and yon_1h == "yukselis":
         if guc_4h is None or guc_4h < MIN_4H_TREND_GUCU_PCT:
-            return None
-        if guc_1d is None or guc_1d < MIN_1D_TREND_GUCU_PCT:
             return None
         return _ucyon_sinyal_yon(sym, "long", yon_1d, yon_4h, yon_1h)
 
@@ -586,7 +569,7 @@ def ucyon_sinyal(sym):
 
 
 def _ucyon_sinyal_yon(sym, yon, yon_1d, yon_4h, yon_1h):
-    df_15m = get_df(sym, "15m", LOOKBACK_15M + 5)
+    df_15m = get_df(sym, "15m", max(LOOKBACK_15M, HACIM_TEYIT_PERIYOT) + 5)
     if df_15m is None or len(df_15m) < LOOKBACK_15M + 2:
         return None
 
@@ -611,13 +594,38 @@ def _ucyon_sinyal_yon(sym, yon, yon_1d, yon_4h, yon_1h):
 
     if not gecerli:
         return None
-    # KULLANICI KARARI (01.09.2026, "vur kaç" için daha isabetli giriş):
-    # backtest'te test edildi - giriş fiyatı swing noktadan çok
-    # uzaklaşmışsa (geç giriş) sinyal reddediliyor.
     if mesafe > GIRIS_MAX_DIP_MESAFE:
         return None
+
+    # ── v3.6 YENİ FİLTRE 1: HACİM TEYİDİ ──
+    # Sessiz (gerçek alım ilgisi olmayan) hareketleri eler. Bunlar canlı
+    # veride max_hold_timeout ile hafif eksi kapanan işlemlerin büyük
+    # kısmını oluşturuyordu (128/161 işlem, net -7.11$, %44 kazanma).
+    if not hacim_teyit_var_mi(df_15m):
+        return None
+
+    # ── v3.6 YENİ FİLTRE 2: PUMP FİLTRESİ ──
+    # Coin zaten aşırı pompalanmışsa LONG girişini reddet - canlı veride
+    # en sert SL kayıplarının ortak paterni buydu (tepede giriş -> sert
+    # geri çekilme). SHORT'a bu filtre uygulanmıyor (mantığı ters olurdu,
+    # ayrıca SHORT şu an zaten kapalı).
+    if yon == "long" and pump_coin_mu(sym):
+        return None
+
     return {"symbol": sym, "entry": float(son_mum["close"]), "swing_nokta": float(swing_nokta),
             "yon": yon, "1d": yon_1d, "4h": yon_4h, "1h": yon_1h}
+
+
+def iki_uzerinden_uc_kontrol(sym):
+    df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
+    df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
+    yon_1d = trend_yonu(df_1d)
+    yon_4h = trend_yonu(df_4h)
+    if yon_1d == "yukselis" and yon_4h == "yukselis":
+        return True
+    if SHORT_AKTIF and yon_1d == "dusus" and yon_4h == "dusus":
+        return True
+    return False
 
 
 # ════════════════════════════════════════════
@@ -721,8 +729,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         log.warning(f"[GERCEK_POZ] {sym}: {e}")
 
     r_risk = abs(entry - sl)
-    kismi_hedef = entry * (1 + KISMI_HEDEF_PCT) if long_mu else entry * (1 - KISMI_HEDEF_PCT)
-    kalan_hedef = entry * (1 + HIZLI_HEDEF_PCT) if long_mu else entry * (1 - HIZLI_HEDEF_PCT)
+    tp = entry * (1 + HIZLI_HEDEF_PCT) if long_mu else entry * (1 - HIZLI_HEDEF_PCT)
 
     sl_emir_id = None
     sl_fiyat = float(exchange.price_to_precision(sym, sl))
@@ -748,97 +755,21 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
 
     with state_lock:
         trade_state[sym] = {
-            "entry": entry, "sl": sl, "kismi_hedef": kismi_hedef, "kalan_hedef": kalan_hedef,
-            "sl_emir_id": sl_emir_id, "yon": yon, "qty": qty,
+            "entry": entry, "sl": sl, "tp": tp, "sl_emir_id": sl_emir_id, "yon": yon, "qty": qty,
             "r_risk": r_risk, "acilis_zamani": time.time(),
             "1d": sinyal["1d"], "4h": sinyal["4h"], "1h": sinyal["1h"], "notional": notional,
-            "kismi_alindi": False, "kismi_pnl_toplam": 0.0,
             "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
         }
     durumu_diske_yaz()
 
     yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
-    tg(f"📈 GERÇEK POZİSYON (kendi stratejim): {sym} {yon_emoji}\n"
-       f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f})\n"
-       f"Kısmi hedef (%{KISMI_KAPAMA_ORANI*100:.0f} poz.): {kismi_hedef:.6f} (%{KISMI_HEDEF_PCT*100:.1f})\n"
-       f"Kalan hedef: {kalan_hedef:.6f} (%{HIZLI_HEDEF_PCT*100:.1f})\n"
+    tg(f"📈 GERÇEK POZİSYON (fırsatçı v3.6): {sym} {yon_emoji}\n"
+       f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
-       f"⚡ Kısmi kâr alma AKTİF: yarısı hızlı kapanır, yarısı büyük hedefi bekler\n"
+       f"✅ Hacim teyidi geçti | ✅ Pump filtresi geçti\n"
+       f"⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${marjin_kullanilan:.2f} "
        f"(bileşik büyüme: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i, taban ${MARJIN_TABAN_USDT:.2f})")
-
-
-def gercek_pozisyon_kismi_kapat(sym):
-    """KISMİ KÂR ALMA (gerçek para): pozisyonun KISMI_KAPAMA_ORANI kadarını
-    borsada GERÇEK bir reduce-only piyasa emriyle kapatır. Kalan kısım
-    açık kalır, mevcut SL emri (tam miktar için yerleştirilmişti) kalan
-    pozisyonu da koruma altında tutmaya devam eder (reduceOnly emirler
-    borsa tarafından mevcut pozisyon büyüklüğüne göre otomatik sınırlanır)."""
-    with state_lock:
-        durum = trade_state.get(sym)
-        if not durum or durum.get("kismi_alindi"):
-            return
-        yon_kayitli = durum.get("yon", "long")
-        long_mu = (yon_kayitli == "long")
-        entry = durum["entry"]
-        qty_orijinal = durum["qty"]
-
-    kapanis_yonu = "sell" if long_mu else "buy"
-    kismi_qty_hedef = qty_orijinal * KISMI_KAPAMA_ORANI
-    try:
-        kismi_qty = float(exchange.amount_to_precision(sym, kismi_qty_hedef))
-    except Exception as e:
-        log.warning(f"[KISMI_MIKTAR] {sym}: {e}")
-        return
-    if kismi_qty <= 0:
-        return
-
-    try:
-        kismi_emri = exchange.create_market_order(sym, kapanis_yonu, kismi_qty, params={"reduceOnly": True})
-    except Exception as e:
-        log.warning(f"[KISMI_KAPAT] {sym}: {e}")
-        return
-
-    time.sleep(0.8)
-    cikis_fiyat = None
-    try:
-        detay = exchange.fetch_order(kismi_emri.get("id"), sym)
-        dolum = safe(detay.get("average")) or safe(detay.get("price"))
-        if dolum > 0:
-            cikis_fiyat = dolum
-    except Exception:
-        pass
-    if not cikis_fiyat:
-        try:
-            t = exchange.fetch_ticker(sym)
-            cikis_fiyat = safe(t["last"])
-        except Exception:
-            cikis_fiyat = entry
-
-    pnl_pct = (cikis_fiyat - entry) / entry if long_mu else (entry - cikis_fiyat) / entry
-    kapanan_notional = kismi_qty * entry
-    brut_pnl = pnl_pct * kapanan_notional
-    komisyon_maliyeti = KOMISYON_PCT * kapanan_notional * 2
-    net_pnl = brut_pnl - komisyon_maliyeti
-
-    with state_lock:
-        if sym not in trade_state:
-            return
-        trade_state[sym]["kismi_alindi"] = True
-        trade_state[sym]["qty"] = qty_orijinal - kismi_qty
-        trade_state[sym]["kismi_pnl_toplam"] = net_pnl
-    durumu_diske_yaz()
-
-    trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": net_pnl,
-                       "yon": yon_kayitli, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                       "not": "kismi_kar_alma", "1d": trade_state.get(sym, {}).get("1d"),
-                       "4h": trade_state.get(sym, {}).get("4h"), "1h": trade_state.get(sym, {}).get("1h")})
-
-    emoji = "🟢" if net_pnl >= 0 else "🔴"
-    tg(f"{emoji} KISMİ KÂR ALINDI (gerçek): {sym} — pozisyonun %{KISMI_KAPAMA_ORANI*100:.0f}'i kapatıldı\n"
-       f"Giriş:{entry:.6f} → Şimdi:{cikis_fiyat:.6f} (%{pnl_pct*100:+.2f})\n"
-       f"💰 Kısmi net PnL: {net_pnl:+.2f}$\n"
-       f"🔒 Kalan pozisyon büyük hedefi bekliyor.")
 
 
 def gercek_pozisyon_kapat(sym, sebep="manuel"):
@@ -852,13 +783,6 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
             with state_lock:
                 trade_state.pop(sym, None)
             durumu_diske_yaz()
-            # KULLANICI KARARI (08.09.2026, "derin düşün" isteğiyle bulundu):
-            # backtest'te test edildi - sadece SL sonrası bekleme uygulamak,
-            # kazanç/nötr (hizli_tp/max_hold) sonrası HEMEN tekrar girebilmek
-            # net kârı %3.5 artırdı (78 coin/~14 gün backtest'inde, +$53.24 ->
-            # +$55.11). Mantık: max_hold ile nötr kapanan bir pozisyon genelde
-            # "trend hâlâ geçerli ama henüz hedefe ulaşmadı" demek, o coin'i
-            # 1 saat dışlamak devam eden hareketi kaçırabilir.
             if sebep == "sl":
                 with cooldown_lock:
                     son_kapanis_zamani[sym] = time.time()
@@ -904,29 +828,17 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
-        # KULLANICI KARARI (08.09.2026): sadece SL sonrası bekleme uygulanır
-        # (bkz. yukarıdaki açıklama) - kazanç/nötr kapanışlarda hemen tekrar
-        # girilebilir.
         if sebep == "sl":
             with cooldown_lock:
                 son_kapanis_zamani[sym] = time.time()
             cooldown_diske_yaz()
-        # DİKKAT: pnl (log'a yazılan) SADECE bu kapanışın kendi payı - kısmi
-        # kâr (varsa) zaten AYRI bir trade_log kaydında var. Mesajda toplamı
-        # bilgi amaçlı gösteriyoruz, log'a tekrar eklemiyoruz (çift sayma
-        # olmasın diye - paper bot'ta bulduğumuz hatayla aynı mantık).
-        kismi_pnl_toplam = (durum or {}).get("kismi_pnl_toplam", 0.0)
-        toplam_gosterim = pnl + kismi_pnl_toplam
-        kismi_satiri = f" (kısmi +{kismi_pnl_toplam:.2f}$ dahil, toplam {toplam_gosterim:+.2f}$)" if kismi_pnl_toplam > 0 else ""
-        tg(f"{'🟢' if toplam_gosterim>=0 else '🔴'} GERÇEK kapandı: {sym} [{sebep}] PnL≈{pnl:+.2f}${kismi_satiri}")
+        tg(f"{'🟢' if pnl>=0 else '🔴'} GERÇEK kapandı: {sym} [{sebep}] PnL≈{pnl:+.2f}$")
         return True, f"✅ {sym} kapatıldı | PnL≈{pnl:+.2f}$"
     except Exception as e:
         return False, f"⚠️ {sym} kapatma hatası: {e}"
 
 
 def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
-    """Pozisyon borsada bizden önce kapanmış - gerçek çıkış fiyatını
-    borsanın işlem geçmişinden çekiyoruz, hiçbir zaman tahmin yapmıyoruz."""
     entry = durum["entry"]
     qty = durum.get("qty", 0)
     cikis_fiyat = None
@@ -996,8 +908,8 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v2 — CANLI ÖZET",
-        f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'})",
+        "💵 LIVE BOT v3.6 — CANLI ÖZET",
+        f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
     ]
@@ -1044,22 +956,24 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.0 (KENDİ STRATEJİM) AYARLARI\n\n"
-            f"Sürüm: v4.0 (12.09.2026, KULLANICI'nın açık isteği ve bilinçli "
-            f"riskiyle: paper'da sadece 18-20 işlemle test edilen 'kendi "
-            f"stratejim' gerçek paraya taşındı - normalde beklenen 80-100 "
-            f"işlem eşiği KARŞILANMADAN. Şu an: {yon_basligi})\n\n"
+    return ("⚙️ LIVE BOT v3.6 (FIRSATÇI + HACİM/PUMP FİLTRELİ) AYARLARI\n\n"
+            f"Sürüm: v3.6 (14.09.2026 — 161 işlemlik gerçek veri analiziyle hacim "
+            f"teyidi + pump filtresi eklendi. Önceki: 01.09.2026 fırsatçı geçiş → "
+            f"08.09.2026 bileşik büyüme/8sa/akıllı cooldown/trend gücü → 10.09.2026 "
+            f"SHORT eklendi → 11.09.2026 SHORT kapatıldı. Şu an: {yon_basligi})\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
-            f"Giriş ({yon_basligi}): Üçlü zaman dilimi trend uyumu + ÇİFT trend gücü + dip/tepe yakınlığı\n"
+            f"Giriş ({yon_basligi}): Üçlü zaman dilimi trend uyumu + trend gücü + "
+            f"dip/tepe yakınlığı + hacim teyidi + pump filtresi\n"
             f"{yon_aciklama}"
             f"  2) 4H trend en az %{MIN_4H_TREND_GUCU_PCT:.1f} güçte olmalı (MA20'den uzaklık)\n"
-            f"  3) 1D trend en az %{MIN_1D_TREND_GUCU_PCT:.1f} güçte olmalı (YENİ - büyük "
-            f"resmin de kararlı olması)\n"
-            "  4) 15m'de swing dip/tepe + dönüş onayı gerekli\n"
-            f"  5) Giriş fiyatı swing noktadan en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzak olmalı\n\n"
-            "⚡ ÇIKIŞ (kısmi kâr alma + kalan hedef):\n"
-            f"  %{KISMI_KAPAMA_ORANI*100:.0f} pozisyon %{KISMI_HEDEF_PCT*100:.1f}'de HEMEN kapanır (gerçek reduce-only emirle)\n"
-            f"  Kalan %{(1-KISMI_KAPAMA_ORANI)*100:.0f} pozisyon %{HIZLI_HEDEF_PCT*100:.1f} tam hedefi bekler\n"
+            "  3) 15m'de swing dip/tepe + dönüş onayı gerekli\n"
+            f"  4) Giriş fiyatı swing noktadan en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzak olmalı\n"
+            f"  5) [v3.6] Son 15m mum hacmi, {HACIM_TEYIT_PERIYOT} mum ortalamasının en az "
+            f"{HACIM_TEYIT_KATSAYI:.1f} katı olmalı ({'AKTİF' if HACIM_TEYIT_AKTIF else 'KAPALI'})\n"
+            f"  6) [v3.6] Coin son 24s'te %{PUMP_FILTRE_ESIK_PCT:.0f}'ten fazla pompalanmamış olmalı "
+            f"(LONG için, {'AKTİF' if PUMP_FILTRE_AKTIF else 'KAPALI'})\n\n"
+            "⚡ ÇIKIŞ (iz sürme YOK, sabit hedef):\n"
+            f"  TP: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
             f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}\n"
             f"  Max tutma: {MAX_HOLD_SAAT:.0f} saat\n\n"
             f"💰 MARJİN (bileşik büyüme): bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i "
@@ -1067,22 +981,16 @@ def panel_ayarlar_metni():
             f"  Şu anki bakiyeyle hesaplanan marjin: ${hesapla_marjin(gercek_bakiye_al() or 0):.2f}\n"
             f"Kaldıraç: {LEV}x\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
-            "📊 BACKTEST (27 coin, ~6 hafta, 3 farklı piyasa dönemi dahil):\n"
-            "  244 işlem, %67.6 kazanma, net +$24.33 ($10 notional ölçeğinde)\n"
-            "  6 haftanın sadece 1'i hafif negatifti (-$0.02)\n\n"
-            "⚠️ DÜRÜSTLÜK NOTU: Kârın %59'u tek bir güçlü ralli haftasından "
-            "geldi. Paper testinde sadece 18-20 işlem birikmişti (hedef "
-            "80-100 idi) - kullanıcı bu riski bilerek kabul etti.\n\n"
-            f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
-            f"  Eski live_bot'ta VE paper_bot_v2'de gerçek/sanal veriyle test "
-            f"edildi, İKİSİNDE DE net zarar verdiği görüldü - varsayılan kapalı.\n\n"
+            f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n\n"
             f"🌡️ TEMKİNLİ MOD: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'}\n"
-            f"  Şu anki durum: {'⚠️ DEVREDE (BTC 1D+4H düşüşte, MAX_POS yarıya indi)' if temkinli else '✅ pasif (BTC 1D+4H yükselişte/karışık, MAX_POS normal)'}\n\n"
+            f"  Şu anki durum: {'⚠️ DEVREDE (BTC 1D+4H düşüşte, MAX_POS yarıya indi)' if temkinli else '✅ pasif (MAX_POS normal)'}\n\n"
             f"👁️ İZLEME LİSTESİ AJANI: max {IZLEME_LISTESI_BOYUTU} coin, "
             f"{IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n"
-            f"  Genel taramanın (en hareketli {ADAY_HAVUZU_BUYUKLUGU} coin) kaçırabileceği "
-            f"sessizce 1D+4H uyumuna erişen coinleri ayrıca izler.\n"
             f"{izleme_satiri} ({izleme_boyut}/{IZLEME_LISTESI_BOYUTU})\n\n"
+            "⚠️ v3.6 filtreleri (hacim teyidi, pump filtresi) henüz canlıda test "
+            "edilmedi - 161 işlemlik geçmiş veri analizine dayanan ilk tahmin "
+            "değerleridir. Birkaç günlük yeni veri sonrası panel_analiz ile "
+            "gözden geçirilmesi gerekir.\n"
             "⚠️ SHORT_AKTIF=true ortam değişkeniyle SHORT tekrar açılabilir, "
             "ama kullanıcı kararıyla şu an kapalı.")
 
@@ -1146,14 +1054,13 @@ def panel_risk_metni():
             long_mu = d.get("yon", "long") == "long"
             yon_etiket = "LONG" if long_mu else "SHORT"
             pnl_pct = (guncel - entry) / entry * 100 if long_mu else (entry - guncel) / entry * 100
-            anlik_kar = pnl_pct / 100 * d.get("notional", NOTIONAL) + d.get("kismi_pnl_toplam", 0.0)
+            anlik_kar = pnl_pct / 100 * d.get("notional", NOTIONAL)
             sure_dk = (time.time() - d["acilis_zamani"]) / 60
             kalan_dk = MAX_HOLD_SAAT * 60 - sure_dk
-            kismi_durum = "✅ alındı" if d.get("kismi_alindi") else "🔓 bekliyor"
             satirlar.append(f"{sym} {yon_etiket} (1D:{d.get('1d')}/4H:{d.get('4h')}/1H:{d.get('1h')})\n"
                              f"  Giriş:{entry:.6f} Şimdi:{guncel:.6f} (%{pnl_pct:+.2f})\n"
-                             f"  Anlık PnL: {anlik_kar:+.2f}$ | SL:{d['sl']:.6f} | Kalan hedef:{d.get('kalan_hedef',0):.6f}\n"
-                             f"  Kısmi kâr: {kismi_durum} | Açık süre: {sure_dk:.0f} dk | Max tutmaya kalan: {max(0,kalan_dk):.0f} dk")
+                             f"  Anlık PnL: {anlik_kar:+.2f}$ | SL:{d['sl']:.6f} | TP:{d.get('tp',0):.6f}\n"
+                             f"  Açık süre: {sure_dk:.0f} dk | Max tutmaya kalan: {max(0,kalan_dk):.0f} dk")
         except Exception:
             satirlar.append(f"{sym} (fiyat alınamadı)")
     return "\n".join(satirlar)
@@ -1367,11 +1274,6 @@ def manage_loop():
                 long_mu = (yon_kayitli == "long")
                 aranan_yon = "yukselis" if long_mu else "dusus"
 
-                # TREND DÖNÜŞ AJANI - varsayılan KAPALI (kullanıcı kararı,
-                # hem eski live_bot'ta hem paper_bot_v2'de net zarar verdiği
-                # görüldü). TREND_AJANI_AKTIF=true ile tekrar açılabilir.
-                # 10.09.2026: SHORT desteği eklenince yön-farkında hâle
-                # getirildi (aranan_yon LONG'da "yukselis", SHORT'ta "dusus").
                 if TREND_AJANI_AKTIF:
                     son_kontrol = durum.get("son_trend_kontrol", 0)
                     if time.time() - son_kontrol >= TREND_KONTROL_ARALIGI_SN:
@@ -1414,45 +1316,21 @@ def manage_loop():
                         except Exception as e:
                             log.warning(f"[TREND_KONTROL_HATA] {sym}: {e}")
 
-                # KULLANICI KARARI (10.09.2026): SHORT desteği eklendi - SL/TP
-                # karşılaştırması yöne göre TERS çalışır (LONG'da SL aşağıda/
-                # TP yukarıda, SHORT'ta SL yukarıda/TP aşağıda).
                 sl_tetiklendi = (guncel <= durum["sl"]) if long_mu else (guncel >= durum["sl"])
                 if sl_tetiklendi:
                     gercek_pozisyon_kapat(sym, "sl")
                     continue
 
-                # KISMİ KÂR ALMA (12.09.2026, "kendi stratejim"): pozisyonun
-                # yarısı küçük bir hedefte hemen kapanır (gerçek reduce-only
-                # emirle), kalan yarı büyük hedefi bekler.
-                if not durum.get("kismi_alindi", False):
-                    kismi_hedef = durum.get("kismi_hedef")
-                    if kismi_hedef is not None:
-                        kismi_tetiklendi = (guncel >= kismi_hedef) if long_mu else (guncel <= kismi_hedef)
-                        if kismi_tetiklendi:
-                            gercek_pozisyon_kismi_kapat(sym)
-                            with state_lock:
-                                durum = trade_state.get(sym)
-                            if not durum:
-                                continue
-
-                # GÜVENLİK: durum.get("kalan_hedef") kullanılıyor (doğrudan
-                # durum["kalan_hedef"] DEĞİL) - eğer diskte bu güncellemeden
-                # ÖNCE açılmış, "kalan_hedef" alanı olmayan eski bir pozisyon
-                # kalmışsa, KeyError ile çökmek yerine güvenlik amaçlı hemen
-                # piyasa fiyatından kapatılır.
-                kalan_hedef = durum.get("kalan_hedef")
-                if kalan_hedef is None:
-                    log.warning(f"[ESKI_POZISYON] {sym} 'kalan_hedef' alanı yok (eski format olabilir) - güvenlik amaçlı kapatılıyor")
+                tp = durum.get("tp")
+                if tp is None:
+                    log.warning(f"[ESKI_POZISYON] {sym} 'tp' alanı yok (v3.0 öncesi kalıntı olabilir) - güvenlik amaçlı kapatılıyor")
                     gercek_pozisyon_kapat(sym, "eski_format_guvenlik_kapanisi")
                     continue
-                hedef_tetiklendi = (guncel >= kalan_hedef) if long_mu else (guncel <= kalan_hedef)
-                if hedef_tetiklendi:
-                    gercek_pozisyon_kapat(sym, "tam_hedef")
+                tp_tetiklendi = (guncel >= tp) if long_mu else (guncel <= tp)
+                if tp_tetiklendi:
+                    gercek_pozisyon_kapat(sym, "hizli_tp")
                     continue
 
-                # borsada pozisyon hâlâ var mı diye doğrula (SL borsada
-                # bizden önce tetiklenmiş olabilir)
                 try:
                     pozlar = exchange.fetch_positions([sym])
                     gercek_pos = next((p for p in pozlar if safe(p.get("contracts")) > 0), None)
@@ -1474,9 +1352,6 @@ def manage_loop():
 
 
 def izleme_listesi_guncelle():
-    """İZLEME LİSTESİ AJANI: geniş evreni tarar, sadece 1D+4H uyumlu (2/3)
-    olanları listeye ekler. Zaten pozisyonu açık ya da cooldown'da olan
-    coinler atlanır."""
     if time.time() - _son_izleme_taramasi["ts"] < IZLEME_TARAMA_ARALIGI_SN:
         return
     _son_izleme_taramasi["ts"] = time.time()
@@ -1521,9 +1396,6 @@ def izleme_listesi_guncelle():
 
 
 def izleme_listesi_kontrol():
-    """İzleme listesindeki her coin için TAM sinyal kontrolü (ucyon_sinyal
-    - 1D+4H+1H+15m, hepsi sıfırdan yeniden doğrulanır) yapılır. 1D/4H
-    uyumunu kaybetmiş ya da bayatlamış kayıtlar temizlenir."""
     with izleme_lock:
         izlenenler = dict(izleme_listesi)
     if not izlenenler:
@@ -1558,7 +1430,7 @@ def izleme_listesi_kontrol():
             with state_lock:
                 if sym in trade_state or len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
                     continue
-            log.info(f"[IZLEME_LISTESI] {sym} tam uyuma ulaştı (1D+4H+1H+15m), pozisyon açılıyor")
+            log.info(f"[IZLEME_LISTESI] {sym} tam uyuma ulaştı (1D+4H+1H+15m+hacim+pump), pozisyon açılıyor")
             gercek_pozisyon_ac(sinyal)
             acilanlar += 1
         else:
@@ -1572,22 +1444,19 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"🧠 LIVE BOT v4.0 (KENDİ STRATEJİM) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v3.6 (FIRSATÇI + HACİM/PUMP FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
-       f"Giriş: 1D+4H+1H uyum + 4H VE 1D'de trend GÜCÜ kontrolü + swing dip/tepe, "
-       f"en fazla %{GIRIS_MAX_DIP_MESAFE*100:.0f} uzaklık\n"
-       f"⚡ ÇIKIŞ: %{KISMI_KAPAMA_ORANI*100:.0f} pozisyon %{KISMI_HEDEF_PCT*100:.1f}'de hızlı kapanır, "
-       f"kalan %{HIZLI_HEDEF_PCT*100:.1f} tam hedefi bekler\n"
+       f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
+       f"⚡ ÇIKIŞ: SABİT %{HIZLI_HEDEF_PCT*100:.1f} hedef - hemen kapanır, iz sürme YOK\n"
        f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat\n"
-       f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı - önceki testlerde net zarar verdi)'}\n"
-       f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} — BTC 1D+4H düşüşe dönerse "
-       f"MAX_POS geçici yarıya iner (açık pozisyonlar etkilenmez)\n"
+       f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
+       f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'}\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📊 Backtest (27 coin, ~6 hafta, 3 farklı piyasa dönemi): 244 işlem, "
-       f"%67.6 kazanma, net +$24.33\n"
-       f"⚠️ KULLANICI KARARI (12.09.2026): Bu strateji paper'da sadece 18-20 "
-       f"işlemle test edildi (hedef 80-100'dü) - kullanıcının AÇIK isteği ve "
-       f"bilinçli riskiyle gerçek paraya taşındı.\n\n"
+       f"📌 v3.6 YENİ (14.09.2026, 161 işlemlik gerçek veri analiziyle): hacim "
+       f"teyidi ve pump filtresi eklendi - amaç max_hold_timeout grubundaki "
+       f"(önceki 161 işlemin %80'i, net -7.11$) sessiz/düşük-bilgi-değerli "
+       f"sinyalleri ve tepe-civarı girişleri elemek. Eşikler henüz canlıda "
+       f"test edilmedi, birkaç gün sonra panel_analiz ile gözden geçirilecek.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
     baslangic_uzlastirma()
@@ -1655,7 +1524,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.0 (KENDİ STRATEJİM - çift trend gücü + kısmi kâr alma) BAŞLIYOR...")
+    print("LIVE BOT v3.6 (1D+4H+1H, LONG-only, hacim+pump filtreli) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
