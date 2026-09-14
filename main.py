@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v3.6 — 1D+4H+1H Uyum + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
-14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2) → 14 Eylül 2026 (v3.6)
+LIVE BOT v3.7 — 1D+4H+1H Uyum + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
+14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2) → 14 Eylül 2026 (v3.6 → v3.7)
+
+v3.7 (14.09.2026, kullanıcı kararıyla — "KASA BÜYÜMESİ" isteğiyle bulundu):
+  1) KISMİ KÂR ALMA + BREAKEVEN: pozisyon %1.5'e ulaşınca miktarın
+     yarısı kapatılır (o kâr garanti altına alınır), kalan kısmın SL'i
+     girişe (breakeven + komisyon payı) çekilir. Amaç: "%5 hedefe
+     ulaşmadan pozisyon geri dönüp o ana kadarki kâr buharlaşıyor"
+     sorununu azaltmak.
+  2) KÜÇÜK BAKİYEDE MARJİN TABANI DÜZELTMESİ: hesapla_marjin() artık
+     min(MARJIN_TABAN_USDT, bakiye/MAX_POS) kullanıyor. Önceden küçük
+     bakiyelerde (örn. 4.26$) sabit $2 taban, bakiyenin ~%47'sini tek
+     işleme kilitleyip MAX_POS'un çeşitlendirme amacını fiilen boşa
+     çıkarıyordu. Artık bakiye küçükken pozisyon boyutu da küçülüyor,
+     bakiye büyüyünce (MARJIN_TABAN_USDT*MAX_POS'u geçince) normal
+     tabana otomatik dönüyor.
+  ⚠️ Her iki değişiklik de henüz canlıda test edilmedi.
 
 v3.6 (14.09.2026, kullanıcı kararıyla — GERÇEK VERİ ANALİZİNE DAYALI):
   161 gerçek işlemlik canlı log analiz edildi. Sonuç:
@@ -199,6 +214,31 @@ PUMP_FILTRE_ESIK_PCT = float(os.getenv("PUMP_FILTRE_ESIK_PCT", "15.0"))
 TICKER_CACHE_SN = 30
 _ticker_cache = {"veri": {}, "ts": 0}
 
+# ════════════════════════════════════════════
+# v3.7 YENİ: KISMİ KÂR ALMA + BREAKEVEN
+# ════════════════════════════════════════════
+# KULLANICI KARARI (14.09.2026): "%5 hedefe ulaşmadan pozisyon geri
+# dönüyor, o zamana kadarki kâr buharlaşıyor" gözlemi üzerine eklendi.
+# Mantık: pozisyon KISMI_KAR_ESIK_PCT'e ulaştığında miktarın
+# KISMI_KAR_ORANI kadarı kapatılır (o kâr garanti altına alınır), kalan
+# kısmın SL'i girişe (breakeven + komisyon payı) çekilir - kalan kısım
+# en kötü ihtimalle nötr kapanır, ayrıca tam %5 hedefe ulaşma şansı da
+# korunur.
+# Eşik %1.5 (hedefin ~%30'u) seçildi: küçük hesap + 10x kaldıraçta tek
+# bir SL kaybı bakiyenin önemli bir kısmını götürüyor (geçmiş veride
+# görülen -1$ civarı kayıplar, ~4$'lık bakiyenin %20-25'i), bu yüzden
+# erken bir eşikle "en azından bir şey garanti et" önceliklendirildi.
+# Oran %50 seçildi: ne çok erken tüm pozisyonu feda edip hızlı_tp
+# grubunun büyük kazançlarını (backtest/canlıda görülen +1$'ı aşan
+# işlemler) kaçırmamak, ne de whipsaw riskini tam taşımak arasında denge.
+# ⚠️ Bu, ortalama kazancı hafifçe düşürebilir (erken kısmi kapanışlar
+# tam hedeften daha az kazandırır) ama tutarlılığı artırması beklenir -
+# henüz canlıda test edilmedi, birkaç günlük veriyle değerlendirilmeli.
+KISMI_KAR_AKTIF = os.getenv("KISMI_KAR_AKTIF", "true").lower() == "true"
+KISMI_KAR_ESIK_PCT = float(os.getenv("KISMI_KAR_ESIK_PCT", "0.015"))
+KISMI_KAR_ORANI = float(os.getenv("KISMI_KAR_ORANI", "0.5"))
+BREAKEVEN_KOMISYON_PAYI = float(os.getenv("BREAKEVEN_KOMISYON_PAYI", "0.001"))
+
 # TREND DÖNÜŞ AJANI - varsayılan KAPALI (kullanıcı kararı, hem eski
 # live_bot'ta hem paper_bot_v2'de net zarar verdiği görüldü).
 TREND_AJANI_AKTIF = os.getenv("TREND_AJANI_AKTIF", "false").lower() == "true"
@@ -353,10 +393,24 @@ def gercek_bakiye_al():
 
 
 def hesapla_marjin(bakiye):
+    """v3.7 GÜNCELLEME (14.09.2026, kullanıcı kararı - 'kasa büyümesi'
+    isteğiyle bulundu): küçük hesaplarda MARJIN_TABAN_USDT tek başına
+    bakiyenin çok büyük bir kısmını tek işleme kilitleyebiliyordu (örn.
+    4.26$ bakiyede taban $2 = bakiyenin %47'si). Bu, MAX_POS'un
+    çeşitlendirme amacını fiilen boşa çıkarıyordu - pratikte 1-2
+    pozisyondan fazla açılamıyordu, tek bir kötü SL kasanın büyük bir
+    dilimini götürüyordu. Efektif taban artık
+    min(MARJIN_TABAN_USDT, bakiye/MAX_POS) - bakiye küçükken pozisyon
+    boyutu küçülür (çeşitlendirme korunur, tek işlem riski azalır),
+    bakiye MARJIN_TABAN_USDT*MAX_POS'u (şu an $8) geçince normal tabana
+    otomatik döner - bileşik büyüme mekanizmasına (RISK_PCT_BAKIYE)
+    dokunulmadı, sadece küçük bakiye durumundaki taban davranışı
+    düzeltildi."""
     if RISK_PCT_BAKIYE <= 0 or bakiye is None or bakiye <= 0:
         return SABIT_MARJIN_USDT
+    efektif_taban = min(MARJIN_TABAN_USDT, max(bakiye / MAX_POS, 0.5))
     marjin = bakiye * RISK_PCT_BAKIYE
-    marjin = max(MARJIN_TABAN_USDT, min(MARJIN_TAVAN_USDT, marjin))
+    marjin = max(efektif_taban, min(MARJIN_TAVAN_USDT, marjin))
     return marjin
 
 
@@ -759,17 +813,127 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
             "r_risk": r_risk, "acilis_zamani": time.time(),
             "1d": sinyal["1d"], "4h": sinyal["4h"], "1h": sinyal["1h"], "notional": notional,
             "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
+            "kismi_alindi": False,
         }
     durumu_diske_yaz()
 
     yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
-    tg(f"📈 GERÇEK POZİSYON (fırsatçı v3.6): {sym} {yon_emoji}\n"
+    tg(f"📈 GERÇEK POZİSYON (fırsatçı v3.7): {sym} {yon_emoji}\n"
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
        f"✅ Hacim teyidi geçti | ✅ Pump filtresi geçti\n"
        f"⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${marjin_kullanilan:.2f} "
        f"(bileşik büyüme: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i, taban ${MARJIN_TABAN_USDT:.2f})")
+
+
+def kismi_kar_al(sym, durum):
+    """v3.7 YENİ: pozisyonun KISMI_KAR_ORANI kadarını piyasadan kapatır
+    (o kâr garanti altına alınır), kalan kısmın SL'i girişe (breakeven +
+    komisyon payı) çekilir. Orijinal SL emri iptal edilip yenisi
+    yerleştirilir. Herhangi bir adımda hata olursa, pozisyon eski haliyle
+    (tam miktar, eski SL) güvenli şekilde bırakılır - yarım işlem riski
+    yok."""
+    try:
+        pozlar = exchange.fetch_positions([sym])
+        gercek_pos = next((p for p in pozlar if safe(p.get("contracts")) > 0), None)
+        if not gercek_pos:
+            return False
+
+        toplam_qty = safe(gercek_pos.get("contracts"))
+        entry = durum["entry"]
+        long_mu = durum.get("yon", "long") == "long"
+        kapanis_yonu = "sell" if long_mu else "buy"
+
+        kapanacak_qty = float(exchange.amount_to_precision(sym, toplam_qty * KISMI_KAR_ORANI))
+        if kapanacak_qty <= 0:
+            return False
+
+        kapama_emri = exchange.create_market_order(sym, kapanis_yonu, kapanacak_qty, params={"reduceOnly": True})
+        time.sleep(0.8)
+        cikis_fiyat = None
+        try:
+            detay = exchange.fetch_order(kapama_emri.get("id"), sym)
+            dolum = safe(detay.get("average")) or safe(detay.get("price"))
+            if dolum > 0:
+                cikis_fiyat = dolum
+        except Exception:
+            pass
+        if not cikis_fiyat:
+            try:
+                t = exchange.fetch_ticker(sym)
+                cikis_fiyat = safe(t["last"])
+            except Exception:
+                cikis_fiyat = entry
+
+        kismi_pnl = (cikis_fiyat - entry) * kapanacak_qty if long_mu else (entry - cikis_fiyat) * kapanacak_qty
+        trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": kismi_pnl,
+                           "yon": durum.get("yon", "long"), "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                           "not": "kismi_kar_alma", "1d": durum.get("1d"), "4h": durum.get("4h"),
+                           "1h": durum.get("1h")})
+
+        # Kalan miktarın SL'ini breakeven'e (+ komisyon payı) çek
+        kalan_qty = float(exchange.amount_to_precision(sym, toplam_qty - kapanacak_qty))
+
+        if kalan_qty <= 0:
+            # Yuvarlama sonucu kapatılacak miktar zaten tüm pozisyonu
+            # kapsıyor demektir - pozisyon tamamen kapanmış sayılır,
+            # state'ten tamamen çıkarılır (yarım/tanımsız durum bırakılmaz).
+            with state_lock:
+                trade_state.pop(sym, None)
+            durumu_diske_yaz()
+            tg(f"🟢 {sym} KISMİ KÂR ALINDI (tam kapanış - yuvarlama): "
+               f"{kapanacak_qty} kapatıldı, PnL≈{kismi_pnl:+.2f}$")
+            return True
+
+        eski_sl_id = durum.get("sl_emir_id")
+        if eski_sl_id:
+            try:
+                exchange.cancel_order(eski_sl_id, sym)
+            except Exception as e:
+                log.warning(f"[KISMI_KAR_SL_IPTAL] {sym}: {e}")
+
+        yeni_sl = entry * (1 + BREAKEVEN_KOMISYON_PAYI) if long_mu else entry * (1 - BREAKEVEN_KOMISYON_PAYI)
+        yeni_sl_fiyat = float(exchange.price_to_precision(sym, yeni_sl))
+        yeni_sl_id = None
+        for deneme in range(3):
+            try:
+                sl_emri = exchange.create_order(sym, "market", kapanis_yonu, kalan_qty, None,
+                                                 {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
+                yeni_sl_id = sl_emri.get("id")
+                if yeni_sl_id:
+                    break
+            except Exception as e:
+                log.warning(f"[KISMI_KAR_SL_YENI] {sym} deneme {deneme+1}/3: {e}")
+            time.sleep(0.5)
+
+        if not yeni_sl_id:
+            tg(f"🚨 {sym} kısmi kâr sonrası breakeven SL yerleştirilemedi, "
+               f"güvenlik amaçlı kalan pozisyon kapatılıyor.")
+            try:
+                exchange.create_market_order(sym, kapanis_yonu, kalan_qty, params={"reduceOnly": True})
+            except Exception:
+                pass
+            with state_lock:
+                trade_state.pop(sym, None)
+            durumu_diske_yaz()
+            return True
+
+        with state_lock:
+            if sym in trade_state:
+                trade_state[sym]["kismi_alindi"] = True
+                trade_state[sym]["qty"] = kalan_qty
+                trade_state[sym]["sl"] = yeni_sl
+                trade_state[sym]["sl_emir_id"] = yeni_sl_id
+        durumu_diske_yaz()
+
+        tg(f"🟢 {sym} KISMİ KÂR ALINDI: {kapanacak_qty} kapatıldı, PnL≈{kismi_pnl:+.2f}$\n"
+           f"Kalan {kalan_qty} için SL breakeven'e çekildi ({yeni_sl:.6f}) - "
+           f"kalan kısım en kötü ihtimalle nötr kapanır, tam hedef hâlâ geçerli.")
+        return True
+    except Exception as e:
+        log.warning(f"[KISMI_KAR_HATA] {sym}: {e}")
+        return False
 
 
 def gercek_pozisyon_kapat(sym, sebep="manuel"):
@@ -908,8 +1072,8 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v3.6 — CANLI ÖZET",
-        f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli)",
+        "💵 LIVE BOT v3.7 — CANLI ÖZET",
+        f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
     ]
@@ -956,11 +1120,11 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v3.6 (FIRSATÇI + HACİM/PUMP FİLTRELİ) AYARLARI\n\n"
-            f"Sürüm: v3.6 (14.09.2026 — 161 işlemlik gerçek veri analiziyle hacim "
-            f"teyidi + pump filtresi eklendi. Önceki: 01.09.2026 fırsatçı geçiş → "
-            f"08.09.2026 bileşik büyüme/8sa/akıllı cooldown/trend gücü → 10.09.2026 "
-            f"SHORT eklendi → 11.09.2026 SHORT kapatıldı. Şu an: {yon_basligi})\n\n"
+    return ("⚙️ LIVE BOT v3.7 (FIRSATÇI + HACİM/PUMP FİLTRELİ + KISMİ KÂR ALMA) AYARLARI\n\n"
+            f"Sürüm: v3.7 (14.09.2026 — kısmi kâr alma + breakeven eklendi. "
+            f"Önceki: 14.09.2026 hacim teyidi + pump filtresi → 01.09.2026 fırsatçı "
+            f"geçiş → 08.09.2026 bileşik büyüme/8sa/akıllı cooldown/trend gücü → "
+            f"10.09.2026 SHORT eklendi → 11.09.2026 SHORT kapatıldı. Şu an: {yon_basligi})\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
             f"Giriş ({yon_basligi}): Üçlü zaman dilimi trend uyumu + trend gücü + "
             f"dip/tepe yakınlığı + hacim teyidi + pump filtresi\n"
@@ -972,12 +1136,17 @@ def panel_ayarlar_metni():
             f"{HACIM_TEYIT_KATSAYI:.1f} katı olmalı ({'AKTİF' if HACIM_TEYIT_AKTIF else 'KAPALI'})\n"
             f"  6) [v3.6] Coin son 24s'te %{PUMP_FILTRE_ESIK_PCT:.0f}'ten fazla pompalanmamış olmalı "
             f"(LONG için, {'AKTİF' if PUMP_FILTRE_AKTIF else 'KAPALI'})\n\n"
-            "⚡ ÇIKIŞ (iz sürme YOK, sabit hedef):\n"
-            f"  TP: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
-            f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f}\n"
+            "⚡ ÇIKIŞ:\n"
+            f"  [v3.7] Kısmi kâr alma: pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca "
+            f"miktarın %{KISMI_KAR_ORANI*100:.0f}'i kapatılır, kalan SL'i breakeven'e çekilir "
+            f"({'AKTİF' if KISMI_KAR_AKTIF else 'KAPALI'})\n"
+            f"  TAM HEDEF: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
+            f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
             f"  Max tutma: {MAX_HOLD_SAAT:.0f} saat\n\n"
             f"💰 MARJİN (bileşik büyüme): bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i "
             f"(taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f})\n"
+            f"  [v3.7] Küçük bakiyede efektif taban = min(${MARJIN_TABAN_USDT:.2f}, bakiye/{MAX_POS}) "
+            f"- çeşitlendirmeyi korumak için (bakiye ${MARJIN_TABAN_USDT*MAX_POS:.0f}'ı geçince normal tabana döner)\n"
             f"  Şu anki bakiyeyle hesaplanan marjin: ${hesapla_marjin(gercek_bakiye_al() or 0):.2f}\n"
             f"Kaldıraç: {LEV}x\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
@@ -987,9 +1156,9 @@ def panel_ayarlar_metni():
             f"👁️ İZLEME LİSTESİ AJANI: max {IZLEME_LISTESI_BOYUTU} coin, "
             f"{IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n"
             f"{izleme_satiri} ({izleme_boyut}/{IZLEME_LISTESI_BOYUTU})\n\n"
-            "⚠️ v3.6 filtreleri (hacim teyidi, pump filtresi) henüz canlıda test "
-            "edilmedi - 161 işlemlik geçmiş veri analizine dayanan ilk tahmin "
-            "değerleridir. Birkaç günlük yeni veri sonrası panel_analiz ile "
+            "⚠️ v3.6/v3.7 filtreleri (hacim teyidi, pump filtresi, kısmi kâr alma) "
+            "henüz canlıda tam test edilmedi - geçmiş veri analizine dayanan ilk "
+            "tahmin değerleridir. Birkaç günlük yeni veri sonrası panel_analiz ile "
             "gözden geçirilmesi gerekir.\n"
             "⚠️ SHORT_AKTIF=true ortam değişkeniyle SHORT tekrar açılabilir, "
             "ama kullanıcı kararıyla şu an kapalı.")
@@ -1316,6 +1485,19 @@ def manage_loop():
                         except Exception as e:
                             log.warning(f"[TREND_KONTROL_HATA] {sym}: {e}")
 
+                # ── v3.7 YENİ: KISMİ KÂR ALMA (SL kontrolünden ÖNCE) ──
+                # Pozisyon KISMI_KAR_ESIK_PCT'e ulaştıysa (ve henüz kısmi
+                # alınmadıysa), miktarın yarısı kapatılıp kalanın SL'i
+                # breakeven'e çekilir. Bu, "hedefe ulaşmadan geri dönüp SL'e
+                # gitme" riskini azaltmayı amaçlar.
+                if KISMI_KAR_AKTIF and not durum.get("kismi_alindi", False):
+                    kismi_esik_fiyat = (durum["entry"] * (1 + KISMI_KAR_ESIK_PCT) if long_mu
+                                         else durum["entry"] * (1 - KISMI_KAR_ESIK_PCT))
+                    kismi_esik_gecti = (guncel >= kismi_esik_fiyat) if long_mu else (guncel <= kismi_esik_fiyat)
+                    if kismi_esik_gecti:
+                        kismi_kar_al(sym, durum)
+                        continue
+
                 sl_tetiklendi = (guncel <= durum["sl"]) if long_mu else (guncel >= durum["sl"])
                 if sl_tetiklendi:
                     gercek_pozisyon_kapat(sym, "sl")
@@ -1444,19 +1626,22 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v3.6 (FIRSATÇI + HACİM/PUMP FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v3.7 (FIRSATÇI + HACİM/PUMP FİLTRELİ + KISMİ KÂR ALMA, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
-       f"⚡ ÇIKIŞ: SABİT %{HIZLI_HEDEF_PCT*100:.1f} hedef - hemen kapanır, iz sürme YOK\n"
+       f"⚡ ÇIKIŞ: %{KISMI_KAR_ESIK_PCT*100:.1f}'te kısmi kâr al (%{KISMI_KAR_ORANI*100:.0f}) + breakeven, "
+       f"tam hedef %{HIZLI_HEDEF_PCT*100:.1f} - iz sürme YOK\n"
        f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat\n"
        f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
        f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'}\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📌 v3.6 YENİ (14.09.2026, 161 işlemlik gerçek veri analiziyle): hacim "
-       f"teyidi ve pump filtresi eklendi - amaç max_hold_timeout grubundaki "
-       f"(önceki 161 işlemin %80'i, net -7.11$) sessiz/düşük-bilgi-değerli "
-       f"sinyalleri ve tepe-civarı girişleri elemek. Eşikler henüz canlıda "
-       f"test edilmedi, birkaç gün sonra panel_analiz ile gözden geçirilecek.\n\n"
+       f"📌 v3.7 YENİ (14.09.2026): kısmi kâr alma + breakeven eklendi - "
+       f"pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca yarısı kapatılıp kalan SL'i "
+       f"girişe çekiliyor. Amaç: '%5 hedefe ulaşmadan geri dönüp kârı kaybetme' "
+       f"riskini azaltmak. v3.6: hacim teyidi + pump filtresi (max_hold_timeout "
+       f"grubundaki sessiz sinyalleri ve tepe-civarı girişleri elemek için).\n"
+       f"⚠️ Tüm bu eşikler henüz canlıda tam test edilmedi, birkaç gün sonra "
+       f"panel_analiz ile gözden geçirilecek.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
     baslangic_uzlastirma()
@@ -1524,7 +1709,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v3.6 (1D+4H+1H, LONG-only, hacim+pump filtreli) BAŞLIYOR...")
+    print("LIVE BOT v3.7 (1D+4H+1H, LONG-only, hacim+pump filtreli, kısmi kâr alma) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
