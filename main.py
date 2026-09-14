@@ -1,8 +1,36 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v3.7 — 1D+4H+1H Uyum + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
-14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2) → 14 Eylül 2026 (v3.6 → v3.7)
+LIVE BOT v3.9 — 1D+4H+1H Uyum + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
+14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2) → 14 Eylül 2026 (v3.6 → v3.7 → v3.8 → v3.9)
+
+v3.9 (14.09.2026, kullanıcı kararıyla — "BTC'den bağımsız pump yapan coinleri kaçırmayalım" isteğiyle bulundu):
+  v3.8'deki "BTC düşerse yeni pozisyonu TAMAMEN durdur" kararı geri
+  alındı - orijinal kodun kendi geçmişinde bu tam olarak denenip terk
+  edilmişti ("coin'leri tamamen engellemek yanlış çıkmıştı"). Yeni
+  yaklaşım: MAX_POS yine yarıya iner (v3.7 davranışı), AMA o dönemde
+  girecek coin için trend gücü eşiği YÜKSELTİLİR (MIN_4H_TREND_GUCU_PCT_TEMKINLI=%4.0, normalde %2.0). Böylece BTC
+  zayıfken sadece BTC'den GERÇEKTEN bağımsız, güçlü hareket eden
+  coinler işleme girebilir - zayıf/sınırda sinyaller elenir. "Hiçbir
+  şey yapma" (v3.7) ile "her şeyi durdur" (v3.8) arasında orta yol.
+
+v3.8 (14.09.2026, kullanıcı kararıyla — "piyasa dönünce bot bocalıyor,
+kârlar eriyor" gözlemiyle bulundu):
+  TEMKİNLİ MOD artık BTC'nin 1D+4H trendi düşüşe döndüğünde YENİ pozisyon
+  açmayı TAMAMEN durduruyor (önceden sadece MAX_POS yarıya iniyordu).
+  Açık pozisyonlara DOKUNULMAZ - onlar kendi SL/TP/kısmi kâr alma
+  mantığıyla yönetilmeye devam eder.
+
+  DEĞERLENDİRİLİP REDDEDİLEN ALTERNATİF: "trend dönünce pozisyonu
+  tersine çevir / SHORT'a geç". Bu, kodun kendi geçmişinde zaten
+  denenmiş ve başarısız olmuş bir yaklaşımdı - SHORT özelliği
+  10.09.2026'da eklenip ilk gerçek işlemde (SLX) "short squeeze" ile
+  kayıp verip 11.09.2026'da kapatılmıştı. Trend dönüş sinyali (1D+4H+1H
+  üçünün de dönmesi) doğası gereği GEÇ gelir - bu noktada pozisyonu
+  tersine çevirmek, geçici bir sıçramaya (whipsaw) yakalanıp hem eski
+  hem yeni yönde kayıp verme riskini artırır. Bu yüzden tek yönlü,
+  daha temkinli bir önlem seçildi: yeni risk eklemeyi durdur, var olan
+  pozisyonlara müdahale etme.
 
 v3.7 (14.09.2026, kullanıcı kararıyla — "KASA BÜYÜMESİ" isteğiyle bulundu):
   1) KISMİ KÂR ALMA + BREAKEVEN: pozisyon %1.5'e ulaşınca miktarın
@@ -560,18 +588,59 @@ def btc_temkinli_mod_mu():
     _btc_rejim_durumu["son_kontrol"] = time.time()
     if yeni_durum != onceki:
         if yeni_durum:
-            tg("⚠️ BTC 1D+4H düşüşe döndü — TEMKİNLİ MOD aktif, "
-               "MAX_POS geçici olarak yarıya indi. Açık pozisyonlar etkilenmez.")
+            durdurma_metni = ("YENİ POZİSYON AÇMA TAMAMEN DURDU" if TEMKINLI_MOD_TAM_DURDURMA
+                               else "MAX_POS geçici olarak yarıya indi")
+            tg(f"⚠️ BTC 1D+4H düşüşe döndü — TEMKİNLİ MOD aktif, "
+               f"{durdurma_metni}. Açık pozisyonlar etkilenmez, kendi "
+               f"SL/TP/kısmi kâr alma mantığıyla yönetilmeye devam eder.")
         else:
             tg("✅ BTC 1D+4H yeniden yükselişte — TEMKİNLİ MOD kapandı, "
-               "MAX_POS normale döndü.")
+               "yeni pozisyon açma normale döndü.")
     return yeni_durum
+
+
+# v3.8 YENİ: TEMKİNLİ MOD DAVRANIŞI SIKILAŞTIRILDI
+# KULLANICI KARARI (14.09.2026): "piyasa düşüşe dönünce bot bocalıyor,
+# kârlar eriyip zarara dönüyor" gözlemi üzerine konuşuldu. Değerlendirilen
+# alternatif ("trend dönünce pozisyonu tersine çevir / SHORT'a geç")
+# BİLİNÇLİ OLARAK REDDEDİLDİ - kodun kendi geçmişinde zaten denenmiş ve
+# başarısız olmuş bir yaklaşım (SHORT özelliği 10.09.2026'da eklenip
+# ilk gerçek işlemde "short squeeze" ile kayıp verip 11.09.2026'da
+# kapatılmıştı). Trend dönüş sinyali (1D+4H+1H'nin üçünün de dönmesi)
+# doğası gereği GEÇ gelir - bu noktada pozisyon tersine çevirmek, geçici
+# bir sıçramaya (whipsaw) yakalanıp hem eski hem yeni yönde kayıp verme
+# riskini artırır (nitekim SLX işleminde tam bu olmuştu).
+# Bunun yerine daha güvenli, tek yönlü bir önlem seçildi: BTC'nin kendi
+# 1D+4H trendi düşüşe dönerse, YENİ pozisyon açmayı TAMAMEN durdur (önceden
+# sadece MAX_POS yarıya iniyordu). Açık pozisyonlara DOKUNULMAZ - onlar
+# kendi SL/TP/kısmi kâr alma mantığıyla normal şekilde yönetilmeye devam
+# eder. Amaç: piyasa net olarak zayıflarken üstüne yeni risk eklememek,
+# ama var olan pozisyonları panikle kapatıp yön değiştirerek ekstra risk
+# yaratmamak.
+# v3.9 GÜNCELLEME (14.09.2026, kullanıcı kararıyla): v3.8'deki "BTC düşerse
+# yeni pozisyonu TAMAMEN durdur" kararı geri alındı. Neden: orijinal kodun
+# kendi geçmişinde bu tam olarak denenmiş ve terk edilmişti - "bir altcoin
+# BTC'den bağımsız gerçekten güçlü olabilir, coin'leri tamamen engellemek
+# yanlış çıkmıştı" notuyla. Kullanıcı haklı olarak bunu hatırlattı: BTC
+# düşerken bağımsız pump yapan güçlü bir coin fırsatını tamamen kaçırmak
+# istemiyoruz.
+# YENİ YAKLAŞIM: MAX_POS yine yarıya iner (v3.7 ve öncesi davranış), AMA
+# o dönemde girecek coin için trend gücü eşiği YÜKSELTİLİR
+# (MIN_4H_TREND_GUCU_PCT yerine MIN_4H_TREND_GUCU_PCT_TEMKINLI kullanılır).
+# Mantık: "piyasa genel olarak zayıfken daha seçici ol" - zayıf/sınırda
+# coinler elenir, sadece BTC'den GERÇEKTEN bağımsız, güçlü hareket eden
+# coinler işleme girebilir. Bu, "hiçbir şey yapma" (eski v3.7) ile
+# "her şeyi durdur" (v3.8) arasında bir orta yol.
+TEMKINLI_MOD_TAM_DURDURMA = os.getenv("TEMKINLI_MOD_TAM_DURDURMA", "false").lower() == "true"
+MIN_4H_TREND_GUCU_PCT_TEMKINLI = float(os.getenv("MIN_4H_TREND_GUCU_PCT_TEMKINLI", "4.0"))
 
 
 def efektif_max_pos():
     if not TEMKINLI_MOD_AKTIF:
         return MAX_POS
     if btc_temkinli_mod_mu():
+        if TEMKINLI_MOD_TAM_DURDURMA:
+            return 0
         return max(1, MAX_POS // 2)
     return MAX_POS
 
@@ -609,13 +678,21 @@ def ucyon_sinyal(sym):
     yon_1h = trend_yonu(df_1h)
     guc_4h = trend_gucu_pct(df_4h)
 
+    # v3.9 YENİ: BTC (piyasa geneli) düşüşteyken eşik yükseltilir - sadece
+    # BTC'den gerçekten bağımsız, güçlü hareket eden coinler geçer. BTC
+    # yükselişte/karışıkken normal eşik (MIN_4H_TREND_GUCU_PCT) kullanılır.
+    if TEMKINLI_MOD_AKTIF and btc_temkinli_mod_mu():
+        aktif_esik = MIN_4H_TREND_GUCU_PCT_TEMKINLI
+    else:
+        aktif_esik = MIN_4H_TREND_GUCU_PCT
+
     if yon_1d == "yukselis" and yon_4h == "yukselis" and yon_1h == "yukselis":
-        if guc_4h is None or guc_4h < MIN_4H_TREND_GUCU_PCT:
+        if guc_4h is None or guc_4h < aktif_esik:
             return None
         return _ucyon_sinyal_yon(sym, "long", yon_1d, yon_4h, yon_1h)
 
     if SHORT_AKTIF and yon_1d == "dusus" and yon_4h == "dusus" and yon_1h == "dusus":
-        if guc_4h is None or guc_4h > -MIN_4H_TREND_GUCU_PCT:
+        if guc_4h is None or guc_4h > -aktif_esik:
             return None
         return _ucyon_sinyal_yon(sym, "short", yon_1d, yon_4h, yon_1h)
 
@@ -818,7 +895,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     durumu_diske_yaz()
 
     yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
-    tg(f"📈 GERÇEK POZİSYON (fırsatçı v3.7): {sym} {yon_emoji}\n"
+    tg(f"📈 GERÇEK POZİSYON (fırsatçı v3.9): {sym} {yon_emoji}\n"
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)\n"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']} (üçlü uyumlu)\n"
        f"✅ Hacim teyidi geçti | ✅ Pump filtresi geçti\n"
@@ -1072,7 +1149,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v3.7 — CANLI ÖZET",
+        "💵 LIVE BOT v3.9 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1120,8 +1197,9 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v3.7 (FIRSATÇI + HACİM/PUMP FİLTRELİ + KISMİ KÂR ALMA) AYARLARI\n\n"
-            f"Sürüm: v3.7 (14.09.2026 — kısmi kâr alma + breakeven eklendi. "
+    return ("⚙️ LIVE BOT v3.9 (FIRSATÇI + HACİM/PUMP + KISMİ KÂR + AKILLI TEMKİNLİ MOD) AYARLARI\n\n"
+            f"Sürüm: v3.9 (14.09.2026 — temkinli mod akıllandı: BTC düşerken "
+            f"yeni pozisyon açma tamamen durur. Önceki: v3.7 kısmi kâr alma + breakeven. "
             f"Önceki: 14.09.2026 hacim teyidi + pump filtresi → 01.09.2026 fırsatçı "
             f"geçiş → 08.09.2026 bileşik büyüme/8sa/akıllı cooldown/trend gücü → "
             f"10.09.2026 SHORT eklendi → 11.09.2026 SHORT kapatıldı. Şu an: {yon_basligi})\n\n"
@@ -1151,8 +1229,9 @@ def panel_ayarlar_metni():
             f"Kaldıraç: {LEV}x\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n\n"
-            f"🌡️ TEMKİNLİ MOD: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'}\n"
-            f"  Şu anki durum: {'⚠️ DEVREDE (BTC 1D+4H düşüşte, MAX_POS yarıya indi)' if temkinli else '✅ pasif (MAX_POS normal)'}\n\n"
+            f"🌡️ TEMKİNLİ MOD: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} "
+            f"(BTC düşerse: {'yeni pozisyon TAMAMEN durur' if TEMKINLI_MOD_TAM_DURDURMA else 'MAX_POS yarıya iner, trend gücü eşiği yükselir (%' + str(MIN_4H_TREND_GUCU_PCT_TEMKINLI) + ')'})\n"
+            f"  Şu anki durum: {'⚠️ DEVREDE (BTC 1D+4H düşüşte: MAX_POS yarıya indi, trend gücü eşiği yükseldi - sadece BTC-bağımsız güçlü coinler geçer)' if temkinli else '✅ pasif (BTC 1D+4H yükselişte/karışık, normal çalışıyor)'}\n\n"
             f"👁️ İZLEME LİSTESİ AJANI: max {IZLEME_LISTESI_BOYUTU} coin, "
             f"{IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n"
             f"{izleme_satiri} ({izleme_boyut}/{IZLEME_LISTESI_BOYUTU})\n\n"
@@ -1626,14 +1705,16 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v3.7 (FIRSATÇI + HACİM/PUMP FİLTRELİ + KISMİ KÂR ALMA, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v3.9 (FIRSATÇI + HACİM/PUMP + KISMİ KÂR + AKILLI TEMKİNLİ MOD, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
        f"⚡ ÇIKIŞ: %{KISMI_KAR_ESIK_PCT*100:.1f}'te kısmi kâr al (%{KISMI_KAR_ORANI*100:.0f}) + breakeven, "
        f"tam hedef %{HIZLI_HEDEF_PCT*100:.1f} - iz sürme YOK\n"
        f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat\n"
        f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
-       f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'}\n"
+       f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} "
+       f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
+       f"BTC'den bağımsız güçlü coinler yine geçebilir)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
        f"📌 v3.7 YENİ (14.09.2026): kısmi kâr alma + breakeven eklendi - "
        f"pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca yarısı kapatılıp kalan SL'i "
@@ -1709,7 +1790,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v3.7 (1D+4H+1H, LONG-only, hacim+pump filtreli, kısmi kâr alma) BAŞLIYOR...")
+    print("LIVE BOT v3.9 (1D+4H+1H, LONG-only, hacim+pump filtreli, kısmi kâr alma, akıllı temkinli mod) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
