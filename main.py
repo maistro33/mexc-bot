@@ -1,7 +1,33 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v3.9 — 1D+4H+1H Uyum + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
+LIVE BOT v4.0 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
+
+v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
+sinyalinin, kararsız/yatay piyasa koşullarında zayıf sinyalleri
+eleyemediği gözlemlendi (panel_analiz: max_hold_timeout %44 kazanma
+net -2.34$, sl %33 kazanma net -3.79$ - hizli_tp ve kismi_kar_alma
+ise hâlâ %100 kazanmaya devam ediyordu, yani sorun ÇIKIŞTA değil
+GİRİŞ SİNYALİNİN SEÇİCİLİĞİNDEYDİ). Önce "trend gücü eşiğini
+yükselt" denendi, ama 136 coin/~51 gün gerçek veride BÜYÜK ÖLÇEKLİ
+backtest edildiğinde net kârı ARTIRMADIĞI, tam tersine AZALTTIĞI
+görüldü (guc=%2.0: net +1211$ / guc=%3.5: net +557$, kazanma oranı
+hemen hemen aynı kalırken sadece işlem sayısı düşüyordu).
+Bunun yerine, paper bot'ta ayrıca doğrulanmış "günün en çok yükseleni"
+(momentum) stratejisi (2377 işlem, %5/%5 TP/SL ile net +5940$, üst
+%10 dilimde) canlı botun GİRİŞ SİNYALİ seçeneği olarak eklendi -
+ÇIKIŞ MEKANİĞİ VE POZİSYON BOYUTLANDIRMA DEĞİŞTİRİLMEDİ (paper
+bot'un ham $100 sabit pozisyonu DEĞİL, canlı botun kendi bileşik
+büyüme + kısmi kâr alma + breakeven sistemi korundu - orantısız risk
+almamak için).
+STRATEJI_MODU="otomatik" (varsayılan): BTC'nin kendi rejimine
+(TEMKINLI_MOD_AKTIF sinyaline) göre kendisi seçer - BTC zayıfken
+"yukselen" moduna, güçlüyken "trend" moduna geçer.
+⚠️ DÜRÜSTLÜK NOTU: Bu OTOMATİK GEÇİŞİN KENDİSİ ayrı ayrı büyük
+ölçekte test EDİLMEDİ - sadece iki stratejinin her biri bağımsız
+olarak doğrulandı. Geçiş mantığı makul bir hipotez ama kanıtlanmamış,
+yakından izlenmesi gerekiyor.
 14 Ağustos 2026 (v2.0) → 21 Ağustos 2026 (v2.1) → 22 Ağustos 2026 (v2.2) → 14 Eylül 2026 (v3.6 → v3.7 → v3.8 → v3.9)
 
 v3.9 (14.09.2026, kullanıcı kararıyla — "BTC'den bağımsız pump yapan coinleri kaçırmayalım" isteğiyle bulundu):
@@ -204,6 +230,38 @@ MAX_SL_PCT_TAVAN = TARGET_MAX_LOSS_USDT / NOTIONAL
 # ════════════════════════════════════════════
 GIRIS_MAX_DIP_MESAFE = float(os.getenv("GIRIS_MAX_DIP_MESAFE", "0.02"))
 MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
+
+# ════════════════════════════════════════════
+# v4.0 YENİ: STRATEJİ MODU SEÇİMİ
+# ════════════════════════════════════════════
+# KULLANICI KARARI (17.09.2026, kullanıcı isteğiyle): Paper bot'ta
+# 136 coin/~51 gün gerçek veride büyük ölçekli backtest edilen "günün
+# en çok yükseleni" (momentum) stratejisi (2283 işlem, net +7254$,
+# %80-95 eşik ve %4-7 TP/SL aralığında İSTİKRARLI pozitif), canlı botun
+# GİRİŞ SİNYALİ olarak eklendi - ÇIKIŞ MEKANİĞİ VE POZİSYON
+# BOYUTLANDIRMA DEĞİŞTİRİLMEDİ. Paper bot'un ham $100 sabit pozisyon +
+# %6 TP/SL'i DOĞRUDAN KOPYALANMADI - bunun yerine canlı botun kendi
+# kanıtlanmış risk yönetimi (bileşik büyüme pozisyon boyutu, kısmi kâr
+# alma + breakeven, mevcut %5 TP/SL) korunarak sadece giriş mantığı
+# değiştirildi. Gerekçe: paper bot'ta $60'lık tekil SL kayıpları
+# görüldü (sabit $100 pozisyonun %6'sı) - bunu olduğu gibi ~$5-10'luk
+# gerçek hesaba taşımak orantısız risk olurdu.
+# STRATEJI_MODU="trend": eski 1D+4H+1H uyumu (v3.9 ve öncesi)
+# STRATEJI_MODU="yukselen": günün en çok yükseleni + hacim teyidi
+STRATEJI_MODU = os.getenv("STRATEJI_MODU", "otomatik")
+YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.90"))
+YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
+# "otomatik": BTC rejimine göre kendisi seçer - BTC zayıfken (temkinli
+# mod aktif) "yukselen" (günün en çok yükseleni) moduna, BTC güçlüyken
+# "trend" (1D+4H+1H uyumu) moduna geçer. Mantık: BTC zayıfken genel
+# piyasa trendine dayalı sinyaller daha az güvenilir olabilir (bugünkü
+# gerçek veri gözlemiyle bulundu - trend_gücü eşiğini yükseltmek net
+# kârı ARTIRMADI, azalttı), bunun yerine anlık momentumu takip eden
+# bağımsız bir sinyale geçmek denendi.
+# ⚠️ DÜRÜSTLÜK NOTU: Bu rejim-bazlı OTOMATİK GEÇİŞİN KENDİSİ ayrı ayrı
+# büyük ölçekte test EDİLMEDİ - sadece iki stratejinin her biri
+# bağımsız olarak (136 coin/~51 gün) doğrulandı. Geçiş mantığı makul
+# bir hipotez ama kanıtlanmamış - yakından izlenmeli.
 HIZLI_HEDEF_PCT = float(os.getenv("HIZLI_HEDEF_PCT", "0.05"))
 SHORT_AKTIF = os.getenv("SHORT_AKTIF", "false").lower() == "true"
 KOMISYON_PCT = float(os.getenv("KOMISYON_PCT", "0.0006"))
@@ -668,7 +726,79 @@ def trend_gucu_pct(df, periyot=MA_PERIYOT):
     return (fiyat - ma) / ma * 100
 
 
+def aktif_strateji_modu():
+    """v4.0 YENİ: STRATEJI_MODU='otomatik' ise BTC rejimine göre karar
+    verir - BTC zayıfken (temkinli mod aktif) 'yukselen', güçlüyken
+    'trend' döner. Sabit 'trend' ya da 'yukselen' verilmişse onu kullanır."""
+    if STRATEJI_MODU in ("trend", "yukselen"):
+        return STRATEJI_MODU
+    # otomatik
+    if TEMKINLI_MOD_AKTIF and btc_temkinli_mod_mu():
+        return "yukselen"
+    return "trend"
+
+
+def yukselen_coin_havuzu():
+    """Tüm likit coinleri son 24s getirisine göre sıralar, üst dilimi
+    döner - paper bot'ta 136 coin/~51 gün gerçek veride doğrulanmış
+    mantığın canlı bot karşılığı (2377 işlem, %5/%5 TP/SL ile net
+    +5940$, üst %10 dilimde)."""
+    tickers = guncel_tickerlari_al()
+    if not tickers:
+        return []
+    adaylar = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT:USDT"):
+            continue
+        base = sym.split("/")[0]
+        if base in SLUGGISH_BASE:
+            continue
+        vol = t.get("quoteVolume") or 0
+        if vol < 300000:
+            continue
+        chg = t.get("percentage")
+        if chg is None:
+            continue
+        adaylar.append((sym, chg))
+    if not adaylar:
+        return []
+    skorlar = sorted([s for _, s in adaylar])
+    esik_idx = min(int(len(skorlar) * YUKSELEN_UST_YUZDELIK), len(skorlar) - 1)
+    esik_deger = skorlar[esik_idx]
+    return [sym for sym, s in adaylar if s >= esik_deger]
+
+
+def yukselen_coin_sinyal(sym):
+    """Üst dilimdeki coin için: hacim teyidi + yükselen kapanış şartı
+    (paper bot'taki giris_sinyali ile birebir aynı mantık)."""
+    if pump_coin_mu(sym):  # aşırı pompalanmış coinlere yine de girmeyelim
+        return None
+    df_15m = get_df(sym, "15m", max(HACIM_TEYIT_PERIYOT, 20) + 5)
+    if df_15m is None or len(df_15m) < HACIM_TEYIT_PERIYOT + 2:
+        return None
+    son_mum = df_15m.iloc[-1]
+    ort_hacim = df_15m["volume"].iloc[-(HACIM_TEYIT_PERIYOT + 1):-1].mean()
+    if pd.isna(ort_hacim) or ort_hacim <= 0 or son_mum["volume"] < ort_hacim * YUKSELEN_HACIM_KATSAYI:
+        return None
+    if son_mum["close"] <= son_mum["open"]:
+        return None
+    # gercek_pozisyon_ac'ın beklediği formatla uyumlu: swing_nokta yerine
+    # basit sabit SL kullanacağız (aşağıda _gercek_pozisyon_ac_ic'te
+    # swing_nokta None ise sabit yüzde SL'e düşülüyor)
+    return {"symbol": sym, "yon": "long", "entry": float(son_mum["close"]),
+            "swing_nokta": None, "1d": "-", "4h": "-", "1h": "-"}
+
+
 def ucyon_sinyal(sym):
+    """v4.0: aktif strateji moduna göre trend-uyum ya da yukselen-coin
+    sinyaline yönlendirir."""
+    mod = aktif_strateji_modu()
+    if mod == "yukselen":
+        return yukselen_coin_sinyal(sym)
+    return trend_uyum_sinyal(sym)
+
+
+def trend_uyum_sinyal(sym):
     df_1d = get_df(sym, "1d", MA_PERIYOT + 10)
     df_4h = get_df(sym, "4h", MA_PERIYOT + 5)
     df_1h = get_df(sym, "1h", MA_PERIYOT + 5)
@@ -804,7 +934,12 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     entry_hedef = sinyal["entry"]
     swing_nokta = sinyal["swing_nokta"]
 
-    if long_mu:
+    if swing_nokta is None:
+        # v4.0: yükselen-coin modu - swing noktası kavramı yok, sabit
+        # taban SL yüzdesi kullanılır (backtest'te doğrulanmış oran)
+        sl_mesafe = MIN_SL_PCT
+        sl = entry_hedef * (1 - sl_mesafe) if long_mu else entry_hedef * (1 + sl_mesafe)
+    elif long_mu:
         sl = swing_nokta * (1 - SL_BUFFER_PCT)
         sl_mesafe = max(MIN_SL_PCT, min(MAX_SL_PCT_TAVAN, (entry_hedef - sl) / entry_hedef))
         sl = entry_hedef * (1 - sl_mesafe)
@@ -1149,7 +1284,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v3.9 — CANLI ÖZET",
+        "💵 LIVE BOT v4.0 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1197,10 +1332,13 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v3.9 (FIRSATÇI + HACİM/PUMP + KISMİ KÂR + AKILLI TEMKİNLİ MOD) AYARLARI\n\n"
-            f"Sürüm: v3.9 (14.09.2026 — temkinli mod akıllandı: BTC düşerken "
-            f"yeni pozisyon açma tamamen durur. Önceki: v3.7 kısmi kâr alma + breakeven. "
-            f"Önceki: 14.09.2026 hacim teyidi + pump filtresi → 01.09.2026 fırsatçı "
+    return ("⚙️ LIVE BOT v4.0 (OTOMATİK STRATEJİ MODU) AYARLARI\n\n"
+            f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
+            f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
+            f"Sürüm: v4.0 (17.09.2026 — otomatik strateji modu eklendi: BTC zayıfken "
+            f"'yükselen coin' moduna, güçlüyken 'trend uyumu' moduna geçer. Önceki: "
+            f"v3.9 akıllı temkinli mod → v3.7 kısmi kâr alma + breakeven → "
+            f"14.09.2026 hacim teyidi + pump filtresi → 01.09.2026 fırsatçı "
             f"geçiş → 08.09.2026 bileşik büyüme/8sa/akıllı cooldown/trend gücü → "
             f"10.09.2026 SHORT eklendi → 11.09.2026 SHORT kapatıldı. Şu an: {yon_basligi})\n\n"
             "💰 BU BOT GERÇEK PARA KULLANIYOR.\n\n"
@@ -1705,7 +1843,8 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v3.9 (FIRSATÇI + HACİM/PUMP + KISMİ KÂR + AKILLI TEMKİNLİ MOD, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.0 (OTOMATİK STRATEJİ MODU, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+       f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
        f"⚡ ÇIKIŞ: %{KISMI_KAR_ESIK_PCT*100:.1f}'te kısmi kâr al (%{KISMI_KAR_ORANI*100:.0f}) + breakeven, "
@@ -1737,8 +1876,11 @@ def tarama_loop():
                 continue
 
             try:
-                izleme_listesi_guncelle()
-                izleme_acilan = izleme_listesi_kontrol()
+                if aktif_strateji_modu() == "trend":
+                    izleme_listesi_guncelle()
+                    izleme_acilan = izleme_listesi_kontrol()
+                else:
+                    izleme_acilan = 0  # v4.0: yükselen modunda izleme listesi (1D+4H+1H bazlı) anlamsız
             except Exception as e:
                 log.warning(f"[IZLEME_GENEL] {e}")
                 izleme_acilan = 0
@@ -1750,7 +1892,8 @@ def tarama_loop():
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
-            adaylar = aday_havuzu()
+            mod_simdi = aktif_strateji_modu()
+            adaylar = yukselen_coin_havuzu() if mod_simdi == "yukselen" else aday_havuzu()
             taranacaklar = []
             for sym in adaylar:
                 with state_lock:
@@ -1790,7 +1933,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v3.9 (1D+4H+1H, LONG-only, hacim+pump filtreli, kısmi kâr alma, akıllı temkinli mod) BAŞLIYOR...")
+    print("LIVE BOT v4.0 (otomatik strateji modu: trend-uyum / yükselen-coin, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
