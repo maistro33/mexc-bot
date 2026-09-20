@@ -248,7 +248,7 @@ MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
 # gerçek hesaba taşımak orantısız risk olurdu.
 # STRATEJI_MODU="trend": eski 1D+4H+1H uyumu (v3.9 ve öncesi)
 # STRATEJI_MODU="yukselen": günün en çok yükseleni + hacim teyidi
-STRATEJI_MODU = os.getenv("STRATEJI_MODU", "otomatik")
+STRATEJI_MODU = os.getenv("STRATEJI_MODU", "yukselen")
 YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.90"))
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # "otomatik": BTC rejimine göre kendisi seçer - BTC zayıfken (temkinli
