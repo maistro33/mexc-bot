@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.1 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.2 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -254,6 +254,24 @@ YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v4.1 YENİ: "tam tepede alım" riskini azaltmak için zirveden mesafe filtresi
 ZIRVE_LOOKBACK = int(os.getenv("ZIRVE_LOOKBACK", "20"))
 ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
+
+# ════════════════════════════════════════════
+# v4.2 YENİ: ERKEN GÜVENLİK ÇIKIŞI (sadece YUKSELEN modunda açılan pozisyonlar)
+# ════════════════════════════════════════════
+# KULLANICI KARARI (22.09.2026): IOTX (-1.07$) ve FLOCK (-1.02$) gibi
+# büyük tekil kayıpları önlemek için eklendi - bunlar hiç kısmi kâr
+# alma noktasına (%1.5) ulaşmadan doğrudan tam SL'e (%5) gitmişti.
+# Paper likidite avı botunda geliştirilen ve DÜZELTİLMİŞ mantık burada
+# kullanılıyor: SÜREKLİ kontrol (her manage_loop turunda, sadece belirli
+# bir dakikada tek seferlik değil) - ilk ERKEN_GUVENLIK_SURE_DK dakika
+# boyunca fiyat ERKEN_GUVENLIK_MAX_ZARAR_PCT'i aşarsa aleyhimize, HEMEN
+# çıkılır. Süre dolduğunda hâlâ hiç ilerleme yoksa da çıkılır. Sadece
+# YUKSELEN modunda açılan pozisyonlara uygulanıyor - TREND modu farklı
+# bir SL mantığı (swing bazlı) kullandığı için bu kapsamda değil.
+ERKEN_GUVENLIK_CIKISI_AKTIF = os.getenv("ERKEN_GUVENLIK_CIKISI_AKTIF", "true").lower() == "true"
+ERKEN_GUVENLIK_SURE_DK = float(os.getenv("ERKEN_GUVENLIK_SURE_DK", "40"))
+ERKEN_GUVENLIK_MAX_ZARAR_PCT = float(os.getenv("ERKEN_GUVENLIK_MAX_ZARAR_PCT", "1.0"))
+ERKEN_GUVENLIK_MIN_ILERLEME_PCT = float(os.getenv("ERKEN_GUVENLIK_MIN_ILERLEME_PCT", "0.3"))
 # "otomatik": BTC rejimine göre kendisi seçer - BTC zayıfken (temkinli
 # mod aktif) "yukselen" (günün en çok yükseleni) moduna, BTC güçlüyken
 # "trend" (1D+4H+1H uyumu) moduna geçer. Mantık: BTC zayıfken genel
@@ -1048,7 +1066,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
             "r_risk": r_risk, "acilis_zamani": time.time(),
             "1d": sinyal["1d"], "4h": sinyal["4h"], "1h": sinyal["1h"], "notional": notional,
             "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
-            "kismi_alindi": False,
+            "kismi_alindi": False, "acilis_modu": aktif_strateji_modu(),
+            "erken_kontrol_yapildi": False,
         }
     durumu_diske_yaz()
 
@@ -1182,7 +1201,7 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
             with state_lock:
                 trade_state.pop(sym, None)
             durumu_diske_yaz()
-            if sebep == "sl":
+            if sebep in ("sl", "erken_guvenlik_cikisi"):
                 with cooldown_lock:
                     son_kapanis_zamani[sym] = time.time()
                 cooldown_diske_yaz()
@@ -1227,7 +1246,7 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
-        if sebep == "sl":
+        if sebep in ("sl", "erken_guvenlik_cikisi"):
             with cooldown_lock:
                 son_kapanis_zamani[sym] = time.time()
             cooldown_diske_yaz()
@@ -1307,7 +1326,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.1 — CANLI ÖZET",
+        "💵 LIVE BOT v4.2 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1355,11 +1374,13 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.1 (ZİRVEDEN MESAFE FİLTRELİ) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.2 (ERKEN GÜVENLİK ÇIKIŞLI) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
-            f"Sürüm: v4.0 (17.09.2026 — otomatik strateji modu eklendi: BTC zayıfken "
-            f"'yükselen coin' moduna, güçlüyken 'trend uyumu' moduna geçer. Önceki: "
+            f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
+            f"modunda ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk içinde %{ERKEN_GUVENLIK_MAX_ZARAR_PCT:.1f} "
+            f"aleyhe giderse erken çıkılır (IOTX/FLOCK tarzı büyük tekil kayıpları önlemek için). "
+            f"Önceki: v4.1 zirveden mesafe filtresi → v4.0 otomatik strateji modu → "
             f"v3.9 akıllı temkinli mod → v3.7 kısmi kâr alma + breakeven → "
             f"14.09.2026 hacim teyidi + pump filtresi → 01.09.2026 fırsatçı "
             f"geçiş → 08.09.2026 bileşik büyüme/8sa/akıllı cooldown/trend gücü → "
@@ -1383,6 +1404,9 @@ def panel_ayarlar_metni():
             f"({'AKTİF' if KISMI_KAR_AKTIF else 'KAPALI'})\n"
             f"  TAM HEDEF: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
             f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
+            f"  [v4.2, sadece YUKSELEN modunda] Erken güvenlik çıkışı: ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk "
+            f"boyunca sürekli kontrol - %{ERKEN_GUVENLIK_MAX_ZARAR_PCT:.1f} aleyhe giderse HEMEN çıkılır "
+            f"({'AKTİF' if ERKEN_GUVENLIK_CIKISI_AKTIF else 'KAPALI'})\n"
             f"  Max tutma: {MAX_HOLD_SAAT:.0f} saat\n\n"
             f"💰 MARJİN (bileşik büyüme): bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i "
             f"(taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f})\n"
@@ -1685,6 +1709,31 @@ def manage_loop():
                 long_mu = (yon_kayitli == "long")
                 aranan_yon = "yukselis" if long_mu else "dusus"
 
+                # ── v4.2 YENİ: ERKEN GÜVENLİK ÇIKIŞI (sadece YUKSELEN modunda
+                # açılan, henüz kısmi kâr alınmamış pozisyonlar) ──
+                if (ERKEN_GUVENLIK_CIKISI_AKTIF and durum.get("acilis_modu") == "yukselen"
+                        and not durum.get("kismi_alindi", False)):
+                    gecen_dk = (time.time() - durum["acilis_zamani"]) / 60
+                    ilerleme_pct = ((guncel - durum["entry"]) / durum["entry"] * 100 if long_mu
+                                     else (durum["entry"] - guncel) / durum["entry"] * 100)
+                    if gecen_dk < ERKEN_GUVENLIK_SURE_DK:
+                        if ilerleme_pct <= -ERKEN_GUVENLIK_MAX_ZARAR_PCT:
+                            log.info(f"[ERKEN_GUVENLIK] {sym} ilk {gecen_dk:.0f} dk içinde "
+                                     f"%{ilerleme_pct:.2f} aleyhe gitti, erken çıkılıyor")
+                            gercek_pozisyon_kapat(sym, "erken_guvenlik_cikisi")
+                            continue
+                    elif not durum.get("erken_kontrol_yapildi", False):
+                        if ilerleme_pct < ERKEN_GUVENLIK_MIN_ILERLEME_PCT:
+                            log.info(f"[ERKEN_GUVENLIK] {sym} {ERKEN_GUVENLIK_SURE_DK:.0f} dk'da "
+                                     f"hâlâ ilerleme yok (%{ilerleme_pct:.2f}), erken çıkılıyor")
+                            gercek_pozisyon_kapat(sym, "erken_guvenlik_cikisi")
+                            continue
+                        else:
+                            with state_lock:
+                                if sym in trade_state:
+                                    trade_state[sym]["erken_kontrol_yapildi"] = True
+                            durumu_diske_yaz()
+
                 if TREND_AJANI_AKTIF:
                     son_kontrol = durum.get("son_trend_kontrol", 0)
                     if time.time() - son_kontrol >= TREND_KONTROL_ARALIGI_SN:
@@ -1868,7 +1917,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.1 (ZİRVEDEN MESAFE FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.2 (ERKEN GÜVENLİK ÇIKIŞLI, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -1958,7 +2007,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.1 (zirveden mesafe filtresi eklendi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.2 (erken güvenlik çıkışı eklendi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
