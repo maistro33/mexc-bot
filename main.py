@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.0 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.1 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -251,6 +251,9 @@ MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
 STRATEJI_MODU = os.getenv("STRATEJI_MODU", "yukselen")
 YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.90"))
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
+# v4.1 YENİ: "tam tepede alım" riskini azaltmak için zirveden mesafe filtresi
+ZIRVE_LOOKBACK = int(os.getenv("ZIRVE_LOOKBACK", "20"))
+ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 # "otomatik": BTC rejimine göre kendisi seçer - BTC zayıfken (temkinli
 # mod aktif) "yukselen" (günün en çok yükseleni) moduna, BTC güçlüyken
 # "trend" (1D+4H+1H uyumu) moduna geçer. Mantık: BTC zayıfken genel
@@ -770,10 +773,21 @@ def yukselen_coin_havuzu():
 
 def yukselen_coin_sinyal(sym):
     """Üst dilimdeki coin için: hacim teyidi + yükselen kapanış şartı
-    (paper bot'taki giris_sinyali ile birebir aynı mantık)."""
+    (paper bot'taki giris_sinyali ile birebir aynı mantık).
+
+    v4.1 YENİ (17.09.2026, kullanıcı gözlemiyle bulundu): PIEVERSE ve
+    SUI gibi coinlerde "tam pompanın zirvesinde giriş" görüldü (fiyat
+    zaten sert yükselmiş, hemen ardından geri çekilmiş, bot tam tepede
+    girmiş). ZIRVEDEN_MIN_MESAFE_PCT filtresi eklendi - giriş fiyatı,
+    son ZIRVE_LOOKBACK mumun en yüksek noktasından en az bu kadar aşağıda
+    olmalı (coin biraz geri çekilmiş olsun, tam zirvede alım yapılmasın).
+    Backtest'te (136 coin/~51 gün) doğrulandı: %1.5 mesafe filtresiyle
+    kazanma oranı %48.9'dan %51.6'ya, işlem başına ortalama kazanç
+    $2.50'den $3.26'ya çıktı - bedeli işlem sayısının azalması (daha
+    seçici hale gelmesi)."""
     if pump_coin_mu(sym):  # aşırı pompalanmış coinlere yine de girmeyelim
         return None
-    df_15m = get_df(sym, "15m", max(HACIM_TEYIT_PERIYOT, 20) + 5)
+    df_15m = get_df(sym, "15m", max(HACIM_TEYIT_PERIYOT, 20, ZIRVE_LOOKBACK) + 5)
     if df_15m is None or len(df_15m) < HACIM_TEYIT_PERIYOT + 2:
         return None
     son_mum = df_15m.iloc[-1]
@@ -782,6 +796,15 @@ def yukselen_coin_sinyal(sym):
         return None
     if son_mum["close"] <= son_mum["open"]:
         return None
+
+    # v4.1 YENİ: zirveden yeterince uzak (tam tepede değil) mi kontrolü
+    if len(df_15m) >= ZIRVE_LOOKBACK:
+        zirve = df_15m["high"].iloc[-ZIRVE_LOOKBACK:].max()
+        if zirve > 0:
+            zirve_mesafe = (zirve - son_mum["close"]) / zirve
+            if zirve_mesafe < ZIRVEDEN_MIN_MESAFE_PCT:
+                return None
+
     # gercek_pozisyon_ac'ın beklediği formatla uyumlu: swing_nokta yerine
     # basit sabit SL kullanacağız (aşağıda _gercek_pozisyon_ac_ic'te
     # swing_nokta None ise sabit yüzde SL'e düşülüyor)
@@ -1284,7 +1307,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.0 — CANLI ÖZET",
+        "💵 LIVE BOT v4.1 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1332,7 +1355,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.0 (OTOMATİK STRATEJİ MODU) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.1 (ZİRVEDEN MESAFE FİLTRELİ) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.0 (17.09.2026 — otomatik strateji modu eklendi: BTC zayıfken "
@@ -1351,7 +1374,9 @@ def panel_ayarlar_metni():
             f"  5) [v3.6] Son 15m mum hacmi, {HACIM_TEYIT_PERIYOT} mum ortalamasının en az "
             f"{HACIM_TEYIT_KATSAYI:.1f} katı olmalı ({'AKTİF' if HACIM_TEYIT_AKTIF else 'KAPALI'})\n"
             f"  6) [v3.6] Coin son 24s'te %{PUMP_FILTRE_ESIK_PCT:.0f}'ten fazla pompalanmamış olmalı "
-            f"(LONG için, {'AKTİF' if PUMP_FILTRE_AKTIF else 'KAPALI'})\n\n"
+            f"(LONG için, {'AKTİF' if PUMP_FILTRE_AKTIF else 'KAPALI'})\n"
+            f"  7) [v4.1, sadece YUKSELEN modunda] Giriş fiyatı, son {ZIRVE_LOOKBACK} mumun "
+            f"zirvesinden en az %{ZIRVEDEN_MIN_MESAFE_PCT*100:.1f} aşağıda olmalı (tam tepede alım önlenir)\n\n"
             "⚡ ÇIKIŞ:\n"
             f"  [v3.7] Kısmi kâr alma: pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca "
             f"miktarın %{KISMI_KAR_ORANI*100:.0f}'i kapatılır, kalan SL'i breakeven'e çekilir "
@@ -1843,7 +1868,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.0 (OTOMATİK STRATEJİ MODU, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.1 (ZİRVEDEN MESAFE FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -1933,7 +1958,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.0 (otomatik strateji modu: trend-uyum / yükselen-coin, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.1 (zirveden mesafe filtresi eklendi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
