@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.5 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.6 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -780,7 +780,18 @@ def yukselen_coin_havuzu():
     ticker'ın 24 saatlik yüksek/düşük aralığının güncel fiyata oranıyla
     ölçülüyor (ekstra API çağrısı gerekmiyor). En volatil ilk 20 coin
     döner (giriş filtreleri - hacim, zirve mesafesi, pump - bunların
-    arasından gerçek sinyali seçer)."""
+    arasından gerçek sinyali seçer).
+
+    v4.6 DÜZELTME (23.09.2026, kullanıcı gözlemiyle bulundu - FLOCK
+    örneği): Salt volatilite YÖN GÖZETMİYOR - sert DÜŞEN bir coin de
+    sert YÜKSELEN bir coin kadar yüksek volatiliteye sahip olabilir.
+    FLOCK, %16 düşüşün ortasında bir sıçrama mumuyla yakalanıp LONG
+    açılmıştı - bu, büyük veride BAŞARISIZ çıkan "çöküşte tersine
+    dönüş yakalama" mantığına kayma riski taşıyordu (likidite avı
+    stratejisi net -6323$ vermişti). Artık sadece son 24 saatte GENEL
+    YÖNÜ HÂLÂ POZİTİF olan (chg > 0) coinler volatilite sıralamasına
+    giriyor - sert düşenler baştan elenip, "gerçekten yükseliyor ve
+    aynı zamanda volatil" olanlar seçiliyor."""
     tickers = guncel_tickerlari_al()
     if not tickers:
         return []
@@ -793,6 +804,9 @@ def yukselen_coin_havuzu():
             continue
         vol = t.get("quoteVolume") or 0
         if vol < 300000:
+            continue
+        chg = t.get("percentage")
+        if chg is None or chg <= 0:  # v4.6: yön filtresi - sert düşenler elenir
             continue
         yuksek = t.get("high")
         dusuk = t.get("low")
@@ -1358,7 +1372,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.5 — CANLI ÖZET",
+        "💵 LIVE BOT v4.6 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1406,7 +1420,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.5 (VOLATİLİTE BAZLI + SABİT $ KÂR HEDEFİ) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.6 (VOLATİLİTE + YÖN FİLTRELİ) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1431,7 +1445,9 @@ def panel_ayarlar_metni():
             f"  7) [v4.1, sadece YUKSELEN modunda] Giriş fiyatı, son {ZIRVE_LOOKBACK} mumun "
             f"zirvesinden en az %{ZIRVEDEN_MIN_MESAFE_PCT*100:.1f} aşağıda olmalı (tam tepede alım önlenir)\n"
             f"  [v4.5] YUKSELEN modunda aday havuzu artık VOLATİLİTE bazlı seçiliyor "
-            f"(24s yüksek/düşük aralığı) - 'en çok yükselen' değil, 'o an en volatil' coinler\n\n"
+            f"(24s yüksek/düşük aralığı) - 'en çok yükselen' değil, 'o an en volatil' coinler\n"
+            f"  [v4.6] Yön filtresi: sadece son 24s'te genel yönü POZİTİF (chg>0) olan coinler "
+            f"volatilite sıralamasına giriyor - sert düşenler (çöküşte 'sıçrama' yakalama riski) elenir\n\n"
             "⚡ ÇIKIŞ:\n"
             f"  [v3.7→v4.4] Kısmi kâr alma (SADECE TREND modunda): pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca "
             f"miktarın %{KISMI_KAR_ORANI*100:.0f}'i kapatılır, kalan SL'i breakeven'e çekilir "
@@ -1970,7 +1986,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.5 (VOLATİLİTE BAZLI + SABİT $ KÂR HEDEFİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.6 (VOLATİLİTE + YÖN FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2060,7 +2076,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.5 (volatilite bazlı giriş + sabit $ kâr hedefi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.6 (volatilite + yön filtresi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
