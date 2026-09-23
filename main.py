@@ -258,7 +258,7 @@ ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 # v4.5 YENİ: sabit dolar kâr hedefi (kullanıcı talimatıyla) - YUKSELEN
 # modunda pozisyon, yüzdesel bir hedef yerine tam olarak bu net dolar
 # kâra ulaşınca kapanır. Komisyon payı otomatik hesaba katılıyor.
-SABIT_KAR_HEDEFI_USD = float(os.getenv("SABIT_KAR_HEDEFI_USD", "0.50"))
+SABIT_KAR_HEDEFI_USD = float(os.getenv("SABIT_KAR_HEDEFI_USD", "0.35"))
 
 # ════════════════════════════════════════════
 # v4.2 → v4.3 GÜNCELLEME: ERKEN GÜVENLİK ÇIKIŞI
