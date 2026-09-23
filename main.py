@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.2 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.3 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -256,19 +256,28 @@ ZIRVE_LOOKBACK = int(os.getenv("ZIRVE_LOOKBACK", "20"))
 ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 
 # ════════════════════════════════════════════
-# v4.2 YENİ: ERKEN GÜVENLİK ÇIKIŞI (sadece YUKSELEN modunda açılan pozisyonlar)
+# v4.2 → v4.3 GÜNCELLEME: ERKEN GÜVENLİK ÇIKIŞI
 # ════════════════════════════════════════════
-# KULLANICI KARARI (22.09.2026): IOTX (-1.07$) ve FLOCK (-1.02$) gibi
-# büyük tekil kayıpları önlemek için eklendi - bunlar hiç kısmi kâr
-# alma noktasına (%1.5) ulaşmadan doğrudan tam SL'e (%5) gitmişti.
-# Paper likidite avı botunda geliştirilen ve DÜZELTİLMİŞ mantık burada
-# kullanılıyor: SÜREKLİ kontrol (her manage_loop turunda, sadece belirli
-# bir dakikada tek seferlik değil) - ilk ERKEN_GUVENLIK_SURE_DK dakika
-# boyunca fiyat ERKEN_GUVENLIK_MAX_ZARAR_PCT'i aşarsa aleyhimize, HEMEN
-# çıkılır. Süre dolduğunda hâlâ hiç ilerleme yoksa da çıkılır. Sadece
-# YUKSELEN modunda açılan pozisyonlara uygulanıyor - TREND modu farklı
-# bir SL mantığı (swing bazlı) kullandığı için bu kapsamda değil.
-ERKEN_GUVENLIK_CIKISI_AKTIF = os.getenv("ERKEN_GUVENLIK_CIKISI_AKTIF", "true").lower() == "true"
+# KULLANICI KARARI (22.09.2026, v4.2): IOTX (-1.07$) ve FLOCK (-1.02$)
+# gibi büyük tekil kayıpları önlemek için eklenmişti - hiç kısmi kâr
+# alma noktasına (%1.5) ulaşmadan doğrudan tam SL'e (%5) gitmişlerdi.
+#
+# KULLANICI KARARI (23.09.2026, v4.3, gerçek veri analiziyle GERİ
+# ALINDI): 136 coin/~51 gün gerçek veride büyük ölçekli backtest
+# yapıldığında, bu mekanizmanın YUKSELEN modu için net ZARARLI olduğu
+# görüldü - koruma yokken net +7254$ olan sonuç, erken güvenlik
+# çıkışı eklenince +1461$'a düşüyordu (kazanma oranı %48.2'den
+# %23.9'a çöküyordu). Sebep: bu strateji zaten "biraz dalgalanıp
+# sonra patlayan" işlemlere dayanıyor - erken çıkış bu potansiyeli
+# daha oluşmadan kesiyor. Canlı veride de aynı patern doğrulandı
+# (paper v2 korumalı: 31 işlem/%25.8 kazanma/+99$ vs orijinal
+# korumasız: 98 işlem/%61.2 kazanma/+1508$).
+# VARSAYILAN ARTIK KAPALI. Zirveden mesafe filtresi (giriş kalitesi)
+# KORUNUYOR - o ayrı test edildi ve zararsız/faydalı çıktı. Sadece bu
+# ÇIKIŞ mekanizması geri alındı. Sabit SL (%5) zaten kayıp tavanını
+# koruyor - kontrolsüz büyüme riski yok, sadece bazen tam SL boyutunda
+# (büyükçe) bir kayıp görülecek, bu kabul edilen bir maliyet.
+ERKEN_GUVENLIK_CIKISI_AKTIF = os.getenv("ERKEN_GUVENLIK_CIKISI_AKTIF", "false").lower() == "true"
 ERKEN_GUVENLIK_SURE_DK = float(os.getenv("ERKEN_GUVENLIK_SURE_DK", "40"))
 ERKEN_GUVENLIK_MAX_ZARAR_PCT = float(os.getenv("ERKEN_GUVENLIK_MAX_ZARAR_PCT", "1.0"))
 ERKEN_GUVENLIK_MIN_ILERLEME_PCT = float(os.getenv("ERKEN_GUVENLIK_MIN_ILERLEME_PCT", "0.3"))
@@ -1326,7 +1335,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.2 — CANLI ÖZET",
+        "💵 LIVE BOT v4.3 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1374,7 +1383,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.2 (ERKEN GÜVENLİK ÇIKIŞLI) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.3 (ERKEN GÜVENLİK ÇIKIŞI KAPALI - VERİYLE DOĞRULANDI) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1917,7 +1926,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.2 (ERKEN GÜVENLİK ÇIKIŞLI, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.3 (ERKEN GÜVENLİK ÇIKIŞI KAPALI, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2007,7 +2016,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.2 (erken güvenlik çıkışı eklendi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.3 (erken güvenlik çıkışı geri alındı - gerçek veri analiziyle, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
