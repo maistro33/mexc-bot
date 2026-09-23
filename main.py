@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.3 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.4 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -1335,7 +1335,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.3 — CANLI ÖZET",
+        "💵 LIVE BOT v4.4 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1383,7 +1383,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.3 (ERKEN GÜVENLİK ÇIKIŞI KAPALI - VERİYLE DOĞRULANDI) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.4 (KISMİ KÂR SADECE TREND MODUNDA) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1408,9 +1408,9 @@ def panel_ayarlar_metni():
             f"  7) [v4.1, sadece YUKSELEN modunda] Giriş fiyatı, son {ZIRVE_LOOKBACK} mumun "
             f"zirvesinden en az %{ZIRVEDEN_MIN_MESAFE_PCT*100:.1f} aşağıda olmalı (tam tepede alım önlenir)\n\n"
             "⚡ ÇIKIŞ:\n"
-            f"  [v3.7] Kısmi kâr alma: pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca "
+            f"  [v3.7→v4.4] Kısmi kâr alma (SADECE TREND modunda): pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca "
             f"miktarın %{KISMI_KAR_ORANI*100:.0f}'i kapatılır, kalan SL'i breakeven'e çekilir "
-            f"({'AKTİF' if KISMI_KAR_AKTIF else 'KAPALI'})\n"
+            f"({'AKTİF' if KISMI_KAR_AKTIF else 'KAPALI'}) - YUKSELEN modunda KAPALI (backtest'te net zararlı çıktı)\n"
             f"  TAM HEDEF: SABİT %{HIZLI_HEDEF_PCT*100:.1f} - hedefe değer değmez HEMEN kapanır\n"
             f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
             f"  [v4.2, sadece YUKSELEN modunda] Erken güvenlik çıkışı: ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk "
@@ -1790,7 +1790,24 @@ def manage_loop():
                 # alınmadıysa), miktarın yarısı kapatılıp kalanın SL'i
                 # breakeven'e çekilir. Bu, "hedefe ulaşmadan geri dönüp SL'e
                 # gitme" riskini azaltmayı amaçlar.
-                if KISMI_KAR_AKTIF and not durum.get("kismi_alindi", False):
+                #
+                # v4.4 GÜNCELLEME (23.09.2026, kullanıcı gözlemiyle bulundu -
+                # "kasa büyüyor sonra tekrar aynı yere dönüyor"): Büyük
+                # ölçekli backtest'te (136 coin/~51 gün) kısmi kâr almanın
+                # YUKSELEN stratejisi için NET ZARARLI olduğu zaten
+                # kanıtlanmıştı (kısmi kâr YOKKEN net +7254$, VARKEN net
+                # -7785$) - ama bu bilgi canlı botun koduna hiç işlenmemişti,
+                # mekanizma tüm modlara zorunlu uygulanıyordu. Sebep: bu
+                # strateji "ara sıra büyük, uzun süren hareketleri yakalama"
+                # gücüne dayanıyor - kısmi kâr alma bu potansiyeli daha
+                # oluşmadan (%1.5'te) kesip kalanı breakeven'e çekiyor, bu da
+                # tam olarak "kâr büyüyor, bot erken kilitliyor, kalan nötr/
+                # hafif kayıpla kapanıyor" hissinin kaynağı. ARTIK SADECE
+                # TREND modunda açılan pozisyonlara uygulanıyor - YUKSELEN
+                # modunda pozisyon doğrudan tam TP ya da tam SL'e gidiyor
+                # (backtest'te en kârlı kombinasyon buydu).
+                if (KISMI_KAR_AKTIF and durum.get("acilis_modu", "trend") == "trend"
+                        and not durum.get("kismi_alindi", False)):
                     kismi_esik_fiyat = (durum["entry"] * (1 + KISMI_KAR_ESIK_PCT) if long_mu
                                          else durum["entry"] * (1 - KISMI_KAR_ESIK_PCT))
                     kismi_esik_gecti = (guncel >= kismi_esik_fiyat) if long_mu else (guncel <= kismi_esik_fiyat)
@@ -1926,7 +1943,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.3 (ERKEN GÜVENLİK ÇIKIŞI KAPALI, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.4 (KISMİ KÂR SADECE TREND MODUNDA, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2016,7 +2033,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.3 (erken güvenlik çıkışı geri alındı - gerçek veri analiziyle, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.4 (kısmi kâr alma sadece TREND modunda, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
