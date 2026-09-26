@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.7 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.8 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -259,6 +259,11 @@ ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 # modunda pozisyon, yüzdesel bir hedef yerine tam olarak bu net dolar
 # kâra ulaşınca kapanır. Komisyon payı otomatik hesaba katılıyor.
 SABIT_KAR_HEDEFI_USD = float(os.getenv("SABIT_KAR_HEDEFI_USD", "0.35"))
+# v4.8 YENİ: SL de artık sabit dolar bazlı (kullanıcı gözlemiyle bulundu:
+# TP sabit $ iken SL yüzdeseldi, bakiye büyüdükçe risk/ödül oranı
+# kötüleşiyordu). Varsayılan TP ile eşit (1:1 risk/ödül) - istersen
+# SABIT_ZARAR_LIMITI_USD'yi TP'den küçük yaparak lehte bir oran kurabilirsin.
+SABIT_ZARAR_LIMITI_USD = float(os.getenv("SABIT_ZARAR_LIMITI_USD", "0.35"))
 # v4.7 YENİ: anlık (24s yerine son birkaç mum) volatilite eşiği
 ANLIK_VOLATILITE_MUM = int(os.getenv("ANLIK_VOLATILITE_MUM", "2"))  # 2x15m = son 30 dk
 ANLIK_VOLATILITE_MIN_PCT = float(os.getenv("ANLIK_VOLATILITE_MIN_PCT", "1.0"))
@@ -1007,7 +1012,9 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
 
     if swing_nokta is None:
         # v4.0: yükselen-coin modu - swing noktası kavramı yok, sabit
-        # taban SL yüzdesi kullanılır (backtest'te doğrulanmış oran)
+        # taban SL yüzdesi kullanılır (backtest'te doğrulanmış oran).
+        # v4.8'de bu YALNIZCA GEÇİCİ bir değer - qty hesaplandıktan sonra
+        # aşağıda SABİT DOLAR bazlı SL ile DEĞİŞTİRİLECEK (bkz. not).
         sl_mesafe = MIN_SL_PCT
         sl = entry_hedef * (1 - sl_mesafe) if long_mu else entry_hedef * (1 + sl_mesafe)
     elif long_mu:
@@ -1064,6 +1071,22 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
             sl = entry * (1 - sl_mesafe) if long_mu else entry * (1 + sl_mesafe)
     except Exception as e:
         log.warning(f"[GERCEK_POZ] {sym}: {e}")
+
+    # ════════════════════════════════════════════
+    # v4.8 KRİTİK DÜZELTME (23.09.2026, kullanıcı gözlemiyle bulundu -
+    # "kazançlar küçük ama SL büyük"): TP sabit dolar ($0.35) iken SL
+    # YÜZDESEL (%5) kalmıştı. Bakiye büyüdükçe (bileşik büyüme ile
+    # pozisyon boyutu büyüdükçe), %5 SL'in dolar karşılığı da büyüyordu
+    # - ama TP hep aynı küçük dolar tutarında kalıyordu. Sonuç: risk/ödül
+    # oranı bakiye büyüdükçe GİDEREK KÖTÜLEŞİYORDU (XPL örneğinde -1.87$
+    # kayıp, +0.35-0.65$'lık kazançların çok üzerinde). ARTIK YUKSELEN
+    # modunda SL DE sabit dolar bazlı - TP ile aynı mantıkla hesaplanıyor,
+    # böylece bakiye ne kadar büyürse büyüsün risk/ödül oranı SABİT kalır.
+    if aktif_strateji_modu() == "yukselen":
+        komisyon_tahmini_sl = entry * qty * KOMISYON_PCT * 2
+        fiyat_hareketi_sl = max(SABIT_ZARAR_LIMITI_USD - komisyon_tahmini_sl, SABIT_ZARAR_LIMITI_USD * 0.5) / qty
+        sl = entry - fiyat_hareketi_sl if long_mu else entry + fiyat_hareketi_sl
+        sl_mesafe = fiyat_hareketi_sl / entry
 
     r_risk = abs(entry - sl)
     # v4.5 GÜNCELLEME: YUKSELEN modunda sabit dolar kâr hedefi kullanılıyor
@@ -1370,7 +1393,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.7 — CANLI ÖZET",
+        "💵 LIVE BOT v4.8 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1418,7 +1441,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.7 (ANLIK VOLATİLİTE + MAX_POS=2) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.8 (SABİT $ TP+SL - RİSK/ÖDÜL DÜZELTİLDİ) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1454,7 +1477,9 @@ def panel_ayarlar_metni():
             f"  TAM HEDEF (TREND modunda): SABİT %{HIZLI_HEDEF_PCT*100:.1f}\n"
             f"  [v4.5] TAM HEDEF (YUKSELEN modunda): SABİT ${SABIT_KAR_HEDEFI_USD:.2f} NET KÂR - "
             f"yüzdesel değil, doğrudan dolar hedefine ulaşınca tamamı kapanır\n"
-            f"  SL: swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
+            f"  SL (TREND modunda): swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
+            f"  [v4.8] SL (YUKSELEN modunda): SABİT ${SABIT_ZARAR_LIMITI_USD:.2f} - TP ile aynı mantık, "
+            f"risk/ödül oranı bakiye büyüklüğünden BAĞIMSIZ sabit kalır\n"
             f"  [v4.2, sadece YUKSELEN modunda] Erken güvenlik çıkışı: ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk "
             f"boyunca sürekli kontrol - %{ERKEN_GUVENLIK_MAX_ZARAR_PCT:.1f} aleyhe giderse HEMEN çıkılır "
             f"({'AKTİF' if ERKEN_GUVENLIK_CIKISI_AKTIF else 'KAPALI'})\n"
@@ -1985,7 +2010,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.7 (ANLIK VOLATİLİTE + MAX_POS=2, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.8 (SABİT $ TP+SL - RİSK/ÖDÜL DÜZELTİLDİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2075,7 +2100,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.7 (anlık volatilite + MAX_POS=2, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.8 (SL de sabit dolar bazlı - risk/ödül düzeltmesi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
