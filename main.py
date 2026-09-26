@@ -260,7 +260,7 @@ ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 # kâra ulaşınca kapanır. Komisyon payı otomatik hesaba katılıyor.
 SABIT_KAR_HEDEFI_USD = float(os.getenv("SABIT_KAR_HEDEFI_USD", "0.35"))
 # v4.7 YENİ: anlık (24s yerine son birkaç mum) volatilite eşiği
-ANLIK_VOLATILITE_MUM = int(os.getenv("ANLIK_VOLATILITE_MUM", "4"))  # 4x15m = son 1 saat
+ANLIK_VOLATILITE_MUM = int(os.getenv("ANLIK_VOLATILITE_MUM", "2"))  # 2x15m = son 30 dk
 ANLIK_VOLATILITE_MIN_PCT = float(os.getenv("ANLIK_VOLATILITE_MIN_PCT", "1.0"))
 
 # ════════════════════════════════════════════
