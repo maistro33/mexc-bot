@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.8 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v4.9 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -249,21 +249,27 @@ MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
 # STRATEJI_MODU="trend": eski 1D+4H+1H uyumu (v3.9 ve öncesi)
 # STRATEJI_MODU="yukselen": günün en çok yükseleni + hacim teyidi
 STRATEJI_MODU = os.getenv("STRATEJI_MODU", "yukselen")
-YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.90"))
+YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.80"))  # v4.9: backtest'te doğrulanan üst %20
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v4.1 YENİ: "tam tepede alım" riskini azaltmak için zirveden mesafe filtresi
 ZIRVE_LOOKBACK = int(os.getenv("ZIRVE_LOOKBACK", "20"))
 ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 
-# v4.5 YENİ: sabit dolar kâr hedefi (kullanıcı talimatıyla) - YUKSELEN
-# modunda pozisyon, yüzdesel bir hedef yerine tam olarak bu net dolar
-# kâra ulaşınca kapanır. Komisyon payı otomatik hesaba katılıyor.
-SABIT_KAR_HEDEFI_USD = float(os.getenv("SABIT_KAR_HEDEFI_USD", "0.35"))
-# v4.8 YENİ: SL de artık sabit dolar bazlı (kullanıcı gözlemiyle bulundu:
-# TP sabit $ iken SL yüzdeseldi, bakiye büyüdükçe risk/ödül oranı
-# kötüleşiyordu). Varsayılan TP ile eşit (1:1 risk/ödül) - istersen
-# SABIT_ZARAR_LIMITI_USD'yi TP'den küçük yaparak lehte bir oran kurabilirsin.
-SABIT_ZARAR_LIMITI_USD = float(os.getenv("SABIT_ZARAR_LIMITI_USD", "0.35"))
+# v4.9 KRİTİK DÜZELTME (23.09.2026, güncel gerçek veriyle backtest edilip
+# bulundu): v4.5-v4.8'deki SABİT DOLAR hedefi ($0.35), şu anki küçük
+# pozisyon boyutunda (~$48 notional) sadece ~%0.7'lik bir fiyat hareketine
+# denk geliyordu - bu, gerçek bir momentum sinyalinden çok PİYASA
+# GÜRÜLTÜSÜ seviyesinde kalıyordu. Son 10 günlük gerçek veride büyük
+# ölçekli backtest yapıldı: %2'nin altındaki her hedef NET ZARARLI
+# çıktı (gürültüye yenik düşüyordu), %3 ve üstü NET KÂRLI çıktı. %3,
+# "mümkün olduğunca hızlı ama hâlâ kârlı" noktayı temsil ediyor
+# (ortalama ~2 saatte sonuçlanıyor, %5'in ~2.75 saatinden daha hızlı).
+# ARTIK TEKRAR YÜZDESEL - SABİT DOLAR YERİNE - kullanılıyor, böylece
+# bakiye büyüdükçe hem kazanç hem kayıp ORANTILI büyür (risk/ödül oranı
+# sabit kalır, v4.8'deki dolar bazlı SL düzeltmesinin amacı da korunmuş
+# olur, ama artık yüzdesel skalada).
+YUKSELEN_HEDEF_PCT = float(os.getenv("YUKSELEN_HEDEF_PCT", "0.03"))
+YUKSELEN_SL_PCT = float(os.getenv("YUKSELEN_SL_PCT", "0.03"))
 # v4.7 YENİ: anlık (24s yerine son birkaç mum) volatilite eşiği
 ANLIK_VOLATILITE_MUM = int(os.getenv("ANLIK_VOLATILITE_MUM", "2"))  # 2x15m = son 30 dk
 ANLIK_VOLATILITE_MIN_PCT = float(os.getenv("ANLIK_VOLATILITE_MIN_PCT", "1.0"))
@@ -782,15 +788,17 @@ def aktif_strateji_modu():
 
 
 def yukselen_coin_havuzu():
-    """v4.7 GÜNCELLEME (23.09.2026, kullanıcı talimatıyla): önceki
-    sürümler 24 SAATLİK yüksek/düşük aralığına göre volatilite
-    sıralaması yapıyordu - bu "gecikmeli" bir ölçüm, işlem anında o
-    coin sakinleşmiş olsa bile geçmiş 24 saate bakınca hâlâ "volatil"
-    görünebiliyordu. Artık bu fonksiyon SADECE yön (chg>0, v4.6'dan
-    korunuyor) ve hacim filtresiyle bir ADAY LİSTESİ döndürüyor -
-    GERÇEK volatilite ölçümü artık yukselen_coin_sinyal() içinde, o an
-    çekilen taze 15m veriyle (son birkaç mumun aralığı) yapılıyor. Bu,
-    "işlem alırken o an volatil olan coin" isteğini karşılıyor."""
+    """v4.9 KRİTİK DÜZELTME (23.09.2026, güncel gerçek veriyle backtest
+    edilip bulundu): v4.6/v4.7'de sadece "yön pozitif mi" (chg>0)
+    filtresi kullanılıyordu - bu ÇOK GEVŞEK bir filtre (coinlerin
+    neredeyse yarısını geçiriyor), asıl seçiciliği sağlayan ÖNCEKİ
+    YÜZDELİK DİLİM sıralaması (üst %X) kaybedilmişti. Son 10 günlük
+    gerçek veride büyük ölçekli backtest yapıldığında: sadece
+    yön+hacim+zirve filtresiyle (yüzdelik sıralama OLMADAN) net
+    ZARARLI çıktı - yüzdelik dilim sıralaması GERİ GETİRİLİNCE
+    (üst %20) net pozitife döndü. Artık coinler, son 24s getirisine
+    göre TÜM ADAYLAR ARASINDA sıralanıp üst dilime girenler seçiliyor
+    (basit "pozitif mi" sorusu değil, "ne kadar güçlü" sorusu)."""
     tickers = guncel_tickerlari_al()
     if not tickers:
         return []
@@ -805,13 +813,17 @@ def yukselen_coin_havuzu():
         if vol < 300000:
             continue
         chg = t.get("percentage")
-        if chg is None or chg <= 0:  # yön filtresi - sert düşenler elenir
+        if chg is None:
             continue
-        adaylar.append((sym, vol))
+        adaylar.append((sym, chg))
     if not adaylar:
         return []
-    adaylar.sort(key=lambda x: x[1], reverse=True)
-    return [sym for sym, _ in adaylar[:40]]
+    skorlar = sorted([s for _, s in adaylar])
+    esik_idx = min(int(len(skorlar) * YUKSELEN_UST_YUZDELIK), len(skorlar) - 1)
+    esik_deger = skorlar[esik_idx]
+    if esik_deger <= 0:  # üst dilim bile negatifse (genel piyasa çok kötü), hiç sinyal verme
+        return []
+    return [sym for sym, s in adaylar if s >= esik_deger]
 
 
 def yukselen_coin_sinyal(sym):
@@ -1073,30 +1085,23 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         log.warning(f"[GERCEK_POZ] {sym}: {e}")
 
     # ════════════════════════════════════════════
-    # v4.8 KRİTİK DÜZELTME (23.09.2026, kullanıcı gözlemiyle bulundu -
-    # "kazançlar küçük ama SL büyük"): TP sabit dolar ($0.35) iken SL
-    # YÜZDESEL (%5) kalmıştı. Bakiye büyüdükçe (bileşik büyüme ile
-    # pozisyon boyutu büyüdükçe), %5 SL'in dolar karşılığı da büyüyordu
-    # - ama TP hep aynı küçük dolar tutarında kalıyordu. Sonuç: risk/ödül
-    # oranı bakiye büyüdükçe GİDEREK KÖTÜLEŞİYORDU (XPL örneğinde -1.87$
-    # kayıp, +0.35-0.65$'lık kazançların çok üzerinde). ARTIK YUKSELEN
-    # modunda SL DE sabit dolar bazlı - TP ile aynı mantıkla hesaplanıyor,
-    # böylece bakiye ne kadar büyürse büyüsün risk/ödül oranı SABİT kalır.
+    # v4.9 KRİTİK DÜZELTME (23.09.2026, güncel gerçek veriyle backtest
+    # edilip bulundu): v4.8'deki sabit dolar SL, güncel notional
+    # ölçeğinde (~$48) çok küçük bir yüzdesel harekete (~%0.7) denk
+    # geliyordu - gürültü seviyesinde kalıyordu. Artık YUKSELEN modunda
+    # SL de YÜZDESEL (YUKSELEN_SL_PCT, varsayılan %3) - risk/ödül oranı
+    # hâlâ TP ile sabit (ikisi de aynı yüzde), ama artık anlamlı bir
+    # gerçek harekete karşılık geliyor.
     if aktif_strateji_modu() == "yukselen":
-        komisyon_tahmini_sl = entry * qty * KOMISYON_PCT * 2
-        fiyat_hareketi_sl = max(SABIT_ZARAR_LIMITI_USD - komisyon_tahmini_sl, SABIT_ZARAR_LIMITI_USD * 0.5) / qty
-        sl = entry - fiyat_hareketi_sl if long_mu else entry + fiyat_hareketi_sl
-        sl_mesafe = fiyat_hareketi_sl / entry
+        sl_mesafe = YUKSELEN_SL_PCT
+        sl = entry * (1 - sl_mesafe) if long_mu else entry * (1 + sl_mesafe)
 
     r_risk = abs(entry - sl)
-    # v4.5 GÜNCELLEME: YUKSELEN modunda sabit dolar kâr hedefi kullanılıyor
-    # (kullanıcı talimatıyla) - yüzdesel hedef yerine, tam SABIT_KAR_HEDEFI_USD
-    # net kâra ulaşınca kapanır. Komisyon (giriş+çıkış) payı eklenerek
-    # gerçek net kârın istenen tutara ulaşması sağlanıyor.
+    # v4.9 GÜNCELLEME: YUKSELEN modunda TP de YÜZDESEL (YUKSELEN_HEDEF_PCT,
+    # varsayılan %3) - backtest'te bu, "mümkün olduğunca hızlı ama hâlâ
+    # kârlı" nokta olarak doğrulandı (%2 altı net zararlı, %3+ net kârlı).
     if aktif_strateji_modu() == "yukselen":
-        komisyon_tahmini = entry * qty * KOMISYON_PCT * 2
-        fiyat_hareketi = (SABIT_KAR_HEDEFI_USD + komisyon_tahmini) / qty
-        tp = entry + fiyat_hareketi if long_mu else entry - fiyat_hareketi
+        tp = entry * (1 + YUKSELEN_HEDEF_PCT) if long_mu else entry * (1 - YUKSELEN_HEDEF_PCT)
     else:
         tp = entry * (1 + HIZLI_HEDEF_PCT) if long_mu else entry * (1 - HIZLI_HEDEF_PCT)
 
@@ -1136,7 +1141,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
     mod_simdi = aktif_strateji_modu()
     if mod_simdi == "yukselen":
-        tp_aciklama = f"TP:{tp:.6f} (sabit ${SABIT_KAR_HEDEFI_USD:.2f} net kâr hedefi)"
+        tp_aciklama = f"TP:{tp:.6f} (%{YUKSELEN_HEDEF_PCT*100:.1f} sabit)"
     else:
         tp_aciklama = f"TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)"
     tg(f"📈 GERÇEK POZİSYON ({mod_simdi.upper()}): {sym} {yon_emoji}\n"
@@ -1393,7 +1398,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.8 — CANLI ÖZET",
+        "💵 LIVE BOT v4.9 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1441,7 +1446,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.8 (SABİT $ TP+SL - RİSK/ÖDÜL DÜZELTİLDİ) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v4.9 (YÜZDESEL %3 TP/SL + YÜZDELİK DİLİM) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1465,8 +1470,9 @@ def panel_ayarlar_metni():
             f"(LONG için, {'AKTİF' if PUMP_FILTRE_AKTIF else 'KAPALI'})\n"
             f"  7) [v4.1, sadece YUKSELEN modunda] Giriş fiyatı, son {ZIRVE_LOOKBACK} mumun "
             f"zirvesinden en az %{ZIRVEDEN_MIN_MESAFE_PCT*100:.1f} aşağıda olmalı (tam tepede alım önlenir)\n"
-            f"  [v4.6] Yön filtresi: sadece son 24s'te genel yönü POZİTİF (chg>0) olan coinler "
-            f"aday havuzuna giriyor - sert düşenler (çöküşte 'sıçrama' yakalama riski) elenir\n"
+            f"  [v4.9] Yüzdelik dilim sıralaması: sadece son 24s getirisi üst %{(1-YUKSELEN_UST_YUZDELIK)*100:.0f}'luk "
+            f"dilimde olan coinler aday havuzuna giriyor (basit 'pozitif mi' değil, 'ne kadar güçlü' sıralaması - "
+            f"geri veriyle doğrulandı)\n"
             f"  [v4.7] ANLIK volatilite filtresi: son {ANLIK_VOLATILITE_MUM} mumda (≈{ANLIK_VOLATILITE_MUM*15} dk) "
             f"en az %{ANLIK_VOLATILITE_MIN_PCT:.1f} hareket olmalı - 24s'lik gecikmeli ölçüm yerine, "
             f"işlem alınacağı O ANDA hareketli olan coin seçiliyor\n\n"
@@ -1475,10 +1481,10 @@ def panel_ayarlar_metni():
             f"miktarın %{KISMI_KAR_ORANI*100:.0f}'i kapatılır, kalan SL'i breakeven'e çekilir "
             f"({'AKTİF' if KISMI_KAR_AKTIF else 'KAPALI'}) - YUKSELEN modunda KAPALI (backtest'te net zararlı çıktı)\n"
             f"  TAM HEDEF (TREND modunda): SABİT %{HIZLI_HEDEF_PCT*100:.1f}\n"
-            f"  [v4.5] TAM HEDEF (YUKSELEN modunda): SABİT ${SABIT_KAR_HEDEFI_USD:.2f} NET KÂR - "
-            f"yüzdesel değil, doğrudan dolar hedefine ulaşınca tamamı kapanır\n"
+            f"  [v4.9] TAM HEDEF (YUKSELEN modunda): SABİT %{YUKSELEN_HEDEF_PCT*100:.1f} - "
+            f"backtest'te doğrulanan 'en hızlı ama hâlâ kârlı' seviye\n"
             f"  SL (TREND modunda): swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
-            f"  [v4.8] SL (YUKSELEN modunda): SABİT ${SABIT_ZARAR_LIMITI_USD:.2f} - TP ile aynı mantık, "
+            f"  [v4.9] SL (YUKSELEN modunda): SABİT %{YUKSELEN_SL_PCT*100:.1f} - TP ile aynı oran, "
             f"risk/ödül oranı bakiye büyüklüğünden BAĞIMSIZ sabit kalır\n"
             f"  [v4.2, sadece YUKSELEN modunda] Erken güvenlik çıkışı: ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk "
             f"boyunca sürekli kontrol - %{ERKEN_GUVENLIK_MAX_ZARAR_PCT:.1f} aleyhe giderse HEMEN çıkılır "
@@ -2010,7 +2016,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.8 (SABİT $ TP+SL - RİSK/ÖDÜL DÜZELTİLDİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v4.9 (YÜZDESEL %3 TP/SL + YÜZDELİK DİLİM, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2100,7 +2106,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.8 (SL de sabit dolar bazlı - risk/ödül düzeltmesi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v4.9 (yüzdesel %3 TP/SL + yüzdelik dilim seçimi - geri veriyle doğrulandı, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
