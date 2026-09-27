@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.2 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.3 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -1447,7 +1447,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.2 — CANLI ÖZET",
+        "💵 LIVE BOT v5.3 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1495,7 +1495,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.2 (GÖVDE GÜCÜ FİLTRELİ) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.3 (TP DÜZELTMESİ + İZ SÜRME BİLDİRİMİ) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1850,6 +1850,27 @@ def manage_loop():
                 long_mu = (yon_kayitli == "long")
                 aranan_yon = "yukselis" if long_mu else "dusus"
 
+                # v5.2 GÜVENLİK DÜZELTMESİ: eski koddan (v5.1 öncesi) kalma
+                # açık pozisyonlar, hâlâ eski sabit %3 TP'yi taşıyor olabilir
+                # (ZRO örneğinde görüldü - iz sürme SL'i doğru yükseltiyordu
+                # ama pozisyon eski %3 tavana takılıp erken kapandı). Eğer
+                # YUKSELEN modunda TP tavanı artık kapalıysa ve bu pozisyonun
+                # TP'si hâlâ makul/ulaşılabilir bir seviyedeyse (yani "ulaşılamaz
+                # tavan" olarak ayarlanmamışsa), otomatik olarak düzeltiyoruz.
+                if (durum.get("acilis_modu") == "yukselen" and not YUKSELEN_TP_TAVAN_AKTIF
+                        and durum.get("tp") is not None):
+                    eski_tp_makul_mu = (durum["tp"] < durum["entry"] * 1.5 if long_mu
+                                         else durum["tp"] > durum["entry"] * 0.5)
+                    if eski_tp_makul_mu:
+                        yeni_tp = durum["entry"] * 2.0 if long_mu else durum["entry"] * 0.5
+                        with state_lock:
+                            if sym in trade_state:
+                                trade_state[sym]["tp"] = yeni_tp
+                        durumu_diske_yaz()
+                        durum = trade_state.get(sym, durum)
+                        log.info(f"[TP_DUZELTME] {sym} eski sabit TP kaldırıldı, "
+                                 f"ulaşılamaz tavana güncellendi")
+
                 # ── v5.0 YENİ: İZ SÜRME (trailing stop) - sadece YUKSELEN
                 # modunda açılan pozisyonlar için. Kısmi kâr almadan farklı:
                 # pozisyonun TAMAMI korunuyor, sadece SL kârın gerisinden
@@ -1890,6 +1911,7 @@ def manage_loop():
                             except Exception as e:
                                 log.warning(f"[TRAILING_SL_YENI] {sym}: {e}")
                             if yeni_sl_id:
+                                ilk_aktivasyon = not durum.get("trailing_aktif", False)
                                 with state_lock:
                                     if sym in trade_state:
                                         trade_state[sym]["sl"] = yeni_sl
@@ -1899,6 +1921,12 @@ def manage_loop():
                                 durum = trade_state.get(sym, durum)
                                 log.info(f"[TRAILING] {sym} SL güncellendi: {yeni_sl_fiyat:.6f} "
                                          f"(zirve: {en_yuksek:.6f})")
+                                if ilk_aktivasyon:
+                                    tg(f"🔒 [İZ SÜRME AKTİF] {sym}\n"
+                                       f"Kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e ulaştı, "
+                                       f"SL kilitlendi: {yeni_sl_fiyat:.6f}\n"
+                                       f"Zirve: {en_yuksek:.6f} | Bundan sonra sadece yükselecek, "
+                                       f"düşerse bu kilitle çıkılır")
 
                 # ── v4.2 YENİ: ERKEN GÜVENLİK ÇIKIŞI (sadece YUKSELEN modunda
                 # açılan, henüz kısmi kâr alınmamış pozisyonlar) ──
@@ -2125,7 +2153,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.2 (GÖVDE GÜCÜ FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.3 (TP DÜZELTMESİ + İZ SÜRME BİLDİRİMİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2215,7 +2243,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.2 (mum gövde gücü filtresi eklendi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.3 (eski TP düzeltmesi + iz sürme bildirimi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
