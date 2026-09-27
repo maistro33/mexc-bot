@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.1 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.2 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -251,6 +251,8 @@ MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
 STRATEJI_MODU = os.getenv("STRATEJI_MODU", "yukselen")
 YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.80"))  # v4.9: backtest'te doğrulanan üst %20
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
+# v5.2 YENİ: mum gövde gücü eşiği - zayıf/kararsız mumları eler
+YUKSELEN_MIN_GOVDE_ORANI = float(os.getenv("YUKSELEN_MIN_GOVDE_ORANI", "0.45"))
 # v4.1 YENİ: "tam tepede alım" riskini azaltmak için zirveden mesafe filtresi
 ZIRVE_LOOKBACK = int(os.getenv("ZIRVE_LOOKBACK", "20"))
 ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
@@ -869,6 +871,22 @@ def yukselen_coin_sinyal(sym):
     if son_mum["close"] <= son_mum["open"]:
         return None
 
+    # v5.2 YENİ (kullanıcı gözlemiyle bulundu - ZRO örneği: giriş sonrası
+    # hiç toparlanmadan sert düşen işlemler): mumun GÖVDE GÜCÜ kontrolü.
+    # Sadece "kapanış açılıştan yüksek mi" (zayıf/kararsız mumlar da bu
+    # şartı geçebilir) değil, gövdenin toplam mum aralığına oranına
+    # bakılıyor - küçük gövdeli/uzun fitilli "kararsız" mumlar elenir.
+    # Backtest'te (güncel veri) doğrulandı: %45 eşiğiyle kazanma oranı
+    # %59.6'dan ~%60.8'e çıktı, işlem başına ortalama kazanç $0.59'dan
+    # ~$0.78'e yükseldi - bedeli işlem sayısının azalması (daha seçici).
+    toplam_aralik = son_mum["high"] - son_mum["low"]
+    if toplam_aralik <= 0:
+        return None
+    govde = son_mum["close"] - son_mum["open"]
+    govde_oran = govde / toplam_aralik
+    if govde_oran < YUKSELEN_MIN_GOVDE_ORANI:
+        return None
+
     # v4.1 YENİ: zirveden yeterince uzak (tam tepede değil) mi kontrolü
     if len(df_15m) >= ZIRVE_LOOKBACK:
         zirve = df_15m["high"].iloc[-ZIRVE_LOOKBACK:].max()
@@ -1429,7 +1447,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.1 — CANLI ÖZET",
+        "💵 LIVE BOT v5.2 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1477,7 +1495,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.1 (TP TAVANI KALDIRILDI) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.2 (GÖVDE GÜCÜ FİLTRELİ) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1506,7 +1524,10 @@ def panel_ayarlar_metni():
             f"geri veriyle doğrulandı)\n"
             f"  [v4.7] ANLIK volatilite filtresi: son {ANLIK_VOLATILITE_MUM} mumda (≈{ANLIK_VOLATILITE_MUM*15} dk) "
             f"en az %{ANLIK_VOLATILITE_MIN_PCT:.1f} hareket olmalı - 24s'lik gecikmeli ölçüm yerine, "
-            f"işlem alınacağı O ANDA hareketli olan coin seçiliyor\n\n"
+            f"işlem alınacağı O ANDA hareketli olan coin seçiliyor\n"
+            f"  [v5.2] Mum gövde gücü: giriş mumunun gövdesi, toplam aralığın en az %{YUKSELEN_MIN_GOVDE_ORANI*100:.0f}'i "
+            f"olmalı - zayıf/kararsız mumlar (giriş sonrası hemen ters gitme riski) elenir. Backtest'te kazanma "
+            f"oranı %59.6'dan ~%61'e çıktı\n\n"
             "⚡ ÇIKIŞ:\n"
             f"  [v3.7→v4.4] Kısmi kâr alma (SADECE TREND modunda): pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca "
             f"miktarın %{KISMI_KAR_ORANI*100:.0f}'i kapatılır, kalan SL'i breakeven'e çekilir "
@@ -2104,7 +2125,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.1 (TP TAVANI KALDIRILDI, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.2 (GÖVDE GÜCÜ FİLTRELİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2194,7 +2215,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.1 (TP tavanı kaldırıldı - büyük hareketler tam yakalanır, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.2 (mum gövde gücü filtresi eklendi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
