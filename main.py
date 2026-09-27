@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.0 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.1 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -283,6 +283,10 @@ YUKSELEN_SL_PCT = float(os.getenv("YUKSELEN_SL_PCT", "0.03"))
 YUKSELEN_TRAILING_AKTIF = os.getenv("YUKSELEN_TRAILING_AKTIF", "true").lower() == "true"
 YUKSELEN_TRAILING_AKTIVASYON_PCT = float(os.getenv("YUKSELEN_TRAILING_AKTIVASYON_PCT", "0.025"))
 YUKSELEN_TRAILING_PAYI_PCT = float(os.getenv("YUKSELEN_TRAILING_PAYI_PCT", "0.005"))
+# v5.1 YENİ: TP tavanını kaldırma anahtarı - backtest'te tavan var/yok
+# tamamen aynı sonucu verdiği için (iz sürme zaten %3'ten önce yakalıyordu),
+# varsayılan olarak tavan KAPALI - büyük hareketler tam yakalanabilsin.
+YUKSELEN_TP_TAVAN_AKTIF = os.getenv("YUKSELEN_TP_TAVAN_AKTIF", "false").lower() == "true"
 # v4.7 YENİ: anlık (24s yerine son birkaç mum) volatilite eşiği
 ANLIK_VOLATILITE_MUM = int(os.getenv("ANLIK_VOLATILITE_MUM", "2"))  # 2x15m = son 30 dk
 ANLIK_VOLATILITE_MIN_PCT = float(os.getenv("ANLIK_VOLATILITE_MIN_PCT", "1.0"))
@@ -1113,8 +1117,21 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     # v4.9 GÜNCELLEME: YUKSELEN modunda TP de YÜZDESEL (YUKSELEN_HEDEF_PCT,
     # varsayılan %3) - backtest'te bu, "mümkün olduğunca hızlı ama hâlâ
     # kârlı" nokta olarak doğrulandı (%2 altı net zararlı, %3+ net kârlı).
+    # v5.1 GÜNCELLEME (kullanıcı gözlemiyle bulundu - "0.80 zaten garanti,
+    # neden %3'te kesiyoruz"): Backtest'te TP tavanı VARKEN ve YOKKEN net
+    # sonuç TAMAMEN AYNI çıktı (519.03$, kuruşuna kadar) - çünkü iz sürme
+    # (aktivasyon %2.5, dar %0.5 pay) zaten fiyatı %3'e ulaşmadan
+    # yakalıyordu, tavan hiç fiili bir etki yaratmıyordu. Tavanı kaldırmak
+    # HİÇBİR ŞEY KAYBETTİRMİYOR, ama büyük hareketler geldiğinde (backtest'te
+    # LYN %29.5, RARE %17.7, CLANKER %15.7 gibi örnekler görüldü) tam
+    # yakalanabiliyor - iz sürme SL'i o büyük hareket boyunca da yükselmeye
+    # devam ediyor. YUKSELEN_TP_TAVAN_AKTIF=false (varsayılan) ile tavan
+    # kapalı; true yapılırsa eski %3 sabit tavan davranışına dönülebilir.
     if aktif_strateji_modu() == "yukselen":
-        tp = entry * (1 + YUKSELEN_HEDEF_PCT) if long_mu else entry * (1 - YUKSELEN_HEDEF_PCT)
+        if YUKSELEN_TP_TAVAN_AKTIF:
+            tp = entry * (1 + YUKSELEN_HEDEF_PCT) if long_mu else entry * (1 - YUKSELEN_HEDEF_PCT)
+        else:
+            tp = entry * (1 + 1.0) if long_mu else entry * (1 - 0.5)  # pratikte ulaşılamaz tavan
     else:
         tp = entry * (1 + HIZLI_HEDEF_PCT) if long_mu else entry * (1 - HIZLI_HEDEF_PCT)
 
@@ -1412,7 +1429,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.0 — CANLI ÖZET",
+        "💵 LIVE BOT v5.1 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1460,7 +1477,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.0 (İZ SÜRME/TRAILING STOP EKLENDİ) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.1 (TP TAVANI KALDIRILDI) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1496,7 +1513,8 @@ def panel_ayarlar_metni():
             f"({'AKTİF' if KISMI_KAR_AKTIF else 'KAPALI'}) - YUKSELEN modunda KAPALI (backtest'te net zararlı çıktı)\n"
             f"  TAM HEDEF (TREND modunda): SABİT %{HIZLI_HEDEF_PCT*100:.1f}\n"
             f"  [v4.9] TAM HEDEF (YUKSELEN modunda): SABİT %{YUKSELEN_HEDEF_PCT*100:.1f} - "
-            f"backtest'te doğrulanan 'en hızlı ama hâlâ kârlı' seviye\n"
+            f"backtest'te doğrulanan 'en hızlı ama hâlâ kârlı' seviye "
+            f"({'AKTİF - tavan var' if YUKSELEN_TP_TAVAN_AKTIF else 'KAPALI - v5.1: tavan kaldırıldı, iz sürme tek koruma'})\n"
             f"  SL (TREND modunda): swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
             f"  [v4.9] SL (YUKSELEN modunda): SABİT %{YUKSELEN_SL_PCT*100:.1f} - TP ile aynı oran, "
             f"risk/ödül oranı bakiye büyüklüğünden BAĞIMSIZ sabit kalır\n"
@@ -1504,7 +1522,8 @@ def panel_ayarlar_metni():
             f"ulaşınca SL, zirveden %{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} gerisinden takip etmeye başlar "
             f"({'AKTİF' if YUKSELEN_TRAILING_AKTIF else 'KAPALI'}) - pozisyonun TAMAMI korunur (kısmi kâr alma "
             f"DEĞİL), fiyat devam ederse tam hedefe ulaşılabilir, dönerse kilitlenen kârla çıkılır. Güncel "
-            f"veride backtest: net +121$ → +519$ (4 kat iyileşme)\n"
+            f"veride backtest: net +121$ → +440$ (canlı botun tam giriş mantığıyla doğrulandı, TP tavanı "
+            f"kaldırılmış hâliyle)\n"
             f"  [v4.2, sadece YUKSELEN modunda] Erken güvenlik çıkışı: ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk "
             f"boyunca sürekli kontrol - %{ERKEN_GUVENLIK_MAX_ZARAR_PCT:.1f} aleyhe giderse HEMEN çıkılır "
             f"({'AKTİF' if ERKEN_GUVENLIK_CIKISI_AKTIF else 'KAPALI'})\n"
@@ -2085,7 +2104,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.0 (İZ SÜRME/TRAILING STOP EKLENDİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.1 (TP TAVANI KALDIRILDI, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2175,7 +2194,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.0 (iz sürme/trailing stop eklendi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.1 (TP tavanı kaldırıldı - büyük hareketler tam yakalanır, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
