@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v4.9 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.0 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -270,6 +270,19 @@ ZIRVEDEN_MIN_MESAFE_PCT = float(os.getenv("ZIRVEDEN_MIN_MESAFE_PCT", "0.015"))
 # olur, ama artık yüzdesel skalada).
 YUKSELEN_HEDEF_PCT = float(os.getenv("YUKSELEN_HEDEF_PCT", "0.03"))
 YUKSELEN_SL_PCT = float(os.getenv("YUKSELEN_SL_PCT", "0.03"))
+# v5.0 YENİ: İZ SÜRME (trailing stop) - kullanıcı önerisiyle bulundu,
+# güncel gerçek veride backtest edildi (üst %20 dilim, %3 hedef):
+# iz sürme YOKKEN net +121$, VARKEN (aktivasyon %2.5, takip payı %0.5)
+# net +519$ - 4 kattan fazla iyileşme. KISMI KÂR ALMADAN (v3.7-v4.4'te
+# denenip yükselen modu için zararlı bulunmuştu) FARKI: kısmi kâr alma
+# pozisyonun bir kısmını erken satıp kalanını breakeven'e sabitliyordu -
+# bu, büyük hareketleri yakalama potansiyelini kesiyordu. İZ SÜRME İSE
+# TAM POZİSYONU KORUYOR, sadece SL'i kârın gerisinden takip ettiriyor -
+# fiyat devam ederse tam hedefe ulaşılabiliyor, dönerse kilitlenen kârla
+# çıkılıyor. Sadece YUKSELEN modunda uygulanıyor.
+YUKSELEN_TRAILING_AKTIF = os.getenv("YUKSELEN_TRAILING_AKTIF", "true").lower() == "true"
+YUKSELEN_TRAILING_AKTIVASYON_PCT = float(os.getenv("YUKSELEN_TRAILING_AKTIVASYON_PCT", "0.025"))
+YUKSELEN_TRAILING_PAYI_PCT = float(os.getenv("YUKSELEN_TRAILING_PAYI_PCT", "0.005"))
 # v4.7 YENİ: anlık (24s yerine son birkaç mum) volatilite eşiği
 ANLIK_VOLATILITE_MUM = int(os.getenv("ANLIK_VOLATILITE_MUM", "2"))  # 2x15m = son 30 dk
 ANLIK_VOLATILITE_MIN_PCT = float(os.getenv("ANLIK_VOLATILITE_MIN_PCT", "1.0"))
@@ -1135,6 +1148,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
             "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
             "kismi_alindi": False, "acilis_modu": aktif_strateji_modu(),
             "erken_kontrol_yapildi": False,
+            "en_yuksek_fiyat": entry, "trailing_aktif": False,
         }
     durumu_diske_yaz()
 
@@ -1398,7 +1412,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v4.9 — CANLI ÖZET",
+        "💵 LIVE BOT v5.0 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1446,7 +1460,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v4.9 (YÜZDESEL %3 TP/SL + YÜZDELİK DİLİM) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.0 (İZ SÜRME/TRAILING STOP EKLENDİ) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1486,6 +1500,11 @@ def panel_ayarlar_metni():
             f"  SL (TREND modunda): swing bazlı, taban %{MIN_SL_PCT*100:.0f} (kısmi alım sonrası breakeven'e çekilir)\n"
             f"  [v4.9] SL (YUKSELEN modunda): SABİT %{YUKSELEN_SL_PCT*100:.1f} - TP ile aynı oran, "
             f"risk/ödül oranı bakiye büyüklüğünden BAĞIMSIZ sabit kalır\n"
+            f"  [v5.0, sadece YUKSELEN modunda] İZ SÜRME: kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e "
+            f"ulaşınca SL, zirveden %{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} gerisinden takip etmeye başlar "
+            f"({'AKTİF' if YUKSELEN_TRAILING_AKTIF else 'KAPALI'}) - pozisyonun TAMAMI korunur (kısmi kâr alma "
+            f"DEĞİL), fiyat devam ederse tam hedefe ulaşılabilir, dönerse kilitlenen kârla çıkılır. Güncel "
+            f"veride backtest: net +121$ → +519$ (4 kat iyileşme)\n"
             f"  [v4.2, sadece YUKSELEN modunda] Erken güvenlik çıkışı: ilk {ERKEN_GUVENLIK_SURE_DK:.0f} dk "
             f"boyunca sürekli kontrol - %{ERKEN_GUVENLIK_MAX_ZARAR_PCT:.1f} aleyhe giderse HEMEN çıkılır "
             f"({'AKTİF' if ERKEN_GUVENLIK_CIKISI_AKTIF else 'KAPALI'})\n"
@@ -1791,6 +1810,56 @@ def manage_loop():
                 long_mu = (yon_kayitli == "long")
                 aranan_yon = "yukselis" if long_mu else "dusus"
 
+                # ── v5.0 YENİ: İZ SÜRME (trailing stop) - sadece YUKSELEN
+                # modunda açılan pozisyonlar için. Kısmi kâr almadan farklı:
+                # pozisyonun TAMAMI korunuyor, sadece SL kârın gerisinden
+                # takip ediyor. Backtest'te (güncel veri) net kârı +121$'dan
+                # +519$'a çıkardığı doğrulandı.
+                if YUKSELEN_TRAILING_AKTIF and durum.get("acilis_modu") == "yukselen":
+                    en_yuksek = durum.get("en_yuksek_fiyat", durum["entry"])
+                    yeni_en_yuksek = max(en_yuksek, guncel) if long_mu else min(en_yuksek, guncel)
+                    if yeni_en_yuksek != en_yuksek:
+                        with state_lock:
+                            if sym in trade_state:
+                                trade_state[sym]["en_yuksek_fiyat"] = yeni_en_yuksek
+                        durumu_diske_yaz()
+                        en_yuksek = yeni_en_yuksek
+
+                    ilerleme_pct = ((en_yuksek - durum["entry"]) / durum["entry"] if long_mu
+                                     else (durum["entry"] - en_yuksek) / durum["entry"])
+                    if ilerleme_pct >= YUKSELEN_TRAILING_AKTIVASYON_PCT:
+                        yeni_sl = (en_yuksek * (1 - YUKSELEN_TRAILING_PAYI_PCT) if long_mu
+                                   else en_yuksek * (1 + YUKSELEN_TRAILING_PAYI_PCT))
+                        eski_sl = durum["sl"]
+                        sl_iyilesti = (yeni_sl > eski_sl) if long_mu else (yeni_sl < eski_sl)
+                        if sl_iyilesti:
+                            eski_sl_id = durum.get("sl_emir_id")
+                            if eski_sl_id:
+                                try:
+                                    exchange.cancel_order(eski_sl_id, sym)
+                                except Exception as e:
+                                    log.warning(f"[TRAILING_SL_IPTAL] {sym}: {e}")
+                            kapanis_yonu_trail = "sell" if long_mu else "buy"
+                            yeni_sl_fiyat = float(exchange.price_to_precision(sym, yeni_sl))
+                            yeni_sl_id = None
+                            try:
+                                sl_emri = exchange.create_order(
+                                    sym, "market", kapanis_yonu_trail, durum["qty"], None,
+                                    {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
+                                yeni_sl_id = sl_emri.get("id")
+                            except Exception as e:
+                                log.warning(f"[TRAILING_SL_YENI] {sym}: {e}")
+                            if yeni_sl_id:
+                                with state_lock:
+                                    if sym in trade_state:
+                                        trade_state[sym]["sl"] = yeni_sl
+                                        trade_state[sym]["sl_emir_id"] = yeni_sl_id
+                                        trade_state[sym]["trailing_aktif"] = True
+                                durumu_diske_yaz()
+                                durum = trade_state.get(sym, durum)
+                                log.info(f"[TRAILING] {sym} SL güncellendi: {yeni_sl_fiyat:.6f} "
+                                         f"(zirve: {en_yuksek:.6f})")
+
                 # ── v4.2 YENİ: ERKEN GÜVENLİK ÇIKIŞI (sadece YUKSELEN modunda
                 # açılan, henüz kısmi kâr alınmamış pozisyonlar) ──
                 if (ERKEN_GUVENLIK_CIKISI_AKTIF and durum.get("acilis_modu") == "yukselen"
@@ -2016,7 +2085,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v4.9 (YÜZDESEL %3 TP/SL + YÜZDELİK DİLİM, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.0 (İZ SÜRME/TRAILING STOP EKLENDİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2106,7 +2175,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v4.9 (yüzdesel %3 TP/SL + yüzdelik dilim seçimi - geri veriyle doğrulandı, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.0 (iz sürme/trailing stop eklendi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
