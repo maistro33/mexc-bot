@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.7 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.8 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -260,6 +260,16 @@ GUNLUK_ZARAR_FRENI_AKTIF = os.getenv("GUNLUK_ZARAR_FRENI_AKTIF", "true").lower()
 GUNLUK_ZARAR_LIMIT_PCT = float(os.getenv("GUNLUK_ZARAR_LIMIT_PCT", "0.06"))
 # v5.6 YENİ: sürtünme (kayma) kaydı - sinyal/tetik fiyatı ile gerçek dolum farkı
 SURTUNME_PATH = os.getenv("LIVE_SURTUNME_PATH", "/data/live2_surtunme.json")
+
+# v5.8 YENİ: KOVALAMA KORUMASI - anlık fiyat, sinyal mumunun kapanışından bu yüzdeden fazla
+# PAHALIYSA (long için üstündeyse) girilmez; fiyat geri gelirse aynı 15dk penceresinde girilir.
+# Örnek: ONDO sinyal kapanışı 0.5370, bot 0.5409'dan girdi (%0.73 pahalı). Zarar sınırlayıcıdır,
+# kâr artışı vaat etmez; etkisi /surtunme verisiyle ölçülecek.
+KOVALAMA_KORUMA_AKTIF = os.getenv("KOVALAMA_KORUMA_AKTIF", "true").lower() == "true"
+KOVALAMA_MAX_PCT = float(os.getenv("KOVALAMA_MAX_PCT", "0.4"))
+# v5.8 YENİ: AYNI MUMDAN SINIRLI GİRİŞ - tek bir 15dk mumundan (piyasa geneli sıçrama) en fazla bu
+# kadar pozisyon açılır. ONDO ve JASMY aynı 12:00 mumundan çıkıp birlikte kaybetmişti. 0 = kapalı.
+AYNI_MUM_MAX_GIRIS = int(os.getenv("AYNI_MUM_MAX_GIRIS", "2"))
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v5.2 YENİ: mum gövde gücü eşiği - zayıf/kararsız mumları eler
 YUKSELEN_MIN_GOVDE_ORANI = float(os.getenv("YUKSELEN_MIN_GOVDE_ORANI", "0.45"))
@@ -925,7 +935,7 @@ def yukselen_coin_sinyal(sym):
     # basit sabit SL kullanacağız (aşağıda _gercek_pozisyon_ac_ic'te
     # swing_nokta None ise sabit yüzde SL'e düşülüyor)
     return {"symbol": sym, "yon": "long", "entry": float(son_mum["close"]),
-            "swing_nokta": None, "1d": "-", "4h": "-", "1h": "-"}
+            "swing_nokta": None, "1d": "-", "4h": "-", "1h": "-", "mum_ts": int(son_mum["ts"])}
 
 
 def ucyon_sinyal(sym):
@@ -1061,6 +1071,30 @@ def gercek_pozisyon_ac(sinyal):
 def _gercek_pozisyon_ac_ic(sym, sinyal):
     if cooldown_da_mi(sym):
         return
+
+    # v5.8: yalnızca YUKSELEN sinyallerine uygulanan iki koruma (ikisi de cooldown UYGULAMAZ:
+    # aynı sinyal mumu içinde sonraki taramada koşullar düzelirse giriş yapılabilir).
+    if sinyal.get("swing_nokta", 1) is None and aktif_strateji_modu() == "yukselen":
+        _mum_ts = sinyal.get("mum_ts")
+        if AYNI_MUM_MAX_GIRIS > 0 and _mum_ts is not None and ayni_mum_dolu_mu(_mum_ts):
+            if engel_bir_kez((sym, _mum_ts, "mum")):
+                log.info(f"[AYNI_MUM_SINIRI] {sym} atlandı: bu 15dk mumundan zaten {AYNI_MUM_MAX_GIRIS} pozisyon açıldı")
+            return
+        _hedef = sinyal.get("entry", 0)
+        if KOVALAMA_KORUMA_AKTIF and _hedef > 0:
+            try:
+                _simdi = safe(exchange.fetch_ticker(sym).get("last"))
+            except Exception as e:
+                log.warning(f"[KOVALAMA_FIYAT] {sym}: {e}")
+                _simdi = 0
+            if _simdi > 0:
+                _uzun = sinyal.get("yon", "long") == "long"
+                _kovalama = ((_simdi - _hedef) / _hedef * 100) if _uzun else ((_hedef - _simdi) / _hedef * 100)
+                if _kovalama > KOVALAMA_MAX_PCT:
+                    if engel_bir_kez((sym, _mum_ts, "kovalama")):
+                        surtunme_kaydet("engel", sym, _kovalama)
+                        log.info(f"[KOVALAMA_ENGEL] {sym} atlandı: fiyat sinyal kapanışından %{_kovalama:.2f} pahalı (limit %{KOVALAMA_MAX_PCT})")
+                    return
 
     bakiye = gercek_bakiye_al()
     if bakiye is None or bakiye <= 0:
@@ -1211,6 +1245,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
             "en_yuksek_fiyat": entry, "trailing_aktif": False,
         }
     durumu_diske_yaz()
+    if swing_nokta is None and sinyal.get("mum_ts") is not None:
+        ayni_mum_kaydet(sinyal["mum_ts"])        # v5.8: aynı mumdan kaç giriş açıldı
 
     yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
     mod_simdi = aktif_strateji_modu()
@@ -1441,6 +1477,9 @@ def surtunme_ozet_metni():
             continue
         ort[tip] = sum(x) / len(x)
         satirlar.append(f"{etiket}: n={len(x)} | ortalama %{ort[tip]:+.3f} | medyan %{x[len(x)//2]:+.3f} | en kötü %{x[-1]:+.3f}")
+    eng = [v["kayma_pct"] for v in veri if v.get("tip") == "engel"]
+    if eng:
+        satirlar.append(f"Kovalama engeli: {len(eng)} kez girilmedi (engellenen girişlerin ortalama kayması %{sum(eng)/len(eng):+.3f})")
     if "giris" in ort:
         toplam = ort["giris"] + (ort.get("stop", 0) * 0.45)
         satirlar.append(f"\nİşlem başına tahmini ek maliyet ≈ %{toplam:.3f} (stopla biten işlem payı ~%45 varsayıldı)")
@@ -1470,6 +1509,34 @@ def gunluk_zarar_freni_mi():
     except Exception as e:
         log.warning(f"[GUNLUK_FREN] {e}")
         return False, 0.0, 0.0
+
+
+_mum_giris_sayaci = {}
+_mum_kilit = threading.Lock()
+_engel_kayitli = set()
+
+
+def ayni_mum_dolu_mu(mum_ts):
+    """Bu 15dk mumundan zaten AYNI_MUM_MAX_GIRIS kadar pozisyon açıldıysa True."""
+    with _mum_kilit:
+        return _mum_giris_sayaci.get(mum_ts, 0) >= AYNI_MUM_MAX_GIRIS
+
+
+def ayni_mum_kaydet(mum_ts):
+    with _mum_kilit:
+        _mum_giris_sayaci[mum_ts] = _mum_giris_sayaci.get(mum_ts, 0) + 1
+        for eski in sorted(_mum_giris_sayaci)[:-20]:      # sadece son 20 mumu tut
+            _mum_giris_sayaci.pop(eski, None)
+
+
+def engel_bir_kez(anahtar):
+    """Aynı (coin, mum, tür) engelini dakikada bir tekrar loglamamak için. İlk seferde True döner."""
+    if anahtar in _engel_kayitli:
+        return False
+    if len(_engel_kayitli) > 500:
+        _engel_kayitli.clear()
+    _engel_kayitli.add(anahtar)
+    return True
 
 
 def borsa_stoplarini_oku(sym):
@@ -1572,7 +1639,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.7 — CANLI ÖZET",
+        "💵 LIVE BOT v5.8 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1620,7 +1687,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.7 (MAX_POS=4, MARJİN %6) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.8 (KOVALAMA KORUMASI + AYNI MUM SINIRI) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1682,7 +1749,9 @@ def panel_ayarlar_metni():
             f"Kaldıraç: {LEV}x\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
             f"🛑 GÜNLÜK ZARAR FRENİ: {'AKTİF' if GUNLUK_ZARAR_FRENI_AKTIF else 'KAPALI'} "
-            f"(bugün gün başı bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i kadar zarar olursa yeni işlem durur) | /surtunme: kayma özeti\n\n"
+            f"(bugün gün başı bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i kadar zarar olursa yeni işlem durur) | /surtunme: kayma özeti\n"
+            f"🚫 KOVALAMA KORUMASI: {'AKTİF' if KOVALAMA_KORUMA_AKTIF else 'KAPALI'} (fiyat sinyal kapanışının %{KOVALAMA_MAX_PCT:.1f}'ten "
+            f"fazla üstündeyse girilmez) | AYNI MUMDAN en fazla {AYNI_MUM_MAX_GIRIS} giriş\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n\n"
             f"🌡️ TEMKİNLİ MOD: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} "
             f"(BTC düşerse: {'yeni pozisyon TAMAMEN durur' if TEMKINLI_MOD_TAM_DURDURMA else 'MAX_POS yarıya iner, trend gücü eşiği yükselir (%' + str(MIN_4H_TREND_GUCU_PCT_TEMKINLI) + ')'})\n"
@@ -2299,7 +2368,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.7 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %{RISK_PCT_BAKIYE*100:.0f} MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.8 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %{RISK_PCT_BAKIYE*100:.0f} MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2316,7 +2385,7 @@ def tarama_loop():
        f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
        f"BTC'den bağımsız güçlü coinler yine geçebilir)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📌 v5.7: günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme (giriş/stop kayma özeti), "
+       f"📌 v5.8: kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
        f"iz sürme stop teşhisi. Eşikler geçmiş veriye dayanır, canlıda henüz doğrulanmadı.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
@@ -2401,7 +2470,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.7 (MAX_POS=4, marjin %6, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.8 (kovalama koruması + aynı mumdan sınırlı giriş, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
