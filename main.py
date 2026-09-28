@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.8 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.9 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -270,6 +270,12 @@ KOVALAMA_MAX_PCT = float(os.getenv("KOVALAMA_MAX_PCT", "0.4"))
 # v5.8 YENİ: AYNI MUMDAN SINIRLI GİRİŞ - tek bir 15dk mumundan (piyasa geneli sıçrama) en fazla bu
 # kadar pozisyon açılır. ONDO ve JASMY aynı 12:00 mumundan çıkıp birlikte kaybetmişti. 0 = kapalı.
 AYNI_MUM_MAX_GIRIS = int(os.getenv("AYNI_MUM_MAX_GIRIS", "2"))
+# v5.9 YENİ: HİSSE/ETF/EMTİA (Bitget'te isRwa=YES) vadelileri varsayılan olarak DIŞLANIR.
+# Gerekçe (28.09.2026, SOXS girişi + 36 günlük backtest): (a) bu enstrümanlarda "hacim 1.2x" şartı her
+# ABD açılışında (13:30 UTC) kendiliğinden sağlanıyor - gerçek momentum değil saat etkisi; (b) 63 işlemde
+# ort/işlem %-0.02 (kriptoda +%0.67) - ölçülebilir üstünlük yok (örnek küçük, kesin değil); (c) 3x kaldıraçlı
+# ETF'ler ve piyasa açılış/kapanış boşlukları stop'u atlayabilir. True yapılırsa tekrar dahil edilir.
+RWA_HISSE_DAHIL = os.getenv("RWA_HISSE_DAHIL", "false").lower() == "true"
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v5.2 YENİ: mum gövde gücü eşiği - zayıf/kararsız mumları eler
 YUKSELEN_MIN_GOVDE_ORANI = float(os.getenv("YUKSELEN_MIN_GOVDE_ORANI", "0.45"))
@@ -601,6 +607,16 @@ def market_bilgisi_al():
     return _market_cache["markets"] or {}
 
 
+def rwa_mi(sym):
+    """Borsa bu sembolü hisse/ETF/emtia (Real World Asset) olarak işaretlediyse True (info.isRwa == 'YES').
+    Market bilgisi alınamazsa False döner (dışlama yapılamaz, kripto gibi davranılır)."""
+    try:
+        m = market_bilgisi_al().get(sym) or {}
+        return str((m.get("info") or {}).get("isRwa", "")).upper() == "YES"
+    except Exception:
+        return False
+
+
 def sembol_max_kaldirac(sym, istenen_lev):
     try:
         markets = market_bilgisi_al()
@@ -847,6 +863,8 @@ def yukselen_coin_havuzu():
             continue
         base = sym.split("/")[0]
         if base in SLUGGISH_BASE:
+            continue
+        if not RWA_HISSE_DAHIL and rwa_mi(sym):
             continue
         vol = t.get("quoteVolume") or 0
         if vol < 300000:
@@ -1639,7 +1657,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.8 — CANLI ÖZET",
+        "💵 LIVE BOT v5.9 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1687,7 +1705,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.8 (KOVALAMA KORUMASI + AYNI MUM SINIRI) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.9 (HİSSE/ETF DIŞLANDI) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1750,6 +1768,7 @@ def panel_ayarlar_metni():
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
             f"🛑 GÜNLÜK ZARAR FRENİ: {'AKTİF' if GUNLUK_ZARAR_FRENI_AKTIF else 'KAPALI'} "
             f"(bugün gün başı bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i kadar zarar olursa yeni işlem durur) | /surtunme: kayma özeti\n"
+            f"📈 HİSSE/ETF/EMTİA (RWA) vadelileri: {'DAHİL' if RWA_HISSE_DAHIL else 'DIŞLANDI (kripto çiftleri)'}\n"
             f"🚫 KOVALAMA KORUMASI: {'AKTİF' if KOVALAMA_KORUMA_AKTIF else 'KAPALI'} (fiyat sinyal kapanışının %{KOVALAMA_MAX_PCT:.1f}'ten "
             f"fazla üstündeyse girilmez) | AYNI MUMDAN en fazla {AYNI_MUM_MAX_GIRIS} giriş\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n\n"
@@ -2368,7 +2387,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.8 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %{RISK_PCT_BAKIYE*100:.0f} MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.9 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %{RISK_PCT_BAKIYE*100:.0f} MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2385,7 +2404,7 @@ def tarama_loop():
        f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
        f"BTC'den bağımsız güçlü coinler yine geçebilir)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📌 v5.8: kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
+       f"📌 v5.9: hisse/ETF vadelileri {'DAHİL' if RWA_HISSE_DAHIL else 'dışlandı'}, kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
        f"iz sürme stop teşhisi. Eşikler geçmiş veriye dayanır, canlıda henüz doğrulanmadı.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
@@ -2470,7 +2489,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.8 (kovalama koruması + aynı mumdan sınırlı giriş, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.9 (hisse/ETF vadelileri dışlandı, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
