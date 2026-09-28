@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.3 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.4 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -210,8 +210,8 @@ def yetkili_mi(msg_or_call):
 SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC", "BCH"}
 
 # ── GERÇEK işlem parametreleri ──
-RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.20"))
-MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "2.0"))
+RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
+MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "1.0"))
 MARJIN_TAVAN_USDT = float(os.getenv("MARJIN_TAVAN_USDT", "50.0"))
 SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
 LEV = 10
@@ -562,7 +562,7 @@ def hesapla_marjin(bakiye):
     düzeltildi."""
     if RISK_PCT_BAKIYE <= 0 or bakiye is None or bakiye <= 0:
         return SABIT_MARJIN_USDT
-    efektif_taban = min(MARJIN_TABAN_USDT, max(bakiye / MAX_POS, 0.5))
+    efektif_taban = min(MARJIN_TABAN_USDT, max(bakiye / max(MAX_POS, 1), 0.5))
     marjin = bakiye * RISK_PCT_BAKIYE
     marjin = max(efektif_taban, min(MARJIN_TAVAN_USDT, marjin))
     return marjin
@@ -1447,7 +1447,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.3 — CANLI ÖZET",
+        "💵 LIVE BOT v5.4 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1495,7 +1495,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.3 (TP DÜZELTMESİ + İZ SÜRME BİLDİRİMİ) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.4 (DÜŞÜK RİSK VARSAYILANLARI) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -2153,13 +2153,18 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.3 (TP DÜZELTMESİ + İZ SÜRME BİLDİRİMİ, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.4 (DÜŞÜK RİSK: %10 MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
-       f"⚡ ÇIKIŞ: %{KISMI_KAR_ESIK_PCT*100:.1f}'te kısmi kâr al (%{KISMI_KAR_ORANI*100:.0f}) + breakeven, "
-       f"tam hedef %{HIZLI_HEDEF_PCT*100:.1f} - iz sürme YOK\n"
-       f"SL taban %{MIN_SL_PCT*100:.0f} | Max tutma: {MAX_HOLD_SAAT:.0f} saat\n"
+       + (f"⚡ ÇIKIŞ (YUKSELEN): SL %{YUKSELEN_SL_PCT*100:.1f}, kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e "
+          f"ulaşınca iz sürme (zirveden %{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} geride), "
+          f"{'sabit hedef %'+format(YUKSELEN_HEDEF_PCT*100,'.1f') if YUKSELEN_TP_TAVAN_AKTIF else 'hedef tavanı YOK'}, kısmi kâr alma KAPALI\n"
+          if aktif_strateji_modu() == "yukselen" else
+          f"⚡ ÇIKIŞ: %{KISMI_KAR_ESIK_PCT*100:.1f}'te kısmi kâr al (%{KISMI_KAR_ORANI*100:.0f}) + breakeven, "
+          f"tam hedef %{HIZLI_HEDEF_PCT*100:.1f} - iz sürme YOK\n"
+          f"SL taban %{MIN_SL_PCT*100:.0f}\n")
+       + f"Max tutma: {MAX_HOLD_SAAT:.0f} saat\n"
        f"🔄 Trend dönüş ajanı: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n"
        f"🌡️ Temkinli mod: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} "
        f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
@@ -2243,7 +2248,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.3 (eski TP düzeltmesi + iz sürme bildirimi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.4 (düşük risk varsayılanları + MAX_POS=0 koruması, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
