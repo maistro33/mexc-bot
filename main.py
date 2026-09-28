@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.6 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.7 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -210,13 +210,13 @@ def yetkili_mi(msg_or_call):
 SLUGGISH_BASE = {"BTC", "ETH", "XRP", "ADA", "DOGE", "BNB", "TRX", "LINK", "LTC", "BCH"}
 
 # ── GERÇEK işlem parametreleri ──
-RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.10"))
+RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.06"))  # v5.7: 4 slotta toplam en kötü kaybı sınırlamak için
 MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "1.0"))
 MARJIN_TAVAN_USDT = float(os.getenv("MARJIN_TAVAN_USDT", "50.0"))
 SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
 LEV = 10
 NOTIONAL = SABIT_MARJIN_USDT * LEV  # sadece eski koddaki referanslar için tutuluyor
-MAX_POS = int(os.getenv("MAX_POS", "2"))
+MAX_POS = int(os.getenv("MAX_POS", "4"))  # v5.7: kullanıcı kararı (bakiye boşta kalmasın)
 
 LOOKBACK_15M = 20
 MA_PERIYOT = 20
@@ -1076,8 +1076,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     if swing_nokta is None:
         # v4.0: yükselen-coin modu - swing noktası kavramı yok, sabit
         # taban SL yüzdesi kullanılır (backtest'te doğrulanmış oran).
-        # v4.8'de bu YALNIZCA GEÇİCİ bir değer - qty hesaplandıktan sonra
-        # aşağıda SABİT DOLAR bazlı SL ile DEĞİŞTİRİLECEK (bkz. not).
+        # Bu YALNIZCA GEÇİCİ bir değer - giriş fiyatı netleştikten sonra aşağıda
+        # YUKSELEN_SL_PCT (yüzdesel) ile DEĞİŞTİRİLİR (v4.9'dan beri sabit dolar SL yok).
         sl_mesafe = MIN_SL_PCT
         sl = entry_hedef * (1 - sl_mesafe) if long_mu else entry_hedef * (1 + sl_mesafe)
     elif long_mu:
@@ -1572,7 +1572,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.6 — CANLI ÖZET",
+        "💵 LIVE BOT v5.7 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1620,7 +1620,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.6 (SÜRTÜNME KAYDI + GÜNLÜK FREN) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.7 (MAX_POS=4, MARJİN %6) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -2299,7 +2299,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.6 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %10 MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.7 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %{RISK_PCT_BAKIYE*100:.0f} MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2316,13 +2316,8 @@ def tarama_loop():
        f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
        f"BTC'den bağımsız güçlü coinler yine geçebilir)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📌 v3.7 YENİ (14.09.2026): kısmi kâr alma + breakeven eklendi - "
-       f"pozisyon %{KISMI_KAR_ESIK_PCT*100:.1f}'e ulaşınca yarısı kapatılıp kalan SL'i "
-       f"girişe çekiliyor. Amaç: '%5 hedefe ulaşmadan geri dönüp kârı kaybetme' "
-       f"riskini azaltmak. v3.6: hacim teyidi + pump filtresi (max_hold_timeout "
-       f"grubundaki sessiz sinyalleri ve tepe-civarı girişleri elemek için).\n"
-       f"⚠️ Tüm bu eşikler henüz canlıda tam test edilmedi, birkaç gün sonra "
-       f"panel_analiz ile gözden geçirilecek.\n\n"
+       f"📌 v5.7: günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme (giriş/stop kayma özeti), "
+       f"iz sürme stop teşhisi. Eşikler geçmiş veriye dayanır, canlıda henüz doğrulanmadı.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
     baslangic_uzlastirma()
@@ -2406,7 +2401,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.6 (sürtünme kaydı + günlük zarar freni + stop teşhisi, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.7 (MAX_POS=4, marjin %6, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
