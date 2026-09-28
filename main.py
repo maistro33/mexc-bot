@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.5 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
+LIVE BOT v5.6 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
 yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
@@ -249,9 +249,17 @@ MIN_4H_TREND_GUCU_PCT = float(os.getenv("MIN_4H_TREND_GUCU_PCT", "2.0"))
 # STRATEJI_MODU="trend": eski 1D+4H+1H uyumu (v3.9 ve öncesi)
 # STRATEJI_MODU="yukselen": günün en çok yükseleni + hacim teyidi
 STRATEJI_MODU = os.getenv("STRATEJI_MODU", "yukselen")
-YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.80"))
+YUKSELEN_UST_YUZDELIK = float(os.getenv("YUKSELEN_UST_YUZDELIK", "0.80"))  # v4.9: backtest'te doğrulanan üst %20
 # v5.5: üst dilim eşiği negatifken aday vermeme kuralı (varsayılan KAPALI, bkz. yukselen_coin_havuzu)
-YUKSELEN_NEGATIF_ESIK_ENGEL = os.getenv("YUKSELEN_NEGATIF_ESIK_ENGEL", "false").lower() == "true"  # v4.9: backtest'te doğrulanan üst %20
+YUKSELEN_NEGATIF_ESIK_ENGEL = os.getenv("YUKSELEN_NEGATIF_ESIK_ENGEL", "false").lower() == "true"
+
+# v5.6 YENİ: GÜNLÜK ZARAR FRENİ - bugün (UTC) gerçekleşen zarar, gün başı bakiyenin
+# GUNLUK_ZARAR_LIMIT_PCT'ini aşarsa YENİ işlem açılmaz (açık pozisyonlar yönetilmeye
+# devam eder). Bir kâr iddiası değil, kötü bir günün hasarını sınırlar.
+GUNLUK_ZARAR_FRENI_AKTIF = os.getenv("GUNLUK_ZARAR_FRENI_AKTIF", "true").lower() == "true"
+GUNLUK_ZARAR_LIMIT_PCT = float(os.getenv("GUNLUK_ZARAR_LIMIT_PCT", "0.06"))
+# v5.6 YENİ: sürtünme (kayma) kaydı - sinyal/tetik fiyatı ile gerçek dolum farkı
+SURTUNME_PATH = os.getenv("LIVE_SURTUNME_PATH", "/data/live2_surtunme.json")
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v5.2 YENİ: mum gövde gücü eşiği - zayıf/kararsız mumları eler
 YUKSELEN_MIN_GOVDE_ORANI = float(os.getenv("YUKSELEN_MIN_GOVDE_ORANI", "0.45"))
@@ -1118,14 +1126,23 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
 
     time.sleep(0.8)
     entry = entry_hedef
+    gercek_giris_alindi = False
     try:
         pozlar = exchange.fetch_positions([sym])
         gercek_pos = next((p for p in pozlar if safe(p.get("contracts")) > 0), None)
         if gercek_pos and safe(gercek_pos.get("entryPrice")) > 0:
             entry = safe(gercek_pos.get("entryPrice"))
             sl = entry * (1 - sl_mesafe) if long_mu else entry * (1 + sl_mesafe)
+            gercek_giris_alindi = True
     except Exception as e:
         log.warning(f"[GERCEK_POZ] {sym}: {e}")
+
+    # v5.6: giriş kayması (sinyal fiyatı → gerçek dolum). + = bot aleyhine.
+    kayma_satiri = ""
+    if gercek_giris_alindi and entry_hedef > 0:
+        giris_kayma_pct = ((entry - entry_hedef) / entry_hedef * 100) if long_mu else ((entry_hedef - entry) / entry_hedef * 100)
+        surtunme_kaydet("giris", sym, giris_kayma_pct)
+        kayma_satiri = f"Giriş kayması: %{giris_kayma_pct:+.3f} (sinyal {entry_hedef:.6f} → dolum {entry:.6f})\n"
 
     # ════════════════════════════════════════════
     # v4.9 KRİTİK DÜZELTME (23.09.2026, güncel gerçek veriyle backtest
@@ -1198,14 +1215,21 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     yon_emoji = "🟢 LONG" if long_mu else "🔴 SHORT"
     mod_simdi = aktif_strateji_modu()
     if mod_simdi == "yukselen":
-        tp_aciklama = f"TP:{tp:.6f} (%{YUKSELEN_HEDEF_PCT*100:.1f} sabit)"
+        if YUKSELEN_TP_TAVAN_AKTIF:
+            tp_aciklama = f"TP:{tp:.6f} (%{YUKSELEN_HEDEF_PCT*100:.1f} sabit)"
+        else:
+            tp_aciklama = "TP: yok (iz sürme)"
+        hedef_satiri = (f"⚡ İZ SÜRME: kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e ulaşınca SL zirveden "
+                        f"%{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} geriden takip eder\n")
     else:
         tp_aciklama = f"TP:{tp:.6f} (%{HIZLI_HEDEF_PCT*100:.1f} sabit)"
+        hedef_satiri = "⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
     tg(f"📈 GERÇEK POZİSYON ({mod_simdi.upper()}): {sym} {yon_emoji}\n"
        f"Giriş≈{entry:.6f} | SL:{sl_fiyat:.6f} (%{sl_mesafe*100:.1f}) | {tp_aciklama}\n"
+       f"{kayma_satiri}"
        f"1D:{sinyal['1d']} | 4H:{sinyal['4h']} | 1H:{sinyal['1h']}\n"
        f"✅ Hacim teyidi geçti | ✅ Pump filtresi geçti | ✅ Zirveden mesafe filtresi geçti\n"
-       f"⚡ SABİT HEDEF: değer değmez HEMEN kapanır, iz sürme yok, bekleme yok\n"
+       f"{hedef_satiri}"
        f"Notional≈${notional:.2f} ({LEV_KULLANILAN}x) | Marjin: ${marjin_kullanilan:.2f} "
        f"(bileşik büyüme: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i, taban ${MARJIN_TABAN_USDT:.2f})")
 
@@ -1385,10 +1409,92 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
         return False, f"⚠️ {sym} kapatma hatası: {e}"
 
 
+# ════════════════════════════════════════════
+# v5.6: SÜRTÜNME KAYDI, GÜNLÜK ZARAR FRENİ, STOP TEŞHİSİ
+# ════════════════════════════════════════════
+_surtunme_kilit = threading.Lock()
+_frene_bildirim = {"gun": None}
+
+
+def surtunme_kaydet(tip, sym, kayma_pct):
+    """tip: 'giris' ya da 'stop'. kayma_pct > 0 => bot aleyhine (daha kötü fiyattan dolum)."""
+    try:
+        with _surtunme_kilit:
+            veri = guvenli_oku(SURTUNME_PATH, [])
+            veri.append({"tip": tip, "symbol": sym, "kayma_pct": round(kayma_pct, 4),
+                         "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())})
+            atomik_yaz(SURTUNME_PATH, veri[-500:])
+    except Exception as e:
+        log.warning(f"[SURTUNME_KAYIT] {e}")
+
+
+def surtunme_ozet_metni():
+    veri = guvenli_oku(SURTUNME_PATH, [])
+    if not veri:
+        return "📏 SÜRTÜNME: henüz kayıt yok (yeni girişler/stoplar birikince dolar)."
+    satirlar = ["📏 SÜRTÜNME ÖZETİ (+ = bot aleyhine, yani daha kötü fiyattan dolum)\n"]
+    ort = {}
+    for tip, etiket in [("giris", "Giriş (sinyal fiyatı → dolum)"), ("stop", "Stop (tetik fiyatı → dolum)")]:
+        x = sorted(v["kayma_pct"] for v in veri if v.get("tip") == tip)
+        if not x:
+            satirlar.append(f"{etiket}: kayıt yok")
+            continue
+        ort[tip] = sum(x) / len(x)
+        satirlar.append(f"{etiket}: n={len(x)} | ortalama %{ort[tip]:+.3f} | medyan %{x[len(x)//2]:+.3f} | en kötü %{x[-1]:+.3f}")
+    if "giris" in ort:
+        toplam = ort["giris"] + (ort.get("stop", 0) * 0.45)
+        satirlar.append(f"\nİşlem başına tahmini ek maliyet ≈ %{toplam:.3f} (stopla biten işlem payı ~%45 varsayıldı)")
+        satirlar.append("Referans: backtest'te işlem başına üstünlük ≈ %0.5-0.65 ve sürtünme 0 varsayıldı.")
+        satirlar.append("Ek maliyet %0.3'ü aşarsa üstünlük büyük ölçüde erimiş demektir.")
+    return "\n".join(satirlar)
+
+
+def gunluk_zarar_freni_mi():
+    """(fren_aktif, bugunku_gerceklesen_pnl, gun_basi_bakiye) döner. Gerçekleşen PNL trade_log'dan
+    (bugün, UTC) toplanır; komisyon dahil değil, yaklaşık. /sifirlagecmis günlük sayacı da sıfırlar."""
+    if not GUNLUK_ZARAR_FRENI_AKTIF:
+        return False, 0.0, 0.0
+    try:
+        bugun = time.strftime("%Y-%m-%d", time.gmtime())
+        with log_lock:
+            gerceklesen = sum(t.get("pnl", 0) for t in trade_log if str(t.get("zaman", "")).startswith(bugun))
+        if gerceklesen >= 0:
+            return False, gerceklesen, 0.0          # kâr/nötr günde bakiye sorgusuna gerek yok
+        bakiye = gercek_bakiye_al()
+        if bakiye is None:
+            return False, gerceklesen, 0.0
+        gun_basi = bakiye - gerceklesen
+        if gun_basi <= 0:
+            return False, gerceklesen, gun_basi
+        return gerceklesen <= -GUNLUK_ZARAR_LIMIT_PCT * gun_basi, gerceklesen, gun_basi
+    except Exception as e:
+        log.warning(f"[GUNLUK_FREN] {e}")
+        return False, 0.0, 0.0
+
+
+def borsa_stoplarini_oku(sym):
+    """SADECE OKUR (emir göndermez/iptal etmez). Borsadaki açık TP/SL plan emirlerini döndürür:
+    [(id, tetik_fiyati, planType)]. Amaç: iz sürmede eski stop'ların değişip değişmediğini/birikip
+    birikmediğini görmek. Hata olursa None."""
+    try:
+        emirler = exchange.fetch_open_orders(sym, None, None, {"planType": "profit_loss"})
+    except Exception as e:
+        log.warning(f"[STOP_TESHIS] {sym}: {e}")
+        return None
+    sonuc = []
+    for o in emirler:
+        info = o.get("info") or {}
+        tetik = (o.get("triggerPrice") or o.get("stopLossPrice") or info.get("stopLossTriggerPrice")
+                 or info.get("triggerPrice"))
+        sonuc.append((o.get("id"), tetik, info.get("planType")))
+    return sonuc
+
+
 def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
     entry = durum["entry"]
     qty = durum.get("qty", 0)
     cikis_fiyat = None
+    gercek_dolum_var = False
     sl_id = durum.get("sl_emir_id")
     if sl_id:
         try:
@@ -1397,6 +1503,7 @@ def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
                 dolum = safe(detay.get("average")) or safe(detay.get("price"))
                 if dolum > 0:
                     cikis_fiyat = dolum
+                    gercek_dolum_var = True
         except Exception as e:
             log.warning(f"[SL_KONTROL] {sym}: {e}")
     if not cikis_fiyat:
@@ -1409,6 +1516,7 @@ def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
                 dolum = safe(son_islem.get("price"))
                 if dolum > 0:
                     cikis_fiyat = dolum
+                    gercek_dolum_var = True
         except Exception as e:
             log.warning(f"[ISLEM_GECMISI] {sym}: {e}")
     if not cikis_fiyat:
@@ -1423,7 +1531,16 @@ def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
     trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": pnl,
                        "yon": durum.get("yon", "long"), "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                        "not": sebep, "1d": durum.get("1d"), "4h": durum.get("4h"), "1h": durum.get("1h")})
-    tg(f"{'🟢' if pnl>=0 else '🔴'} GERÇEK kapandı: {sym} [{sebep}] PnL≈{pnl:+.2f}$ (borsada önceden kapanmış)")
+    stop_kayma_metni = ""
+    try:
+        if str(sebep).startswith("sl") and gercek_dolum_var and durum.get("sl"):
+            tetik = float(durum["sl"])
+            kayma = ((tetik - cikis_fiyat) / tetik * 100) if long_mu else ((cikis_fiyat - tetik) / tetik * 100)
+            surtunme_kaydet("stop", sym, kayma)
+            stop_kayma_metni = f" | stop kayması %{kayma:+.3f}"
+    except Exception as e:
+        log.warning(f"[STOP_KAYMA] {sym}: {e}")
+    tg(f"{'🟢' if pnl>=0 else '🔴'} GERÇEK kapandı: {sym} [{sebep}] PnL≈{pnl:+.2f}$ (borsada önceden kapanmış){stop_kayma_metni}")
 
 
 # ════════════════════════════════════════════
@@ -1455,7 +1572,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.5 — CANLI ÖZET",
+        "💵 LIVE BOT v5.6 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1503,7 +1620,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.5 (NEGATİF EŞİK ENGELİ KAPALI) AYARLARI\n\n"
+    return ("⚙️ LIVE BOT v5.6 (SÜRTÜNME KAYDI + GÜNLÜK FREN) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1564,6 +1681,8 @@ def panel_ayarlar_metni():
             f"  Şu anki bakiyeyle hesaplanan marjin: ${hesapla_marjin(gercek_bakiye_al() or 0):.2f}\n"
             f"Kaldıraç: {LEV}x\n"
             f"MAX_POS (normal): {MAX_POS} | MAX_POS (şu an geçerli): {efektif_max_pos()}\n\n"
+            f"🛑 GÜNLÜK ZARAR FRENİ: {'AKTİF' if GUNLUK_ZARAR_FRENI_AKTIF else 'KAPALI'} "
+            f"(bugün gün başı bakiyenin %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}'i kadar zarar olursa yeni işlem durur) | /surtunme: kayma özeti\n\n"
             f"🔄 TREND DÖNÜŞ AJANI: {'AKTİF' if TREND_AJANI_AKTIF else 'KAPALI (kullanıcı kararı)'}\n\n"
             f"🌡️ TEMKİNLİ MOD: {'AKTİF' if TEMKINLI_MOD_AKTIF else 'KAPALI'} "
             f"(BTC düşerse: {'yeni pozisyon TAMAMEN durur' if TEMKINLI_MOD_TAM_DURDURMA else 'MAX_POS yarıya iner, trend gücü eşiği yükselir (%' + str(MIN_4H_TREND_GUCU_PCT_TEMKINLI) + ')'})\n"
@@ -1778,6 +1897,12 @@ if bot:
         atomik_yaz(TRADE_LOG_PATH, [])
         bot.send_message(msg.chat.id, "🗑️ İşlem geçmişi sıfırlandı.")
 
+    @bot.message_handler(commands=["surtunme"])
+    def surtunme_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        bot.send_message(msg.chat.id, surtunme_ozet_metni())
+
     @bot.message_handler(commands=["veri"])
     def veri_komutu(msg):
         if not yetkili_mi(msg):
@@ -1929,6 +2054,19 @@ def manage_loop():
                                 durum = trade_state.get(sym, durum)
                                 log.info(f"[TRAILING] {sym} SL güncellendi: {yeni_sl_fiyat:.6f} "
                                          f"(zirve: {en_yuksek:.6f})")
+                                # v5.6 TEŞHİS (yalnızca okur): eski stop'lar borsada değişiyor mu birikiyor mu?
+                                sayac = durum.get("trailing_guncelleme_sayisi", 0) + 1
+                                with state_lock:
+                                    if sym in trade_state:
+                                        trade_state[sym]["trailing_guncelleme_sayisi"] = sayac
+                                if sayac in (1, 4):
+                                    stoplar = borsa_stoplarini_oku(sym)
+                                    if stoplar is not None:
+                                        tetikler = [t for _, t, _ in stoplar]
+                                        log.info(f"[STOP_TESHIS] {sym} güncelleme#{sayac}: borsada {len(stoplar)} TP/SL plan emri: {stoplar}")
+                                        tg(f"🔎 [STOP TEŞHİS] {sym} (iz sürme güncellemesi #{sayac}): borsada "
+                                           f"{len(stoplar)} stop/plan emri var, tetik fiyatları: {tetikler}\n"
+                                           f"1 ise borsa eskiyi yeniyle değiştiriyor (iyi). 1'den fazlaysa eski stoplar birikiyor.")
                                 if ilk_aktivasyon:
                                     tg(f"🔒 [İZ SÜRME AKTİF] {sym}\n"
                                        f"Kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e ulaştı, "
@@ -2161,7 +2299,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.5 (NEGATİF EŞİK ENGELİ KAPALI, %10 MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v5.6 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %10 MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2191,6 +2329,18 @@ def tarama_loop():
 
     while True:
         try:
+            # v5.6: günlük zarar freni - yeni giriş açmadan önce kontrol (açık pozisyonlar manage_loop'ta yönetilir)
+            fren, gun_pnl, gun_basi = gunluk_zarar_freni_mi()
+            if fren:
+                bugun = time.strftime("%Y-%m-%d", time.gmtime())
+                if _frene_bildirim["gun"] != bugun:
+                    _frene_bildirim["gun"] = bugun
+                    tg(f"🛑 GÜNLÜK ZARAR FRENİ devrede: bugün gerçekleşen ≈{gun_pnl:+.2f}$ "
+                       f"(gün başı ≈{gun_basi:.2f}$'ın %{abs(gun_pnl)/gun_basi*100:.1f}'i, limit %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}). "
+                       f"UTC 00:00'a kadar YENİ işlem açılmayacak, açık pozisyonlar yönetilmeye devam eder.")
+                time.sleep(KONTROL_ARALIGI_SN)
+                continue
+
             emp = efektif_max_pos()
             with state_lock:
                 bos_slot = emp - len(trade_state) - len(acilis_rezervasyonlari)
@@ -2256,7 +2406,7 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.5 (negatif eşik engeli kapatıldı, LONG-only) BAŞLIYOR...")
+    print("LIVE BOT v5.6 (sürtünme kaydı + günlük zarar freni + stop teşhisi, LONG-only) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
