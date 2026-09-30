@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v6.2 — MANUEL ONAY PANELİ + WEB PANELİ (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v6.3 — MANUEL ONAY PANELİ + WEB PANELİ (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
@@ -1614,13 +1614,15 @@ async function pozYukle(){
       <td class="muted">${p.sl} / ${p.tp}</td>
       <td><button class="btn-outline" onclick="pozKapat('${p.symbol}')">Kapat</button></td>
     </tr>`).join("");
-  const semboller = [...new Set(liste.map(p=>p.symbol))];
-  const sel = document.getElementById("grafikSembol");
-  if(sel.dataset.dolu !== semboller.join(",")){
-    sel.innerHTML = (semboller.length?semboller:["BTC/USDT:USDT"]).map(s=>`<option value="${s}">${s.split('/')[0]}</option>`).join("");
-    sel.dataset.dolu = semboller.join(",");
-    grafikYukle();
-  }
+  try{
+    const semboller = [...new Set(liste.map(p=>p.symbol))];
+    const sel = document.getElementById("grafikSembol");
+    if(sel.dataset.dolu !== semboller.join(",")){
+      sel.innerHTML = (semboller.length?semboller:["BTC/USDT:USDT"]).map(s=>`<option value="${s}">${s.split('/')[0]}</option>`).join("");
+      sel.dataset.dolu = semboller.join(",");
+      grafikYukle();
+    }
+  }catch(e){ console.warn("grafik sembol listesi güncellenemedi", e); }
 }
 async function gecmisYukle(){
   const liste = await api("/api/history?limit=10");
@@ -1636,33 +1638,46 @@ function tfSec(tf){
   grafikYukle();
 }
 async function grafikYukle(){
-  const sembol = document.getElementById("grafikSembol").value || "BTC/USDT:USDT";
-  const veri = await api(`/api/ohlcv?symbol=${encodeURIComponent(sembol)}&tf=${aktifTf}&limit=150`);
-  if(!Array.isArray(veri)) return;
-  candleSeries.setData(veri.map(v=>({time:v.time, open:v.open, high:v.high, low:v.low, close:v.close})));
+  if(!candleSeries) return;   // grafik kütüphanesi yüklenemediyse sessizce atla
+  try{
+    const sembol = document.getElementById("grafikSembol").value || "BTC/USDT:USDT";
+    const veri = await api(`/api/ohlcv?symbol=${encodeURIComponent(sembol)}&tf=${aktifTf}&limit=150`);
+    if(!Array.isArray(veri)) return;
+    candleSeries.setData(veri.map(v=>({time:v.time, open:v.open, high:v.high, low:v.low, close:v.close})));
+  }catch(e){ console.warn("grafik verisi yüklenemedi", e); }
 }
 function grafikKur(){
-  chart = LightweightCharts.createChart(document.getElementById("chart"), {
-    layout:{background:{color:"transparent"}, textColor:"#8695b3"},
-    grid:{vertLines:{color:"#16203a"}, horzLines:{color:"#16203a"}},
-    timeScale:{timeVisible:true}, height:280,
-  });
-  candleSeries = chart.addCandlestickSeries({upColor:"#22c55e", downColor:"#ef4444", borderVisible:false, wickUpColor:"#22c55e", wickDownColor:"#ef4444"});
-  new ResizeObserver(()=>chart.applyOptions({width:document.getElementById("chart").clientWidth})).observe(document.getElementById("chart"));
+  try{
+    if(typeof LightweightCharts === "undefined"){
+      document.getElementById("chart").innerHTML = '<div class="empty">Grafik kütüphanesi yüklenemedi (ağ engeli olabilir) - diğer bölümler normal çalışır.</div>';
+      return;
+    }
+    chart = LightweightCharts.createChart(document.getElementById("chart"), {
+      layout:{background:{color:"transparent"}, textColor:"#8695b3"},
+      grid:{vertLines:{color:"#16203a"}, horzLines:{color:"#16203a"}},
+      timeScale:{timeVisible:true}, height:280,
+    });
+    candleSeries = chart.addCandlestickSeries({upColor:"#22c55e", downColor:"#ef4444", borderVisible:false, wickUpColor:"#22c55e", wickDownColor:"#ef4444"});
+    new ResizeObserver(()=>chart.applyOptions({width:document.getElementById("chart").clientWidth})).observe(document.getElementById("chart"));
+  }catch(e){
+    console.warn("grafik kurulamadı", e);
+    document.getElementById("chart").innerHTML = '<div class="empty">Grafik yüklenemedi - diğer bölümler normal çalışır.</div>';
+  }
 }
 async function yenile(){
-  try{ await Promise.all([durumYukle(), pozYukle(), gecmisYukle()]); }catch(e){}
+  const sonuclar = await Promise.allSettled([durumYukle(), pozYukle(), gecmisYukle()]);
+  sonuclar.forEach((r,i)=>{ if(r.status==="rejected") console.warn(["durum","pozisyonlar","gecmis"][i]+" yüklenemedi:", r.reason); });
 }
 async function baslat(){
   try{
     await durumYukle();
-    document.getElementById("lock").style.display="none";
-    document.getElementById("app").style.display="block";
-    grafikKur();
-    yenile();
-    taramaPoll();
-    setInterval(yenile, 15000);
-  }catch(e){ /* şifre yanlış, kilit ekranında kal */ }
+  }catch(e){ return; /* şifre yanlış ya da bağlantı yok - kilit ekranında kal */ }
+  document.getElementById("lock").style.display="none";
+  document.getElementById("app").style.display="block";
+  try{ grafikKur(); }catch(e){ console.warn("grafikKur hata verdi", e); }
+  yenile();
+  try{ taramaPoll(); }catch(e){ console.warn("tarama başlatılamadı", e); }
+  setInterval(yenile, 15000);
 }
 if(SIFRE) baslat(); 
 </script>
@@ -2551,7 +2566,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v6.2 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v6.3 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3545,7 +3560,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v6.2 (MANUEL ONAY PANELİ + WEB PANELİ) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v6.3 (MANUEL ONAY PANELİ + WEB PANELİ) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -3652,7 +3667,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v6.2 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v6.3 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
