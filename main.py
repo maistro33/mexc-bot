@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v6.1 — MANUEL ONAY PANELİ (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v6.2 — MANUEL ONAY PANELİ + WEB PANELİ (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
-onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1 notları aşağıda). Eski
+onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
 
@@ -158,6 +158,7 @@ import os
 import time
 import json
 import uuid
+from flask import Flask, request, jsonify, Response
 import logging
 import threading
 import ccxt
@@ -296,6 +297,15 @@ MANUEL_MIN_RR = float(os.getenv("MANUEL_MIN_RR", "1.3"))
 MANUEL_MAKS_KART = int(os.getenv("MANUEL_MAKS_KART", "5"))
 MANUEL_LIMIT_TIMEOUT_SN = int(os.getenv("MANUEL_LIMIT_TIMEOUT_SN", str(6*3600)))
 MANUEL_MARJIN_VARSAYILAN_USDT = float(os.getenv("MANUEL_MARJIN_VARSAYILAN_USDT", "5.0"))
+
+# ════════════════════════════════════════════
+# v6.2 YENİ: WEB PANELİ (Flask). Ayrı bir web arayüzü - Telegram'daki aynı
+# verileri ve aksiyonları (durdur/başlat/tümünü kapat/manuel aç/kapat)
+# tarayıcıdan sunar. ŞİFRE ZORUNLU (WEB_PANEL_SIFRE) - boşsa panel API'si
+# hiçbir isteğe cevap vermez (güvenlik varsayılanı: kapalı sayılır).
+WEB_PANEL_AKTIF = os.getenv("WEB_PANEL_AKTIF", "true").lower() == "true"
+WEB_PANEL_SIFRE = os.getenv("WEB_PANEL_SIFRE", "")
+WEB_PANEL_PORT = int(os.getenv("PORT", os.getenv("WEB_PANEL_PORT", "8080")))
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v5.2 YENİ: mum gövde gücü eşiği - zayıf/kararsız mumları eler
 YUKSELEN_MIN_GOVDE_ORANI = float(os.getenv("YUKSELEN_MIN_GOVDE_ORANI", "0.45"))
@@ -1329,6 +1339,502 @@ def manuel_limit_iptal(sym, sebep="kullanıcı isteğiyle"):
     return True
 
 
+def tum_pozisyonlari_kapat():
+    """Acil durdurma: tüm açık pozisyonları piyasa fiyatından kapatır ve
+    bekleyen tüm manuel limit emirlerini iptal eder. (kapatilan, iptal_edilen) döner."""
+    with state_lock:
+        durumlar = dict(trade_state)
+    kapatilan = []
+    for sym in durumlar:
+        try:
+            basarili, _ = gercek_pozisyon_kapat(sym, "manuel_hepsini_kapat")
+            if basarili:
+                kapatilan.append(sym)
+        except Exception as e:
+            log.warning(f"[HEPSINI_KAPAT] {sym}: {e}")
+    with manuel_kilit:
+        bekleyenler = list(manuel_limit_emirler.keys())
+    iptal_edilen = [s for s in bekleyenler if manuel_limit_iptal(s, "acil durdurma - tümünü kapat")]
+    return kapatilan, iptal_edilen
+
+
+PANEL_HTML = r"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sadik Futures Bot — Panel</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.min.js"></script>
+<style>
+  :root{--bg:#0b1220;--panel:#111a2e;--panel2:#0f1830;--border:#1f2c47;--txt:#e7edf7;--muted:#8695b3;
+        --green:#22c55e;--red:#ef4444;--blue:#3b82f6;--purple:#8b5cf6;--orange:#f59e0b;--yellow:#eab308;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap;gap:10px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand .logo{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:20px}
+  .brand h1{font-size:17px;margin:0}
+  .brand p{font-size:12px;color:var(--muted);margin:0}
+  .status-chip{display:flex;align-items:center;gap:6px;background:#0f2a1a;border:1px solid #1e4a2d;color:var(--green);padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600}
+  .status-chip.off{background:#2a0f0f;border-color:#4a1e1e;color:var(--red)}
+  .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .updated{font-size:11px;color:var(--muted)}
+  .grid{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:16px;padding:18px;max-width:1600px;margin:0 auto}
+  @media(max-width:1100px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px}
+  .card h2{font-size:14px;margin:0 0 12px;display:flex;align-items:center;gap:8px;color:#cfd8ea}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  button{cursor:pointer;border:none;border-radius:9px;padding:11px 14px;font-weight:600;font-size:13px;color:#fff;transition:.15s}
+  button:active{transform:scale(.97)}
+  .btn-green{background:var(--green)} .btn-red{background:var(--red)} .btn-blue{background:var(--blue)}
+  .btn-purple{background:var(--purple)} .btn-outline{background:#182238;border:1px solid var(--border);color:var(--txt)}
+  .btn-orange{background:var(--orange)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border)}
+  td{padding:8px;border-bottom:1px solid #16203a}
+  .pill{padding:3px 9px;border-radius:6px;font-size:11px;font-weight:700}
+  .pill.long{background:#0f2a1a;color:var(--green)} .pill.short{background:#2a0f0f;color:var(--red)}
+  .pill.bekleyen{background:#2a230f;color:var(--yellow)}
+  .g{color:var(--green)} .r{color:var(--red)} .muted{color:var(--muted)}
+  .statline{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #16203a;font-size:13px}
+  .statline:last-child{border:0}
+  input,select{background:#0d1729;border:1px solid var(--border);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px;width:100%}
+  label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px}
+  .field{margin-bottom:10px}
+  #chart{width:100%;height:280px}
+  .tf-btn{background:#182238;border:1px solid var(--border);color:var(--muted);padding:5px 10px;border-radius:6px;font-size:11px;font-weight:600}
+  .tf-btn.active{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .lockscreen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:99;flex-direction:column;gap:14px}
+  .lockscreen input{width:260px;text-align:center}
+  .empty{color:var(--muted);font-size:13px;padding:14px 0;text-align:center}
+  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel2);border:1px solid var(--border);padding:12px 18px;border-radius:10px;font-size:13px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+</style>
+</head>
+<body>
+
+<div id="lock" class="lockscreen">
+  <div class="brand"><div class="logo">💎</div><div><h1>Sadik Futures Bot</h1><p>Panel şifresi</p></div></div>
+  <input id="sifreInput" type="password" placeholder="Şifre">
+  <button class="btn-blue" onclick="girisYap()" style="width:260px">Giriş</button>
+</div>
+
+<div id="app" style="display:none">
+<header>
+  <div class="brand">
+    <div class="logo">🤖</div>
+    <div><h1>Sadik Futures Bot</h1><p>Manuel Onay Paneli</p></div>
+  </div>
+  <div class="row" style="align-items:center">
+    <span class="status-chip" id="otomatikRozet"><span class="dot"></span> <span id="otomatikMetin">—</span></span>
+    <span class="updated" id="sonGuncelleme"></span>
+  </div>
+</header>
+
+<div class="grid">
+  <!-- SOL SÜTUN -->
+  <div>
+    <div class="card">
+      <h2>⚡ Hızlı Kontrol</h2>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn-green" style="flex:1" onclick="aksiyon('baslat')">▶️ Otomatik Girişi Başlat</button>
+        <button class="btn-red" style="flex:1" onclick="aksiyon('durdur')">🛑 Otomatik Girişi Durdur</button>
+      </div>
+      <div class="row">
+        <button class="btn-purple" style="flex:1" onclick="taramaBaslat()">🔍 Tara</button>
+        <button class="btn-orange" style="flex:1" onclick="kapatHepsiOnay()">🚨 Tümünü Kapat</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📈 Aktif Pozisyonlar / Bekleyen Emirler <span class="muted" id="pozSayi" style="margin-left:auto;font-weight:400"></span></h2>
+      <table><thead><tr><th>Coin</th><th>Yön</th><th>Giriş</th><th>Şimdi</th><th>PnL</th><th>SL/TP</th><th></th></tr></thead>
+      <tbody id="pozTablo"><tr><td colspan="7" class="empty">Yükleniyor...</td></tr></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>📋 Son İşlemler</h2>
+      <table><thead><tr><th>Zaman</th><th>Coin</th><th>PnL</th><th>Sebep</th></tr></thead>
+      <tbody id="gecmisTablo"><tr><td colspan="4" class="empty">Yükleniyor...</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- ORTA SÜTUN -->
+  <div>
+    <div class="card">
+      <h2>💼 Bot Durumu</h2>
+      <div class="statline"><span>Bitget API</span><span id="stBitget">—</span></div>
+      <div class="statline"><span>Telegram</span><span id="stTelegram">—</span></div>
+      <div class="statline"><span>Bakiye</span><span id="stBakiye">—</span></div>
+      <div class="statline"><span>Açık Pozisyon</span><span id="stAcik">—</span></div>
+      <div class="statline"><span>Bekleyen Emir</span><span id="stBekleyen">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>📊 Canlı Grafik</h2>
+      <div class="row" style="margin-bottom:10px">
+        <select id="grafikSembol" onchange="grafikYukle()" style="flex:1"></select>
+        <button class="tf-btn active" data-tf="15m" onclick="tfSec('15m')">15m</button>
+        <button class="tf-btn" data-tf="1h" onclick="tfSec('1h')">1S</button>
+        <button class="tf-btn" data-tf="4h" onclick="tfSec('4h')">4S</button>
+      </div>
+      <div id="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>✍️ Manuel Aç (Limit Emir)</h2>
+      <div class="field"><label>Sembol (örn. PUMP)</label><input id="acSembol" placeholder="PUMP"></div>
+      <div class="row">
+        <div class="field" style="flex:1"><label>Yön</label>
+          <select id="acYon"><option value="long">Long</option><option value="short">Short</option></select></div>
+        <div class="field" style="flex:1"><label>Marjin ($)</label><input id="acMarjin" value="5" type="number"></div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1"><label>Giriş</label><input id="acGiris" type="number" step="any"></div>
+        <div class="field" style="flex:1"><label>SL</label><input id="acSl" type="number" step="any"></div>
+        <div class="field" style="flex:1"><label>TP</label><input id="acTp" type="number" step="any"></div>
+      </div>
+      <button class="btn-blue" style="width:100%" onclick="manuelAc()">Limit Emri Gönder</button>
+    </div>
+  </div>
+
+  <!-- SAĞ SÜTUN -->
+  <div>
+    <div class="card">
+      <h2>🔎 Piyasa Taraması <span class="muted" id="taramaZaman" style="margin-left:auto;font-weight:400"></span></h2>
+      <div id="btcBaglam" class="statline" style="border:0"></div>
+      <div id="taramaListe"><div class="empty">Henüz tarama yapılmadı — "🔍 Tara" butonuna bas.</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+let SIFRE = localStorage.getItem("panel_sifre") || "";
+let chart, candleSeries, aktifTf = "15m";
+
+function girisYap(){
+  SIFRE = document.getElementById("sifreInput").value;
+  localStorage.setItem("panel_sifre", SIFRE);
+  baslat();
+}
+async function api(path, opts={}){
+  opts.headers = Object.assign({"X-Panel-Sifre": SIFRE, "Content-Type":"application/json"}, opts.headers||{});
+  const r = await fetch(path, opts);
+  if(r.status === 401){ document.getElementById("lock").style.display="flex"; document.getElementById("app").style.display="none"; throw new Error("yetkisiz"); }
+  return r.json();
+}
+function toast(msg){
+  const t = document.createElement("div"); t.className="toast"; t.textContent=msg;
+  document.body.appendChild(t); setTimeout(()=>t.remove(), 3500);
+}
+async function aksiyon(ad, ekstra={}){
+  try{
+    const sonuc = await api("/api/action", {method:"POST", body: JSON.stringify(Object.assign({aksiyon: ad}, ekstra))});
+    toast(sonuc.mesaj || (sonuc.tamam ? "Tamam" : (sonuc.hata||"Hata")));
+    yenile();
+  }catch(e){}
+}
+function kapatHepsiOnay(){
+  if(confirm("Tüm açık pozisyonlar piyasa fiyatından kapatılacak, bekleyen emirler iptal edilecek. Emin misin?"))
+    aksiyon("kapat_hepsi");
+}
+async function taramaBaslat(){
+  await api("/api/tara", {method:"POST"});
+  document.getElementById("taramaListe").innerHTML = '<div class="empty">Taranıyor...</div>';
+  taramaPoll();
+}
+async function taramaPoll(){
+  const d = await api("/api/tara");
+  if(d.calisiyor){ setTimeout(taramaPoll, 2000); return; }
+  taramaGoster(d);
+}
+function taramaGoster(d){
+  document.getElementById("taramaZaman").textContent = d.son_guncelleme || "";
+  if(d.btc && d.btc.y4)
+    document.getElementById("btcBaglam").innerHTML = `<span>BTC 4S/1S</span><span>${d.btc.y4} (${d.btc.r4}) / ${d.btc.y1} (${d.btc.r1})</span>`;
+  const kutu = document.getElementById("taramaListe");
+  if(!d.sonuc || !d.sonuc.length){ kutu.innerHTML = '<div class="empty">Temiz bir kurulum bulunamadı.</div>'; return; }
+  kutu.innerHTML = d.sonuc.map(a => `
+    <div class="card" style="background:#0d1729;margin-bottom:10px;padding:12px">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <b>${a.symbol.split('/')[0]} ${a.yon==='long'?'🟢 UZUN':'🔴 KISA'}</b>
+        <span class="muted">R/R ${a.rr}</span>
+      </div>
+      <div class="muted" style="font-size:12px;margin:6px 0">4S ${a.y4} (RSI ${a.r4}) · 1S ${a.y1} (RSI ${a.r1})</div>
+      <div style="font-size:12.5px">Giriş ${a.fiyat} · SL ${a.sl} · TP ${a.tp}</div>
+      <button class="btn-blue" style="margin-top:8px;width:100%" onclick='doldurVeAc(${JSON.stringify(a)})'>Bu Adayı Aç</button>
+    </div>`).join("");
+}
+function doldurVeAc(a){
+  document.getElementById("acSembol").value = a.symbol.split("/")[0];
+  document.getElementById("acYon").value = a.yon;
+  document.getElementById("acGiris").value = a.fiyat;
+  document.getElementById("acSl").value = a.sl;
+  document.getElementById("acTp").value = a.tp;
+  window.scrollTo({top:400, behavior:"smooth"});
+}
+async function manuelAc(){
+  const sembol = document.getElementById("acSembol").value.trim().toUpperCase();
+  const body = {
+    symbol: sembol.includes("/") ? sembol : sembol + "/USDT:USDT",
+    yon: document.getElementById("acYon").value,
+    giris: document.getElementById("acGiris").value,
+    sl: document.getElementById("acSl").value,
+    tp: document.getElementById("acTp").value,
+    marjin: document.getElementById("acMarjin").value,
+  };
+  aksiyon("ac", body);
+}
+async function pozKapat(symbol){ if(confirm(symbol+" kapatılsın mı?")) aksiyon("kapat", {symbol}); }
+
+async function durumYukle(){
+  const d = await api("/api/status");
+  const rozet = document.getElementById("otomatikRozet");
+  rozet.className = "status-chip" + (d.otomatik_giris ? "" : " off");
+  document.getElementById("otomatikMetin").textContent = d.otomatik_giris ? "OTOMATİK GİRİŞ AÇIK" : "MANUEL MOD";
+  document.getElementById("sonGuncelleme").textContent = "Son güncelleme: " + d.son_guncelleme;
+  document.getElementById("stBitget").innerHTML = d.bitget_bagli ? '<span class="g">Bağlı</span>' : '<span class="r">Bağlı değil</span>';
+  document.getElementById("stTelegram").innerHTML = d.telegram_bagli ? '<span class="g">Bağlı</span>' : '<span class="r">Bağlı değil</span>';
+  document.getElementById("stBakiye").textContent = d.bakiye != null ? "$"+d.bakiye.toFixed(2) : "—";
+  document.getElementById("stAcik").textContent = d.acik_sayi + "/" + d.max_pos;
+  document.getElementById("stBekleyen").textContent = d.bekleyen_sayi;
+}
+async function pozYukle(){
+  const liste = await api("/api/positions");
+  document.getElementById("pozSayi").textContent = liste.length + " kayıt";
+  const tablo = document.getElementById("pozTablo");
+  if(!liste.length){ tablo.innerHTML = '<tr><td colspan="7" class="empty">Açık pozisyon yok.</td></tr>'; }
+  else tablo.innerHTML = liste.map(p => `
+    <tr>
+      <td><b>${p.symbol.split('/')[0]}</b></td>
+      <td><span class="pill ${p.durum==='bekleyen'?'bekleyen':p.yon}">${p.durum==='bekleyen' ? 'BEKLİYOR' : p.yon.toUpperCase()}</span></td>
+      <td>${p.entry}</td>
+      <td>${p.simdi ?? '—'}</td>
+      <td class="${p.pnl_usdt>=0?'g':'r'}">${p.pnl_usdt!=null ? (p.pnl_usdt>=0?'+':'')+p.pnl_usdt+'$ ('+p.pnl_pct+'%)' : '—'}</td>
+      <td class="muted">${p.sl} / ${p.tp}</td>
+      <td><button class="btn-outline" onclick="pozKapat('${p.symbol}')">Kapat</button></td>
+    </tr>`).join("");
+  const semboller = [...new Set(liste.map(p=>p.symbol))];
+  const sel = document.getElementById("grafikSembol");
+  if(sel.dataset.dolu !== semboller.join(",")){
+    sel.innerHTML = (semboller.length?semboller:["BTC/USDT:USDT"]).map(s=>`<option value="${s}">${s.split('/')[0]}</option>`).join("");
+    sel.dataset.dolu = semboller.join(",");
+    grafikYukle();
+  }
+}
+async function gecmisYukle(){
+  const liste = await api("/api/history?limit=10");
+  const tablo = document.getElementById("gecmisTablo");
+  if(!liste.length){ tablo.innerHTML = '<tr><td colspan="4" class="empty">Henüz kapanan işlem yok.</td></tr>'; return; }
+  tablo.innerHTML = liste.map(t => `
+    <tr><td class="muted">${(t.zaman||'').split(' ')[1]||''}</td><td>${(t.symbol||'').split('/')[0]}</td>
+    <td class="${t.pnl>=0?'g':'r'}">${t.pnl>=0?'+':''}${t.pnl.toFixed(2)}$</td><td class="muted">${t.not||''}</td></tr>`).join("");
+}
+function tfSec(tf){
+  aktifTf = tf;
+  document.querySelectorAll(".tf-btn").forEach(b=>b.classList.toggle("active", b.dataset.tf===tf));
+  grafikYukle();
+}
+async function grafikYukle(){
+  const sembol = document.getElementById("grafikSembol").value || "BTC/USDT:USDT";
+  const veri = await api(`/api/ohlcv?symbol=${encodeURIComponent(sembol)}&tf=${aktifTf}&limit=150`);
+  if(!Array.isArray(veri)) return;
+  candleSeries.setData(veri.map(v=>({time:v.time, open:v.open, high:v.high, low:v.low, close:v.close})));
+}
+function grafikKur(){
+  chart = LightweightCharts.createChart(document.getElementById("chart"), {
+    layout:{background:{color:"transparent"}, textColor:"#8695b3"},
+    grid:{vertLines:{color:"#16203a"}, horzLines:{color:"#16203a"}},
+    timeScale:{timeVisible:true}, height:280,
+  });
+  candleSeries = chart.addCandlestickSeries({upColor:"#22c55e", downColor:"#ef4444", borderVisible:false, wickUpColor:"#22c55e", wickDownColor:"#ef4444"});
+  new ResizeObserver(()=>chart.applyOptions({width:document.getElementById("chart").clientWidth})).observe(document.getElementById("chart"));
+}
+async function yenile(){
+  try{ await Promise.all([durumYukle(), pozYukle(), gecmisYukle()]); }catch(e){}
+}
+async function baslat(){
+  try{
+    await durumYukle();
+    document.getElementById("lock").style.display="none";
+    document.getElementById("app").style.display="block";
+    grafikKur();
+    yenile();
+    taramaPoll();
+    setInterval(yenile, 15000);
+  }catch(e){ /* şifre yanlış, kilit ekranında kal */ }
+}
+if(SIFRE) baslat(); 
+</script>
+</body>
+</html>"""
+
+
+# ════════════════════════════════════════════
+# v6.2: WEB PANELİ - Flask API + gömülü tek-sayfa arayüz
+# ════════════════════════════════════════════
+web_app = Flask("panel")
+_web_tarama_durum = {"calisiyor": False, "sonuc": [], "btc": {}, "son_guncelleme": None}
+_web_tarama_kilit = threading.Lock()
+
+
+def _panel_sifre_dogru():
+    if not WEB_PANEL_SIFRE:
+        return False
+    girilen = request.headers.get("X-Panel-Sifre") or request.args.get("sifre") or ""
+    return girilen == WEB_PANEL_SIFRE
+
+
+@web_app.before_request
+def _panel_yetki_kontrol():
+    if request.path == "/":
+        return None
+    if not _panel_sifre_dogru():
+        return jsonify({"hata": "Yetkisiz - şifre eksik/hatalı"}), 401
+
+
+@web_app.route("/api/status")
+def api_status():
+    bakiye = gercek_bakiye_al()
+    with state_lock:
+        acik_sayi = len(trade_state)
+    with manuel_kilit:
+        bekleyen_sayi = len(manuel_limit_emirler)
+    return jsonify({
+        "bakiye": bakiye, "otomatik_giris": OTOMATIK_GIRIS_AKTIF, "acik_sayi": acik_sayi,
+        "max_pos": MAX_POS, "bekleyen_sayi": bekleyen_sayi,
+        "bitget_bagli": bakiye is not None, "telegram_bagli": bot is not None,
+        "son_guncelleme": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+    })
+
+
+@web_app.route("/api/positions")
+def api_positions():
+    with state_lock:
+        durumlar = dict(trade_state)
+    with manuel_kilit:
+        bekleyenler = dict(manuel_limit_emirler)
+    sonuc = []
+    for sym, d in durumlar.items():
+        try:
+            simdi = safe(exchange.fetch_ticker(sym).get("last"))
+        except Exception:
+            simdi = d["entry"]
+        long_mu = d["yon"] == "long"
+        pnl_pct = (simdi / d["entry"] - 1) * 100 if long_mu else (d["entry"] / simdi - 1) * 100
+        pnl_usdt = pnl_pct / 100 * d.get("notional", 0)
+        sonuc.append({"symbol": sym, "yon": d["yon"], "entry": d["entry"], "simdi": simdi,
+                       "pnl_pct": round(pnl_pct, 2), "pnl_usdt": round(pnl_usdt, 2),
+                       "sl": d["sl"], "tp": d["tp"], "trailing_aktif": d.get("trailing_aktif", False),
+                       "acilis_modu": d.get("acilis_modu", "?"), "durum": "acik"})
+    for sym, k in bekleyenler.items():
+        sonuc.append({"symbol": sym, "yon": k["yon"], "entry": k["entry_hedef"], "simdi": None,
+                       "pnl_pct": None, "pnl_usdt": None, "sl": k["sl"], "tp": k["tp"],
+                       "trailing_aktif": False, "acilis_modu": "bekleyen", "durum": "bekleyen"})
+    return jsonify(sonuc)
+
+
+@web_app.route("/api/history")
+def api_history():
+    limit = int(request.args.get("limit", 20))
+    with log_lock:
+        gecmis = list(trade_log)
+    return jsonify(list(reversed(gecmis))[:limit])
+
+
+@web_app.route("/api/ohlcv")
+def api_ohlcv():
+    sym = request.args.get("symbol", "BTC/USDT:USDT")
+    tf = request.args.get("tf", "15m")
+    limit = min(int(request.args.get("limit", 100)), 300)
+    try:
+        veri = exchange.fetch_ohlcv(sym, tf, limit=limit)
+    except Exception as e:
+        return jsonify({"hata": str(e)}), 500
+    return jsonify([{"time": c[0] // 1000, "open": c[1], "high": c[2], "low": c[3], "close": c[4], "volume": c[5]} for c in veri])
+
+
+def _web_tarama_arkaplan():
+    with _web_tarama_kilit:
+        if _web_tarama_durum["calisiyor"]:
+            return
+        _web_tarama_durum["calisiyor"] = True
+    try:
+        bulunanlar, btc_baglam = manuel_tarama_yap()
+        with _web_tarama_kilit:
+            _web_tarama_durum["sonuc"] = bulunanlar
+            _web_tarama_durum["btc"] = btc_baglam
+            _web_tarama_durum["son_guncelleme"] = time.strftime("%H:%M:%S UTC", time.gmtime())
+    except Exception as e:
+        log.warning(f"[WEB_TARAMA] {e}")
+    finally:
+        with _web_tarama_kilit:
+            _web_tarama_durum["calisiyor"] = False
+
+
+@web_app.route("/api/tara", methods=["GET", "POST"])
+def api_tara():
+    if request.method == "POST":
+        threading.Thread(target=_web_tarama_arkaplan, daemon=True).start()
+        return jsonify({"basladi": True})
+    with _web_tarama_kilit:
+        return jsonify(dict(_web_tarama_durum))
+
+
+@web_app.route("/api/action", methods=["POST"])
+def api_action():
+    veri = request.get_json(force=True, silent=True) or {}
+    aksiyon = veri.get("aksiyon")
+    global OTOMATIK_GIRIS_AKTIF
+    if aksiyon == "durdur":
+        OTOMATIK_GIRIS_AKTIF = False
+        return jsonify({"tamam": True, "otomatik_giris": False})
+    if aksiyon == "baslat":
+        OTOMATIK_GIRIS_AKTIF = True
+        return jsonify({"tamam": True, "otomatik_giris": True})
+    if aksiyon == "kapat_hepsi":
+        kapatilan, iptal_edilen = tum_pozisyonlari_kapat()
+        return jsonify({"tamam": True, "kapatilan": kapatilan, "iptal_edilen": iptal_edilen})
+    if aksiyon == "kapat":
+        sym = veri.get("symbol")
+        with state_lock:
+            var_mi = sym in trade_state
+        if var_mi:
+            basarili, mesaj = gercek_pozisyon_kapat(sym, "manuel_web_kapat")
+            return jsonify({"tamam": basarili, "mesaj": mesaj}), (200 if basarili else 500)
+        if manuel_limit_iptal(sym, "web panelden iptal"):
+            return jsonify({"tamam": True})
+        return jsonify({"tamam": False, "hata": "Bulunamadı"}), 404
+    if aksiyon == "ac":
+        try:
+            aday = {"symbol": veri["symbol"], "yon": veri["yon"], "fiyat": float(veri["giris"])}
+            sl, tp = float(veri["sl"]), float(veri["tp"])
+            marjin = float(veri["marjin"]) if veri.get("marjin") else None
+        except Exception as e:
+            return jsonify({"tamam": False, "hata": f"Eksik/hatalı parametre: {e}"}), 400
+        basarili, mesaj = manuel_limit_ac(aday, sl, tp, marjin)
+        return jsonify({"tamam": basarili, "mesaj": mesaj}), (200 if basarili else 400)
+    return jsonify({"tamam": False, "hata": "Bilinmeyen aksiyon"}), 400
+
+
+@web_app.route("/")
+def api_index():
+    return Response(PANEL_HTML, mimetype="text/html")
+
+
+def web_panel_baslat():
+    if not WEB_PANEL_AKTIF:
+        log.info("[WEB_PANEL] WEB_PANEL_AKTIF=false, web paneli başlatılmıyor.")
+        return
+    if not WEB_PANEL_SIFRE:
+        log.warning("[WEB_PANEL] WEB_PANEL_SIFRE ayarlanmamış - panel API'si TÜM istekleri reddedecek. "
+                    "Railway'de WEB_PANEL_SIFRE değişkenini ekle.")
+    try:
+        web_app.run(host="0.0.0.0", port=WEB_PANEL_PORT, debug=False, use_reloader=False, threaded=True)
+    except Exception as e:
+        log.error(f"[WEB_PANEL] başlatılamadı: {e}")
+
+
 def manuel_limit_loop():
     """Bekleyen manuel limit emirlerinin doluşunu izler; dolunca SL/TP kurar
     ve trade_state'e 'manuel' modunda ekler (iz sürme dahil)."""
@@ -1988,37 +2494,45 @@ def panel_ozet_metni():
         except Exception:
             continue
 
+    with manuel_kilit:
+        bekleyen_sayi = len(manuel_limit_emirler)
+    otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
+
     satirlar = [
-        "💵 LIVE BOT v6.1 — CANLI ÖZET",
-        f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
+        "💎 <b>GHOST BOT v6.2</b>",
+        f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"💼 Bakiye (borsa): {bakiye_metni}",
+        f"💼 Bakiye: <b>{bakiye_metni}</b>",
     ]
     if acik_sayi > 0:
         gc_emoji = "🟢" if gerceklesmeyen_net >= 0 else "🔴"
-        satirlar.append(f"{gc_emoji} Açık pozisyonlarda (gerçekleşmemiş): {gerceklesmeyen_net:+.2f}$")
-    satirlar.append("━━━━━━━━━━━━━━━━━━━━\n")
+        satirlar.append(f"{gc_emoji} Açık pozisyonlarda (gerçekleşmemiş): <b>{gerceklesmeyen_net:+.2f}$</b>")
+    satirlar.append(f"📈 Açık: <b>{acik_sayi}/{MAX_POS}</b>   ·   📝 Bekleyen limit emir: <b>{bekleyen_sayi}</b>")
+    satirlar.append("━━━━━━━━━━━━━━━━━━━━")
 
     if gecmis:
         toplam = len(gecmis)
         kazanan = [t for t in gecmis if t["pnl"] > 0]
         net = sum(t["pnl"] for t in gecmis)
         wr = len(kazanan) / toplam * 100
-        satirlar.append("📊 İstatistik")
-        satirlar.append(f"  Toplam işlem: {toplam}  |  Kazanma: %{wr:.1f}")
-        satirlar.append(f"  Net PnL: {net:+.2f}$  |  Ortalama: {net/toplam:+.3f}$\n")
-        satirlar.append("📋 Son 5 işlem:")
+        net_emoji = "🟢" if net >= 0 else "🔴"
+        satirlar.append(f"📊 <b>İstatistik</b>  ·  {toplam} işlem  ·  kazanma %{wr:.1f}")
+        satirlar.append(f"{net_emoji} Net PnL: <b>{net:+.2f}$</b>  ·  Ortalama: {net/toplam:+.3f}$")
+        satirlar.append("")
+        satirlar.append("📋 <b>Son 5 işlem</b>")
         for t in list(reversed(gecmis))[:5]:
             emoji = "🟢" if t["pnl"] >= 0 else "🔴"
             sebep = t.get("not", "")
-            satirlar.append(f"  {emoji} {t['symbol'].split('/')[0]:<8} {t['pnl']:+.2f}$  ({sebep})")
+            satirlar.append(f"  {emoji} {t['symbol'].split('/')[0]:<8} {t['pnl']:+.2f}$  <i>({sebep})</i>")
     else:
-        satirlar.append("Henüz kapanan işlem yok.")
+        satirlar.append("⚪ Henüz kapanan işlem yok.")
 
-    satirlar.append(f"\n📈 Açık pozisyon: {acik_sayi}/{MAX_POS}")
-    for sym, anlik in acik_detay:
-        e = "🟢" if anlik >= 0 else "🔴"
-        satirlar.append(f"  {e} {sym.split('/')[0]:<8} {anlik:+.2f}$")
+    if acik_detay:
+        satirlar.append("")
+        satirlar.append("📈 <b>Açık pozisyonlar</b>")
+        for sym, anlik in acik_detay:
+            e = "🟢" if anlik >= 0 else "🔴"
+            satirlar.append(f"  {e} {sym.split('/')[0]:<8} {anlik:+.2f}$")
     return "\n".join(satirlar)
 
 
@@ -2037,7 +2551,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v6.1 (MANUEL ONAY PANELİ, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v6.2 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -2192,6 +2706,12 @@ def panel_risk_metni():
 def ana_menu_klavye():
     markup = telebot.types.InlineKeyboardMarkup()
     markup.row(
+        telebot.types.InlineKeyboardButton("🔍 Tara", callback_data="panel_tara"),
+        telebot.types.InlineKeyboardButton("📋 Pozisyonlar", callback_data="panel_pozisyonlar"),
+    )
+    durdur_baslat_etiket = "🛑 Otomatik Girişi Durdur" if OTOMATIK_GIRIS_AKTIF else "▶️ Otomatik Girişi Başlat"
+    markup.row(telebot.types.InlineKeyboardButton(durdur_baslat_etiket, callback_data="panel_durdur_toggle"))
+    markup.row(
         telebot.types.InlineKeyboardButton("📊 Özet", callback_data="panel_ozet"),
         telebot.types.InlineKeyboardButton("⚙️ Ayarlar", callback_data="panel_ayarlar"),
     )
@@ -2199,7 +2719,11 @@ def ana_menu_klavye():
         telebot.types.InlineKeyboardButton("📜 Geçmiş", callback_data="panel_gecmis"),
         telebot.types.InlineKeyboardButton("🔬 Analiz", callback_data="panel_analiz"),
     )
-    markup.row(telebot.types.InlineKeyboardButton("📉 Açık Pozisyon Detayı", callback_data="panel_risk"))
+    markup.row(
+        telebot.types.InlineKeyboardButton("📏 Sürtünme", callback_data="panel_surtunme"),
+        telebot.types.InlineKeyboardButton("📉 Pozisyon Detayı", callback_data="panel_risk"),
+    )
+    markup.row(telebot.types.InlineKeyboardButton("🚨 Tümünü Kapat", callback_data="panel_kapat_hepsi_sor"))
     markup.row(telebot.types.InlineKeyboardButton("🔄 Yenile", callback_data="panel_ana"))
     return markup
 
@@ -2215,7 +2739,7 @@ if bot:
     def panel_komutu(msg):
         if not yetkili_mi(msg):
             return
-        bot.send_message(msg.chat.id, panel_ozet_metni(), reply_markup=ana_menu_klavye())
+        bot.send_message(msg.chat.id, panel_ozet_metni(), reply_markup=ana_menu_klavye(), parse_mode="HTML")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("panel_"))
     def panel_buton_yaniti(call):
@@ -2226,9 +2750,51 @@ if bot:
         veri = call.data
         try:
             if veri == "panel_ana":
-                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye())
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
             elif veri == "panel_ozet":
-                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu(), parse_mode="HTML")
+            elif veri == "panel_tara":
+                bot.answer_callback_query(call.id, "Taranıyor...")
+                _sahte_msg = type("M", (), {"chat": type("C", (), {"id": call.message.chat.id})()})()
+                tara_komutu(_sahte_msg)
+                return
+            elif veri == "panel_pozisyonlar":
+                _sahte_msg = type("M", (), {"chat": type("C", (), {"id": call.message.chat.id})()})()
+                pozisyonlar_komutu(_sahte_msg)
+                bot.answer_callback_query(call.id)
+                return
+            elif veri == "panel_durdur_toggle":
+                global OTOMATIK_GIRIS_AKTIF
+                OTOMATIK_GIRIS_AKTIF = not OTOMATIK_GIRIS_AKTIF
+                bot.answer_callback_query(call.id, f"Otomatik giriş {'açıldı' if OTOMATIK_GIRIS_AKTIF else 'durduruldu'}.")
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
+                return
+            elif veri == "panel_surtunme":
+                bot.edit_message_text(surtunme_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+            elif veri == "panel_kapat_hepsi_sor":
+                with state_lock:
+                    n_poz = len(trade_state)
+                with manuel_kilit:
+                    n_bek = len(manuel_limit_emirler)
+                onay_markup = telebot.types.InlineKeyboardMarkup()
+                onay_markup.row(
+                    telebot.types.InlineKeyboardButton("✅ Evet, HEPSİNİ kapat", callback_data="panel_kapat_hepsi_evet"),
+                    telebot.types.InlineKeyboardButton("❌ Vazgeç", callback_data="panel_ana"),
+                )
+                bot.edit_message_text(
+                    f"⚠️ <b>{n_poz} açık pozisyon</b> piyasa fiyatından kapatılacak, "
+                    f"<b>{n_bek} bekleyen limit emir</b> iptal edilecek. Emin misin?",
+                    call.message.chat.id, call.message.message_id, reply_markup=onay_markup, parse_mode="HTML")
+                bot.answer_callback_query(call.id)
+                return
+            elif veri == "panel_kapat_hepsi_evet":
+                kapatilan, iptal_edilen = tum_pozisyonlari_kapat()
+                bot.edit_message_text(
+                    f"🚨 Kapatıldı: {', '.join(s.split('/')[0] for s in kapatilan) or 'yok'}\n"
+                    f"🗑️ İptal edildi: {', '.join(s.split('/')[0] for s in iptal_edilen) or 'yok'}",
+                    call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
+                bot.answer_callback_query(call.id)
+                return
             elif veri == "panel_ayarlar":
                 bot.edit_message_text(panel_ayarlar_metni(), call.message.chat.id, call.message.message_id, reply_markup=geri_butonu())
             elif veri == "panel_gecmis":
@@ -2979,7 +3545,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v6.1 (MANUEL ONAY PANELİ) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v6.2 (MANUEL ONAY PANELİ + WEB PANELİ) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -2997,7 +3563,7 @@ def tarama_loop():
        f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
        f"BTC'den bağımsız güçlü coinler yine geçebilir)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📌 v6.1: /tara (4S+1S analiz + renkli kart + Aç/Düzenle/Geç), /ac SEMBOL yon giriş sl tp [marjin], "
+       f"📌 v6.2: web paneli (WEB_PANEL_SIFRE ile korumalı), /tara (4S+1S analiz + renkli kart + Aç/Düzenle/Geç), /ac SEMBOL yon giriş sl tp [marjin], "
        f"/pozisyonlar (Kapat/İptal), /durdur ve /baslat (otomatik giriş). Varsayılan marjin ${MANUEL_MARJIN_VARSAYILAN_USDT:.0f} "
        f"(Düzenle ya da /ac'te değiştirilebilir). Eski otomatik strateji: hisse/ETF {'DAHİL' if RWA_HISSE_DAHIL else 'dışlandı'}, "
        f"kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
@@ -3086,12 +3652,13 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v6.1 (MANUEL ONAY PANELİ + serbest marjin, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v6.2 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
     trade_log_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=manuel_limit_loop, daemon=True).start()
+    threading.Thread(target=web_panel_baslat, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
