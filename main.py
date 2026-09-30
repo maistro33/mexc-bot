@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v5.9 — OTOMATİK STRATEJİ MODU (1D+4H+1H uyum / günün en çok
-yükseleni) + LONG-only (GERÇEK PARA, SHORT kod içinde ama kapalı)
+LIVE BOT v6.1 — MANUEL ONAY PANELİ (30.09.2026, kullanıcı kararı: otomatik
+strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
+onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1 notları aşağıda). Eski
+otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
+OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
 sinyalinin, kararsız/yatay piyasa koşullarında zayıf sinyalleri
@@ -154,6 +157,7 @@ veri toplanıp panel_analiz ile tekrar değerlendirilmesi gerekir.
 import os
 import time
 import json
+import uuid
 import logging
 import threading
 import ccxt
@@ -276,6 +280,22 @@ AYNI_MUM_MAX_GIRIS = int(os.getenv("AYNI_MUM_MAX_GIRIS", "2"))
 # ort/işlem %-0.02 (kriptoda +%0.67) - ölçülebilir üstünlük yok (örnek küçük, kesin değil); (c) 3x kaldıraçlı
 # ETF'ler ve piyasa açılış/kapanış boşlukları stop'u atlayabilir. True yapılırsa tekrar dahil edilir.
 RWA_HISSE_DAHIL = os.getenv("RWA_HISSE_DAHIL", "false").lower() == "true"
+
+# ════════════════════════════════════════════
+# v6.0 YENİ (30.09.2026, kullanıcı kararı): MANUEL ONAY PANELİ.
+# Otomatik strateji artık KENDİ BAŞINA işlem AÇMIYOR (OTOMATIK_GIRIS_AKTIF
+# varsayılan false) - kullanıcı /tara ile aday listesi ister, her adayı
+# 4S (ana filtre) + 1S (giriş zamanlaması) + 15dk (sadece güncel fiyat)
+# ile gösterir, kullanıcı "Aç" butonuna basmadan hiçbir emir gitmez.
+# Otomatik yönetim (mevcut pozisyonların SL/TP/iz sürme/günlük fren/
+# stop teşhisi) DEĞİŞMEDİ, aynen çalışmaya devam ediyor.
+OTOMATIK_GIRIS_AKTIF = os.getenv("OTOMATIK_GIRIS_AKTIF", "false").lower() == "true"
+MANUEL_RSI_PERIYOT = int(os.getenv("MANUEL_RSI_PERIYOT", "14"))
+MANUEL_SL_BUFFER_PCT = float(os.getenv("MANUEL_SL_BUFFER_PCT", "0.004"))
+MANUEL_MIN_RR = float(os.getenv("MANUEL_MIN_RR", "1.3"))
+MANUEL_MAKS_KART = int(os.getenv("MANUEL_MAKS_KART", "5"))
+MANUEL_LIMIT_TIMEOUT_SN = int(os.getenv("MANUEL_LIMIT_TIMEOUT_SN", str(6*3600)))
+MANUEL_MARJIN_VARSAYILAN_USDT = float(os.getenv("MANUEL_MARJIN_VARSAYILAN_USDT", "5.0"))
 YUKSELEN_HACIM_KATSAYI = float(os.getenv("YUKSELEN_HACIM_KATSAYI", "1.2"))
 # v5.2 YENİ: mum gövde gücü eşiği - zayıf/kararsız mumları eler
 YUKSELEN_MIN_GOVDE_ORANI = float(os.getenv("YUKSELEN_MIN_GOVDE_ORANI", "0.45"))
@@ -533,6 +553,154 @@ def safe(x):
         return float(x)
     except Exception:
         return 0.0
+
+
+# ════════════════════════════════════════════
+# v6.0: MANUEL ANALİZ MOTORU (RSI, trend yönü, aday tarama, swing SL/TP)
+# ════════════════════════════════════════════
+manuel_bekleyen = {}       # token -> aday dict (Aç/Düzenle butonları için)
+manuel_limit_emirler = {}  # sym -> {order_id, sym, yon, sl, tp, qty, konulma_zamani, iz_surme}
+manuel_kilit = threading.Lock()
+manuel_metin_bekleyen = {}  # chat_id -> token (bir sonraki düz metin mesajı SL/TP düzenlemesi olarak okunur)
+
+
+def rsi_hesapla(kapanislar, periyot=14):
+    if len(kapanislar) < periyot + 1:
+        return None
+    d = kapanislar.diff()
+    kazanc = d.clip(lower=0).ewm(alpha=1/periyot, adjust=False).mean()
+    kayip = (-d.clip(upper=0)).ewm(alpha=1/periyot, adjust=False).mean()
+    if kayip.iloc[-1] == 0:
+        return 100.0
+    rs = kazanc.iloc[-1] / kayip.iloc[-1]
+    return 100 - 100 / (1 + rs)
+
+
+def trend_yon(df):
+    """MA20/MA50 sıralaması + MA20 eğimine göre YUKARI/AŞAĞI/karışık. df en az 55 mum içermeli."""
+    if df is None or len(df) < 55:
+        return "karışık"
+    ma20 = df["close"].rolling(20).mean()
+    ma50 = df["close"].rolling(50).mean()
+    egim = ma20.iloc[-1] - ma20.iloc[-4]
+    c = df["close"].iloc[-1]
+    if c > ma20.iloc[-1] > ma50.iloc[-1] and egim > 0:
+        return "YUKARI"
+    if c < ma20.iloc[-1] < ma50.iloc[-1] and egim < 0:
+        return "AŞAĞI"
+    return "karışık"
+
+
+def manuel_swing_sl_tp(df1s, df4s, entry, long_mu):
+    """Son 20 adet 1S mumun dip/zirvesinden SL, son 20 adet 4S mumun
+    dip/zirvesinden TP hesaplar (basit, şeffaf bir destek/direnç kuralı -
+    gözle yapılan yorumun kaba bir yaklaşığı, kesin bir sinyal değil).
+    R/R < MANUEL_MIN_RR ise None döner (aday elenir)."""
+    if df1s is None or len(df1s) < 21 or df4s is None or len(df4s) < 21:
+        return None
+    if long_mu:
+        dip1s = df1s["low"].iloc[-21:-1].min()
+        sl = dip1s * (1 - MANUEL_SL_BUFFER_PCT)
+        risk = entry - sl
+        zirve4s = df4s["high"].iloc[-21:-1].max()
+        if zirve4s > entry:
+            tp = min(zirve4s, entry + risk * 3)          # direnç hâlâ ileride: ona doğru hedefle, aşırı iyimseri sınırla
+        else:
+            tp = entry + risk * max(MANUEL_MIN_RR, 1.5)  # fiyat zaten kırılmış: görünür direnç yok, R/R'a dayalı hedef
+        odul = tp - entry
+    else:
+        zirve1s = df1s["high"].iloc[-21:-1].max()
+        sl = zirve1s * (1 + MANUEL_SL_BUFFER_PCT)
+        risk = sl - entry
+        dip4s = df4s["low"].iloc[-21:-1].min()
+        if dip4s < entry:
+            tp = max(dip4s, entry - risk * 3)
+        else:
+            tp = entry - risk * max(MANUEL_MIN_RR, 1.5)
+        odul = entry - tp
+    if risk <= 0 or odul <= 0 or odul / risk < MANUEL_MIN_RR:
+        return None
+    return round(sl, 10), round(tp, 10), round(odul / risk, 2)
+
+
+def manuel_aday_analiz(sym):
+    """Tek bir sembolü 4S (ana filtre) + 1S (zamanlama) + 15dk (güncel fiyat)
+    ile analiz eder. Temiz bir uzun/kısa kurulum yoksa None döner."""
+    try:
+        d4 = get_df(sym, "4h", 150)
+        d1 = get_df(sym, "1h", 150)
+        d15 = get_df(sym, "15m", 30)
+    except Exception as e:
+        log.warning(f"[MANUEL_ANALIZ] {sym}: {e}")
+        return None
+    if d4 is None or d1 is None or d15 is None or len(d4) < 55 or len(d1) < 55:
+        return None
+    y4, y1 = trend_yon(d4), trend_yon(d1)
+    r4 = rsi_hesapla(d4["close"], MANUEL_RSI_PERIYOT)
+    r1 = rsi_hesapla(d1["close"], MANUEL_RSI_PERIYOT)
+    if r4 is None or r1 is None:
+        return None
+    fiyat = float(d15["close"].iloc[-1])
+    ma20_1s = d1["close"].rolling(20).mean().iloc[-1]
+    ma_mesafe = (fiyat / ma20_1s - 1) * 100 if ma20_1s else 0
+
+    long_mu = None
+    if y4 == "YUKARI" and y1 == "YUKARI" and r4 <= 72 and r1 <= 70 and ma_mesafe <= 5:
+        long_mu = True
+    elif y4 == "AŞAĞI" and y1 == "AŞAĞI" and r4 >= 28 and r1 >= 30 and ma_mesafe >= -5:
+        long_mu = False
+    if long_mu is None:
+        return None
+
+    sonuc = manuel_swing_sl_tp(d1, d4, fiyat, long_mu)
+    if sonuc is None:
+        return None
+    sl, tp, rr = sonuc
+    return {
+        "symbol": sym, "yon": "long" if long_mu else "short", "fiyat": fiyat,
+        "y4": y4, "y1": y1, "r4": round(r4, 1), "r1": round(r1, 1),
+        "ma_mesafe": round(ma_mesafe, 2), "sl": sl, "tp": tp, "rr": rr,
+        "zaman": time.time(),
+    }
+
+
+def manuel_tarama_yap(ilerleme_cb=None):
+    """İlk 20 yükselen + ilk 20 düşen likit kripto (RWA/yavaş coin hariç)
+    içinden temiz kurulumları bulur. BTC bağlamını da döner."""
+    tickers = guncel_tickerlari_al()
+    btc_t = tickers.get("BTC/USDT:USDT", {})
+    d4b, d1b = get_df("BTC/USDT:USDT", "4h", 150), get_df("BTC/USDT:USDT", "1h", 150)
+    btc_baglam = {
+        "y4": trend_yon(d4b) if d4b is not None else "?",
+        "y1": trend_yon(d1b) if d1b is not None else "?",
+        "r4": round(rsi_hesapla(d4b["close"], MANUEL_RSI_PERIYOT), 1) if d4b is not None else None,
+        "r1": round(rsi_hesapla(d1b["close"], MANUEL_RSI_PERIYOT), 1) if d1b is not None else None,
+        "chg24": btc_t.get("percentage"),
+    }
+    adaylar = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT:USDT"):
+            continue
+        base = sym.split("/")[0]
+        if base in SLUGGISH_BASE or rwa_mi(sym):
+            continue
+        vol = t.get("quoteVolume") or 0
+        chg = t.get("percentage")
+        if vol < 1_500_000 or chg is None:
+            continue
+        adaylar.append((sym, chg, vol))
+    adaylar.sort(key=lambda x: -x[1])
+    havuz = [s for s, _, _ in adaylar[:20]] + [s for s, _, _ in adaylar[-20:]]
+
+    bulunanlar = []
+    for i, sym in enumerate(havuz):
+        if ilerleme_cb and i % 8 == 0:
+            ilerleme_cb(i, len(havuz))
+        sonuc = manuel_aday_analiz(sym)
+        if sonuc:
+            bulunanlar.append(sonuc)
+    bulunanlar.sort(key=lambda x: -x["rr"])
+    return bulunanlar[:MANUEL_MAKS_KART], btc_baglam
 
 
 def get_df(sym, tf, limit=60):
@@ -1063,6 +1231,170 @@ def acilis_basarisiz_cooldown_uygula(sym):
     with cooldown_lock:
         son_kapanis_zamani[sym] = time.time()
     cooldown_diske_yaz()
+
+
+def manuel_limit_ac(aday, sl, tp, marjin=None):
+    """Kullanıcının onayladığı adayı LİMİT emirle açar (aday['fiyat']'tan).
+    marjin=None ise MANUEL_MARJIN_VARSAYILAN_USDT kullanılır, verilirse o
+    kullanılır (biz/kullanıcı elle belirler). Emir hemen dolmaz;
+    manuel_limit_loop doluşu bekler, dolunca SL/TP kurar.
+
+    v6.1: Eksik/hatalı işlem açılmasını önlemek için kapsamlı doğrulama -
+    sembol formatı, yön, giriş/SL/TP'nin doğru tarafta olup olmadığı, R/R,
+    marjin sınırları hepsi burada kontrol edilir; herhangi biri geçersizse
+    HİÇBİR borsa çağrısı yapılmadan (False, açık sebep) döner."""
+    # ── Girdi doğrulama (borsaya hiçbir şey gönderilmeden önce) ──
+    sym = aday.get("symbol", "")
+    if not sym or "/" not in sym:
+        return False, f"Geçersiz sembol: '{sym}'."
+    yon = aday.get("yon")
+    if yon not in ("long", "short"):
+        return False, f"Geçersiz yön: '{yon}' (long ya da short olmalı)."
+    long_mu = yon == "long"
+    entry_hedef = safe(aday.get("fiyat"))
+    sl = safe(sl); tp = safe(tp)
+    if entry_hedef <= 0 or sl <= 0 or tp <= 0:
+        return False, "Giriş, SL ve TP pozitif sayı olmalı."
+    if long_mu and not (sl < entry_hedef < tp):
+        return False, f"UZUN işlemde SL < Giriş < TP olmalı (SL={sl:.8g}, Giriş={entry_hedef:.8g}, TP={tp:.8g})."
+    if not long_mu and not (tp < entry_hedef < sl):
+        return False, f"KISA işlemde TP < Giriş < SL olmalı (TP={tp:.8g}, Giriş={entry_hedef:.8g}, SL={sl:.8g})."
+    risk_pct = abs(entry_hedef - sl) / entry_hedef
+    if risk_pct > 0.25:
+        return False, f"Stop mesafesi çok geniş (%{risk_pct*100:.1f}) - girdileri kontrol et."
+    if marjin is not None:
+        marjin = safe(marjin)
+        if marjin <= 0:
+            return False, f"Marjin pozitif olmalı (girilen: {marjin})."
+
+    with state_lock:
+        if sym in trade_state or sym in acilis_rezervasyonlari or sym in manuel_limit_emirler:
+            return False, "Bu sembolde zaten açık bir pozisyon ya da bekleyen emir var."
+        if len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
+            return False, f"Maksimum pozisyon sayısına ({efektif_max_pos()}) ulaşıldı."
+    bakiye = gercek_bakiye_al()
+    if not bakiye or bakiye <= 0:
+        return False, "Bakiye alınamadı."
+
+    marjin_istenen = MANUEL_MARJIN_VARSAYILAN_USDT if marjin is None else marjin
+    if marjin_istenen > bakiye * 0.95:
+        return False, (f"İstenen marjin (${marjin_istenen:.2f}) bakiyenin (${bakiye:.2f}) çoğunu/tamamını kullanıyor "
+                        f"- reddedildi. En fazla ${bakiye*0.95:.2f} kullanılabilir.")
+    marjin_kullanilan = marjin_istenen
+
+    LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
+    notional = marjin_kullanilan * LEV_KULLANILAN
+    amount = notional / entry_hedef
+    try:
+        qty = float(exchange.amount_to_precision(sym, amount))
+        fiyat_p = float(exchange.price_to_precision(sym, entry_hedef))
+    except Exception as e:
+        return False, f"Miktar/fiyat hesaplanamadı: {e}"
+    if qty <= 0:
+        return False, "Hesaplanan miktar sıfır."
+    try:
+        exchange.set_leverage(LEV_KULLANILAN, sym)
+    except Exception as e:
+        log.warning(f"[MANUEL_KALDIRAC] {sym}: {e}")
+    yon_str = "buy" if long_mu else "sell"
+    try:
+        emir = exchange.create_order(sym, "limit", yon_str, qty, fiyat_p)
+    except Exception as e:
+        return False, f"Limit emir gönderilemedi: {e}"
+    with manuel_kilit:
+        manuel_limit_emirler[sym] = {
+            "order_id": emir.get("id"), "sym": sym, "yon": aday["yon"], "qty": qty,
+            "entry_hedef": fiyat_p, "sl": sl, "tp": tp, "konulma_zamani": time.time(),
+            "1d": "-", "4h": aday.get("y4", "-"), "1h": aday.get("y1", "-"),
+        }
+    durumu_diske_yaz()
+    tg(f"📝 MANUEL LİMİT EMİR: {sym} {'LONG' if long_mu else 'SHORT'} @ {fiyat_p:.8g}\n"
+       f"Marjin: ${marjin_kullanilan:.2f} ({LEV_KULLANILAN}x, pozisyon ≈${notional:.2f})\n"
+       f"Miktar: {qty} | SL: {sl:.8g} | TP: {tp:.8g}\n"
+       f"Emir {MANUEL_LIMIT_TIMEOUT_SN//3600} saat içinde dolmazsa otomatik iptal edilir.")
+    return True, f"{sym} için limit emir gönderildi ({fiyat_p:.8g}), marjin ${marjin_kullanilan:.2f}."
+
+
+def manuel_limit_iptal(sym, sebep="kullanıcı isteğiyle"):
+    with manuel_kilit:
+        kayit = manuel_limit_emirler.pop(sym, None)
+    if not kayit:
+        return False
+    try:
+        exchange.cancel_order(kayit["order_id"], sym)
+    except Exception as e:
+        log.warning(f"[MANUEL_IPTAL] {sym}: {e}")
+    durumu_diske_yaz()
+    tg(f"🗑️ {sym} bekleyen limit emri iptal edildi ({sebep}).")
+    return True
+
+
+def manuel_limit_loop():
+    """Bekleyen manuel limit emirlerinin doluşunu izler; dolunca SL/TP kurar
+    ve trade_state'e 'manuel' modunda ekler (iz sürme dahil)."""
+    while True:
+        try:
+            with manuel_kilit:
+                semboller = list(manuel_limit_emirler.keys())
+            for sym in semboller:
+                with manuel_kilit:
+                    kayit = manuel_limit_emirler.get(sym)
+                if not kayit:
+                    continue
+                if time.time() - kayit["konulma_zamani"] > MANUEL_LIMIT_TIMEOUT_SN:
+                    manuel_limit_iptal(sym, "zaman aşımı")
+                    continue
+                try:
+                    durum_emir = exchange.fetch_order(kayit["order_id"], sym)
+                except Exception as e:
+                    log.warning(f"[MANUEL_FETCH] {sym}: {e}")
+                    continue
+                if durum_emir.get("status") not in ("closed", "filled"):
+                    continue
+                # Doldu: gerçek giriş fiyatını al, SL/TP kur, state'e yaz
+                long_mu = kayit["yon"] == "long"
+                entry = safe(durum_emir.get("average")) or kayit["entry_hedef"]
+                kapanis_yonu = "sell" if long_mu else "buy"
+                sl_fiyat = float(exchange.price_to_precision(sym, kayit["sl"]))
+                sl_emir_id = None
+                for _ in range(3):
+                    try:
+                        sl_emri = exchange.create_order(sym, "market", kapanis_yonu, kayit["qty"], None,
+                                                         {"reduceOnly": True, "stopLossPrice": sl_fiyat})
+                        sl_emir_id = sl_emri.get("id")
+                        if sl_emir_id:
+                            break
+                    except Exception as e:
+                        log.warning(f"[MANUEL_SL] {sym}: {e}")
+                    time.sleep(0.5)
+                if not sl_emir_id:
+                    tg(f"🚨 {sym} manuel işlemde SL kurulamadı, güvenlik amaçlı kapatılıyor.")
+                    try:
+                        exchange.create_market_order(sym, kapanis_yonu, kayit["qty"], params={"reduceOnly": True})
+                    except Exception:
+                        pass
+                    with manuel_kilit:
+                        manuel_limit_emirler.pop(sym, None)
+                    durumu_diske_yaz()
+                    continue
+                with state_lock:
+                    trade_state[sym] = {
+                        "entry": entry, "sl": kayit["sl"], "tp": kayit["tp"], "sl_emir_id": sl_emir_id,
+                        "yon": kayit["yon"], "qty": kayit["qty"], "r_risk": abs(entry - kayit["sl"]),
+                        "acilis_zamani": time.time(), "1d": "-", "4h": kayit.get("4h", "-"), "1h": kayit.get("1h", "-"),
+                        "notional": kayit["qty"] * entry, "son_trend_kontrol": 0, "ters_trend_sayisi": 0,
+                        "kismi_ters_sayisi": 0, "kismi_alindi": False, "acilis_modu": "manuel",
+                        "erken_kontrol_yapildi": False, "en_yuksek_fiyat": entry, "trailing_aktif": False,
+                    }
+                with manuel_kilit:
+                    manuel_limit_emirler.pop(sym, None)
+                durumu_diske_yaz()
+                tg(f"✅ MANUEL İŞLEM AÇILDI: {sym} {'🟢 LONG' if long_mu else '🔴 SHORT'}\n"
+                   f"Giriş: {entry:.8g} | SL: {kayit['sl']:.8g} | TP: {kayit['tp']:.8g}\n"
+                   f"⚡ İz sürme kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e ulaşınca otomatik devreye girer.")
+        except Exception as e:
+            log.error(f"[MANUEL_LIMIT_LOOP] {e}")
+        time.sleep(10)
 
 
 def gercek_pozisyon_ac(sinyal):
@@ -1657,7 +1989,7 @@ def panel_ozet_metni():
             continue
 
     satirlar = [
-        "💵 LIVE BOT v5.9 — CANLI ÖZET",
+        "💵 LIVE BOT v6.1 — CANLI ÖZET",
         f"(GERÇEK PARA, 1D+4H+1H {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}, hacim+pump filtreli, kısmi kâr alma)",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye (borsa): {bakiye_metni}",
@@ -1705,7 +2037,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return ("⚙️ LIVE BOT v5.9 (HİSSE/ETF DIŞLANDI) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v6.1 (MANUEL ONAY PANELİ, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -1991,6 +2323,264 @@ if bot:
             return
         bot.send_message(msg.chat.id, surtunme_ozet_metni())
 
+    # ════════════════════════════════════════════
+    # v6.0: MANUEL ONAY PANELİ - /tara, /ac, /pozisyonlar, /durdur, /baslat
+    # ════════════════════════════════════════════
+    def _rsi_emoji(r):
+        if r is None: return "⚪"
+        if r >= 70: return "🟥"
+        if r <= 30: return "🟦"
+        return "🟩"
+
+    def _yon_emoji(y):
+        return {"YUKARI": "📈", "AŞAĞI": "📉"}.get(y, "➖")
+
+    def manuel_kart_metni(aday, btc_baglam):
+        long_mu = aday["yon"] == "long"
+        renk = "🟢" if long_mu else "🔴"
+        ok = "UZUN" if long_mu else "KISA"
+        risk = abs(aday["fiyat"] - aday["sl"]); odul = abs(aday["tp"] - aday["fiyat"])
+        rr = aday["rr"]
+        rr_emoji = "💎" if rr >= 2 else ("✅" if rr >= 1.5 else "🟡")
+        sym_ad = aday["symbol"].split("/")[0]
+        return (
+            f"{renk} <b>{sym_ad}</b>  ·  <b>{ok}</b> aday\n"
+            f"<i>BTC {_yon_emoji(btc_baglam['y4'])} 4S {btc_baglam['y4']} (RSI {btc_baglam['r4']})"
+            f"  ·  {_yon_emoji(btc_baglam['y1'])} 1S {btc_baglam['y1']} (RSI {btc_baglam['r1']})</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💲 Fiyat: <b>{aday['fiyat']:.8g}</b>\n"
+            f"{_yon_emoji(aday['y4'])} 4S  <b>{aday['y4']}</b>   {_rsi_emoji(aday['r4'])} RSI {aday['r4']}\n"
+            f"{_yon_emoji(aday['y1'])} 1S  <b>{aday['y1']}</b>   {_rsi_emoji(aday['r1'])} RSI {aday['r1']}\n"
+            f"📏 MA20'den: <b>%{aday['ma_mesafe']:+.2f}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Plan</b> <i>(1S/4S swing destek-direnç — kesin sinyal değil)</i>\n"
+            f"   Giriş (limit): <b>{aday['fiyat']:.8g}</b>\n"
+            f"   🛑 SL: <b>{aday['sl']:.8g}</b>  (-%{risk/aday['fiyat']*100:.1f})\n"
+            f"   🏁 TP: <b>{aday['tp']:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
+            f"   {rr_emoji} R/R: <b>{rr}</b>\n"
+            f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b> "
+            f"<i>(değiştirmek için ✏️ Düzenle)</i>\n"
+            f"   ⚡ İz sürme: kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'te aktif, %{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} pay"
+        )
+
+    def manuel_kart_markup(token):
+        m = telebot.types.InlineKeyboardMarkup()
+        m.row(telebot.types.InlineKeyboardButton("✅ Aç", callback_data=f"macik:{token}:ac"),
+              telebot.types.InlineKeyboardButton("✏️ Düzenle", callback_data=f"macik:{token}:duzenle"),
+              telebot.types.InlineKeyboardButton("❌ Geç", callback_data=f"macik:{token}:gec"))
+        return m
+
+    @bot.message_handler(commands=["tara"])
+    def tara_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        durum_mesaji = bot.send_message(msg.chat.id, "🔍 Taranıyor (4S+1S, ilk 20 yükselen + ilk 20 düşen)...")
+        def isle():
+            try:
+                bulunanlar, btc_baglam = manuel_tarama_yap()
+            except Exception as e:
+                bot.edit_message_text(f"⚠️ Tarama başarısız: {e}", msg.chat.id, durum_mesaji.message_id)
+                return
+            if not bulunanlar:
+                bot.edit_message_text(
+                    f"🔎 <b>BTC</b>: {_yon_emoji(btc_baglam['y4'])} 4S {btc_baglam['y4']} (RSI {btc_baglam['r4']})"
+                    f"  ·  {_yon_emoji(btc_baglam['y1'])} 1S {btc_baglam['y1']} (RSI {btc_baglam['r1']})\n\n"
+                    f"⚪ Şu an temiz bir 4S+1S kurulumu yok. Zorlamıyorum, birazdan tekrar dene.",
+                    msg.chat.id, durum_mesaji.message_id, parse_mode="HTML")
+                return
+            bot.edit_message_text(f"✅ <b>{len(bulunanlar)} aday</b> bulundu:", msg.chat.id, durum_mesaji.message_id, parse_mode="HTML")
+            for aday in bulunanlar:
+                token = uuid.uuid4().hex[:10]
+                with manuel_kilit:
+                    manuel_bekleyen[token] = aday
+                bot.send_message(msg.chat.id, manuel_kart_metni(aday, btc_baglam), reply_markup=manuel_kart_markup(token), parse_mode="HTML")
+        threading.Thread(target=isle, daemon=True).start()
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("macik:"))
+    def manuel_kart_callback(call):
+        if not yetkili_mi(call):
+            return
+        _, token, aksiyon = call.data.split(":", 2)
+        with manuel_kilit:
+            aday = manuel_bekleyen.get(token)
+        if not aday:
+            bot.answer_callback_query(call.id, "Bu kart artık geçerli değil (süresi doldu ya da işlendi).")
+            return
+        if aksiyon == "gec":
+            with manuel_kilit:
+                manuel_bekleyen.pop(token, None)
+            bot.edit_message_text(f"❌ Geçildi: {aday['symbol'].split('/')[0]}", call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id)
+            return
+        if aksiyon == "duzenle":
+            manuel_metin_bekleyen[call.message.chat.id] = token
+            bot.send_message(call.message.chat.id,
+                              f"{aday['symbol'].split('/')[0]} için yeni SL ve TP'yi tek satırda yaz (örnek: `0.0500 0.0555`).",
+                              parse_mode="Markdown")
+            bot.answer_callback_query(call.id)
+            return
+        if aksiyon == "ac":
+            # Fiyatı tazeden kontrol et (kart eski olabilir)
+            try:
+                simdi = safe(exchange.fetch_ticker(aday["symbol"]).get("last"))
+            except Exception as e:
+                bot.answer_callback_query(call.id, f"Fiyat alınamadı: {e}", show_alert=True)
+                return
+            long_mu = aday["yon"] == "long"
+            kayma = ((simdi - aday["fiyat"]) / aday["fiyat"] * 100) if long_mu else ((aday["fiyat"] - simdi) / aday["fiyat"] * 100)
+            if abs(kayma) > 1.0:
+                bot.answer_callback_query(call.id, f"Fiyat %{kayma:+.2f} kaymış ({simdi:.8g}). Yine de limit {aday['fiyat']:.8g}'ten emir konur, dolmayabilir.", show_alert=True)
+            basarili, mesaj = manuel_limit_ac(aday, aday["sl"], aday["tp"], aday.get("marjin"))
+            with manuel_kilit:
+                manuel_bekleyen.pop(token, None)
+            bot.edit_message_text(f"{'✅' if basarili else '⚠️'} {mesaj}", call.message.chat.id, call.message.message_id)
+            bot.answer_callback_query(call.id)
+
+    @bot.message_handler(commands=["ac"])
+    def ac_komutu(msg):
+        # /ac SEMBOL long|short GIRIS SL TP [MARJIN]  -- biz elle bulduğumuz bir işlemi doğrudan açmak için
+        # MARJIN verilmezse MANUEL_MARJIN_VARSAYILAN_USDT kullanılır.
+        if not yetkili_mi(msg):
+            return
+        try:
+            parcalar = msg.text.split()[1:]
+            if len(parcalar) not in (5, 6):
+                raise ValueError("parametre sayısı 5 ya da 6 olmalı")
+            sembol_ham, yon = parcalar[0], parcalar[1].lower()
+            giris, sl, tp = float(parcalar[2]), float(parcalar[3]), float(parcalar[4])
+            marjin = float(parcalar[5]) if len(parcalar) == 6 else None
+            sym = sembol_ham.upper() if "/" in sembol_ham else f"{sembol_ham.upper()}/USDT:USDT"
+            if yon not in ("long", "short"):
+                raise ValueError("yon long ya da short olmalı")
+        except Exception as e:
+            bot.send_message(msg.chat.id,
+                "Kullanım: /ac SEMBOL long|short GIRIS SL TP [MARJIN]\n"
+                "Örnek: /ac PUMP long 0.00522 0.00506 0.00555\n"
+                f"Örnek (marjin belirterek): /ac PUMP long 0.00522 0.00506 0.00555 8\n"
+                f"(hata: {e})")
+            return
+        aday = {"symbol": sym, "yon": yon, "fiyat": giris, "y4": "-", "y1": "-"}
+        basarili, mesaj = manuel_limit_ac(aday, sl, tp, marjin)
+        bot.send_message(msg.chat.id, f"{'✅' if basarili else '⚠️'} {mesaj}")
+
+    @bot.message_handler(commands=["pozisyonlar"])
+    def pozisyonlar_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        with state_lock:
+            durum_kopya = dict(trade_state)
+        with manuel_kilit:
+            bekleyen_kopya = dict(manuel_limit_emirler)
+        if not durum_kopya and not bekleyen_kopya:
+            bot.send_message(msg.chat.id, "Açık pozisyon ya da bekleyen emir yok.")
+            return
+        for sym, d in durum_kopya.items():
+            try:
+                simdi = safe(exchange.fetch_ticker(sym).get("last"))
+            except Exception:
+                simdi = d["entry"]
+            long_mu = d["yon"] == "long"
+            pnl_pct = (simdi/d["entry"]-1)*100 if long_mu else (d["entry"]/simdi-1)*100
+            m = telebot.types.InlineKeyboardMarkup()
+            m.row(telebot.types.InlineKeyboardButton("❌ Kapat", callback_data=f"mapoz:{sym}:kapat"))
+            pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
+            bot.send_message(msg.chat.id,
+                f"{'🟢' if long_mu else '🔴'} <b>{sym.split('/')[0]}</b>  <i>[{d.get('acilis_modu','?')}]</i>\n"
+                f"Giriş <b>{d['entry']:.8g}</b> → Şimdi <b>{simdi:.8g}</b>  {pnl_emoji} <b>%{pnl_pct:+.2f}</b>\n"
+                f"🛑 SL {d['sl']:.8g}  ·  🏁 TP {d['tp']:.8g}  ·  ⚡ İz sürme: {'AKTİF' if d.get('trailing_aktif') else 'henüz değil'}",
+                reply_markup=m, parse_mode="HTML")
+        for sym, k in bekleyen_kopya.items():
+            m = telebot.types.InlineKeyboardMarkup()
+            m.row(telebot.types.InlineKeyboardButton("🗑️ İptal Et", callback_data=f"mapoz:{sym}:iptal"))
+            bot.send_message(msg.chat.id, f"📝 {sym.split('/')[0]} bekleyen limit emir @ {k['entry_hedef']:.8g}", reply_markup=m)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("mapoz:"))
+    def pozisyon_callback(call):
+        if not yetkili_mi(call):
+            return
+        _, sym, aksiyon = call.data.split(":", 2)
+        if aksiyon == "iptal":
+            ok = manuel_limit_iptal(sym, "panelden iptal")
+            bot.edit_message_text(f"{'🗑️ İptal edildi' if ok else 'Bulunamadı'}: {sym.split('/')[0]}", call.message.chat.id, call.message.message_id)
+        elif aksiyon == "kapat":
+            with state_lock:
+                durum = trade_state.get(sym)
+            if not durum:
+                bot.answer_callback_query(call.id, "Pozisyon zaten kapalı.")
+                return
+            try:
+                kapanis_yonu = "sell" if durum["yon"] == "long" else "buy"
+                exchange.create_market_order(sym, kapanis_yonu, durum["qty"], params={"reduceOnly": True})
+                bot.edit_message_text(f"❌ Kapatıldı: {sym.split('/')[0]}", call.message.chat.id, call.message.message_id)
+            except Exception as e:
+                bot.answer_callback_query(call.id, f"Kapatma başarısız: {e}", show_alert=True)
+                return
+        bot.answer_callback_query(call.id)
+
+    @bot.message_handler(commands=["durdur"])
+    def durdur_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global OTOMATIK_GIRIS_AKTIF
+        OTOMATIK_GIRIS_AKTIF = False
+        bot.send_message(msg.chat.id, "🛑 Otomatik giriş durduruldu. Açık pozisyonlar yönetilmeye devam eder. Manuel /tara ve /ac her zaman çalışır.")
+
+    @bot.message_handler(commands=["baslat"])
+    def baslat_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global OTOMATIK_GIRIS_AKTIF
+        OTOMATIK_GIRIS_AKTIF = True
+        bot.send_message(msg.chat.id, "▶️ Otomatik giriş tekrar aktif.")
+
+    @bot.message_handler(func=lambda m: m.chat.id in manuel_metin_bekleyen)
+    def duzenle_metin_handler(msg):
+        if not yetkili_mi(msg):
+            return
+        token = manuel_metin_bekleyen.pop(msg.chat.id)
+        with manuel_kilit:
+            aday = manuel_bekleyen.get(token)
+        if not aday:
+            bot.send_message(msg.chat.id, "Bu kartın süresi doldu.")
+            return
+        try:
+            parcalar = [float(x) for x in msg.text.replace(",", " ").split()]
+            if len(parcalar) not in (2, 3):
+                raise ValueError("2 ya da 3 sayı olmalı")
+            yeni_sl, yeni_tp = parcalar[0], parcalar[1]
+            yeni_marjin = parcalar[2] if len(parcalar) == 3 else aday.get("marjin")
+        except Exception:
+            bot.send_message(msg.chat.id,
+                "Anlaşılamadı. Şu formatlardan biriyle yaz:\n"
+                "SL TP  (örnek: 0.0500 0.0555)\n"
+                "SL TP MARJIN  (örnek: 0.0500 0.0555 8)")
+            manuel_metin_bekleyen[msg.chat.id] = token
+            return
+        long_mu = aday["yon"] == "long"
+        if (long_mu and not (yeni_sl < aday["fiyat"] < yeni_tp)) or (not long_mu and not (yeni_tp < aday["fiyat"] < yeni_sl)):
+            beklenen = "SL < Giriş < TP" if long_mu else "TP < Giriş < SL"
+            bot.send_message(msg.chat.id, f"Bu yön ({'UZUN' if long_mu else 'KISA'}) için {beklenen} olmalı. Giriş: {aday['fiyat']:.8g}. Tekrar yaz.")
+            manuel_metin_bekleyen[msg.chat.id] = token
+            return
+        if yeni_marjin is not None and yeni_marjin <= 0:
+            bot.send_message(msg.chat.id, "Marjin pozitif olmalı. Tekrar yaz.")
+            manuel_metin_bekleyen[msg.chat.id] = token
+            return
+        aday["sl"], aday["tp"] = yeni_sl, yeni_tp
+        if yeni_marjin is not None:
+            aday["marjin"] = yeni_marjin
+        risk = abs(aday["fiyat"]-yeni_sl); odul = abs(yeni_tp-aday["fiyat"])
+        aday["rr"] = round(odul/risk, 2) if risk > 0 else 0
+        with manuel_kilit:
+            manuel_bekleyen[token] = aday
+        m = telebot.types.InlineKeyboardMarkup()
+        m.row(telebot.types.InlineKeyboardButton("✅ Aç", callback_data=f"macik:{token}:ac"),
+              telebot.types.InlineKeyboardButton("❌ Geç", callback_data=f"macik:{token}:gec"))
+        marjin_metni = f"${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}"
+        bot.send_message(msg.chat.id,
+            f"Güncellendi: {aday['symbol'].split('/')[0]} SL {yeni_sl:.8g} TP {yeni_tp:.8g} (R/R {aday['rr']}) | Marjin {marjin_metni}",
+            reply_markup=m)
+
     @bot.message_handler(commands=["veri"])
     def veri_komutu(msg):
         if not yetkili_mi(msg):
@@ -2097,7 +2687,7 @@ def manage_loop():
                 # pozisyonun TAMAMI korunuyor, sadece SL kârın gerisinden
                 # takip ediyor. Backtest'te (güncel veri) net kârı +121$'dan
                 # +519$'a çıkardığı doğrulandı.
-                if YUKSELEN_TRAILING_AKTIF and durum.get("acilis_modu") == "yukselen":
+                if YUKSELEN_TRAILING_AKTIF and durum.get("acilis_modu") in ("yukselen", "manuel"):
                     en_yuksek = durum.get("en_yuksek_fiyat", durum["entry"])
                     yeni_en_yuksek = max(en_yuksek, guncel) if long_mu else min(en_yuksek, guncel)
                     if yeni_en_yuksek != en_yuksek:
@@ -2367,6 +2957,8 @@ def izleme_listesi_kontrol():
             log.warning(f"[IZLEME_SINYAL] {sym}: {e}")
             continue
 
+        if sinyal and not OTOMATIK_GIRIS_AKTIF:
+            continue    # v6.1: otomatik giriş kapalı, izleme listesi sinyali görmezden gel (pozisyon açma)
         if sinyal:
             with izleme_lock:
                 izleme_listesi.pop(sym, None)
@@ -2387,7 +2979,8 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v5.9 (SÜRTÜNME KAYDI + GÜNLÜK FREN, %{RISK_PCT_BAKIYE*100:.0f} MARJİN, {'LONG+SHORT' if SHORT_AKTIF else 'LONG-only'}) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v6.1 (MANUEL ONAY PANELİ) başladı — GERÇEK PARA\n"
+       f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
        f"Giriş: 1D+4H+1H uyum + hacim teyidi (x{HACIM_TEYIT_KATSAYI:.1f}) + pump filtresi (%{PUMP_FILTRE_ESIK_PCT:.0f} üstü reddedilir)\n"
@@ -2404,7 +2997,10 @@ def tarama_loop():
        f"(BTC düşerse MAX_POS yarıya iner, trend gücü eşiği %{MIN_4H_TREND_GUCU_PCT_TEMKINLI:.1f}'e yükselir - "
        f"BTC'den bağımsız güçlü coinler yine geçebilir)\n"
        f"👁️ İzleme listesi ajanı: max {IZLEME_LISTESI_BOYUTU} coin, {IZLEME_TARAMA_ARALIGI_SN//60}dk'da bir genişletiliyor\n\n"
-       f"📌 v5.9: hisse/ETF vadelileri {'DAHİL' if RWA_HISSE_DAHIL else 'dışlandı'}, kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
+       f"📌 v6.1: /tara (4S+1S analiz + renkli kart + Aç/Düzenle/Geç), /ac SEMBOL yon giriş sl tp [marjin], "
+       f"/pozisyonlar (Kapat/İptal), /durdur ve /baslat (otomatik giriş). Varsayılan marjin ${MANUEL_MARJIN_VARSAYILAN_USDT:.0f} "
+       f"(Düzenle ya da /ac'te değiştirilebilir). Eski otomatik strateji: hisse/ETF {'DAHİL' if RWA_HISSE_DAHIL else 'dışlandı'}, "
+       f"kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
        f"iz sürme stop teşhisi. Eşikler geçmiş veriye dayanır, canlıda henüz doğrulanmadı.\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
@@ -2470,7 +3066,7 @@ def tarama_loop():
                         except Exception as e:
                             log.warning(f"[TARAMA] {sym}: {e}")
                             continue
-                        if sinyal:
+                        if sinyal and OTOMATIK_GIRIS_AKTIF:
                             with state_lock:
                                 if sym in trade_state or len(trade_state) + len(acilis_rezervasyonlari) >= efektif_max_pos():
                                     continue
@@ -2489,11 +3085,13 @@ def tarama_loop():
 
 
 if __name__ == "__main__":
-    print("LIVE BOT v5.9 (hisse/ETF vadelileri dışlandı, LONG-only) BAŞLIYOR...")
+    etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
+    print(f"LIVE BOT v6.1 (MANUEL ONAY PANELİ + serbest marjin, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
     trade_log_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
+    threading.Thread(target=manuel_limit_loop, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
