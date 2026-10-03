@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v6.3 — MANUEL ONAY PANELİ + WEB PANELİ (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v6.5 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
@@ -295,6 +295,33 @@ MANUEL_RSI_PERIYOT = int(os.getenv("MANUEL_RSI_PERIYOT", "14"))
 MANUEL_SL_BUFFER_PCT = float(os.getenv("MANUEL_SL_BUFFER_PCT", "0.004"))
 MANUEL_MIN_RR = float(os.getenv("MANUEL_MIN_RR", "1.3"))
 MANUEL_MAKS_KART = int(os.getenv("MANUEL_MAKS_KART", "5"))
+# v6.4 YENİ: OTOMATİK BİLDİRİM - bot arka planda düzenli tarar, temiz bir
+# kurulum bulunca (kart + Aç/Düzenle/Geç butonlarıyla) Telegram'a HABER VERİR.
+# Bu OTOMATİK İŞLEM AÇMA DEĞİL - hiçbir emir kullanıcı onayı olmadan gitmez,
+# sadece taramayı elle yapma ihtiyacını azaltır.
+OTOMATIK_BILDIRIM_AKTIF = os.getenv("OTOMATIK_BILDIRIM_AKTIF", "true").lower() == "true"
+OTOMATIK_BILDIRIM_ARALIK_SN = int(os.getenv("OTOMATIK_BILDIRIM_ARALIK_SN", str(30*60)))
+OTOMATIK_BILDIRIM_COOLDOWN_SN = int(os.getenv("OTOMATIK_BILDIRIM_COOLDOWN_SN", str(2*3600)))
+
+# v6.5 YENİ: ANİ DÖNÜŞ ALARMI - en çok yükselen/düşen ilk birkaç coin ayrıca
+# izlenir; bunlardan biri KISA sürede ters yöne sert hareket ederse (zirve
+# yapan coin aniden düşmeye başlarsa, dip yapan coin aniden sıçrarsa) haber
+# verilir. Bu da OTOMATİK İŞLEM AÇMA DEĞİL - sadece "buna hemen bak" uyarısı.
+ANI_HAREKET_AKTIF = os.getenv("ANI_HAREKET_AKTIF", "true").lower() == "true"
+ANI_HAREKET_ARALIK_SN = int(os.getenv("ANI_HAREKET_ARALIK_SN", "90"))
+# "Çok şişmiş/çok düşmüş" eşiği: son 3 günde en az bu kadar hareket etmiş olmalı
+# (28.09.2026 backtest: 3 günde >=%25 hareket eden coinlerde, zamanlamayı beklemeden
+# girmek bile tutarlı pozitif sonuç verdi - bkz. tukenme_testi.py). Bu yüzden önce
+# 3 günlük şişkinlik filtrelenir, SONRA o adaylarda güçlü ters hareket aranır.
+ANI_HAREKET_3GUN_ESIK_PCT = float(os.getenv("ANI_HAREKET_3GUN_ESIK_PCT", "25.0"))
+# "Güçlü satış/alım başladı" penceresi ve eşiği (son X dakikada ters yöne bu kadar hareket)
+ANI_HAREKET_PENCERE_DK = int(os.getenv("ANI_HAREKET_PENCERE_DK", "30"))
+ANI_HAREKET_ESIK_PCT = float(os.getenv("ANI_HAREKET_ESIK_PCT", "3.0"))
+# Hacim teyidi: pencere içindeki hacim, önceki ortalamanın en az bu katı olmalı
+# (zayıf hacimli küçük dalgalanmaları elemek için)
+ANI_HAREKET_HACIM_CARPANI = float(os.getenv("ANI_HAREKET_HACIM_CARPANI", "1.3"))
+ANI_HAREKET_TAKIP_SAYISI = int(os.getenv("ANI_HAREKET_TAKIP_SAYISI", "8"))
+ANI_HAREKET_COOLDOWN_SN = int(os.getenv("ANI_HAREKET_COOLDOWN_SN", str(2*3600)))
 MANUEL_LIMIT_TIMEOUT_SN = int(os.getenv("MANUEL_LIMIT_TIMEOUT_SN", str(6*3600)))
 MANUEL_MARJIN_VARSAYILAN_USDT = float(os.getenv("MANUEL_MARJIN_VARSAYILAN_USDT", "5.0"))
 
@@ -572,6 +599,8 @@ manuel_bekleyen = {}       # token -> aday dict (Aç/Düzenle butonları için)
 manuel_limit_emirler = {}  # sym -> {order_id, sym, yon, sl, tp, qty, konulma_zamani, iz_surme}
 manuel_kilit = threading.Lock()
 manuel_metin_bekleyen = {}  # chat_id -> token (bir sonraki düz metin mesajı SL/TP düzenlemesi olarak okunur)
+otomatik_bildirim_gecmis = {}  # "SEMBOL:yon" -> son bildirim zamanı (aynı kurulumu tekrar tekrar bildirmemek için)
+ani_hareket_gecmis = {}  # "SEMBOL:yon" -> son alarm zamanı
 
 
 def rsi_hesapla(kapanislar, periyot=14):
@@ -672,6 +701,102 @@ def manuel_aday_analiz(sym):
         "ma_mesafe": round(ma_mesafe, 2), "sl": sl, "tp": tp, "rr": rr,
         "zaman": time.time(),
     }
+
+
+def uc_gun_degisim_pct(sym):
+    """Son 72 saatteki toplam fiyat değişimini (%) döner (1S mumlarla).
+    Yeterli geçmişi olmayan (yeni listelenen) coinler için None döner."""
+    try:
+        d = get_df(sym, "1h", 76)
+    except Exception:
+        return None
+    if d is None or len(d) < 73:
+        return None
+    simdi = d["close"].iloc[-1]
+    eski = d["close"].iloc[-73]
+    if eski <= 0:
+        return None
+    return (simdi / eski - 1) * 100
+
+
+def pencere_ici_hareket_ve_hacim(sym, pencere_dk):
+    """Son `pencere_dk` dakikadaki fiyat değişimini (%) ve hacim çarpanını
+    (bu pencere / aynı uzunluktaki önceki pencere) döner. 1dk mum kullanır,
+    tamamlanmamış son mumu atar. Veri yetersizse (None, None) döner."""
+    try:
+        d = get_df(sym, "1m", pencere_dk * 2 + 5)
+    except Exception:
+        return None, None
+    if d is None or len(d) < pencere_dk * 2 + 1:
+        return None, None
+    simdi = d["close"].iloc[-1]
+    eski = d["close"].iloc[-(pencere_dk + 1)]
+    if eski <= 0:
+        return None, None
+    hareket = (simdi / eski - 1) * 100
+    hacim_simdi = d["volume"].iloc[-pencere_dk:].sum()
+    hacim_once = d["volume"].iloc[-(pencere_dk * 2):-pencere_dk].sum()
+    hacim_carpani = hacim_simdi / hacim_once if hacim_once > 0 else 0
+    return hareket, hacim_carpani
+
+
+def ani_hareket_tara():
+    """İki aşamalı tarama:
+    1) Son 3 günde en az ANI_HAREKET_3GUN_ESIK_PCT kadar şişmiş/düşmüş
+       (likit, RWA/yavaş coin hariç) adayları bulur.
+    2) O adaylardan, son ANI_HAREKET_PENCERE_DK dakikada GÜÇLÜ (hacim teyitli)
+       bir TERS hareket başlamış olanları listeler - şişmiş biri düşmeye,
+       düşmüş biri yükselmeye başlamışsa.
+    Döner: [{"symbol", "yon" (long/short), "hareket_3g", "hareket_pencere",
+             "hacim_carpani", "fiyat"}]
+    """
+    tickers = guncel_tickerlari_al()
+    adaylar = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT:USDT"):
+            continue
+        base = sym.split("/")[0]
+        if base in SLUGGISH_BASE or rwa_mi(sym):
+            continue
+        vol = t.get("quoteVolume") or 0
+        chg = t.get("percentage")
+        if vol < 1_500_000 or chg is None:
+            continue
+        adaylar.append((sym, chg))
+    adaylar.sort(key=lambda x: -x[1])
+    # geniş bir havuzdan şişmiş/düşmüş adayları bul (sadece ilk/son N değil,
+    # 3 günlük gerçek harekete göre - 24s sıralaması yanıltıcı olabilir)
+    havuz = [s for s, _ in adaylar[:ANI_HAREKET_TAKIP_SAYISI * 4]] + [s for s, _ in adaylar[-ANI_HAREKET_TAKIP_SAYISI * 4:]]
+
+    sonuc = []
+    for sym in havuz:
+        g3 = uc_gun_degisim_pct(sym)
+        if g3 is None:
+            continue
+        if g3 >= ANI_HAREKET_3GUN_ESIK_PCT:
+            tur = "sismis"      # düşüş adayı (short)
+        elif g3 <= -ANI_HAREKET_3GUN_ESIK_PCT:
+            tur = "cokmus"      # yükseliş adayı (long)
+        else:
+            continue
+        hareket, hacim_carpani = pencere_ici_hareket_ve_hacim(sym, ANI_HAREKET_PENCERE_DK)
+        if hareket is None or hacim_carpani is None or hacim_carpani < ANI_HAREKET_HACIM_CARPANI:
+            continue
+        if tur == "sismis" and hareket <= -ANI_HAREKET_ESIK_PCT:
+            try:
+                fiyat = safe(tickers[sym].get("last"))
+            except Exception:
+                continue
+            sonuc.append({"symbol": sym, "yon": "short", "hareket_3g": round(g3, 1),
+                          "hareket_pencere": round(hareket, 2), "hacim_carpani": round(hacim_carpani, 2), "fiyat": fiyat})
+        elif tur == "cokmus" and hareket >= ANI_HAREKET_ESIK_PCT:
+            try:
+                fiyat = safe(tickers[sym].get("last"))
+            except Exception:
+                continue
+            sonuc.append({"symbol": sym, "yon": "long", "hareket_3g": round(g3, 1),
+                          "hareket_pencere": round(hareket, 2), "hacim_carpani": round(hacim_carpani, 2), "fiyat": fiyat})
+    return sonuc
 
 
 def manuel_tarama_yap(ilerleme_cb=None):
@@ -2514,7 +2639,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v6.2</b>",
+        "💎 <b>GHOST BOT v6.5</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2566,7 +2691,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v6.3 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v6.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -2950,6 +3075,144 @@ if bot:
               telebot.types.InlineKeyboardButton("✏️ Düzenle", callback_data=f"macik:{token}:duzenle"),
               telebot.types.InlineKeyboardButton("❌ Geç", callback_data=f"macik:{token}:gec"))
         return m
+
+    def otomatik_bildirim_gonder(aday, btc_baglam):
+        token = uuid.uuid4().hex[:10]
+        with manuel_kilit:
+            manuel_bekleyen[token] = aday
+        metin = "🔔 <b>OTOMATİK BİLDİRİM</b> (arka plan taraması, karar hâlâ sende)\n\n" + manuel_kart_metni(aday, btc_baglam)
+        try:
+            bot.send_message(CHAT_ID, metin, reply_markup=manuel_kart_markup(token), parse_mode="HTML")
+        except Exception as e:
+            log.warning(f"[OTOMATIK_BILDIRIM] gönderilemedi: {e}")
+
+    def otomatik_bildirim_loop():
+        while True:
+            try:
+                time.sleep(OTOMATIK_BILDIRIM_ARALIK_SN)
+                if not OTOMATIK_BILDIRIM_AKTIF:
+                    continue
+                bulunanlar, btc_baglam = manuel_tarama_yap()
+                simdi = time.time()
+                for aday in bulunanlar:
+                    anahtar = f"{aday['symbol']}:{aday['yon']}"
+                    son = otomatik_bildirim_gecmis.get(anahtar, 0)
+                    if simdi - son < OTOMATIK_BILDIRIM_COOLDOWN_SN:
+                        continue    # bu kurulum için yakın zamanda zaten haber verildi
+                    otomatik_bildirim_gecmis[anahtar] = simdi
+                    otomatik_bildirim_gonder(aday, btc_baglam)
+            except Exception as e:
+                log.error(f"[OTOMATIK_BILDIRIM_LOOP] {e}")
+                time.sleep(30)
+
+    @bot.message_handler(commands=["bildirimac"])
+    def bildirimac_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global OTOMATIK_BILDIRIM_AKTIF
+        OTOMATIK_BILDIRIM_AKTIF = True
+        bot.send_message(msg.chat.id, f"🔔 Otomatik bildirim açık. Her {OTOMATIK_BILDIRIM_ARALIK_SN//60} dakikada bir arka planda taranır, temiz kurulum bulunursa haber verilir (işlem açılmaz).")
+
+    @bot.message_handler(commands=["bildirimkapat"])
+    def bildirimkapat_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global OTOMATIK_BILDIRIM_AKTIF
+        OTOMATIK_BILDIRIM_AKTIF = False
+        bot.send_message(msg.chat.id, "🔕 Otomatik bildirim kapatıldı. /tara ile elle taramaya devam edebilirsin.")
+
+    @bot.message_handler(commands=["tara"])
+    def ani_hareket_kart_metni(aday, btc_baglam):
+        long_mu = aday["yon"] == "long"
+        renk = "🟢" if long_mu else "🔴"
+        baslik = "📈 Bu coin YÜKSELEBİLİR" if long_mu else "📉 Bu coin DÜŞEBİLİR"
+        yon_sismis = "çökmüş (son 3 günde" if long_mu else "şişmiş (son 3 günde"
+        sym_ad = aday["symbol"].split("/")[0]
+        sl, tp, rr = aday["sl"], aday["tp"], aday["rr"]
+        risk = abs(aday["fiyat"] - sl); odul = abs(tp - aday["fiyat"])
+        rr_emoji = "💎" if rr >= 2 else ("✅" if rr >= 1.5 else "🟡")
+        return (
+            f"{renk} <b>{baslik}</b>\n"
+            f"<b>{sym_ad}</b> — {yon_sismis} %{aday['hareket_3g']:+.1f})\n"
+            f"<i>BTC {btc_baglam['y4']} (RSI {btc_baglam['r4']}) / {btc_baglam['y1']} (RSI {btc_baglam['r1']})</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡ Son {ANI_HAREKET_PENCERE_DK} dakikada %{aday['hareket_pencere']:+.2f} hareket, "
+            f"hacim x{aday['hacim_carpani']:.1f}\n"
+            f"💲 Fiyat: <b>{aday['fiyat']:.8g}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 <b>Plan</b> <i>(swing destek-direnç — kesin sinyal değil)</i>\n"
+            f"   Giriş (limit): <b>{aday['fiyat']:.8g}</b>\n"
+            f"   🛑 SL: <b>{sl:.8g}</b>  (-%{risk/aday['fiyat']*100:.1f})\n"
+            f"   🏁 TP: <b>{tp:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
+            f"   {rr_emoji} R/R: <b>{rr}</b>\n"
+            f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b>"
+        )
+
+    def ani_hareket_gonder(aday, btc_baglam):
+        token = uuid.uuid4().hex[:10]
+        with manuel_kilit:
+            manuel_bekleyen[token] = aday
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.row(telebot.types.InlineKeyboardButton("✅ Gir", callback_data=f"macik:{token}:ac"),
+                   telebot.types.InlineKeyboardButton("✏️ Düzenle", callback_data=f"macik:{token}:duzenle"),
+                   telebot.types.InlineKeyboardButton("❌ Pas", callback_data=f"macik:{token}:gec"))
+        try:
+            bot.send_message(CHAT_ID, ani_hareket_kart_metni(aday, btc_baglam), reply_markup=markup, parse_mode="HTML")
+        except Exception as e:
+            log.warning(f"[ANI_HAREKET_GONDER] gönderilemedi: {e}")
+
+    def ani_hareket_loop():
+        while True:
+            try:
+                time.sleep(ANI_HAREKET_ARALIK_SN)
+                if not ANI_HAREKET_AKTIF:
+                    continue
+                bulunanlar = ani_hareket_tara()
+                if not bulunanlar:
+                    continue
+                d4b, d1b = get_df("BTC/USDT:USDT", "4h", 150), get_df("BTC/USDT:USDT", "1h", 150)
+                btc_baglam = {
+                    "y4": trend_yon(d4b) if d4b is not None else "?",
+                    "y1": trend_yon(d1b) if d1b is not None else "?",
+                    "r4": round(rsi_hesapla(d4b["close"], MANUEL_RSI_PERIYOT), 1) if d4b is not None else None,
+                    "r1": round(rsi_hesapla(d1b["close"], MANUEL_RSI_PERIYOT), 1) if d1b is not None else None,
+                }
+                simdi = time.time()
+                for aday in bulunanlar:
+                    anahtar = f"{aday['symbol']}:{aday['yon']}"
+                    son = ani_hareket_gecmis.get(anahtar, 0)
+                    if simdi - son < ANI_HAREKET_COOLDOWN_SN:
+                        continue
+                    long_mu = aday["yon"] == "long"
+                    d1_sym = get_df(aday["symbol"], "1h", 150)
+                    d4_sym = get_df(aday["symbol"], "4h", 150)
+                    if d1_sym is None or d4_sym is None:
+                        continue
+                    sonuc = manuel_swing_sl_tp(d1_sym, d4_sym, aday["fiyat"], long_mu)
+                    if sonuc is None:
+                        continue
+                    aday["sl"], aday["tp"], aday["rr"] = sonuc
+                    ani_hareket_gecmis[anahtar] = simdi
+                    ani_hareket_gonder(aday, btc_baglam)
+            except Exception as e:
+                log.error(f"[ANI_HAREKET_LOOP] {e}")
+                time.sleep(30)
+
+    @bot.message_handler(commands=["anihareketac"])
+    def anihareketac_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global ANI_HAREKET_AKTIF
+        ANI_HAREKET_AKTIF = True
+        bot.send_message(msg.chat.id, f"🔔 Ani hareket alarmı açık. Son 3 günde %{ANI_HAREKET_3GUN_ESIK_PCT:.0f}+ şişen/çöken coinlerde, hacim teyitli güçlü ters hareket başlarsa haber verilir.")
+
+    @bot.message_handler(commands=["anihareketkapat"])
+    def anihareketkapat_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        global ANI_HAREKET_AKTIF
+        ANI_HAREKET_AKTIF = False
+        bot.send_message(msg.chat.id, "🔕 Ani hareket alarmı kapatıldı.")
 
     @bot.message_handler(commands=["tara"])
     def tara_komutu(msg):
@@ -3560,7 +3823,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v6.3 (MANUEL ONAY PANELİ + WEB PANELİ) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v6.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -3667,13 +3930,15 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v6.3 (MANUEL ONAY PANELİ + WEB PANELİ, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v6.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
     trade_log_yukle()
     threading.Thread(target=manage_loop, daemon=True).start()
     threading.Thread(target=manuel_limit_loop, daemon=True).start()
+    threading.Thread(target=otomatik_bildirim_loop, daemon=True).start()
+    threading.Thread(target=ani_hareket_loop, daemon=True).start()
     threading.Thread(target=web_panel_baslat, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
