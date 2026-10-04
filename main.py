@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v6.6 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v6.7 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v6.7 (04.10.2026): ANİ HAREKET sinyal eşikleri backtest'e göre sıkılaştırıldı (zayıf sinyalleri elemek için):
+KISA için son 30 dk düşüşü %3 yerine %5, UZUN için 3 günlük çöküş %25 yerine %40.
+Eski 'otomatik bildirim' (4S+1S) varsayılan olarak KAPATILDI: sadece ani hareket alarmı gelir. Ayrıntı: ANI_HAREKET_ESIK_KISA_PCT
+ve ANI_HAREKET_UZUN_MIN_3GUN_PCT ayarlarının yanındaki not. Bedeli: sinyal sayısı belirgin azalır (özellikle UZUN).
 
 v6.6 (04.10.2026): (1) HATA DÜZELTMESİ: /tara komutu yanlışlıkla ani_hareket_kart_metni fonksiyonuna
 bağlanmıştı (dekoratör yanlış yerdeydi); Telegram'dan elle yazılan /tara hata veriyordu, panel
@@ -306,7 +311,9 @@ MANUEL_MAKS_KART = int(os.getenv("MANUEL_MAKS_KART", "5"))
 # kurulum bulunca (kart + Aç/Düzenle/Geç butonlarıyla) Telegram'a HABER VERİR.
 # Bu OTOMATİK İŞLEM AÇMA DEĞİL - hiçbir emir kullanıcı onayı olmadan gitmez,
 # sadece taramayı elle yapma ihtiyacını azaltır.
-OTOMATIK_BILDIRIM_AKTIF = os.getenv("OTOMATIK_BILDIRIM_AKTIF", "true").lower() == "true"
+# v6.7: varsayılan KAPALI. Kullanıcı sadece ani hareket alarmını istiyor; /bildirimkapat bellekte tutulduğu için
+# her deploy'da (yeniden başlatmada) eski 4S+1S bildirimi geri açılıyordu. Açmak için /bildirimac ya da ortam değişkeni.
+OTOMATIK_BILDIRIM_AKTIF = os.getenv("OTOMATIK_BILDIRIM_AKTIF", "false").lower() == "true"
 OTOMATIK_BILDIRIM_ARALIK_SN = int(os.getenv("OTOMATIK_BILDIRIM_ARALIK_SN", str(30*60)))
 OTOMATIK_BILDIRIM_COOLDOWN_SN = int(os.getenv("OTOMATIK_BILDIRIM_COOLDOWN_SN", str(2*3600)))
 
@@ -323,7 +330,13 @@ ANI_HAREKET_ARALIK_SN = int(os.getenv("ANI_HAREKET_ARALIK_SN", "90"))
 ANI_HAREKET_3GUN_ESIK_PCT = float(os.getenv("ANI_HAREKET_3GUN_ESIK_PCT", "25.0"))
 # "Güçlü satış/alım başladı" penceresi ve eşiği (son X dakikada ters yöne bu kadar hareket)
 ANI_HAREKET_PENCERE_DK = int(os.getenv("ANI_HAREKET_PENCERE_DK", "30"))
-ANI_HAREKET_ESIK_PCT = float(os.getenv("ANI_HAREKET_ESIK_PCT", "3.0"))
+ANI_HAREKET_ESIK_PCT = float(os.getenv("ANI_HAREKET_ESIK_PCT", "3.0"))   # UZUN sinyal: son penceredeki yükseliş eşiği
+# v6.7 (04.10.2026, 187 coin/50 gün backtest, iz sürmeli çıkış, iki yarıda da tutarlı):
+#  KISA: pencere hareketi -%3..-%5 arası zayıftı (n=432 ort +%0.37); <= -%5 olanlar n=255, kazanma %82, ort +%2.10.
+#  UZUN: 3 günlük düşüş -%25..-%40 arası marjinaldi (n=119 ort +%0.16, istatistiksel olarak sıfırdan ayırt edilemez);
+#        düşüş >= %40 olanlar n=40, kazanma %87.5, ort +%3.32 (örnek küçük, temkinli yorumla).
+ANI_HAREKET_ESIK_KISA_PCT = float(os.getenv("ANI_HAREKET_ESIK_KISA_PCT", "5.0"))
+ANI_HAREKET_UZUN_MIN_3GUN_PCT = float(os.getenv("ANI_HAREKET_UZUN_MIN_3GUN_PCT", "40.0"))
 # Hacim teyidi: pencere içindeki hacim, önceki ortalamanın en az bu katı olmalı
 # (zayıf hacimli küçük dalgalanmaları elemek için)
 ANI_HAREKET_HACIM_CARPANI = float(os.getenv("ANI_HAREKET_HACIM_CARPANI", "1.3"))
@@ -792,6 +805,7 @@ def ani_hareket_tara():
     # geniş bir havuzdan şişmiş/düşmüş adayları bul (sadece ilk/son N değil,
     # 3 günlük gerçek harekete göre - 24s sıralaması yanıltıcı olabilir)
     havuz = [s for s, _ in adaylar[:ANI_HAREKET_TAKIP_SAYISI * 4]] + [s for s, _ in adaylar[-ANI_HAREKET_TAKIP_SAYISI * 4:]]
+    havuz = list(dict.fromkeys(havuz))   # v6.7: aday sayısı az ise aynı coin iki kez taranmasın
 
     sonuc = []
     for sym in havuz:
@@ -800,14 +814,14 @@ def ani_hareket_tara():
             continue
         if g3 >= ANI_HAREKET_3GUN_ESIK_PCT:
             tur = "sismis"      # düşüş adayı (short)
-        elif g3 <= -ANI_HAREKET_3GUN_ESIK_PCT:
-            tur = "cokmus"      # yükseliş adayı (long)
+        elif g3 <= -max(ANI_HAREKET_3GUN_ESIK_PCT, ANI_HAREKET_UZUN_MIN_3GUN_PCT):
+            tur = "cokmus"      # yükseliş adayı (long) - v6.7: sadece derin çöküşler (>= %40)
         else:
             continue
         hareket, hacim_carpani = pencere_ici_hareket_ve_hacim(sym, ANI_HAREKET_PENCERE_DK)
         if hareket is None or hacim_carpani is None or hacim_carpani < ANI_HAREKET_HACIM_CARPANI:
             continue
-        if tur == "sismis" and hareket <= -ANI_HAREKET_ESIK_PCT:
+        if tur == "sismis" and hareket <= -ANI_HAREKET_ESIK_KISA_PCT:
             try:
                 fiyat = safe(tickers[sym].get("last"))
             except Exception:
@@ -2665,7 +2679,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v6.6</b>",
+        "💎 <b>GHOST BOT v6.7</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2717,7 +2731,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v6.6 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v6.7 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3231,7 +3245,7 @@ if bot:
             return
         global ANI_HAREKET_AKTIF
         ANI_HAREKET_AKTIF = True
-        bot.send_message(msg.chat.id, f"🔔 Ani hareket alarmı açık. Son 3 günde %{ANI_HAREKET_3GUN_ESIK_PCT:.0f}+ şişen/çöken coinlerde, hacim teyitli güçlü ters hareket başlarsa haber verilir.")
+        bot.send_message(msg.chat.id, f"🔔 Ani hareket alarmı açık.\nKISA: 3 günde %{ANI_HAREKET_3GUN_ESIK_PCT:.0f}+ şişmiş coin, son {ANI_HAREKET_PENCERE_DK} dk'da %{ANI_HAREKET_ESIK_KISA_PCT:.0f}+ düşüş, hacim teyitli.\nUZUN: 3 günde %{ANI_HAREKET_UZUN_MIN_3GUN_PCT:.0f}+ çökmüş coin, son {ANI_HAREKET_PENCERE_DK} dk'da %{ANI_HAREKET_ESIK_PCT:.0f}+ yükseliş, hacim teyitli.")
 
     @bot.message_handler(commands=["anihareketkapat"])
     def anihareketkapat_komutu(msg):
@@ -3850,7 +3864,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v6.6 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v6.7 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -3957,7 +3971,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v6.6 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v6.7 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
