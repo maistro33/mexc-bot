@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v6.5 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v6.6 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v6.6 (04.10.2026): (1) HATA DÜZELTMESİ: /tara komutu yanlışlıkla ani_hareket_kart_metni fonksiyonuna
+bağlanmıştı (dekoratör yanlış yerdeydi); Telegram'dan elle yazılan /tara hata veriyordu, panel
+butonu çalışıyordu. Dekoratör kaldırıldı. (2) Kartlara ve emir mesajına LİKİDASYON UYARISI eklendi:
+SL mesafesi tahmini likidasyondan uzaksa bildirir. Sinyal kuralına DOKUNULMADI: 187 coin/50 gün
+backtest'te (iz sürmeli çıkış) mevcut kural kısa n=687 kazanma %73.5 ort +%1.01, 4H EMA/RSI veya
+72s tepe-dip filtreleri sonucu iyileştirmedi (bkz. sohbet), bu yüzden eklenmedi.
 
 v4.0 (17.09.2026, kullanıcı isteğiyle): Canlı botta trend-uyum
 sinyalinin, kararsız/yatay piyasa koşullarında zayıf sinyalleri
@@ -590,6 +597,24 @@ def safe(x):
         return float(x)
     except Exception:
         return 0.0
+
+
+def likidasyon_mesafe_yaklasik(lev):
+    """v6.6: Tahmini likidasyon mesafesi (fiyat yüzdesi, oran olarak). Bitget küçük coinlerde yüksek
+    bakım marjini uyguladığı için 10x'te likidasyon ~%9.5 değil ~%5 civarında çıkıyor (SAND short
+    örneği: giriş 0.07453, likidasyon 0.07803 = %4.7). Bu YAKLAŞIK bir değerdir; kesin değer için
+    borsadaki 'Est. liq. price' alanına bak."""
+    return max(0.01, 1.0 / max(lev, 1) - 0.05)
+
+
+def likidasyon_uyari_satiri(risk_orani, lev=None):
+    """SL mesafesi tahmini likidasyondan uzaksa kart için uyarı satırı döner (yoksa boş metin)."""
+    lev = lev or LEV
+    liq = likidasyon_mesafe_yaklasik(lev)
+    if risk_orani <= liq:
+        return ""
+    return (f"   ⚠️ <i>SL (%{risk_orani*100:.1f}) tahmini likidasyondan (~%{liq*100:.1f}, {lev}x) uzak: "
+            f"stop çalışmadan likide olabilirsin, gerçek zarar sınırı marjin. Marjini küçük tut ya da kaldıracı düşür.</i>\n")
 
 
 # ════════════════════════════════════════════
@@ -1446,6 +1471,7 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
     tg(f"📝 MANUEL LİMİT EMİR: {sym} {'LONG' if long_mu else 'SHORT'} @ {fiyat_p:.8g}\n"
        f"Marjin: ${marjin_kullanilan:.2f} ({LEV_KULLANILAN}x, pozisyon ≈${notional:.2f})\n"
        f"Miktar: {qty} | SL: {sl:.8g} | TP: {tp:.8g}\n"
+       f"{likidasyon_uyari_satiri(risk_pct, LEV_KULLANILAN).replace('<i>', '').replace('</i>', '')}"
        f"Emir {MANUEL_LIMIT_TIMEOUT_SN//3600} saat içinde dolmazsa otomatik iptal edilir.")
     return True, f"{sym} için limit emir gönderildi ({fiyat_p:.8g}), marjin ${marjin_kullanilan:.2f}."
 
@@ -2639,7 +2665,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v6.5</b>",
+        "💎 <b>GHOST BOT v6.6</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2691,7 +2717,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v6.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v6.6 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3064,6 +3090,7 @@ if bot:
             f"   🛑 SL: <b>{aday['sl']:.8g}</b>  (-%{risk/aday['fiyat']*100:.1f})\n"
             f"   🏁 TP: <b>{aday['tp']:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
             f"   {rr_emoji} R/R: <b>{rr}</b>\n"
+            f"{likidasyon_uyari_satiri(risk / aday['fiyat'])}"
             f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b> "
             f"<i>(değiştirmek için ✏️ Düzenle)</i>\n"
             f"   ⚡ İz sürme: kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'te aktif, %{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} pay"
@@ -3121,7 +3148,6 @@ if bot:
         OTOMATIK_BILDIRIM_AKTIF = False
         bot.send_message(msg.chat.id, "🔕 Otomatik bildirim kapatıldı. /tara ile elle taramaya devam edebilirsin.")
 
-    @bot.message_handler(commands=["tara"])
     def ani_hareket_kart_metni(aday, btc_baglam):
         long_mu = aday["yon"] == "long"
         renk = "🟢" if long_mu else "🔴"
@@ -3145,6 +3171,7 @@ if bot:
             f"   🛑 SL: <b>{sl:.8g}</b>  (-%{risk/aday['fiyat']*100:.1f})\n"
             f"   🏁 TP: <b>{tp:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
             f"   {rr_emoji} R/R: <b>{rr}</b>\n"
+            f"{likidasyon_uyari_satiri(risk / aday['fiyat'])}"
             f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b>"
         )
 
@@ -3823,7 +3850,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v6.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v6.6 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -3930,7 +3957,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v6.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v6.6 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
