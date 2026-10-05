@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v6.7 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v7.0 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v7.0 (05.10.2026): GERÇEKÇİ BACKTEST'E GÖRE İKİ DEĞİŞİKLİK. (1) Kaldıraç ortam değişkeni oldu (KALDIRAC), varsayılan 5x (önce sabit 10x).
+(2) Ani hareket kartlarında SL en fazla %4 (ANI_HAREKET_SL_TAVAN_PCT), TP/R-R buna göre. Gerekçe (187 coin/45 gün/5 dk mum, komisyon+kayma+
+likidasyon dahil): kartın doğal SL'i (medyan %12) 10x'te işlemlerin %33'ünü likide etti (-$0.66/işlem); SL<=%4 ile pozitif (+$0.19, 10x) ve
+5x'te kötü stop kaymasında (%1) hesabı patlatmıyor. KENAR İNCE: en iyi senaryoda marjin üzerinden 45 günde ~%4; stop kayması %0.5'e çıkarsa sıfıra yakın.
+OTOMATİK İŞLEM AÇMA ÖNERİLMEZ (OTOMATIK_GIRIS_AKTIF kapalı kalmalı; o eski stratejiyi çalıştırır, ani hareket sinyallerini değil).
+Karttaki geçmiş istatistiği bu backtest'le güncellendi.
+
+v6.9 (04.10.2026): GARANTİ VERİLEMEZ. v6.8'deki KISA hacim 2.0x şartı GERİ ALINDI (baştan simülasyonda fayda göstermedi; v6.8'de
+yazılan %85 rakamı hatalı dilimlemeden çıkmıştı). Kartlardaki geçmiş istatistiği düzeltildi: KISA %81 kazanma (n=305), kaybedenlerde ort. -%9.
+Her karta "GARANTİ YOK" uyarısı kaldı. 4H/1H RSI ve EMA şartları denendi, kazanma oranını artırmadı (eklenmedi).
 
 v6.7 (04.10.2026): ANİ HAREKET sinyal eşikleri backtest'e göre sıkılaştırıldı (zayıf sinyalleri elemek için):
 KISA için son 30 dk düşüşü %3 yerine %5, UZUN için 3 günlük çöküş %25 yerine %40.
@@ -231,7 +242,11 @@ RISK_PCT_BAKIYE = float(os.getenv("RISK_PCT_BAKIYE", "0.06"))  # v5.7: 4 slotta 
 MARJIN_TABAN_USDT = float(os.getenv("MARJIN_TABAN_USDT", "1.0"))
 MARJIN_TAVAN_USDT = float(os.getenv("MARJIN_TAVAN_USDT", "50.0"))
 SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
-LEV = 10
+# v7.0: kaldıraç artık ortam değişkeni (KALDIRAC), varsayılan 5x. Gerçekçi backtest (187 coin/45 gün, komisyon+kayma+likidasyon):
+# 10x'te kartların geniş SL'i likidasyondan önce çalışmadığı için işlemlerin %33'ü likide oldu (-$0.66/işlem); 5x'te likidasyon
+# mesafesi ~%14.7 olduğundan stop çalışabiliyor ve kötü stop kaymasında (%1) bile hesap patlamıyor. Coin'in izin verdiği
+# maksimum kaldıraç bundan düşükse o kullanılır (sembol_max_kaldirac).
+LEV = int(os.getenv("KALDIRAC", "5"))
 NOTIONAL = SABIT_MARJIN_USDT * LEV  # sadece eski koddaki referanslar için tutuluyor
 MAX_POS = int(os.getenv("MAX_POS", "4"))  # v5.7: kullanıcı kararı (bakiye boşta kalmasın)
 
@@ -240,7 +255,7 @@ MA_PERIYOT = 20
 SL_BUFFER_PCT = 0.015
 MIN_SL_PCT = 0.05
 TARGET_MAX_LOSS_USDT = float(os.getenv("TARGET_MAX_LOSS_USDT", "0.90"))
-MAX_SL_PCT_TAVAN = TARGET_MAX_LOSS_USDT / NOTIONAL
+MAX_SL_PCT_TAVAN = TARGET_MAX_LOSS_USDT / (SABIT_MARJIN_USDT * 10)   # v7.0: eski otomatik stratejinin davranışı kaldıraçtan etkilenmesin diye 10x üzerinden sabit
 
 # ════════════════════════════════════════════
 # KULLANICI KARARI (01.09.2026): FIRSATÇI STRATEJİYE GEÇİŞ
@@ -331,15 +346,22 @@ ANI_HAREKET_3GUN_ESIK_PCT = float(os.getenv("ANI_HAREKET_3GUN_ESIK_PCT", "25.0")
 # "Güçlü satış/alım başladı" penceresi ve eşiği (son X dakikada ters yöne bu kadar hareket)
 ANI_HAREKET_PENCERE_DK = int(os.getenv("ANI_HAREKET_PENCERE_DK", "30"))
 ANI_HAREKET_ESIK_PCT = float(os.getenv("ANI_HAREKET_ESIK_PCT", "3.0"))   # UZUN sinyal: son penceredeki yükseliş eşiği
-# v6.7 (04.10.2026, 187 coin/50 gün backtest, iz sürmeli çıkış, iki yarıda da tutarlı):
-#  KISA: pencere hareketi -%3..-%5 arası zayıftı (n=432 ort +%0.37); <= -%5 olanlar n=255, kazanma %82, ort +%2.10.
-#  UZUN: 3 günlük düşüş -%25..-%40 arası marjinaldi (n=119 ort +%0.16, istatistiksel olarak sıfırdan ayırt edilemez);
-#        düşüş >= %40 olanlar n=40, kazanma %87.5, ort +%3.32 (örnek küçük, temkinli yorumla).
+# v6.7/v6.9 (187 coin/50 gün backtest, her eşik baştan simüle edildi, iz sürmeli çıkış, komisyon %0.12, kayma yok):
+#  KISA (3g>=%25, hacim>=1.3x): 30dk eşiği -%3: n=682 kazanma %73 ort +%0.99 | -%4: n=446 %77 +%1.44 | -%5: n=305 %81 +%1.86
+#        (ilk/son yarıda ikisi de pozitif). Eşik yükseldikçe kazanma oranı ve ortalama düzenli artıyor.
+#  UZUN (30dk>=+%3): 3 günlük çöküş -%25: n=159 %74 +%0.96 (t=2.0) | -%35: n=69 %83 +%2.29 | -%40: n=40 %87.5 +%3.32 (örnek küçük).
 ANI_HAREKET_ESIK_KISA_PCT = float(os.getenv("ANI_HAREKET_ESIK_KISA_PCT", "5.0"))
 ANI_HAREKET_UZUN_MIN_3GUN_PCT = float(os.getenv("ANI_HAREKET_UZUN_MIN_3GUN_PCT", "40.0"))
 # Hacim teyidi: pencere içindeki hacim, önceki ortalamanın en az bu katı olmalı
 # (zayıf hacimli küçük dalgalanmaları elemek için)
 ANI_HAREKET_HACIM_CARPANI = float(os.getenv("ANI_HAREKET_HACIM_CARPANI", "1.3"))
+# v6.9: KISA için ayrı hacim şartı eklenmişti (v6.8: 2.0x), GERİ ALINDI: baştan simülasyonda 2.0x kazanma oranını
+# artırmadı (30dk<=-%5: 1.3x -> n=305 %81.3 +%1.86; 2.0x -> n=203 %82.3 +%1.90) ve sinyal sayısını 1/3 azalttı.
+# (v6.8'deki "%85" rakamı, sinyaller tekilleştirildikten SONRA dilimlenmekten doğan yanıltıcı bir sonuçtu.)
+ANI_HAREKET_HACIM_CARPANI_KISA = float(os.getenv("ANI_HAREKET_HACIM_CARPANI_KISA", "1.3"))
+# v7.0: ani hareket kartlarında SL en fazla bu yüzde (%) uzakta olur, TP ve R/R buna göre yeniden hesaplanır.
+# Backtest (5x/10x, likidasyon dahil): kartın doğal SL'i (medyan %12) 10x'te zarar, SL<=%4 ile pozitif ve likidasyonsuz.
+ANI_HAREKET_SL_TAVAN_PCT = float(os.getenv("ANI_HAREKET_SL_TAVAN_PCT", "4.0"))
 ANI_HAREKET_TAKIP_SAYISI = int(os.getenv("ANI_HAREKET_TAKIP_SAYISI", "8"))
 ANI_HAREKET_COOLDOWN_SN = int(os.getenv("ANI_HAREKET_COOLDOWN_SN", str(2*3600)))
 MANUEL_LIMIT_TIMEOUT_SN = int(os.getenv("MANUEL_LIMIT_TIMEOUT_SN", str(6*3600)))
@@ -612,6 +634,29 @@ def safe(x):
         return 0.0
 
 
+# v7.0: kartlara dürüst geçmiş istatistiği (garanti DEĞİL). Kaynak: 187 coin / 45 gün / 5 dk mum gerçekçi backtest:
+# kartın SL/TP mantığı (SL<=%4), iz sürme, 8 saat zaman aşımı, komisyon %0.06/%0.02, giriş kayması %0.1, stop kayması %0.15,
+# likidasyon, 4 pozisyon sınırı; $5 marjin, 5x. Fonlama ücreti ve elle seçim dahil değil.
+ISTATISTIK_KALDIRAC = 5
+ISTATISTIK_GECMIS = {
+    "short": {"kazanma": 60, "ort": 2.0, "en_kotu": 22, "not": "424 işlem"},
+    "long": {"kazanma": 59, "ort": 0.8, "en_kotu": 22, "not": "sadece 46 işlem, örnek küçük"},
+}
+
+
+def gecmis_istatistik_satiri(yon):
+    """Kartın sonuna eklenen uyarı: sinyal garanti değildir; gerçekçi backtest sonuçları."""
+    g = ISTATISTIK_GECMIS.get(yon)
+    if not g:
+        return ""
+    uyari = ""
+    if LEV != ISTATISTIK_KALDIRAC:
+        uyari = f" ⚠️ Test {ISTATISTIK_KALDIRAC}x ile yapıldı, senin kaldıracın {LEV}x."
+    return (f"   📊 <i>Geçmiş test ({g['not']}, {ISTATISTIK_KALDIRAC}x, SL≤%4): işlemlerin ~%{g['kazanma']}'i kazandı, "
+            f"işlem başına ortalama marjinin %{g['ort']:.1f}'i; en kötü işlem marjinin -%{g['en_kotu']}'i. "
+            f"Kayma/komisyon varsayımdır, fonlama dahil değil.{uyari} GARANTİ YOK.</i>")
+
+
 def likidasyon_mesafe_yaklasik(lev):
     """v6.6: Tahmini likidasyon mesafesi (fiyat yüzdesi, oran olarak). Bitget küçük coinlerde yüksek
     bakım marjini uyguladığı için 10x'te likidasyon ~%9.5 değil ~%5 civarında çıkıyor (SAND short
@@ -668,7 +713,7 @@ def trend_yon(df):
     return "karışık"
 
 
-def manuel_swing_sl_tp(df1s, df4s, entry, long_mu):
+def manuel_swing_sl_tp(df1s, df4s, entry, long_mu, sl_tavan=None):
     """Son 20 adet 1S mumun dip/zirvesinden SL, son 20 adet 4S mumun
     dip/zirvesinden TP hesaplar (basit, şeffaf bir destek/direnç kuralı -
     gözle yapılan yorumun kaba bir yaklaşığı, kesin bir sinyal değil).
@@ -678,6 +723,8 @@ def manuel_swing_sl_tp(df1s, df4s, entry, long_mu):
     if long_mu:
         dip1s = df1s["low"].iloc[-21:-1].min()
         sl = dip1s * (1 - MANUEL_SL_BUFFER_PCT)
+        if sl_tavan and (entry - sl) / entry > sl_tavan:
+            sl = entry * (1 - sl_tavan)      # v7.0: SL en fazla sl_tavan kadar uzakta
         risk = entry - sl
         zirve4s = df4s["high"].iloc[-21:-1].max()
         if zirve4s > entry:
@@ -688,6 +735,8 @@ def manuel_swing_sl_tp(df1s, df4s, entry, long_mu):
     else:
         zirve1s = df1s["high"].iloc[-21:-1].max()
         sl = zirve1s * (1 + MANUEL_SL_BUFFER_PCT)
+        if sl_tavan and (sl - entry) / entry > sl_tavan:
+            sl = entry * (1 + sl_tavan)      # v7.0: SL en fazla sl_tavan kadar uzakta
         risk = sl - entry
         dip4s = df4s["low"].iloc[-21:-1].min()
         if dip4s < entry:
@@ -819,7 +868,8 @@ def ani_hareket_tara():
         else:
             continue
         hareket, hacim_carpani = pencere_ici_hareket_ve_hacim(sym, ANI_HAREKET_PENCERE_DK)
-        if hareket is None or hacim_carpani is None or hacim_carpani < ANI_HAREKET_HACIM_CARPANI:
+        gerekli_hacim = ANI_HAREKET_HACIM_CARPANI_KISA if tur == "sismis" else ANI_HAREKET_HACIM_CARPANI
+        if hareket is None or hacim_carpani is None or hacim_carpani < gerekli_hacim:
             continue
         if tur == "sismis" and hareket <= -ANI_HAREKET_ESIK_KISA_PCT:
             try:
@@ -2679,7 +2729,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v6.7</b>",
+        "💎 <b>GHOST BOT v7.0</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2731,7 +2781,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v6.7 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v7.0 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3186,7 +3236,8 @@ if bot:
             f"   🏁 TP: <b>{tp:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
             f"   {rr_emoji} R/R: <b>{rr}</b>\n"
             f"{likidasyon_uyari_satiri(risk / aday['fiyat'])}"
-            f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b>"
+            f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b>\n"
+            f"{gecmis_istatistik_satiri(aday['yon'])}"
         )
 
     def ani_hareket_gonder(aday, btc_baglam):
@@ -3229,7 +3280,8 @@ if bot:
                     d4_sym = get_df(aday["symbol"], "4h", 150)
                     if d1_sym is None or d4_sym is None:
                         continue
-                    sonuc = manuel_swing_sl_tp(d1_sym, d4_sym, aday["fiyat"], long_mu)
+                    sonuc = manuel_swing_sl_tp(d1_sym, d4_sym, aday["fiyat"], long_mu,
+                                              ANI_HAREKET_SL_TAVAN_PCT / 100.0 if ANI_HAREKET_SL_TAVAN_PCT > 0 else None)
                     if sonuc is None:
                         continue
                     aday["sl"], aday["tp"], aday["rr"] = sonuc
@@ -3864,7 +3916,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v6.7 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v7.0 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -3971,7 +4023,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v6.7 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v7.0 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
