@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v7.0 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v7.2 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v7.2 (05.10.2026): KART ÜSTÜNDEN AYAR. Her sinyal kartının altında kaldıraç (3x/5x/10x), marjin ($3/$5/$10) ve marjin modu (İzole/Cross) düğmeleri var;
+seçili olan ✅ ile gösterilir, kart seçime göre yeniden çizilir (pozisyon büyüklüğü, uyarılar dahil). "Aç/Gir"e basınca bot seçilen ayarı uygular:
+önce marjin modunu, sonra kaldıracı ayarlar, sonra emri gönderir. Varsayılan: İzole, 5x, $5 (MARJIN_MODU, LEV_SECENEKLERI, MARJIN_SECENEKLERI ile değişir).
+Pozisyon dolunca borsadaki GERÇEK marjin modu, kaldıraç ve likidasyon okunur; beklenenden farklıysa uyarı verir. Cross seçilirse kartta uyarı çıkar.
+
+v7.1 (05.10.2026): HATA DÜZELTMESİ: kaldıraç 5x istenmesine rağmen pozisyon 10x açıldı (kaldıraç ayarı hata verince sessizce eski değerde
+kalıyordu; Bitget izole+hedge modunda holdSide gerekebiliyor). (1) set_leverage artık holdSide ile, olmazsa parametresiz deneniyor; başarısızsa emir
+mesajında uyarı çıkıyor. (2) Pozisyon dolunca borsadaki GERÇEK kaldıraç ve likidasyon fiyatı okunup "AÇILDI" mesajında gösteriliyor; beklenenden farklıysa
+ya da likidasyon SL'ye çok yakın/öndeyse 🚨/⚠️ uyarısı veriliyor. (Otomatik düzeltme yok, sadece uyarı: marjin ekleme/kaldıraç değiştirmeyi sen yaparsın.)
 
 v7.0 (05.10.2026): GERÇEKÇİ BACKTEST'E GÖRE İKİ DEĞİŞİKLİK. (1) Kaldıraç ortam değişkeni oldu (KALDIRAC), varsayılan 5x (önce sabit 10x).
 (2) Ani hareket kartlarında SL en fazla %4 (ANI_HAREKET_SL_TAVAN_PCT), TP/R-R buna göre. Gerekçe (187 coin/45 gün/5 dk mum, komisyon+kayma+
@@ -248,6 +258,10 @@ SABIT_MARJIN_USDT = float(os.getenv("SABIT_MARJIN_USDT", "2.0"))
 # maksimum kaldıraç bundan düşükse o kullanılır (sembol_max_kaldirac).
 LEV = int(os.getenv("KALDIRAC", "5"))
 NOTIONAL = SABIT_MARJIN_USDT * LEV  # sadece eski koddaki referanslar için tutuluyor
+# v7.2: kart düğmelerindeki seçenekler ve varsayılan marjin modu (izole = kayıp marjinle sınırlı, cross = tüm bakiye ortak)
+MARJIN_MODU = "cross" if os.getenv("MARJIN_MODU", "isolated").lower() in ("cross", "crossed") else "isolated"
+LEV_SECENEKLERI = [int(x) for x in os.getenv("LEV_SECENEKLERI", "3,5,10").split(",") if x.strip()]
+MARJIN_SECENEKLERI = [float(x) for x in os.getenv("MARJIN_SECENEKLERI", "3,5,10").split(",") if x.strip()]
 MAX_POS = int(os.getenv("MAX_POS", "4"))  # v5.7: kullanıcı kararı (bakiye boşta kalmasın)
 
 LOOKBACK_15M = 20
@@ -644,17 +658,73 @@ ISTATISTIK_GECMIS = {
 }
 
 
-def gecmis_istatistik_satiri(yon):
+def gecmis_istatistik_satiri(yon, lev=None):
     """Kartın sonuna eklenen uyarı: sinyal garanti değildir; gerçekçi backtest sonuçları."""
     g = ISTATISTIK_GECMIS.get(yon)
     if not g:
         return ""
     uyari = ""
-    if LEV != ISTATISTIK_KALDIRAC:
-        uyari = f" ⚠️ Test {ISTATISTIK_KALDIRAC}x ile yapıldı, senin kaldıracın {LEV}x."
+    lev = int(lev or LEV)
+    if lev != ISTATISTIK_KALDIRAC:
+        uyari = f" ⚠️ Test {ISTATISTIK_KALDIRAC}x ile yapıldı, senin kaldıracın {lev}x."
     return (f"   📊 <i>Geçmiş test ({g['not']}, {ISTATISTIK_KALDIRAC}x, SL≤%4): işlemlerin ~%{g['kazanma']}'i kazandı, "
             f"işlem başına ortalama marjinin %{g['ort']:.1f}'i; en kötü işlem marjinin -%{g['en_kotu']}'i. "
             f"Kayma/komisyon varsayımdır, fonlama dahil değil.{uyari} GARANTİ YOK.</i>")
+
+
+def kaldirac_ayarla(sym, lev, long_mu):
+    """v7.1: Bitget izole + hedge (çift yönlü) modunda kaldıraç YÖNE göre ayrıdır; holdSide verilmezse API hata verebilir ve
+    kaldıraç sessizce eski değerinde (örn. 10x) kalıyordu. Önce holdSide ile dener, olmazsa parametresiz dener.
+    Döner: (başarılı_mı, hata_metni)."""
+    hata = None
+    for params in ({"holdSide": "long" if long_mu else "short"}, {}):
+        try:
+            exchange.set_leverage(lev, sym, params)
+            return True, None
+        except Exception as e:
+            hata = e
+            log.warning(f"[KALDIRAC] {sym} {lev}x params={params}: {e}")
+    return False, str(hata)[:160]
+
+
+def pozisyon_kaldirac_satiri(sym, long_mu, sl, beklenen_lev, beklenen_mod=None):
+    """v7.1/v7.2: Pozisyon açıldıktan sonra borsadaki GERÇEK kaldıracı, marjin modunu ve likidasyon fiyatını okuyup bildirim satırı üretir.
+    Beklenenden farklıysa ya da (izoleyse) likidasyon SL'ye çok yakın/öndeyse uyarır."""
+    try:
+        pozlar = exchange.fetch_positions([sym])
+        p = next((x for x in pozlar if safe(x.get("contracts")) > 0), None)
+    except Exception as e:
+        log.warning(f"[POZ_KALDIRAC] {sym}: {e}")
+        return "⚠️ Kaldıraç/marjin modu/likidasyon borsadan okunamadı, Bitget'te elle kontrol et.\n"
+    if not p:
+        return ""
+    lev = safe(p.get("leverage")) or None
+    liq = safe(p.get("liquidationPrice")) or None
+    entry = safe(p.get("entryPrice")) or sl
+    mod_g = str(p.get("marginMode") or "").lower()
+    mod_g = "cross" if mod_g in ("cross", "crossed") else ("isolated" if mod_g == "isolated" else None)
+    satir = ""
+    if mod_g:
+        satir += f"Marjin modu: {mod_etiketi(mod_g)}\n"
+        if beklenen_mod and mod_g != beklenen_mod:
+            satir += (f"🚨 {mod_etiketi(beklenen_mod)} bekleniyordu ama pozisyon {mod_etiketi(mod_g)} açıldı! "
+                      f"Bitget'te marjin modunu elle kontrol et.\n")
+    if lev:
+        satir += f"Kaldıraç: {lev:.0f}x"
+        if abs(lev - beklenen_lev) > 0.5:
+            satir += (f"\n🚨 BEKLENEN {beklenen_lev}x ama pozisyon {lev:.0f}x açıldı! Bitget'te 'Marjin ekle' ile ya da "
+                      f"kaldıracı düşürerek düzelt.")
+        satir += "\n"
+    if liq:
+        satir += f"Likidasyon: {liq:.8g}\n"
+        if mod_g != "cross":
+            onde = (liq >= sl) if long_mu else (liq <= sl)
+            tampon = abs(sl - liq) / entry if entry else 0
+            if onde:
+                satir += "🚨 LİKİDASYON SL'DEN ÖNCE GELİR, stop çalışmaz! Hemen marjin ekle ya da kaldıracı düşür.\n"
+            elif tampon < 0.015:
+                satir += f"⚠️ Likidasyon SL'ye çok yakın (%{tampon*100:.1f} tampon). Marjin eklemeyi düşün.\n"
+    return satir
 
 
 def likidasyon_mesafe_yaklasik(lev):
@@ -665,9 +735,34 @@ def likidasyon_mesafe_yaklasik(lev):
     return max(0.01, 1.0 / max(lev, 1) - 0.05)
 
 
-def likidasyon_uyari_satiri(risk_orani, lev=None):
-    """SL mesafesi tahmini likidasyondan uzaksa kart için uyarı satırı döner (yoksa boş metin)."""
+def mod_etiketi(mod):
+    return "Cross" if mod in ("cross", "crossed") else "İzole"
+
+
+def ayar_satiri(aday):
+    """Kartta gösterilen güncel ayar: kaldıraç · marjin modu · marjin → pozisyon büyüklüğü."""
+    lev = int(aday.get("lev") or LEV)
+    marjin = float(aday.get("marjin", MANUEL_MARJIN_VARSAYILAN_USDT))
+    mod = aday.get("mod") or MARJIN_MODU
+    return f"   ⚙️ <b>{lev}x · {mod_etiketi(mod)} · marjin ${marjin:.2f} → pozisyon ≈${marjin*lev:.0f}</b>\n"
+
+
+def marjin_modu_ayarla(sym, mod):
+    """Bitget'te coin için marjin modunu ('isolated' / 'cross') ayarlar. Açık pozisyon/emir varken mod değişmez.
+    Döner: (başarılı_mı, hata_metni). Zaten aynı moddaysa borsa hata verebilir; gerçek durum dolumdan sonra okunur."""
+    try:
+        exchange.set_margin_mode(mod, sym)
+        return True, None
+    except Exception as e:
+        log.warning(f"[MARJIN_MODU] {sym} {mod}: {e}")
+        return False, str(e)[:160]
+
+
+def likidasyon_uyari_satiri(risk_orani, lev=None, mod=None):
+    """SL mesafesi tahmini likidasyondan uzaksa kart için uyarı satırı döner (yoksa boş metin). Cross'ta her zaman uyarır."""
     lev = lev or LEV
+    if mod == "cross":
+        return ("   ⚠️ <i>CROSS: tüm bakiye ortak marjin. Stop çalışmazsa kayıp bu işlemle sınırlı kalmaz; İzole daha güvenli.</i>\n")
     liq = likidasyon_mesafe_yaklasik(lev)
     if risk_orani <= liq:
         return ""
@@ -1506,7 +1601,18 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
                         f"- reddedildi. En fazla ${bakiye*0.95:.2f} kullanılabilir.")
     marjin_kullanilan = marjin_istenen
 
-    LEV_KULLANILAN = sembol_max_kaldirac(sym, LEV)
+    try:
+        lev_ham = aday.get("lev")
+        lev_istenen = LEV if lev_ham is None else int(lev_ham)     # 0 gibi açık geçersiz değer varsayılana düşmesin, reddedilsin
+    except Exception:
+        return False, f"Geçersiz kaldıraç: {aday.get('lev')}"
+    if lev_istenen < 1:
+        return False, f"Geçersiz kaldıraç: {lev_istenen}"
+    mod = str(aday.get("mod") or MARJIN_MODU).lower()
+    mod = "cross" if mod == "crossed" else mod
+    if mod not in ("isolated", "cross"):
+        return False, f"Geçersiz marjin modu: {mod} (isolated ya da cross olmalı)."
+    LEV_KULLANILAN = sembol_max_kaldirac(sym, lev_istenen)
     notional = marjin_kullanilan * LEV_KULLANILAN
     amount = notional / entry_hedef
     try:
@@ -1516,10 +1622,12 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
         return False, f"Miktar/fiyat hesaplanamadı: {e}"
     if qty <= 0:
         return False, "Hesaplanan miktar sıfır."
-    try:
-        exchange.set_leverage(LEV_KULLANILAN, sym)
-    except Exception as e:
-        log.warning(f"[MANUEL_KALDIRAC] {sym}: {e}")
+    mod_ok, mod_hata = marjin_modu_ayarla(sym, mod)      # önce marjin modu, sonra kaldıraç
+    mod_uyari = "" if mod_ok else (f"⚠️ Marjin modu ({mod_etiketi(mod)}) ayarlanamadı ({mod_hata}). Zaten o moddaysa sorun değil; "
+                                   f"açık pozisyon/emir varken mod değişmez. Açılınca kontrol et.\n")
+    kaldirac_ok, kaldirac_hata = kaldirac_ayarla(sym, LEV_KULLANILAN, long_mu)
+    kaldirac_uyari = "" if kaldirac_ok else (f"⚠️ Kaldıraç {LEV_KULLANILAN}x AYARLANAMADI ({kaldirac_hata}). Pozisyon Bitget'teki "
+                                             f"mevcut kaldıraçla açılabilir; açılınca kontrol et.\n")
     yon_str = "buy" if long_mu else "sell"
     try:
         emir = exchange.create_order(sym, "limit", yon_str, qty, fiyat_p)
@@ -1529,13 +1637,15 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
         manuel_limit_emirler[sym] = {
             "order_id": emir.get("id"), "sym": sym, "yon": aday["yon"], "qty": qty,
             "entry_hedef": fiyat_p, "sl": sl, "tp": tp, "konulma_zamani": time.time(),
-            "1d": "-", "4h": aday.get("y4", "-"), "1h": aday.get("y1", "-"),
+            "1d": "-", "4h": aday.get("y4", "-"), "1h": aday.get("y1", "-"), "lev": LEV_KULLANILAN, "mod": mod,
         }
     durumu_diske_yaz()
     tg(f"📝 MANUEL LİMİT EMİR: {sym} {'LONG' if long_mu else 'SHORT'} @ {fiyat_p:.8g}\n"
-       f"Marjin: ${marjin_kullanilan:.2f} ({LEV_KULLANILAN}x, pozisyon ≈${notional:.2f})\n"
+       f"Marjin: ${marjin_kullanilan:.2f} ({LEV_KULLANILAN}x {mod_etiketi(mod)}, pozisyon ≈${notional:.2f})\n"
        f"Miktar: {qty} | SL: {sl:.8g} | TP: {tp:.8g}\n"
-       f"{likidasyon_uyari_satiri(risk_pct, LEV_KULLANILAN).replace('<i>', '').replace('</i>', '')}"
+       f"{mod_uyari}"
+       f"{kaldirac_uyari}"
+       f"{likidasyon_uyari_satiri(risk_pct, LEV_KULLANILAN, mod).replace('<i>', '').replace('</i>', '')}"
        f"Emir {MANUEL_LIMIT_TIMEOUT_SN//3600} saat içinde dolmazsa otomatik iptal edilir.")
     return True, f"{sym} için limit emir gönderildi ({fiyat_p:.8g}), marjin ${marjin_kullanilan:.2f}."
 
@@ -2125,8 +2235,10 @@ def manuel_limit_loop():
                 with manuel_kilit:
                     manuel_limit_emirler.pop(sym, None)
                 durumu_diske_yaz()
+                kaldirac_satiri = pozisyon_kaldirac_satiri(sym, long_mu, kayit["sl"], kayit.get("lev", LEV), kayit.get("mod"))
                 tg(f"✅ MANUEL İŞLEM AÇILDI: {sym} {'🟢 LONG' if long_mu else '🔴 SHORT'}\n"
                    f"Giriş: {entry:.8g} | SL: {kayit['sl']:.8g} | TP: {kayit['tp']:.8g}\n"
+                   f"{kaldirac_satiri}"
                    f"⚡ İz sürme kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e ulaşınca otomatik devreye girer.")
         except Exception as e:
             log.error(f"[MANUEL_LIMIT_LOOP] {e}")
@@ -2228,11 +2340,8 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
         acilis_basarisiz_cooldown_uygula(sym)
         return
 
-    try:
-        exchange.set_leverage(LEV_KULLANILAN, sym)
-        time.sleep(0.3)
-    except Exception as e:
-        log.warning(f"[KALDIRAC] {sym}: {e}")
+    kaldirac_ayarla(sym, LEV_KULLANILAN, long_mu)
+    time.sleep(0.3)
 
     acilis_yonu = "buy" if long_mu else "sell"
     kapanis_yonu = "sell" if long_mu else "buy"
@@ -2729,7 +2838,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v7.0</b>",
+        "💎 <b>GHOST BOT v7.2</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2781,7 +2890,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v7.0 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v7.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3154,26 +3263,55 @@ if bot:
             f"   🛑 SL: <b>{aday['sl']:.8g}</b>  (-%{risk/aday['fiyat']*100:.1f})\n"
             f"   🏁 TP: <b>{aday['tp']:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
             f"   {rr_emoji} R/R: <b>{rr}</b>\n"
-            f"{likidasyon_uyari_satiri(risk / aday['fiyat'])}"
-            f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b> "
-            f"<i>(değiştirmek için ✏️ Düzenle)</i>\n"
+            f"{likidasyon_uyari_satiri(risk / aday['fiyat'], aday.get('lev'), aday.get('mod'))}"
+            f"{ayar_satiri(aday)}"
             f"   ⚡ İz sürme: kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'te aktif, %{YUKSELEN_TRAILING_PAYI_PCT*100:.1f} pay"
         )
 
-    def manuel_kart_markup(token):
+    def kart_markup(token, aday=None):
+        """Kartın düğmeleri: ana satır (Aç/Düzenle/Geç) + kaldıraç + marjin + marjin modu seçimleri (seçili olan ✅)."""
+        B = telebot.types.InlineKeyboardButton
         m = telebot.types.InlineKeyboardMarkup()
-        m.row(telebot.types.InlineKeyboardButton("✅ Aç", callback_data=f"macik:{token}:ac"),
-              telebot.types.InlineKeyboardButton("✏️ Düzenle", callback_data=f"macik:{token}:duzenle"),
-              telebot.types.InlineKeyboardButton("❌ Geç", callback_data=f"macik:{token}:gec"))
+        ani = bool(aday and aday.get("kart_tip") == "ani")
+        e1, e2, e3 = ("✅ Gir", "✏️ Düzenle", "❌ Pas") if ani else ("✅ Aç", "✏️ Düzenle", "❌ Geç")
+        m.row(B(e1, callback_data=f"macik:{token}:ac"), B(e2, callback_data=f"macik:{token}:duzenle"),
+              B(e3, callback_data=f"macik:{token}:gec"))
+        if aday is not None:
+            lev_s = int(aday.get("lev") or LEV)
+            m.row(*[B(("✅ " if lev_s == v else "") + f"{v}x", callback_data=f"mayar:{token}:lev:{v}") for v in LEV_SECENEKLERI])
+            mj = float(aday.get("marjin", MANUEL_MARJIN_VARSAYILAN_USDT))
+            m.row(*[B(("✅ " if abs(mj - v) < 1e-9 else "") + f"${v:g}", callback_data=f"mayar:{token}:marjin:{v:g}")
+                    for v in MARJIN_SECENEKLERI])
+            mod = aday.get("mod") or MARJIN_MODU
+            m.row(B(("✅ " if mod == "isolated" else "") + "🔒 İzole", callback_data=f"mayar:{token}:mod:isolated"),
+                  B(("✅ " if mod == "cross" else "") + "🌐 Cross", callback_data=f"mayar:{token}:mod:cross"))
         return m
+
+    def manuel_kart_markup(token, aday=None):
+        return kart_markup(token, aday)
+
+    def kart_hazirla(aday, tip, btc_baglam, onek=""):
+        """Karta varsayılan ayarları (kaldıraç, marjin, marjin modu) ve yeniden çizim için gerekenleri ekler."""
+        aday.setdefault("lev", LEV)
+        aday.setdefault("marjin", MANUEL_MARJIN_VARSAYILAN_USDT)
+        aday.setdefault("mod", MARJIN_MODU)
+        aday["kart_tip"] = tip
+        aday["_btc"] = btc_baglam
+        aday["_onek"] = onek
+        return aday
+
+    def kart_metni(aday):
+        govde = (ani_hareket_kart_metni(aday, aday["_btc"]) if aday.get("kart_tip") == "ani"
+                 else manuel_kart_metni(aday, aday["_btc"]))
+        return aday.get("_onek", "") + govde
 
     def otomatik_bildirim_gonder(aday, btc_baglam):
         token = uuid.uuid4().hex[:10]
         with manuel_kilit:
             manuel_bekleyen[token] = aday
-        metin = "🔔 <b>OTOMATİK BİLDİRİM</b> (arka plan taraması, karar hâlâ sende)\n\n" + manuel_kart_metni(aday, btc_baglam)
+        kart_hazirla(aday, "manuel", btc_baglam, "🔔 <b>OTOMATİK BİLDİRİM</b> (arka plan taraması, karar hâlâ sende)\n\n")
         try:
-            bot.send_message(CHAT_ID, metin, reply_markup=manuel_kart_markup(token), parse_mode="HTML")
+            bot.send_message(CHAT_ID, kart_metni(aday), reply_markup=kart_markup(token, aday), parse_mode="HTML")
         except Exception as e:
             log.warning(f"[OTOMATIK_BILDIRIM] gönderilemedi: {e}")
 
@@ -3235,21 +3373,18 @@ if bot:
             f"   🛑 SL: <b>{sl:.8g}</b>  (-%{risk/aday['fiyat']*100:.1f})\n"
             f"   🏁 TP: <b>{tp:.8g}</b>  (+%{odul/aday['fiyat']*100:.1f})\n"
             f"   {rr_emoji} R/R: <b>{rr}</b>\n"
-            f"{likidasyon_uyari_satiri(risk / aday['fiyat'])}"
-            f"   💰 Marjin: <b>${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}</b>\n"
-            f"{gecmis_istatistik_satiri(aday['yon'])}"
+            f"{likidasyon_uyari_satiri(risk / aday['fiyat'], aday.get('lev'), aday.get('mod'))}"
+            f"{ayar_satiri(aday)}"
+            f"{gecmis_istatistik_satiri(aday['yon'], aday.get('lev'))}"
         )
 
     def ani_hareket_gonder(aday, btc_baglam):
         token = uuid.uuid4().hex[:10]
         with manuel_kilit:
             manuel_bekleyen[token] = aday
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.row(telebot.types.InlineKeyboardButton("✅ Gir", callback_data=f"macik:{token}:ac"),
-                   telebot.types.InlineKeyboardButton("✏️ Düzenle", callback_data=f"macik:{token}:duzenle"),
-                   telebot.types.InlineKeyboardButton("❌ Pas", callback_data=f"macik:{token}:gec"))
+        kart_hazirla(aday, "ani", btc_baglam)
         try:
-            bot.send_message(CHAT_ID, ani_hareket_kart_metni(aday, btc_baglam), reply_markup=markup, parse_mode="HTML")
+            bot.send_message(CHAT_ID, kart_metni(aday), reply_markup=kart_markup(token, aday), parse_mode="HTML")
         except Exception as e:
             log.warning(f"[ANI_HAREKET_GONDER] gönderilemedi: {e}")
 
@@ -3330,7 +3465,8 @@ if bot:
                 token = uuid.uuid4().hex[:10]
                 with manuel_kilit:
                     manuel_bekleyen[token] = aday
-                bot.send_message(msg.chat.id, manuel_kart_metni(aday, btc_baglam), reply_markup=manuel_kart_markup(token), parse_mode="HTML")
+                kart_hazirla(aday, "manuel", btc_baglam)
+                bot.send_message(msg.chat.id, kart_metni(aday), reply_markup=kart_markup(token, aday), parse_mode="HTML")
         threading.Thread(target=isle, daemon=True).start()
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("macik:"))
@@ -3372,6 +3508,41 @@ if bot:
                 manuel_bekleyen.pop(token, None)
             bot.edit_message_text(f"{'✅' if basarili else '⚠️'} {mesaj}", call.message.chat.id, call.message.message_id)
             bot.answer_callback_query(call.id)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("mayar:"))
+    def ayar_callback(call):
+        """Kart üstündeki kaldıraç / marjin / marjin modu düğmeleri: seçimi karta yazar ve kartı yeniden çizer."""
+        if not yetkili_mi(call):
+            return
+        try:
+            _, token, anahtar, deger = call.data.split(":", 3)
+        except ValueError:
+            bot.answer_callback_query(call.id)
+            return
+        with manuel_kilit:
+            aday = manuel_bekleyen.get(token)
+        if not aday:
+            bot.answer_callback_query(call.id, "Bu kart artık geçerli değil (süresi doldu ya da işlendi).")
+            return
+        try:
+            if anahtar == "lev" and int(deger) in LEV_SECENEKLERI:
+                aday["lev"] = int(deger); secim = f"Kaldıraç {int(deger)}x"
+            elif anahtar == "marjin" and float(deger) in MARJIN_SECENEKLERI:
+                aday["marjin"] = float(deger); secim = f"Marjin ${float(deger):g}"
+            elif anahtar == "mod" and deger in ("isolated", "cross"):
+                aday["mod"] = deger; secim = f"Marjin modu: {mod_etiketi(deger)}"
+            else:
+                raise ValueError("geçersiz seçim")
+        except Exception:
+            bot.answer_callback_query(call.id, "Geçersiz seçim.")
+            return
+        try:
+            bot.edit_message_text(kart_metni(aday), call.message.chat.id, call.message.message_id,
+                                  reply_markup=kart_markup(token, aday), parse_mode="HTML")
+        except Exception as e:
+            if "message is not modified" not in str(e):
+                log.warning(f"[AYAR_CALLBACK] {e}")
+        bot.answer_callback_query(call.id, secim)
 
     @bot.message_handler(commands=["ac"])
     def ac_komutu(msg):
@@ -3510,13 +3681,8 @@ if bot:
         aday["rr"] = round(odul/risk, 2) if risk > 0 else 0
         with manuel_kilit:
             manuel_bekleyen[token] = aday
-        m = telebot.types.InlineKeyboardMarkup()
-        m.row(telebot.types.InlineKeyboardButton("✅ Aç", callback_data=f"macik:{token}:ac"),
-              telebot.types.InlineKeyboardButton("❌ Geç", callback_data=f"macik:{token}:gec"))
-        marjin_metni = f"${aday.get('marjin', MANUEL_MARJIN_VARSAYILAN_USDT):.2f}"
-        bot.send_message(msg.chat.id,
-            f"Güncellendi: {aday['symbol'].split('/')[0]} SL {yeni_sl:.8g} TP {yeni_tp:.8g} (R/R {aday['rr']}) | Marjin {marjin_metni}",
-            reply_markup=m)
+        bot.send_message(msg.chat.id, "✏️ <b>Güncellendi</b>\n\n" + kart_metni(aday), reply_markup=kart_markup(token, aday),
+                         parse_mode="HTML")
 
     @bot.message_handler(commands=["veri"])
     def veri_komutu(msg):
@@ -3916,7 +4082,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v7.0 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v7.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4023,7 +4189,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v7.0 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v7.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
