@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v7.2 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v7.3 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v7.3 (06.10.2026): MARJIN MODU DOĞRULAMASI. İzole seçilmesine rağmen pozisyon Cross açılmıştı (ayar sessizce tutmamıştı). Artık emirden önce
+Bitget'ten coinin marjin modu okunur (fetch_margin_mode), gerekirse ayarlanır ve tekrar okunur. İstenen mod tutmadıysa emir GÖNDERİLMEZ ve sebep
+(Bitget'in hata mesajı) Telegram'da gösterilir. MARJIN_MODU_KATI=false yaparsan sadece uyarır ve emri yine gönderir. Okunamazsa uyarıyla devam eder.
 
 v7.2 (05.10.2026): KART ÜSTÜNDEN AYAR. Her sinyal kartının altında kaldıraç (3x/5x/10x), marjin ($3/$5/$10) ve marjin modu (İzole/Cross) düğmeleri var;
 seçili olan ✅ ile gösterilir, kart seçime göre yeniden çizilir (pozisyon büyüklüğü, uyarılar dahil). "Aç/Gir"e basınca bot seçilen ayarı uygular:
@@ -260,6 +264,9 @@ LEV = int(os.getenv("KALDIRAC", "5"))
 NOTIONAL = SABIT_MARJIN_USDT * LEV  # sadece eski koddaki referanslar için tutuluyor
 # v7.2: kart düğmelerindeki seçenekler ve varsayılan marjin modu (izole = kayıp marjinle sınırlı, cross = tüm bakiye ortak)
 MARJIN_MODU = "cross" if os.getenv("MARJIN_MODU", "isolated").lower() in ("cross", "crossed") else "isolated"
+# v7.3: istenen marjin modu emirden önce borsadan doğrulanır; tutmadıysa (örn. İzole istendi ama Bitget'te coin Cross kaldı) emir
+# GÖNDERİLMEZ. "false" yaparsan sadece uyarı verip emri yine gönderir.
+MARJIN_MODU_KATI = os.getenv("MARJIN_MODU_KATI", "true").lower() == "true"
 LEV_SECENEKLERI = [int(x) for x in os.getenv("LEV_SECENEKLERI", "3,5,10").split(",") if x.strip()]
 MARJIN_SECENEKLERI = [float(x) for x in os.getenv("MARJIN_SECENEKLERI", "3,5,10").split(",") if x.strip()]
 MAX_POS = int(os.getenv("MAX_POS", "4"))  # v5.7: kullanıcı kararı (bakiye boşta kalmasın)
@@ -745,6 +752,17 @@ def ayar_satiri(aday):
     marjin = float(aday.get("marjin", MANUEL_MARJIN_VARSAYILAN_USDT))
     mod = aday.get("mod") or MARJIN_MODU
     return f"   ⚙️ <b>{lev}x · {mod_etiketi(mod)} · marjin ${marjin:.2f} → pozisyon ≈${marjin*lev:.0f}</b>\n"
+
+
+def marjin_modu_oku(sym):
+    """Bitget'te coinin GÜNCEL marjin modunu okur: 'isolated' / 'cross' / None (okunamadı)."""
+    try:
+        r = exchange.fetch_margin_mode(sym)
+        v = str((r or {}).get("marginMode") or "").lower()
+        return "cross" if v in ("cross", "crossed") else ("isolated" if v == "isolated" else None)
+    except Exception as e:
+        log.warning(f"[MARJIN_MODU_OKU] {sym}: {e}")
+        return None
 
 
 def marjin_modu_ayarla(sym, mod):
@@ -1622,9 +1640,25 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
         return False, f"Miktar/fiyat hesaplanamadı: {e}"
     if qty <= 0:
         return False, "Hesaplanan miktar sıfır."
-    mod_ok, mod_hata = marjin_modu_ayarla(sym, mod)      # önce marjin modu, sonra kaldıraç
-    mod_uyari = "" if mod_ok else (f"⚠️ Marjin modu ({mod_etiketi(mod)}) ayarlanamadı ({mod_hata}). Zaten o moddaysa sorun değil; "
-                                   f"açık pozisyon/emir varken mod değişmez. Açılınca kontrol et.\n")
+    # önce marjin modu (okuyup doğrula), sonra kaldıraç, sonra emir
+    mod_once = marjin_modu_oku(sym)
+    if mod_once == mod:
+        mod_ok, mod_hata, mod_simdi = True, None, mod                 # zaten istenen modda, dokunma
+    else:
+        mod_ok, mod_hata = marjin_modu_ayarla(sym, mod)
+        mod_simdi = marjin_modu_oku(sym)                               # ayar gerçekten tuttu mu?
+    if mod_simdi and mod_simdi != mod and MARJIN_MODU_KATI:
+        return False, (f"Marjin modu {mod_etiketi(mod)} istendi ama Bitget'te bu coin {mod_etiketi(mod_simdi)} görünüyor"
+                       + (f" (ayar hatası: {mod_hata})" if mod_hata else "")
+                       + ". Emir GÖNDERİLMEDİ. Bitget'te coini istediğin moda çevirip tekrar dene "
+                         "(açık pozisyon/emir varken mod değişmez).")
+    if mod_simdi == mod:
+        mod_uyari = ""
+    elif mod_simdi:
+        mod_uyari = f"⚠️ Marjin modu {mod_etiketi(mod_simdi)} kaldı (istenen {mod_etiketi(mod)}). Açılınca kontrol et.\n"
+    else:
+        mod_uyari = (f"⚠️ Marjin modu ({mod_etiketi(mod)}) doğrulanamadı"
+                     + (f" ({mod_hata})" if mod_hata else "") + ". Açılınca kontrol et.\n")
     kaldirac_ok, kaldirac_hata = kaldirac_ayarla(sym, LEV_KULLANILAN, long_mu)
     kaldirac_uyari = "" if kaldirac_ok else (f"⚠️ Kaldıraç {LEV_KULLANILAN}x AYARLANAMADI ({kaldirac_hata}). Pozisyon Bitget'teki "
                                              f"mevcut kaldıraçla açılabilir; açılınca kontrol et.\n")
@@ -2838,7 +2872,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v7.2</b>",
+        "💎 <b>GHOST BOT v7.3</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2890,7 +2924,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v7.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v7.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4082,7 +4116,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v7.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v7.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4189,7 +4223,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v7.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v7.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
