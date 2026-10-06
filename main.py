@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.12 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.13 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
@@ -2836,6 +2836,95 @@ def _momentum_ac_ic(sym, sinyal, tekrar=False):
     return True
 
 
+_veri_indir_kilit = threading.Lock()
+
+
+def veri_indir_calistir(chat_id, gun=45, adet=100):
+    """v8.13: backtest için hacmi en yüksek coinlerin 5 dk mumlarını indirir, sıkıştırıp (csv.gz) Telegram'dan dosya olarak yollar.
+    Sütunlar: sembol,ts_ms,open,high,low,close,volume. Dosyalar ~12 MB'lık parçalara bölünür."""
+    import gzip, io
+    if not _veri_indir_kilit.acquire(blocking=False):
+        bot.send_message(chat_id, "⏳ Zaten bir veri indirme çalışıyor, bitmesini bekle.")
+        return
+    try:
+        tickers = guncel_tickerlari_al() or {}
+        havuz = []
+        for sym, t in tickers.items():
+            if not sym.endswith("/USDT:USDT"):
+                continue
+            if rwa_mi(sym) or coin_bloke_mi(sym):
+                continue
+            hacim = safe(t.get("quoteVolume"))
+            if hacim >= 1_000_000:
+                havuz.append((hacim, sym))
+        havuz.sort(reverse=True)
+        semboller = [x[1] for x in havuz[:adet]]
+        if not semboller:
+            bot.send_message(chat_id, "⚠️ Coin listesi alınamadı, sonra tekrar dene.")
+            return
+        bot.send_message(chat_id, f"📥 Veri indiriliyor: {len(semboller)} coin, son {gun} gün, 5 dk mum. Birkaç dakika sürer, dosya(lar) gelince haber veririm.")
+        simdi_ms = int(time.time() * 1000)
+        baslangic_ms = simdi_ms - gun * 86400 * 1000
+        parca_no = 1
+        tampon = io.StringIO()
+        satir_toplam = 0
+        gonderilen = 0
+        hatali = []
+
+        def parca_gonder(son=False):
+            nonlocal tampon, parca_no, gonderilen
+            ham = tampon.getvalue().encode()
+            if not ham:
+                return
+            sikis = gzip.compress(ham, 6)
+            ad = f"mumlar_5m_{gun}gun_parca{parca_no}.csv.gz"
+            bio = io.BytesIO(sikis); bio.name = ad
+            bot.send_document(chat_id, bio, caption=f"{ad} ({len(sikis)/1e6:.1f} MB)")
+            gonderilen += 1
+            parca_no += 1
+            tampon = io.StringIO()
+
+        for i, sym in enumerate(semboller, 1):
+            try:
+                since = baslangic_ms
+                satirlar = {}
+                for _ in range(120):
+                    parti = exchange.fetch_ohlcv(sym, "5m", since=since, limit=1000)
+                    if not parti:
+                        break
+                    for c in parti:
+                        satirlar[int(c[0])] = c
+                    son_ts = int(parti[-1][0])
+                    if son_ts >= simdi_ms - 300_000 or son_ts < since:
+                        break
+                    since = son_ts + 1
+                for ts in sorted(satirlar):
+                    c = satirlar[ts]
+                    tampon.write(f"{sym},{ts},{c[1]},{c[2]},{c[3]},{c[4]},{c[5]}\n")
+                    satir_toplam += 1
+                if len(satirlar) < 100:
+                    hatali.append(sym)
+            except Exception as e:
+                hatali.append(sym)
+                log.warning(f"[VERI_INDIR] {sym}: {e}")
+            if tampon.tell() > 35_000_000:               # ~12 MB sıkıştırılmış
+                parca_gonder()
+            if i % 25 == 0:
+                bot.send_message(chat_id, f"… {i}/{len(semboller)} coin indirildi")
+        parca_gonder(son=True)
+        bot.send_message(chat_id, f"✅ Bitti: {len(semboller)-len(hatali)} coin tamam, {satir_toplam} mum, {gonderilen} dosya gönderildi."
+                                  + (f"\n⚠️ Eksik/hatalı: {', '.join(x.split('/')[0] for x in hatali[:15])}" if hatali else "")
+                                  + "\nDosya(ları) Claude sohbetine ekle.")
+    except Exception as e:
+        log.error(f"[VERI_INDIR] {e}")
+        try:
+            bot.send_message(chat_id, f"⚠️ Veri indirme hatası: {e}")
+        except Exception:
+            pass
+    finally:
+        _veri_indir_kilit.release()
+
+
 def momentum_loop():
     """Her yeni 5 dk mumu kapandıktan ~8 sn sonra bir kez tarar ve sinyal varsa piyasa emriyle girer."""
     son_bucket = None
@@ -3509,7 +3598,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.12 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.13 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4375,6 +4464,23 @@ if bot:
                 return
         bot.answer_callback_query(call.id)
 
+    @bot.message_handler(commands=["veriindir"])
+    def veriindir_komutu(msg):
+        # /veriindir [gun] [coin_sayisi]  -- varsayılan 45 gün, 100 coin
+        if not yetkili_mi(msg):
+            return
+        gun, adet = 45, 100
+        try:
+            p = msg.text.split()[1:]
+            if len(p) >= 1:
+                gun = max(5, min(90, int(p[0])))
+            if len(p) >= 2:
+                adet = max(10, min(200, int(p[1])))
+        except Exception:
+            bot.send_message(msg.chat.id, "Kullanım: /veriindir [gün] [coin sayısı]   örnek: /veriindir 45 100")
+            return
+        threading.Thread(target=veri_indir_calistir, args=(msg.chat.id, gun, adet), daemon=True).start()
+
     @bot.message_handler(commands=["durdur"])
     def durdur_komutu(msg):
         if not yetkili_mi(msg):
@@ -4846,7 +4952,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.12 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.13 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4959,7 +5065,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.12 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.13 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
