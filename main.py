@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.2 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.3 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
 
+v8.3 (06.10.2026): HIZLI GİRİŞ. Kart "Aç" artık sinyal fiyatında bekleyen limit değil: anlık fiyattan %0.2 toleranslı limit (hemen dolar, kayma sınırlı; ANI_GIRIS_MODU=sinirli|market|limit), 60 sn dolmazsa iptal+bildirim (kısmi dolum yönetilir), SL/TP anlık fiyata göre kaydırılır, fiyat sinyalden %1.5 kaçtıysa girmez. /ac eski gibi yazılan fiyatta limit.
 v8.2 (06.10.2026): MOMENTUM "YAŞIYORUM" LOGU + ESKİ TARAYICI DURDURULDU. (1) Momentum her 5 dk taramada logluyor: "[MOMENTUM] tarama tamam | havuz | sinyal | en yüksek 30dk hareket (coin)"
 ve /momentumdurum son taramayı gösteriyor ("sinyal yok" ile "tarama çalışmıyor" ayrılır). (2) OTOMATIK_GIRIS_AKTIF kapalıyken eski tarayıcı (günün en çok yükseleni) artık dakikada 47 coin sorgulamıyor,
 [NABIZ] logları kesildi; API payı momentum'a kalır.
@@ -442,6 +443,14 @@ MOMENTUM_LIMIT_SECENEKLERI = [5, 10, 0]
 ANI_HAREKET_TAKIP_SAYISI = int(os.getenv("ANI_HAREKET_TAKIP_SAYISI", "8"))
 ANI_HAREKET_COOLDOWN_SN = int(os.getenv("ANI_HAREKET_COOLDOWN_SN", str(2*3600)))
 MANUEL_LIMIT_TIMEOUT_SN = int(os.getenv("MANUEL_LIMIT_TIMEOUT_SN", str(6*3600)))
+# v8.3 HIZLI GİRİŞ (kart "Aç"): "sinirli" = anlık fiyattan %TOLERANS kadar kötüsüne kadar dolan limit emir (hemen dolar,
+# kayma sınırlı), TIMEOUT sn içinde dolmazsa iptal + bildirim; "market" = piyasa emri; "limit" = eski (sinyal fiyatında bekleyen limit)
+ANI_GIRIS_MODU = os.getenv("ANI_GIRIS_MODU", "sinirli").strip().lower()
+if ANI_GIRIS_MODU not in ("sinirli", "market", "limit"):
+    ANI_GIRIS_MODU = "sinirli"
+ANI_GIRIS_TOLERANS_PCT = float(os.getenv("ANI_GIRIS_TOLERANS_PCT", "0.2"))      # sınırlı emirde izin verilen kayma (%)
+ANI_GIRIS_TIMEOUT_SN = int(os.getenv("ANI_GIRIS_TIMEOUT_SN", "60"))
+ANI_GIRIS_MAX_KAYMA_PCT = float(os.getenv("ANI_GIRIS_MAX_KAYMA_PCT", "1.5"))    # fiyat sinyalden bu kadar kaçtıysa girme
 MANUEL_MARJIN_VARSAYILAN_USDT = float(os.getenv("MANUEL_MARJIN_VARSAYILAN_USDT", "5.0"))
 
 # ════════════════════════════════════════════
@@ -1684,6 +1693,30 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
     long_mu = yon == "long"
     entry_hedef = safe(aday.get("fiyat"))
     sl = safe(sl); tp = safe(tp)
+    # v8.3: hızlı giriş - anlık fiyata göre giriş/SL/TP yeniden hesapla
+    giris_modu = str(aday.get("giris") or ANI_GIRIS_MODU).lower()
+    if giris_modu not in ("sinirli", "market", "limit"):
+        giris_modu = "limit"
+    hizli = giris_modu in ("sinirli", "market")
+    hizli_not = ""
+    if hizli:
+        if entry_hedef <= 0 or sl <= 0 or tp <= 0:
+            return False, "Giriş, SL ve TP pozitif sayı olmalı."
+        try:
+            simdi = safe(exchange.fetch_ticker(sym).get("last"))
+        except Exception as e:
+            return False, f"Anlık fiyat alınamadı, emir gönderilmedi: {e}"
+        if simdi <= 0:
+            return False, "Anlık fiyat geçersiz, emir gönderilmedi."
+        kacma = ((simdi - entry_hedef) if long_mu else (entry_hedef - simdi)) / entry_hedef * 100   # + = fiyat yönümüzde kaçtı
+        if kacma > ANI_GIRIS_MAX_KAYMA_PCT:
+            return False, (f"Fiyat sinyalden %{kacma:.2f} kaçmış (sinyal {entry_hedef:.8g} → şimdi {simdi:.8g}); "
+                           f"sınır %{ANI_GIRIS_MAX_KAYMA_PCT:g}. Girilmedi - kovalamak yerine yeni sinyali bekle.")
+        oran = simdi / entry_hedef
+        sl, tp = sl * oran, tp * oran                      # SL/TP yüzde mesafeleri aynı kalır
+        if abs(kacma) >= 0.3:
+            hizli_not = f"Fiyat sinyalden %{kacma:+.2f} oynadı, SL/TP anlık fiyata göre kaydırıldı.\n"
+        entry_hedef = simdi
     if entry_hedef <= 0 or sl <= 0 or tp <= 0:
         return False, "Giriş, SL ve TP pozitif sayı olmalı."
     if long_mu and not (sl < entry_hedef < tp):
@@ -1758,25 +1791,40 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
     kaldirac_uyari = "" if kaldirac_ok else (f"⚠️ Kaldıraç {LEV_KULLANILAN}x AYARLANAMADI ({kaldirac_hata}). Pozisyon Bitget'teki "
                                              f"mevcut kaldıraçla açılabilir; açılınca kontrol et.\n")
     yon_str = "buy" if long_mu else "sell"
+    timeout_sn = MANUEL_LIMIT_TIMEOUT_SN
     try:
-        emir = exchange.create_order(sym, "limit", yon_str, qty, fiyat_p)
+        if giris_modu == "market":
+            emir = exchange.create_order(sym, "market", yon_str, qty)
+            timeout_sn = ANI_GIRIS_TIMEOUT_SN
+        elif giris_modu == "sinirli":
+            tol = ANI_GIRIS_TOLERANS_PCT / 100.0
+            fiyat_p = float(exchange.price_to_precision(sym, entry_hedef * (1 + tol if long_mu else 1 - tol)))
+            qty = float(exchange.amount_to_precision(sym, notional / fiyat_p))
+            if qty <= 0:
+                return False, "Hesaplanan miktar sıfır."
+            emir = exchange.create_order(sym, "limit", yon_str, qty, fiyat_p)
+            timeout_sn = ANI_GIRIS_TIMEOUT_SN
+        else:
+            emir = exchange.create_order(sym, "limit", yon_str, qty, fiyat_p)
     except Exception as e:
-        return False, f"Limit emir gönderilemedi: {e}"
+        return False, f"Emir gönderilemedi: {e}"
     with manuel_kilit:
         manuel_limit_emirler[sym] = {
-            "order_id": emir.get("id"), "sym": sym, "yon": aday["yon"], "qty": qty,
-            "entry_hedef": fiyat_p, "sl": sl, "tp": tp, "konulma_zamani": time.time(),
+            "order_id": emir.get("id"), "sym": sym, "yon": aday["yon"], "qty": qty, "timeout_sn": timeout_sn,
+            "hizli": hizli, "entry_hedef": fiyat_p, "sl": sl, "tp": tp, "konulma_zamani": time.time(),
             "1d": "-", "4h": aday.get("y4", "-"), "1h": aday.get("y1", "-"), "lev": LEV_KULLANILAN, "mod": mod,
         }
     durumu_diske_yaz()
-    tg(f"📝 MANUEL LİMİT EMİR: {sym} {'LONG' if long_mu else 'SHORT'} @ {fiyat_p:.8g}\n"
+    emir_ad = {"market": "⚡ PİYASA EMRİ", "sinirli": "⚡ HIZLI GİRİŞ (sınırlı limit)", "limit": "📝 MANUEL LİMİT EMİR"}[giris_modu]
+    tg(f"{emir_ad}: {sym} {'LONG' if long_mu else 'SHORT'} @ {fiyat_p:.8g}\n{hizli_not}"
        f"Marjin: ${marjin_kullanilan:.2f} ({LEV_KULLANILAN}x {mod_etiketi(mod)}, pozisyon ≈${notional:.2f})\n"
        f"Miktar: {qty} | SL: {sl:.8g} | TP: {tp:.8g}\n"
        f"{mod_uyari}"
        f"{kaldirac_uyari}"
        f"{likidasyon_uyari_satiri(risk_pct, LEV_KULLANILAN, mod).replace('<i>', '').replace('</i>', '')}"
-       f"Emir {MANUEL_LIMIT_TIMEOUT_SN//3600} saat içinde dolmazsa otomatik iptal edilir.")
-    return True, f"{sym} için limit emir gönderildi ({fiyat_p:.8g}), marjin ${marjin_kullanilan:.2f}."
+       + (f"Emir {timeout_sn} sn içinde dolmazsa iptal edilir ve haber verilir." if hizli
+          else f"Emir {MANUEL_LIMIT_TIMEOUT_SN//3600} saat içinde dolmazsa otomatik iptal edilir."))
+    return True, f"{sym} için {giris_modu} emir gönderildi ({fiyat_p:.8g}), marjin ${marjin_kullanilan:.2f}."
 
 
 def manuel_limit_iptal(sym, sebep="kullanıcı isteğiyle"):
@@ -2316,13 +2364,37 @@ def manuel_limit_loop():
                     kayit = manuel_limit_emirler.get(sym)
                 if not kayit:
                     continue
-                if time.time() - kayit["konulma_zamani"] > MANUEL_LIMIT_TIMEOUT_SN:
-                    manuel_limit_iptal(sym, "zaman aşımı")
-                    continue
                 try:
                     durum_emir = exchange.fetch_order(kayit["order_id"], sym)
                 except Exception as e:
                     log.warning(f"[MANUEL_FETCH] {sym}: {e}")
+                    durum_emir = None
+                zaman_asimi = time.time() - kayit["konulma_zamani"] > kayit.get("timeout_sn", MANUEL_LIMIT_TIMEOUT_SN)
+                if zaman_asimi and (durum_emir is None or durum_emir.get("status") not in ("closed", "filled")):
+                    try:
+                        exchange.cancel_order(kayit["order_id"], sym)
+                    except Exception as e:
+                        log.warning(f"[MANUEL_IPTAL] {sym}: {e}")
+                    try:
+                        durum_emir = exchange.fetch_order(kayit["order_id"], sym)      # iptalden sonra kısmi dolum var mı?
+                    except Exception:
+                        durum_emir = None
+                    dolan = safe((durum_emir or {}).get("filled"))
+                    if dolan > 0:
+                        kayit["qty"] = float(exchange.amount_to_precision(sym, dolan))   # kısmi dolum: dolan kadarını yönet
+                        durum_emir["status"] = "closed"
+                        tg(f"⚠️ {sym} emir kısmen doldu ({dolan}); dolan kısım yönetilecek.")
+                    else:
+                        with manuel_kilit:
+                            manuel_limit_emirler.pop(sym, None)
+                        durumu_diske_yaz()
+                        if kayit.get("hizli"):
+                            tg(f"⏱️ {sym} hızlı giriş {kayit.get('timeout_sn')} sn içinde dolmadı, emir iptal edildi (fiyat kaçtı). "
+                               f"İşleme GİRİLMEDİ; kovalamak istersen kartı yeniden aç.")
+                        else:
+                            tg(f"🗑️ {sym} bekleyen limit emri iptal edildi (zaman aşımı).")
+                        continue
+                if durum_emir is None:
                     continue
                 if durum_emir.get("status") not in ("closed", "filled"):
                     continue
@@ -3345,7 +3417,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4088,7 +4160,7 @@ if bot:
             long_mu = aday["yon"] == "long"
             kayma = ((simdi - aday["fiyat"]) / aday["fiyat"] * 100) if long_mu else ((aday["fiyat"] - simdi) / aday["fiyat"] * 100)
             if abs(kayma) > 1.0:
-                bot.answer_callback_query(call.id, f"Fiyat %{kayma:+.2f} kaymış ({simdi:.8g}). Yine de limit {aday['fiyat']:.8g}'ten emir konur, dolmayabilir.", show_alert=True)
+                bot.answer_callback_query(call.id, f"Fiyat %{kayma:+.2f} kaymış ({simdi:.8g}). Hızlı giriş anlık fiyata göre ayarlanır; %{ANI_GIRIS_MAX_KAYMA_PCT:g}'den fazlaysa girilmez.", show_alert=True)
             basarili, mesaj = manuel_limit_ac(aday, aday["sl"], aday["tp"], aday.get("marjin"))
             with manuel_kilit:
                 manuel_bekleyen.pop(token, None)
@@ -4153,7 +4225,7 @@ if bot:
                 f"Örnek (marjin belirterek): /ac PUMP long 0.00522 0.00506 0.00555 8\n"
                 f"(hata: {e})")
             return
-        aday = {"symbol": sym, "yon": yon, "fiyat": giris, "y4": "-", "y1": "-"}
+        aday = {"symbol": sym, "yon": yon, "fiyat": giris, "y4": "-", "y1": "-", "giris": "limit"}   # /ac: yazılan fiyatta limit
         basarili, mesaj = manuel_limit_ac(aday, sl, tp, marjin)
         bot.send_message(msg.chat.id, f"{'✅' if basarili else '⚠️'} {mesaj}")
 
@@ -4682,7 +4754,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4795,7 +4867,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
