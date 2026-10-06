@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.8 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.11 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
 
+v8.11 (06.10.2026): KÖK NEDEN: ccxt emirde marginMode yoksa Bitget'e "crossed" gönderiyormuş (ayar izole olsa da CROSS açılıyordu). Artık her emre marginMode eklenir (giriş: seçilen mod, kapatma/stop: pozisyonun gerçek modu).
 v8.8 (06.10.2026): momentum düşük kaldıraçlı coinlerde de açar: >=20x ise $1 marjin; <20x ise pozisyon büyüklüğü aynı kalsın diye marjin büyür (üst sınır $10; ör. 5x -> $10). Likidasyon SL'den önce gelirse zaten açılmaz.
 v8.7 (06.10.2026): momentum 50x dener, kabul etmezse 40/30/25/20x'e düşer; 20x'in altına inen (ör. max 5x) coinler havuzdan elenir/atlanır. Marjin hep MOMENTUM_MARJIN_USDT. Ayar: MOMENTUM_MIN_KALDIRAC.
 v8.6 (06.10.2026): momentum sadece seçili kaldıracı (50x) kabul eden coinlere bakar; kabul etmeyeni havuzdan eler ya da sessizce 6 saat atlar. Düşürme için MOMENTUM_KALDIRAC_DUSUR=true.
@@ -255,6 +256,30 @@ exchange = ccxt.bitget({
     "options": {"defaultType": "swap"}, "enableRateLimit": True, "timeout": 30000,
 })
 
+# v8.11 KÖK NEDEN DÜZELTMESİ: ccxt, emir parametresinde marginMode verilmezse Bitget'e 'crossed' gönderir -> pozisyon, ayar izole olsa bile
+# CROSS açılıyordu. Her emre marginMode eklenir: giriş emirlerinde seçilen mod (_EMIR_MODU), kapatma/stop emirlerinde coinin güncel modu.
+_EMIR_MODU = {}
+_orijinal_create_order = exchange.create_order
+
+
+def _marjin_parametreli_create_order(symbol, type, side, amount, price=None, params=None):
+    params = dict(params or {})
+    if not params.get("marginMode"):
+        mod = _EMIR_MODU.get(symbol)
+        if not params.get("reduceOnly"):
+            mod = mod or MARJIN_MODU
+        else:
+            try:
+                mod = marjin_modu_oku(symbol) or mod or MARJIN_MODU        # kapatma: pozisyonun gerçek modu
+            except Exception:
+                mod = mod or MARJIN_MODU
+        mod = "cross" if str(mod).lower() in ("cross", "crossed") else "isolated"
+        params["marginMode"] = mod
+    return _orijinal_create_order(symbol, type, side, amount, price, params)
+
+
+exchange.create_order = _marjin_parametreli_create_order
+
 bot = telebot.TeleBot(TELE_TOKEN) if TELE_TOKEN else None
 
 
@@ -442,7 +467,7 @@ MOMENTUM_HAREKET_PCT = float(os.getenv("MOMENTUM_HAREKET_PCT", "5.0"))
 MOMENTUM_HACIM_CARPANI = float(os.getenv("MOMENTUM_HACIM_CARPANI", "2.0"))
 MOMENTUM_MIN_HACIM_USDT = float(os.getenv("MOMENTUM_MIN_HACIM_USDT", "1500000"))
 MOMENTUM_COOLDOWN_SN = int(os.getenv("MOMENTUM_COOLDOWN_SN", str(2 * 3600)))
-MOMENTUM_MAX_POS = int(os.getenv("MOMENTUM_MAX_POS", "2"))
+MOMENTUM_MAX_POS = int(os.getenv("MOMENTUM_MAX_POS", "1"))
 # v8.1: DENEME LİMİTİ: >0 ise bu kadar momentum işlemi açıldıktan sonra YENİ giriş durur (açık pozisyonlar yönetilir); 0 = limitsiz.
 # Ayarlar (açık/kapalı, kaldıraç, limit, sayaç) /data'da saklanır, bot yeniden başlayınca kaybolmaz. Panelden/komutla değişir.
 MOMENTUM_MAX_ISLEM = int(os.getenv("MOMENTUM_MAX_ISLEM", "0"))
@@ -1800,6 +1825,7 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
     kaldirac_uyari = "" if kaldirac_ok else (f"⚠️ Kaldıraç {LEV_KULLANILAN}x AYARLANAMADI ({kaldirac_hata}). Pozisyon Bitget'teki "
                                              f"mevcut kaldıraçla açılabilir; açılınca kontrol et.\n")
     yon_str = "buy" if long_mu else "sell"
+    _EMIR_MODU[sym] = mod
     timeout_sn = MANUEL_LIMIT_TIMEOUT_SN
     try:
         if giris_modu == "market":
@@ -2689,6 +2715,7 @@ def _momentum_ac_ic(sym, sinyal):
         if qty <= 0:
             return False
         try:
+            _EMIR_MODU[sym] = "isolated"
             exchange.create_market_order(sym, "buy", qty)
             lev = aday_lev; marjin = marjin_a
             break
@@ -2737,6 +2764,10 @@ def _momentum_ac_ic(sym, sinyal):
     if sorun:
         _momentum_acil_kapat(sym, gqty, sorun)
         _momentum_cooldown_koy(sym, 1800)
+        if g_mod == "cross":
+            momentum_ac_kapat(False)         # v8.10: izole sağlanamıyor (hesap modu): tekrar tekrar aç-kapa ücret yakmasın, momentum kalıcı KAPANIR
+            tg("⛔ Momentum otomatiği KAPATILDI: işlem CROSS açıldı (izole uygulanmıyor). Bitget'te varlık modunu (tek varlık / çoklu varlık) kontrol et; "
+               "düzelince /momentumac ile aç.")
         return False
     # 5) borsada stop-loss
     sl_fiyat = float(exchange.price_to_precision(sym, sl))
@@ -2910,6 +2941,7 @@ def _gercek_pozisyon_ac_ic(sym, sinyal):
     kapanis_yonu = "sell" if long_mu else "buy"
 
     try:
+        _EMIR_MODU[sym] = MARJIN_MODU
         exchange.create_market_order(sym, acilis_yonu, qty)
     except Exception as e:
         tg(f"⚠️ {sym} giriş emri başarısız: {e}")
@@ -3455,7 +3487,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.8 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.11 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4792,7 +4824,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.8 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.11 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4905,7 +4937,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.8 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.11 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
