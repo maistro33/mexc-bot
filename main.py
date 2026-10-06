@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.5 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.8 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
 
+v8.8 (06.10.2026): momentum düşük kaldıraçlı coinlerde de açar: >=20x ise $1 marjin; <20x ise pozisyon büyüklüğü aynı kalsın diye marjin büyür (üst sınır $10; ör. 5x -> $10). Likidasyon SL'den önce gelirse zaten açılmaz.
+v8.7 (06.10.2026): momentum 50x dener, kabul etmezse 40/30/25/20x'e düşer; 20x'in altına inen (ör. max 5x) coinler havuzdan elenir/atlanır. Marjin hep MOMENTUM_MARJIN_USDT. Ayar: MOMENTUM_MIN_KALDIRAC.
+v8.6 (06.10.2026): momentum sadece seçili kaldıracı (50x) kabul eden coinlere bakar; kabul etmeyeni havuzdan eler ya da sessizce 6 saat atlar. Düşürme için MOMENTUM_KALDIRAC_DUSUR=true.
 v8.5 (06.10.2026): momentum kaldıraç basamakları 5x'e kadar iner ama MOMENTUM_MIN_KALDIRAC (varsayılan 10) altına inmez; coin en fazla 5x veriyorsa işlem açılmaz (1$ marjinle 5x anlamsız, deney yüksek kaldıraç içindir).
 v8.4 (06.10.2026): MOMENTUM KALDIRAÇ DÜŞÜRME. Bitget bazı coinlerde 50x'e izin vermiyor (40797); bot 40/30/25/20... diye düşürüp dener, olmazsa açmaz.
 v8.3 (06.10.2026): HIZLI GİRİŞ. Kart "Aç" artık sinyal fiyatında bekleyen limit değil: anlık fiyattan %0.2 toleranslı limit (hemen dolar, kayma sınırlı; ANI_GIRIS_MODU=sinirli|market|limit), 60 sn dolmazsa iptal+bildirim (kısmi dolum yönetilir), SL/TP anlık fiyata göre kaydırılır, fiyat sinyalden %1.5 kaçtıysa girmez. /ac eski gibi yazılan fiyatta limit.
@@ -426,7 +429,10 @@ ANI_TEYIT_PENCERE_SN = int(os.getenv("ANI_TEYIT_PENCERE_SN", "900"))
 #   kaldıraç sadece ölçeklendirir (aynı çıkışta 10x +$8, 20x +$16, 50x +$40). İZOLE ZORUNLU; izole doğrulanamazsa işlem AÇILMAZ.
 # ════════════════════════════════════════════
 MOMENTUM_OTO_AKTIF = os.getenv("MOMENTUM_OTO_AKTIF", "false").lower() == "true"
-MOMENTUM_MIN_KALDIRAC = int(os.getenv("MOMENTUM_MIN_KALDIRAC", "10"))     # v8.5: bu coin bundan düşük kaldıraç veriyorsa (ör. 龙虾 max 5x) işlem açılmaz
+MOMENTUM_KALDIRAC_DUSUR = os.getenv("MOMENTUM_KALDIRAC_DUSUR", "true").strip().lower() in ("1", "true", "yes", "evet")   # v8.6: false = sadece seçili kaldıracı (ör. 50x) kabul eden coinler
+MOMENTUM_DUSUK_KALDIRAC_ESIK = int(os.getenv("MOMENTUM_DUSUK_KALDIRAC_ESIK", "20"))   # v8.8: bu kaldıracın altında marjin büyütülür (pozisyon büyüklüğü aynı kalsın)
+MOMENTUM_DUSUK_MARJIN_MAKS = float(os.getenv("MOMENTUM_DUSUK_MARJIN_MAKS", "10"))     # düşük kaldıraçta marjin üst sınırı ($)
+MOMENTUM_MIN_KALDIRAC = int(os.getenv("MOMENTUM_MIN_KALDIRAC", "2"))     # v8.5: bu coin bundan düşük kaldıraç veriyorsa (ör. 龙虾 max 5x) işlem açılmaz
 MOMENTUM_MARJIN_USDT = float(os.getenv("MOMENTUM_MARJIN_USDT", "1.0"))
 MOMENTUM_KALDIRAC = int(os.getenv("MOMENTUM_KALDIRAC", "20"))
 MOMENTUM_SL_PCT = float(os.getenv("MOMENTUM_SL_PCT", "1.0"))
@@ -2556,6 +2562,8 @@ def momentum_tara():
             continue
         if (t.get("quoteVolume") or 0) < MOMENTUM_MIN_HACIM_USDT:
             continue
+        if sembol_max_kaldirac(sym, MOMENTUM_KALDIRAC) < (MOMENTUM_MIN_KALDIRAC if MOMENTUM_KALDIRAC_DUSUR else MOMENTUM_KALDIRAC):
+            continue                                     # borsa bilgisi bu coinin istenen kaldıracı vermediğini söylüyor
         adaylar.append(sym)
 
     def kontrol(sym):
@@ -2653,17 +2661,28 @@ def _momentum_ac_ic(sym, sinyal):
     # v8.4: Bitget bu coin için istenen kaldıraca izin vermeyebilir (40797 "Exceeded the maximum settable leverage").
     # Basamak basamak düşürerek dene; hiçbiri olmazsa işlem AÇILMAZ. Marjin hep aynı ($MOMENTUM_MARJIN_USDT), sadece pozisyon büyüklüğü küçülür.
     lev0 = sembol_max_kaldirac(sym, MOMENTUM_KALDIRAC)
-    basamaklar = [x for x in [lev0] + [y for y in (40, 30, 25, 20, 15, 10, 5) if y < lev0] if x >= MOMENTUM_MIN_KALDIRAC]
-    if not basamaklar:
-        basamaklar = [lev0]
+    if MOMENTUM_KALDIRAC_DUSUR:
+        basamaklar = [x for x in [lev0] + [y for y in (40, 30, 25, 20, 15, 10, 5, 3, 2) if y < lev0] if x >= MOMENTUM_MIN_KALDIRAC]
+        if not basamaklar:
+            basamaklar = [lev0]
+    else:
+        basamaklar = [lev0]                              # v8.6: düşürme yok; coin istenen kaldıracı vermiyorsa atla
     lev = None; son_hata = None; fiyat = sinyal["fiyat"]; qty = 0
-    for aday_lev in basamaklar[:8]:
+    marjin = MOMENTUM_MARJIN_USDT
+    for aday_lev in basamaklar[:10]:
+        if aday_lev >= MOMENTUM_DUSUK_KALDIRAC_ESIK:
+            marjin_a = MOMENTUM_MARJIN_USDT
+        else:                                            # düşük kaldıraç: aynı pozisyon büyüklüğü (≈ marjin×istenen kaldıraç), marjin üst sınırlı
+            marjin_a = min(MOMENTUM_DUSUK_MARJIN_MAKS, MOMENTUM_MARJIN_USDT * MOMENTUM_KALDIRAC / aday_lev)
+        if bakiye < marjin_a * 1.2:
+            son_hata = f"bakiye yetersiz ({aday_lev}x için ${marjin_a:.2f} marjin gerekir)"
+            break
         lev_ok, lev_hata = kaldirac_ayarla(sym, aday_lev, True)
         if not lev_ok:
             son_hata = f"kaldıraç {aday_lev}x ayarlanamadı ({lev_hata})"
             continue
         try:
-            qty = float(exchange.amount_to_precision(sym, MOMENTUM_MARJIN_USDT * aday_lev / fiyat))
+            qty = float(exchange.amount_to_precision(sym, marjin_a * aday_lev / fiyat))
         except Exception as e:
             log.warning(f"[MOMENTUM_MIKTAR] {sym}: {e}")
             return False
@@ -2671,18 +2690,22 @@ def _momentum_ac_ic(sym, sinyal):
             return False
         try:
             exchange.create_market_order(sym, "buy", qty)
-            lev = aday_lev
+            lev = aday_lev; marjin = marjin_a
             break
         except Exception as e:
             son_hata = f"{aday_lev}x giriş emri reddedildi: {e}"
             if "40797" not in str(e) and "leverage" not in str(e).lower():
                 break                                   # kaldıraçla ilgisiz hata: düşürmenin anlamı yok
     if lev is None:
+        if "40797" in str(son_hata) or "ayarlanamadı" in str(son_hata) or "leverage" in str(son_hata).lower():
+            log.info(f"[MOMENTUM] {sym} atlandı: en az {MOMENTUM_MIN_KALDIRAC}x kabul etmiyor ({son_hata})")      # mesaj yok, 6 saat tekrar deneme
+            _momentum_cooldown_koy(sym, 6 * 3600)
+            return False
         _momentum_uyari("emir", f"⚠️ Momentum {sym} açılamadı: {son_hata}")
         _momentum_cooldown_koy(sym, 900)
         return False
     if lev != lev0:
-        tg(f"ℹ️ Momentum {sym}: Bitget {lev0}x'e izin vermedi, {lev}x ile açıldı (marjin ${MOMENTUM_MARJIN_USDT:g}).")
+        tg(f"ℹ️ Momentum {sym}: Bitget {lev0}x'e izin vermedi, {lev}x ile açıldı (marjin ${marjin:g}).")
     time.sleep(0.8)
     gercek = None
     for _ in range(4):
@@ -2751,7 +2774,7 @@ def _momentum_ac_ic(sym, sinyal):
     tg(f"🤖 MOMENTUM AÇILDI: {sym.split('/')[0]} 🟢 LONG\n"
        f"Sinyal: son 30 dk %{sinyal['hareket']:+.1f}, hacim x{sinyal['hacim']:.1f}\n"
        f"Giriş {entry:.8g} (sinyal {fiyat:.8g}, kayma %{kayma:+.2f}) | SL {sl:.8g} (-%{MOMENTUM_SL_PCT:g})\n"
-       f"{lev}x İzole, marjin ${MOMENTUM_MARJIN_USDT:g} (pozisyon ≈${gqty*entry:.1f})"
+       f"{lev}x İzole, marjin ${marjin:g} (pozisyon ≈${gqty*entry:.1f})"
        + (f" | likidasyon {liq:.8g}" if liq else "")
        + f"\nİz sürme: kâr %{MOMENTUM_TRAIL_AKT_PCT:g}'te başlar, zirveden %{MOMENTUM_TRAIL_PAY_PCT:g} geride.")
     if momentum_limit_doldu():
@@ -3432,7 +3455,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.8 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4769,7 +4792,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.8 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4882,7 +4905,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.5 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.8 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
