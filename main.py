@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.1 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.2 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v8.2 (06.10.2026): MOMENTUM "YAŞIYORUM" LOGU + ESKİ TARAYICI DURDURULDU. (1) Momentum her 5 dk taramada logluyor: "[MOMENTUM] tarama tamam | havuz | sinyal | en yüksek 30dk hareket (coin)"
+ve /momentumdurum son taramayı gösteriyor ("sinyal yok" ile "tarama çalışmıyor" ayrılır). (2) OTOMATIK_GIRIS_AKTIF kapalıyken eski tarayıcı (günün en çok yükseleni) artık dakikada 47 coin sorgulamıyor,
+[NABIZ] logları kesildi; API payı momentum'a kalır.
 
 v8.1 (06.10.2026): MOMENTUM PANEL + DENEME LİMİTİ. /panel menüsüne: momentum aç/kapat, kaldıraç 10x/20x/30x/40x/50x, deneme limiti (5/10/limitsiz) ve
 "Yeni deneme (sayaç sıfır)" düğmeleri. Limit dolunca (örn. 5 işlem) YENİ giriş durur, açık pozisyonlar yönetilir, özet gönderilir. Ayarlar ve sayaç /data'da
@@ -884,6 +888,7 @@ otomatik_bildirim_gecmis = {}  # "SEMBOL:yon" -> son bildirim zamanı (aynı kur
 ani_hareket_gecmis = {}  # "SEMBOL:yon" -> son alarm zamanı
 ani_teyit_bekleyen = {}  # "SEMBOL:yon" -> {"aday", "zaman", "fiyat"}: teyit bekleyen sinyaller
 momentum_gecmis = {}     # SEMBOL -> son momentum girişi/denemesi zamanı (cooldown)
+_momentum_son_tarama = {}  # son taramanın özeti: zaman, havuz, sinyal, en_yuksek (30 dk hareketi %), en_yuksek_coin
 momentum_deneme = {"acilan": 0, "baslangic": "", "kayma": []}   # deneme sayacı (açılan işlem), başlangıç (UTC metni), giriş kaymaları
 _momentum_uyari_zamani = {}  # uyarı anahtarı -> son Telegram uyarısı (spam önleme)
 
@@ -2434,6 +2439,14 @@ def momentum_deneme_ozeti():
     return satir
 
 
+def momentum_tarama_satiri():
+    t = _momentum_son_tarama.get("zaman")
+    if not t:
+        return "Son tarama: henüz yok (momentum açıksa her 5 dk mum kapanışında çalışır)"
+    return (f"Son tarama: {int(time.time()-t)} sn önce, havuz {_momentum_son_tarama.get('havuz')} coin, sinyal {_momentum_son_tarama.get('sinyal')}, "
+            f"en yüksek 30 dk hareket %{_momentum_son_tarama.get('en_yuksek')} ({(_momentum_son_tarama.get('en_yuksek_coin') or '-').split('/')[0]}), eşik %{MOMENTUM_HAREKET_PCT:g}")
+
+
 def momentum_panel_satiri():
     limit = f"{momentum_deneme['acilan']}/{MOMENTUM_MAX_ISLEM}" if MOMENTUM_MAX_ISLEM > 0 else f"{momentum_deneme['acilan']} (limitsiz)"
     return (f"🤖 Momentum: <b>{'AÇIK' if MOMENTUM_OTO_AKTIF else 'KAPALI'}</b> · {MOMENTUM_KALDIRAC}x İzole · ${MOMENTUM_MARJIN_USDT:g} · deneme {limit}"
@@ -2457,6 +2470,8 @@ def _momentum_cooldown_koy(sym, kalan_sn):
 def momentum_tara():
     """Son KAPANMIŞ 5 dk mumunda ani yükselen coinleri bulur: son 30 dk >= %MOMENTUM_HAREKET_PCT ve 30 dk hacmi önceki 30 dk'nın
     >= MOMENTUM_HACIM_CARPANI katı (backtest ile birebir aynı tanım). Likit, RWA/yavaş coin dışı. En sert hareket önce."""
+    _momentum_son_tarama["_tmp_max"] = -999
+    _momentum_son_tarama["_tmp_sym"] = None
     tickers = guncel_tickerlari_al()
     adaylar = []
     for sym, t in tickers.items():
@@ -2476,6 +2491,9 @@ def momentum_tara():
         if c.iloc[-7] <= 0:
             return None
         hareket = (c.iloc[-1] / c.iloc[-7] - 1) * 100
+        if hareket > _momentum_son_tarama.get("_tmp_max", -999):
+            _momentum_son_tarama["_tmp_max"] = hareket
+            _momentum_son_tarama["_tmp_sym"] = sym
         once = v.iloc[-12:-6].sum()
         if hareket < MOMENTUM_HAREKET_PCT or once <= 0:
             return None
@@ -2486,11 +2504,21 @@ def momentum_tara():
                 "hacim": round(float(hacim), 2), "mum_ts": int(df["ts"].iloc[-1])}
 
     sonuc = []
+    en_yuksek = [None, 0.0]            # [coin, en yüksek 30 dk hareketi]
+    taranan = [0]
+
+    def kontrol_ist(sym):
+        r = kontrol(sym)
+        return r
+
     with ThreadPoolExecutor(max_workers=8) as havuz:
-        for r in havuz.map(kontrol, adaylar):
+        for r in havuz.map(kontrol_ist, adaylar):
             if r:
                 sonuc.append(r)
     sonuc.sort(key=lambda x: -x["hareket"])
+    mx = _momentum_son_tarama.get("_tmp_max", -999)
+    _momentum_son_tarama.update({"zaman": time.time(), "havuz": len(adaylar), "sinyal": len(sonuc),
+                                 "en_yuksek": (round(mx, 2) if mx > -999 else None), "en_yuksek_coin": _momentum_son_tarama.get("_tmp_sym")})
     return sonuc
 
 
@@ -2658,7 +2686,12 @@ def momentum_loop():
             if bucket == son_bucket or (simdi % 300) < 8:
                 continue
             son_bucket = bucket
-            for sinyal in momentum_tara():
+            sinyaller = momentum_tara()
+            ist = _momentum_son_tarama
+            log.info(f"[MOMENTUM] tarama tamam | havuz={ist.get('havuz')} | sinyal={len(sinyaller)} | en yüksek 30dk hareket="
+                     f"{ist.get('en_yuksek')}% ({(ist.get('en_yuksek_coin') or '-').split('/')[0]}) | eşik %{MOMENTUM_HAREKET_PCT:g} | "
+                     f"{MOMENTUM_KALDIRAC}x izole | deneme {momentum_deneme['acilan']}/{MOMENTUM_MAX_ISLEM or '∞'}")
+            for sinyal in sinyaller:
                 momentum_pozisyon_ac(sinyal)
         except Exception as e:
             log.error(f"[MOMENTUM_LOOP] {e}")
@@ -3259,7 +3292,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v8.1</b>",
+        "💎 <b>GHOST BOT v8.2</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -3312,7 +3345,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.1 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3990,7 +4023,7 @@ if bot:
         satirlar = [f"🤖 Momentum: {'AÇIK' if MOMENTUM_OTO_AKTIF else 'KAPALI'}",
                     f"Ayar: {MOMENTUM_KALDIRAC}x İzole, ${MOMENTUM_MARJIN_USDT:g} marjin, SL %{MOMENTUM_SL_PCT:g}, iz sürme %{MOMENTUM_TRAIL_AKT_PCT:g}/%{MOMENTUM_TRAIL_PAY_PCT:g}, "
                     f"sinyal %{MOMENTUM_HAREKET_PCT:g}/{MOMENTUM_HACIM_CARPANI:g}x, max {MOMENTUM_MAX_POS} pozisyon",
-                    f"Açık momentum pozisyonu: {len(acik)}", momentum_deneme_ozeti()]
+                    f"Açık momentum pozisyonu: {len(acik)}", momentum_deneme_ozeti(), momentum_tarama_satiri()]
         for k, d in acik:
             satirlar.append(f"  {k.split('/')[0]} giriş {d['entry']:.8g} SL {d['sl']:.8g} iz sürme {'AKTİF' if d.get('trailing_aktif') else 'henüz değil'}")
         bot.send_message(msg.chat.id, "\n".join(satirlar))
@@ -4649,7 +4682,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.1 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4688,6 +4721,11 @@ def tarama_loop():
                     tg(f"🛑 GÜNLÜK ZARAR FRENİ devrede: bugün gerçekleşen ≈{gun_pnl:+.2f}$ "
                        f"(gün başı ≈{gun_basi:.2f}$'ın %{abs(gun_pnl)/gun_basi*100:.1f}'i, limit %{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}). "
                        f"UTC 00:00'a kadar YENİ işlem açılmayacak, açık pozisyonlar yönetilmeye devam eder.")
+                time.sleep(KONTROL_ARALIGI_SN)
+                continue
+
+            # v8.2: otomatik giriş kapalıyken eski tarayıcı hiçbir şey açmayacağı için boşuna API isteği yapma
+            if not OTOMATIK_GIRIS_AKTIF:
                 time.sleep(KONTROL_ARALIGI_SN)
                 continue
 
@@ -4757,7 +4795,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.1 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.2 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
