@@ -1,11 +1,28 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v7.3 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.1 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
 OTOMATIK_GIRIS_AKTIF=true yapılırsa hâlâ çalışır, varsayılan KAPALI.
+
+v8.1 (06.10.2026): MOMENTUM PANEL + DENEME LİMİTİ. /panel menüsüne: momentum aç/kapat, kaldıraç 10x/20x/30x/40x/50x, deneme limiti (5/10/limitsiz) ve
+"Yeni deneme (sayaç sıfır)" düğmeleri. Limit dolunca (örn. 5 işlem) YENİ giriş durur, açık pozisyonlar yönetilir, özet gönderilir. Ayarlar ve sayaç /data'da
+saklanır (yeniden başlatmada kaybolmaz). Komutlar: /momentumkaldirac N, /momentumlimit N. Not: 5 işlem istatistik için çok azdır; asıl faydası gerçek kayma/SL/izole
+işleyişini görmektir. Yüksek kaldıraçta (50x) likidasyon SL'ye yakındır; bot SL'den önce likidasyon varsa pozisyonu hemen kapatır.
+
+v8.0 (06.10.2026): OTOMATİK MOMENTUM (kullanıcı kararı) + İZOLE ZORUNLULUĞU. Ani yükselen coinlere (son 30 dk >= %5, hacim >= 2x) bot kendisi piyasa emriyle LONG girer:
+$1 marjin, 20x, İZOLE, SL %1, iz sürme %1'de başlar/zirveden %0.3 geride, 8 saat zaman aşımı. VARSAYILAN KAPALI: MOMENTUM_OTO_AKTIF=true ya da /momentumac.
+Güvenlik: izole emirden önce okunup doğrulanır, doğrulanamazsa işlem açılmaz; açıldıktan sonra Cross/yanlış kaldıraç/SL'den önce gelen likidasyon varsa pozisyon
+hemen kapatılır; SL kurulamazsa kapatılır; günlük zarar freni ve /durdur geçerli. İz sürme stopu yenilenemezse pozisyon kapatılır (stopsuz kalmaz).
+Backtest kenarı ÇOK İNCE ve kaymaya duyarlı (kayma %0.2/%0.3'te zarara döner). v7.4 5 dk teyit varsayılan KAPATILDI.
+
+v7.4 (06.10.2026): TEYİTLİ GİRİŞ + DÜRÜST BAŞLIK. Kullanıcı geri bildirimi: "kaliteli diye gelen sinyal sonra ters gidiyor". Gerçekçi backtest: ~%40 sinyal
+stopa gider (arıza değil, stratejinin doğası); girişi geri çekilmeye koymak kazandırmadı, 1 mum teyit KISA'da işlem başına getiriyi artırdı
+(+%2.0 -> +%3.6 marjin, düşüş yarıya) ama sinyal sayısını yarıdan fazla azalttı. (1) KISA sinyaller artık 5 dk bekler: fiyat yönde devam ederse kart
+(yeni fiyatla) gelir, etmezse düşer (ANI_TEYIT_AKTIF, ANI_TEYIT_YONLER). (2) Kart başlığı "Bu coin YÜKSELEBİLİR" yerine "YÜKSELİŞ/DÜŞÜŞ ADAYI (garanti
+değil)". UZUN sinyallerin kanıtı zayıf (46 işlem) ve teyitle de iyileşmedi (21 işlem): UZUN kartlara temkinli yaklaş.
 
 v7.3 (06.10.2026): MARJIN MODU DOĞRULAMASI. İzole seçilmesine rağmen pozisyon Cross açılmıştı (ayar sessizce tutmamıştı). Artık emirden önce
 Bitget'ten coinin marjin modu okunur (fetch_margin_mode), gerekirse ayarlanır ve tekrar okunur. İstenen mod tutmadıysa emir GÖNDERİLMEZ ve sebep
@@ -383,6 +400,41 @@ ANI_HAREKET_HACIM_CARPANI_KISA = float(os.getenv("ANI_HAREKET_HACIM_CARPANI_KISA
 # v7.0: ani hareket kartlarında SL en fazla bu yüzde (%) uzakta olur, TP ve R/R buna göre yeniden hesaplanır.
 # Backtest (5x/10x, likidasyon dahil): kartın doğal SL'i (medyan %12) 10x'te zarar, SL<=%4 ile pozitif ve likidasyonsuz.
 ANI_HAREKET_SL_TAVAN_PCT = float(os.getenv("ANI_HAREKET_SL_TAVAN_PCT", "4.0"))
+# v7.4: TEYİTLİ GİRİŞ. Sinyal anında kart göndermek yerine ANI_TEYIT_BEKLEME_SN (5 dk) beklenir; fiyat sinyal fiyatından sinyal yönünde
+# DEVAM ETTİYSE kart gönderilir (yeni fiyatla), etmediyse sinyal sessizce düşer. Backtest (187 coin/45 gün/5 dk mum, 5x, SL<=%4, komisyon+kayma
+# dahil): KISA sinyallerde anında giriş n=424 %60 kazanma +%2.0 marjin/işlem; teyitli n=190 %64 kazanma +%3.6 marjin/işlem, max düşüş yarıya indi.
+# UZUN'da teyitli örnek çok küçük (n=21, negatif), bu yüzden varsayılan sadece KISA (ANI_TEYIT_YONLER="short,long" ile değişir).
+# Her iki durumda da yaklaşık %40 işlem stopa gider; bu bir arıza değil, stratejinin doğası.
+ANI_TEYIT_AKTIF = os.getenv("ANI_TEYIT_AKTIF", "false").lower() == "true"   # v8.0: varsayılan KAPALI (kart 5 dk gecikir)
+ANI_TEYIT_YONLER = {x.strip() for x in os.getenv("ANI_TEYIT_YONLER", "short").split(",") if x.strip()}
+ANI_TEYIT_BEKLEME_SN = int(os.getenv("ANI_TEYIT_BEKLEME_SN", "300"))
+ANI_TEYIT_PENCERE_SN = int(os.getenv("ANI_TEYIT_PENCERE_SN", "900"))
+
+# ════════════════════════════════════════════
+# v8.0: OTOMATİK MOMENTUM (ani yükselen, LONG). Kullanıcı kararı (06.10.2026). VARSAYILAN KAPALI: MOMENTUM_OTO_AKTIF=true ile ya da /momentumac ile açılır.
+# Backtest (187 coin/45 gün/5 dk mum, $1 marjin, izole, long, komisyon+kayma dahil, aynı coin 2 sa cooldown, 4 poz. sınırı):
+#   sinyal: son 30 dk >= +%5 ve hacim >= 2x (önceki 30 dk'ya göre), 24s hacmi >= 1.5M$, her coin.
+#   çıkış: SL %1, kâr %1'e ulaşınca iz sürme zirveden %0.3 geride, 8 saat zaman aşımı.
+#   50x: +$118/45 gün (1020 işlem, kazanma %44, iki yarıda da pozitif). KENAR ÇOK İNCE: giriş/stop kayması %0.2/%0.3 olursa -$118'e döner;
+#   kaldıraç sadece ölçeklendirir (aynı çıkışta 10x +$8, 20x +$16, 50x +$40). İZOLE ZORUNLU; izole doğrulanamazsa işlem AÇILMAZ.
+# ════════════════════════════════════════════
+MOMENTUM_OTO_AKTIF = os.getenv("MOMENTUM_OTO_AKTIF", "false").lower() == "true"
+MOMENTUM_MARJIN_USDT = float(os.getenv("MOMENTUM_MARJIN_USDT", "1.0"))
+MOMENTUM_KALDIRAC = int(os.getenv("MOMENTUM_KALDIRAC", "20"))
+MOMENTUM_SL_PCT = float(os.getenv("MOMENTUM_SL_PCT", "1.0"))
+MOMENTUM_TRAIL_AKT_PCT = float(os.getenv("MOMENTUM_TRAIL_AKT_PCT", "1.0"))
+MOMENTUM_TRAIL_PAY_PCT = float(os.getenv("MOMENTUM_TRAIL_PAY_PCT", "0.3"))
+MOMENTUM_HAREKET_PCT = float(os.getenv("MOMENTUM_HAREKET_PCT", "5.0"))
+MOMENTUM_HACIM_CARPANI = float(os.getenv("MOMENTUM_HACIM_CARPANI", "2.0"))
+MOMENTUM_MIN_HACIM_USDT = float(os.getenv("MOMENTUM_MIN_HACIM_USDT", "1500000"))
+MOMENTUM_COOLDOWN_SN = int(os.getenv("MOMENTUM_COOLDOWN_SN", str(2 * 3600)))
+MOMENTUM_MAX_POS = int(os.getenv("MOMENTUM_MAX_POS", "2"))
+# v8.1: DENEME LİMİTİ: >0 ise bu kadar momentum işlemi açıldıktan sonra YENİ giriş durur (açık pozisyonlar yönetilir); 0 = limitsiz.
+# Ayarlar (açık/kapalı, kaldıraç, limit, sayaç) /data'da saklanır, bot yeniden başlayınca kaybolmaz. Panelden/komutla değişir.
+MOMENTUM_MAX_ISLEM = int(os.getenv("MOMENTUM_MAX_ISLEM", "0"))
+MOMENTUM_AYAR_PATH = os.getenv("MOMENTUM_AYAR_PATH", "/data/live2_momentum.json")
+MOMENTUM_LEV_SECENEKLERI = [10, 20, 30, 40, 50]
+MOMENTUM_LIMIT_SECENEKLERI = [5, 10, 0]
 ANI_HAREKET_TAKIP_SAYISI = int(os.getenv("ANI_HAREKET_TAKIP_SAYISI", "8"))
 ANI_HAREKET_COOLDOWN_SN = int(os.getenv("ANI_HAREKET_COOLDOWN_SN", str(2*3600)))
 MANUEL_LIMIT_TIMEOUT_SN = int(os.getenv("MANUEL_LIMIT_TIMEOUT_SN", str(6*3600)))
@@ -665,9 +717,14 @@ ISTATISTIK_GECMIS = {
 }
 
 
-def gecmis_istatistik_satiri(yon, lev=None):
+ISTATISTIK_TEYITLI = {
+    "short": {"kazanma": 64, "ort": 3.6, "en_kotu": 22, "not": "teyitli, 190 işlem"},
+}
+
+
+def gecmis_istatistik_satiri(yon, lev=None, teyitli=False):
     """Kartın sonuna eklenen uyarı: sinyal garanti değildir; gerçekçi backtest sonuçları."""
-    g = ISTATISTIK_GECMIS.get(yon)
+    g = (ISTATISTIK_TEYITLI.get(yon) if teyitli else None) or ISTATISTIK_GECMIS.get(yon)
     if not g:
         return ""
     uyari = ""
@@ -742,6 +799,15 @@ def likidasyon_mesafe_yaklasik(lev):
     return max(0.01, 1.0 / max(lev, 1) - 0.05)
 
 
+def teyit_satiri(aday):
+    """Teyitli kartlarda: sinyal fiyatından teyit anındaki fiyata hareket."""
+    t = aday.get("teyit")
+    if not t:
+        return ""
+    p0, p1, sn = t
+    return f"   ✔ <b>Teyit:</b> {sn/60:.0f} dk sonra fiyat yönde devam etti ({p0:.8g} → {p1:.8g}, %{(p1/p0-1)*100:+.2f})\n"
+
+
 def mod_etiketi(mod):
     return "Cross" if mod in ("cross", "crossed") else "İzole"
 
@@ -763,6 +829,25 @@ def marjin_modu_oku(sym):
     except Exception as e:
         log.warning(f"[MARJIN_MODU_OKU] {sym}: {e}")
         return None
+
+
+def marjin_modu_teshis(sym):
+    """İzole tutmazsa olası sebebi göstermek için hesabın varlık/pozisyon modunu okur (Bitget'te çoklu varlık modunda sadece Cross vardır)."""
+    try:
+        info = (exchange.fetch_margin_mode(sym) or {}).get("info") or {}
+    except Exception:
+        return ""
+    parca = []
+    am = str(info.get("assetMode") or "").lower()
+    pm = str(info.get("posMode") or "").lower()
+    if am:
+        parca.append(f"varlık modu={am}")
+    if pm:
+        parca.append(f"pozisyon modu={pm}")
+    t = ", ".join(parca)
+    if am and ("union" in am or "multi" in am):
+        t += " → ÇOKLU VARLIK modunda İzole kullanılamaz: Bitget > Vadeli > Ayarlar > Varlık modu > Tek varlık modunu seç."
+    return t
 
 
 def marjin_modu_ayarla(sym, mod):
@@ -797,6 +882,10 @@ manuel_kilit = threading.Lock()
 manuel_metin_bekleyen = {}  # chat_id -> token (bir sonraki düz metin mesajı SL/TP düzenlemesi olarak okunur)
 otomatik_bildirim_gecmis = {}  # "SEMBOL:yon" -> son bildirim zamanı (aynı kurulumu tekrar tekrar bildirmemek için)
 ani_hareket_gecmis = {}  # "SEMBOL:yon" -> son alarm zamanı
+ani_teyit_bekleyen = {}  # "SEMBOL:yon" -> {"aday", "zaman", "fiyat"}: teyit bekleyen sinyaller
+momentum_gecmis = {}     # SEMBOL -> son momentum girişi/denemesi zamanı (cooldown)
+momentum_deneme = {"acilan": 0, "baslangic": "", "kayma": []}   # deneme sayacı (açılan işlem), başlangıç (UTC metni), giriş kaymaları
+_momentum_uyari_zamani = {}  # uyarı anahtarı -> son Telegram uyarısı (spam önleme)
 
 
 def rsi_hesapla(kapanislar, periyot=14):
@@ -1651,7 +1740,8 @@ def manuel_limit_ac(aday, sl, tp, marjin=None):
         return False, (f"Marjin modu {mod_etiketi(mod)} istendi ama Bitget'te bu coin {mod_etiketi(mod_simdi)} görünüyor"
                        + (f" (ayar hatası: {mod_hata})" if mod_hata else "")
                        + ". Emir GÖNDERİLMEDİ. Bitget'te coini istediğin moda çevirip tekrar dene "
-                         "(açık pozisyon/emir varken mod değişmez).")
+                         "(açık pozisyon/emir varken mod değişmez)."
+                       + ((" Teşhis: " + marjin_modu_teshis(sym)) if marjin_modu_teshis(sym) else ""))
     if mod_simdi == mod:
         mod_uyari = ""
     elif mod_simdi:
@@ -2279,6 +2369,302 @@ def manuel_limit_loop():
         time.sleep(10)
 
 
+def momentum_ayar_kaydet():
+    atomik_yaz(MOMENTUM_AYAR_PATH, {"aktif": MOMENTUM_OTO_AKTIF, "kaldirac": MOMENTUM_KALDIRAC, "max_islem": MOMENTUM_MAX_ISLEM,
+                                    "acilan": momentum_deneme["acilan"], "baslangic": momentum_deneme["baslangic"],
+                                    "kayma": momentum_deneme["kayma"][-200:]})
+
+
+def momentum_ayar_yukle():
+    """Kaydedilmiş momentum ayarlarını (açık/kapalı, kaldıraç, limit, sayaç) yükler; dosya yoksa ortam değişkeni varsayılanları kalır."""
+    global MOMENTUM_OTO_AKTIF, MOMENTUM_KALDIRAC, MOMENTUM_MAX_ISLEM
+    v = guvenli_oku(MOMENTUM_AYAR_PATH, None)
+    if isinstance(v, dict):
+        MOMENTUM_OTO_AKTIF = bool(v.get("aktif", MOMENTUM_OTO_AKTIF))
+        MOMENTUM_KALDIRAC = int(v.get("kaldirac", MOMENTUM_KALDIRAC))
+        MOMENTUM_MAX_ISLEM = int(v.get("max_islem", MOMENTUM_MAX_ISLEM))
+        momentum_deneme["acilan"] = int(v.get("acilan", 0))
+        momentum_deneme["baslangic"] = str(v.get("baslangic") or "")
+        momentum_deneme["kayma"] = list(v.get("kayma", []))
+    if not momentum_deneme["baslangic"]:
+        momentum_deneme["baslangic"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
+
+def momentum_ac_kapat(aktif):
+    global MOMENTUM_OTO_AKTIF
+    MOMENTUM_OTO_AKTIF = bool(aktif)
+    momentum_ayar_kaydet()
+
+
+def momentum_kaldirac_ayarla(lev):
+    global MOMENTUM_KALDIRAC
+    MOMENTUM_KALDIRAC = int(lev)
+    momentum_ayar_kaydet()
+
+
+def momentum_limit_ayarla(n):
+    global MOMENTUM_MAX_ISLEM
+    MOMENTUM_MAX_ISLEM = max(0, int(n))
+    momentum_ayar_kaydet()
+
+
+def momentum_deneme_sifirla():
+    momentum_deneme["acilan"] = 0
+    momentum_deneme["kayma"] = []
+    momentum_deneme["baslangic"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+    momentum_ayar_kaydet()
+
+
+def momentum_limit_doldu():
+    return MOMENTUM_MAX_ISLEM > 0 and momentum_deneme["acilan"] >= MOMENTUM_MAX_ISLEM
+
+
+def momentum_deneme_ozeti():
+    """Deneme sayacından bu yana momentum işlemlerinin özeti (PnL komisyonsuzdur)."""
+    with log_lock:
+        kayitlar = [t for t in trade_log if t.get("mod_kaynak") == "momentum" and str(t.get("zaman", "")) >= momentum_deneme["baslangic"]]
+    n = len(kayitlar)
+    kazanan = sum(1 for t in kayitlar if t.get("pnl", 0) > 0)
+    net = sum(t.get("pnl", 0) for t in kayitlar)
+    limit = f"/{MOMENTUM_MAX_ISLEM}" if MOMENTUM_MAX_ISLEM > 0 else ""
+    satir = f"Deneme: {momentum_deneme['acilan']}{limit} işlem açıldı, {n} kapandı, {kazanan} kazanan, net PnL ≈ {net:+.2f}$ (komisyonsuz)"
+    ks = momentum_deneme["kayma"]
+    if ks:
+        satir += f", ortalama giriş kayması %{sum(ks)/len(ks):+.3f}"
+    return satir
+
+
+def momentum_panel_satiri():
+    limit = f"{momentum_deneme['acilan']}/{MOMENTUM_MAX_ISLEM}" if MOMENTUM_MAX_ISLEM > 0 else f"{momentum_deneme['acilan']} (limitsiz)"
+    return (f"🤖 Momentum: <b>{'AÇIK' if MOMENTUM_OTO_AKTIF else 'KAPALI'}</b> · {MOMENTUM_KALDIRAC}x İzole · ${MOMENTUM_MARJIN_USDT:g} · deneme {limit}"
+            + ("  🏁 <i>limit doldu</i>" if momentum_limit_doldu() else ""))
+
+
+def _momentum_uyari(anahtar, metin, aralik=1800):
+    """Aynı uyarıyı en fazla `aralik` sn'de bir Telegram'a gönderir (spam önleme)."""
+    simdi = time.time()
+    if simdi - _momentum_uyari_zamani.get(anahtar, 0) < aralik:
+        return
+    _momentum_uyari_zamani[anahtar] = simdi
+    tg(metin)
+
+
+def _momentum_cooldown_koy(sym, kalan_sn):
+    """Başarısız denemeden sonra coini `kalan_sn` süre bekletir (normal cooldown'dan kısa)."""
+    momentum_gecmis[sym] = time.time() - (MOMENTUM_COOLDOWN_SN - kalan_sn)
+
+
+def momentum_tara():
+    """Son KAPANMIŞ 5 dk mumunda ani yükselen coinleri bulur: son 30 dk >= %MOMENTUM_HAREKET_PCT ve 30 dk hacmi önceki 30 dk'nın
+    >= MOMENTUM_HACIM_CARPANI katı (backtest ile birebir aynı tanım). Likit, RWA/yavaş coin dışı. En sert hareket önce."""
+    tickers = guncel_tickerlari_al()
+    adaylar = []
+    for sym, t in tickers.items():
+        if not sym.endswith("/USDT:USDT"):
+            continue
+        if sym.split("/")[0] in SLUGGISH_BASE or rwa_mi(sym) or coin_bloke_mi(sym):
+            continue
+        if (t.get("quoteVolume") or 0) < MOMENTUM_MIN_HACIM_USDT:
+            continue
+        adaylar.append(sym)
+
+    def kontrol(sym):
+        df = get_df(sym, "5m", 14)
+        if df is None or len(df) < 13:
+            return None
+        c, v = df["close"], df["volume"]
+        if c.iloc[-7] <= 0:
+            return None
+        hareket = (c.iloc[-1] / c.iloc[-7] - 1) * 100
+        once = v.iloc[-12:-6].sum()
+        if hareket < MOMENTUM_HAREKET_PCT or once <= 0:
+            return None
+        hacim = v.iloc[-6:].sum() / once
+        if hacim < MOMENTUM_HACIM_CARPANI:
+            return None
+        return {"symbol": sym, "fiyat": float(c.iloc[-1]), "hareket": round(float(hareket), 2),
+                "hacim": round(float(hacim), 2), "mum_ts": int(df["ts"].iloc[-1])}
+
+    sonuc = []
+    with ThreadPoolExecutor(max_workers=8) as havuz:
+        for r in havuz.map(kontrol, adaylar):
+            if r:
+                sonuc.append(r)
+    sonuc.sort(key=lambda x: -x["hareket"])
+    return sonuc
+
+
+def momentum_pozisyon_ac(sinyal):
+    sym = sinyal["symbol"]
+    if time.time() - sinyal.get("mum_ts", 0) / 1000.0 > 600:
+        return False                                   # bayat sinyal (mum 10 dk'dan eski)
+    if time.time() - momentum_gecmis.get(sym, 0) < MOMENTUM_COOLDOWN_SN:
+        return False
+    if momentum_limit_doldu():
+        return False                                   # deneme limiti doldu: yeni giriş yok
+    emp = efektif_max_pos()
+    with state_lock:
+        if sym in trade_state or sym in acilis_rezervasyonlari:
+            return False
+        if sum(1 for d in trade_state.values() if d.get("acilis_modu") == "momentum") >= MOMENTUM_MAX_POS:
+            return False
+        if len(trade_state) + len(acilis_rezervasyonlari) >= emp:
+            return False
+        acilis_rezervasyonlari[sym] = True
+    try:
+        return _momentum_ac_ic(sym, sinyal)
+    finally:
+        with state_lock:
+            acilis_rezervasyonlari.pop(sym, None)
+
+
+def _momentum_acil_kapat(sym, qty, sebep):
+    try:
+        exchange.create_market_order(sym, "sell", qty, params={"reduceOnly": True})
+        tg(f"🚫 Momentum {sym}: {sebep} → pozisyon hemen KAPATILDI.")
+    except Exception as e:
+        tg(f"🚨🚨 Momentum {sym}: {sebep} ve pozisyon KAPATILAMADI ({e}). BITGET'TE ELLE KAPAT!")
+
+
+def _momentum_ac_ic(sym, sinyal):
+    fren, _, _ = gunluk_zarar_freni_mi()
+    if fren:
+        return False
+    bakiye = gercek_bakiye_al()
+    if bakiye is None or bakiye < MOMENTUM_MARJIN_USDT * 1.2:
+        _momentum_uyari("bakiye", "⚠️ Momentum: bakiye yetersiz ya da okunamadı, işlem açılmadı.")
+        return False
+    # 1) İZOLE ZORUNLU: önce oku, gerekirse ayarla, tekrar oku. Doğrulanamazsa işlem AÇILMAZ.
+    mod = marjin_modu_oku(sym)
+    mod_hata = None
+    if mod != "isolated":
+        _, mod_hata = marjin_modu_ayarla(sym, "isolated")
+        mod = marjin_modu_oku(sym)
+    if mod != "isolated":
+        _momentum_uyari("izole", f"🚫 Momentum {sym}: İZOLE sağlanamadı (şu an: {mod_etiketi(mod) if mod else 'okunamadı'}) → işlem AÇILMADI."
+                                 + (f" Hata: {mod_hata}." if mod_hata else "")
+                                 + (f" Teşhis: {marjin_modu_teshis(sym)}" if marjin_modu_teshis(sym) else ""))
+        _momentum_cooldown_koy(sym, 900)
+        return False
+    # 2) kaldıraç
+    lev = sembol_max_kaldirac(sym, MOMENTUM_KALDIRAC)
+    lev_ok, lev_hata = kaldirac_ayarla(sym, lev, True)
+    if not lev_ok:
+        _momentum_uyari("kaldirac", f"🚫 Momentum {sym}: kaldıraç {lev}x ayarlanamadı ({lev_hata}) → işlem AÇILMADI.")
+        _momentum_cooldown_koy(sym, 900)
+        return False
+    # 3) miktar ve piyasa emri
+    fiyat = sinyal["fiyat"]
+    try:
+        qty = float(exchange.amount_to_precision(sym, MOMENTUM_MARJIN_USDT * lev / fiyat))
+    except Exception as e:
+        log.warning(f"[MOMENTUM_MIKTAR] {sym}: {e}")
+        return False
+    if qty <= 0:
+        return False
+    try:
+        exchange.create_market_order(sym, "buy", qty)
+    except Exception as e:
+        _momentum_uyari("emir", f"⚠️ Momentum {sym} giriş emri başarısız: {e}")
+        _momentum_cooldown_koy(sym, 900)
+        return False
+    time.sleep(0.8)
+    gercek = None
+    for _ in range(4):
+        try:
+            gercek = next((p for p in exchange.fetch_positions([sym]) if safe(p.get("contracts")) > 0), None)
+        except Exception as e:
+            log.warning(f"[MOMENTUM_POZ] {sym}: {e}")
+        if gercek:
+            break
+        time.sleep(0.5)
+    if not gercek:
+        tg(f"🚨 Momentum {sym}: emir gönderildi ama pozisyon okunamadı! Bitget'te kontrol et.")
+        return False
+    entry = safe(gercek.get("entryPrice")) or fiyat
+    gqty = safe(gercek.get("contracts")) or qty
+    g_lev = safe(gercek.get("leverage")) or None
+    liq = safe(gercek.get("liquidationPrice")) or None
+    g_mod = str(gercek.get("marginMode") or "").lower()
+    g_mod = "cross" if g_mod in ("cross", "crossed") else ("isolated" if g_mod == "isolated" else None)
+    sl = entry * (1 - MOMENTUM_SL_PCT / 100)
+    # 4) güvenlik doğrulamaları: ihlal varsa pozisyon hemen kapatılır
+    sorun = None
+    if g_mod == "cross":
+        sorun = "pozisyon CROSS açıldı"
+    elif g_lev and g_lev > lev + 0.5:
+        sorun = f"kaldıraç {g_lev:.0f}x açıldı (beklenen {lev}x)"
+    elif liq and liq >= sl:
+        sorun = f"likidasyon ({liq:.8g}) SL'den ({sl:.8g}) önce geliyor"
+    if sorun:
+        _momentum_acil_kapat(sym, gqty, sorun)
+        _momentum_cooldown_koy(sym, 1800)
+        return False
+    # 5) borsada stop-loss
+    sl_fiyat = float(exchange.price_to_precision(sym, sl))
+    sl_id = None
+    for deneme in range(3):
+        try:
+            sl_emri = exchange.create_order(sym, "market", "sell", gqty, None, {"reduceOnly": True, "stopLossPrice": sl_fiyat})
+            sl_id = sl_emri.get("id")
+            if sl_id:
+                break
+        except Exception as e:
+            log.warning(f"[MOMENTUM_SL] {sym} deneme {deneme+1}/3: {e}")
+        time.sleep(0.5)
+    if not sl_id:
+        _momentum_acil_kapat(sym, gqty, "SL kurulamadı")
+        _momentum_cooldown_koy(sym, 1800)
+        return False
+    with state_lock:
+        trade_state[sym] = {
+            "entry": entry, "sl": sl, "tp": entry * 11, "sl_emir_id": sl_id, "yon": "long", "qty": gqty,
+            "r_risk": entry - sl, "acilis_zamani": time.time(), "1d": "-", "4h": "-", "1h": "-",
+            "notional": gqty * entry, "son_trend_kontrol": 0, "ters_trend_sayisi": 0, "kismi_ters_sayisi": 0,
+            "kismi_alindi": False, "acilis_modu": "momentum", "erken_kontrol_yapildi": False,
+            "en_yuksek_fiyat": entry, "trailing_aktif": False,
+            "trail_act": MOMENTUM_TRAIL_AKT_PCT / 100.0, "trail_pad": MOMENTUM_TRAIL_PAY_PCT / 100.0,
+            "lev": lev, "mod": "isolated",
+        }
+    durumu_diske_yaz()
+    momentum_gecmis[sym] = time.time()
+    kayma = (entry - fiyat) / fiyat * 100
+    surtunme_kaydet("giris", sym, kayma)
+    momentum_deneme["acilan"] += 1
+    momentum_deneme["kayma"].append(round(kayma, 4))
+    momentum_ayar_kaydet()
+    tg(f"🤖 MOMENTUM AÇILDI: {sym.split('/')[0]} 🟢 LONG\n"
+       f"Sinyal: son 30 dk %{sinyal['hareket']:+.1f}, hacim x{sinyal['hacim']:.1f}\n"
+       f"Giriş {entry:.8g} (sinyal {fiyat:.8g}, kayma %{kayma:+.2f}) | SL {sl:.8g} (-%{MOMENTUM_SL_PCT:g})\n"
+       f"{lev}x İzole, marjin ${MOMENTUM_MARJIN_USDT:g} (pozisyon ≈${gqty*entry:.1f})"
+       + (f" | likidasyon {liq:.8g}" if liq else "")
+       + f"\nİz sürme: kâr %{MOMENTUM_TRAIL_AKT_PCT:g}'te başlar, zirveden %{MOMENTUM_TRAIL_PAY_PCT:g} geride.")
+    if momentum_limit_doldu():
+        tg(f"🏁 Momentum deneme limiti doldu ({momentum_deneme['acilan']}/{MOMENTUM_MAX_ISLEM}). YENİ giriş durdu, açık pozisyonlar SL/iz sürme ile yönetilir.\n"
+           f"{momentum_deneme_ozeti()}\nSonuçlar kapanınca /momentumdurum. Devam: panelde 'Yeni deneme' ya da limiti değiştir; kaldıracı düşürmek için panelden seç.")
+    return True
+
+
+def momentum_loop():
+    """Her yeni 5 dk mumu kapandıktan ~8 sn sonra bir kez tarar ve sinyal varsa piyasa emriyle girer."""
+    son_bucket = None
+    while True:
+        try:
+            time.sleep(10)
+            if not MOMENTUM_OTO_AKTIF or momentum_limit_doldu():
+                continue
+            simdi = time.time()
+            bucket = int(simdi // 300)
+            if bucket == son_bucket or (simdi % 300) < 8:
+                continue
+            son_bucket = bucket
+            for sinyal in momentum_tara():
+                momentum_pozisyon_ac(sinyal)
+        except Exception as e:
+            log.error(f"[MOMENTUM_LOOP] {e}")
+            time.sleep(15)
+
+
 def gercek_pozisyon_ac(sinyal):
     sym = sinyal["symbol"]
 
@@ -2660,7 +3046,7 @@ def gercek_pozisyon_kapat(sym, sebep="manuel"):
         trade_log_kaydet({"symbol": sym, "entry": entry_fiyat, "exit": cikis_fiyat, "pnl": pnl,
                            "yon": yon_kayitli, "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
                            "not": sebep, "1d": (durum or {}).get("1d"), "4h": (durum or {}).get("4h"),
-                           "1h": (durum or {}).get("1h")})
+                           "1h": (durum or {}).get("1h"), "mod_kaynak": (durum or {}).get("acilis_modu")})
         with state_lock:
             trade_state.pop(sym, None)
         durumu_diske_yaz()
@@ -2826,7 +3212,8 @@ def _kapanis_kaydet_gercek_veriyle(sym, durum, sebep):
     pnl = (cikis_fiyat - entry) * qty if long_mu else (entry - cikis_fiyat) * qty
     trade_log_kaydet({"symbol": sym, "entry": entry, "exit": cikis_fiyat, "pnl": pnl,
                        "yon": durum.get("yon", "long"), "zaman": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                       "not": sebep, "1d": durum.get("1d"), "4h": durum.get("4h"), "1h": durum.get("1h")})
+                       "not": sebep, "1d": durum.get("1d"), "4h": durum.get("4h"), "1h": durum.get("1h"),
+                       "mod_kaynak": durum.get("acilis_modu")})
     stop_kayma_metni = ""
     try:
         if str(sebep).startswith("sl") and gercek_dolum_var and durum.get("sl"):
@@ -2872,7 +3259,7 @@ def panel_ozet_metni():
     otomatik_rozet = "🟢 AÇIK" if OTOMATIK_GIRIS_AKTIF else "⚪ KAPALI"
 
     satirlar = [
-        "💎 <b>GHOST BOT v7.3</b>",
+        "💎 <b>GHOST BOT v8.1</b>",
         f"<i>Manuel onay paneli  ·  otomatik giriş {otomatik_rozet}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💼 Bakiye: <b>{bakiye_metni}</b>",
@@ -2881,6 +3268,7 @@ def panel_ozet_metni():
         gc_emoji = "🟢" if gerceklesmeyen_net >= 0 else "🔴"
         satirlar.append(f"{gc_emoji} Açık pozisyonlarda (gerçekleşmemiş): <b>{gerceklesmeyen_net:+.2f}$</b>")
     satirlar.append(f"📈 Açık: <b>{acik_sayi}/{MAX_POS}</b>   ·   📝 Bekleyen limit emir: <b>{bekleyen_sayi}</b>")
+    satirlar.append(momentum_panel_satiri())
     satirlar.append("━━━━━━━━━━━━━━━━━━━━")
 
     if gecmis:
@@ -2924,7 +3312,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v7.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.1 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -3096,6 +3484,12 @@ def ana_menu_klavye():
         telebot.types.InlineKeyboardButton("📏 Sürtünme", callback_data="panel_surtunme"),
         telebot.types.InlineKeyboardButton("📉 Pozisyon Detayı", callback_data="panel_risk"),
     )
+    B = telebot.types.InlineKeyboardButton
+    markup.row(B("🤖 Momentum: AÇIK ✅ (kapat)" if MOMENTUM_OTO_AKTIF else "🤖 Momentum: KAPALI (aç)", callback_data="panel_mom_toggle"))
+    markup.row(*[B(("✅ " if MOMENTUM_KALDIRAC == v else "") + f"{v}x", callback_data=f"panel_momlev_{v}") for v in MOMENTUM_LEV_SECENEKLERI])
+    markup.row(*[B(("✅ " if MOMENTUM_MAX_ISLEM == v else "") + (f"{v} işlem" if v else "Limitsiz"), callback_data=f"panel_momlim_{v}")
+                 for v in MOMENTUM_LIMIT_SECENEKLERI])
+    markup.row(B("🔁 Yeni deneme (sayaç sıfır)", callback_data="panel_momsifir"))
     markup.row(telebot.types.InlineKeyboardButton("🚨 Tümünü Kapat", callback_data="panel_kapat_hepsi_sor"))
     markup.row(telebot.types.InlineKeyboardButton("🔄 Yenile", callback_data="panel_ana"))
     return markup
@@ -3140,6 +3534,40 @@ if bot:
                 global OTOMATIK_GIRIS_AKTIF
                 OTOMATIK_GIRIS_AKTIF = not OTOMATIK_GIRIS_AKTIF
                 bot.answer_callback_query(call.id, f"Otomatik giriş {'açıldı' if OTOMATIK_GIRIS_AKTIF else 'durduruldu'}.")
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
+                return
+            elif veri == "panel_mom_toggle":
+                momentum_ac_kapat(not MOMENTUM_OTO_AKTIF)
+                bot.answer_callback_query(call.id, f"Momentum {'açıldı' if MOMENTUM_OTO_AKTIF else 'kapatıldı'}.")
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
+                return
+            elif veri.startswith("panel_momlev_"):
+                try:
+                    lev = int(veri.rsplit("_", 1)[1])
+                except ValueError:
+                    lev = 0
+                if lev not in MOMENTUM_LEV_SECENEKLERI:
+                    bot.answer_callback_query(call.id, "Geçersiz seçim.")
+                    return
+                momentum_kaldirac_ayarla(lev)
+                bot.answer_callback_query(call.id, f"Momentum kaldıracı {lev}x")
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
+                return
+            elif veri.startswith("panel_momlim_"):
+                try:
+                    n = int(veri.rsplit("_", 1)[1])
+                except ValueError:
+                    n = -1
+                if n not in MOMENTUM_LIMIT_SECENEKLERI:
+                    bot.answer_callback_query(call.id, "Geçersiz seçim.")
+                    return
+                momentum_limit_ayarla(n)
+                bot.answer_callback_query(call.id, f"Deneme limiti: {n if n else 'limitsiz'}")
+                bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
+                return
+            elif veri == "panel_momsifir":
+                momentum_deneme_sifirla()
+                bot.answer_callback_query(call.id, "Yeni deneme başladı (sayaç sıfır).")
                 bot.edit_message_text(panel_ozet_metni(), call.message.chat.id, call.message.message_id, reply_markup=ana_menu_klavye(), parse_mode="HTML")
                 return
             elif veri == "panel_surtunme":
@@ -3387,7 +3815,7 @@ if bot:
     def ani_hareket_kart_metni(aday, btc_baglam):
         long_mu = aday["yon"] == "long"
         renk = "🟢" if long_mu else "🔴"
-        baslik = "📈 Bu coin YÜKSELEBİLİR" if long_mu else "📉 Bu coin DÜŞEBİLİR"
+        baslik = "📈 YÜKSELİŞ ADAYI (garanti değil)" if long_mu else "📉 DÜŞÜŞ ADAYI (garanti değil)"
         yon_sismis = "çökmüş (son 3 günde" if long_mu else "şişmiş (son 3 günde"
         sym_ad = aday["symbol"].split("/")[0]
         sl, tp, rr = aday["sl"], aday["tp"], aday["rr"]
@@ -3401,6 +3829,7 @@ if bot:
             f"⚡ Son {ANI_HAREKET_PENCERE_DK} dakikada %{aday['hareket_pencere']:+.2f} hareket, "
             f"hacim x{aday['hacim_carpani']:.1f}\n"
             f"💲 Fiyat: <b>{aday['fiyat']:.8g}</b>\n"
+            f"{teyit_satiri(aday)}"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🎯 <b>Plan</b> <i>(swing destek-direnç — kesin sinyal değil)</i>\n"
             f"   Giriş (limit): <b>{aday['fiyat']:.8g}</b>\n"
@@ -3409,7 +3838,7 @@ if bot:
             f"   {rr_emoji} R/R: <b>{rr}</b>\n"
             f"{likidasyon_uyari_satiri(risk / aday['fiyat'], aday.get('lev'), aday.get('mod'))}"
             f"{ayar_satiri(aday)}"
-            f"{gecmis_istatistik_satiri(aday['yon'], aday.get('lev'))}"
+            f"{gecmis_istatistik_satiri(aday['yon'], aday.get('lev'), bool(aday.get('teyit')))}"
         )
 
     def ani_hareket_gonder(aday, btc_baglam):
@@ -3422,40 +3851,70 @@ if bot:
         except Exception as e:
             log.warning(f"[ANI_HAREKET_GONDER] gönderilemedi: {e}")
 
+    def _btc_baglam_al():
+        d4b, d1b = get_df("BTC/USDT:USDT", "4h", 150), get_df("BTC/USDT:USDT", "1h", 150)
+        return {
+            "y4": trend_yon(d4b) if d4b is not None else "?",
+            "y1": trend_yon(d1b) if d1b is not None else "?",
+            "r4": round(rsi_hesapla(d4b["close"], MANUEL_RSI_PERIYOT), 1) if d4b is not None else None,
+            "r1": round(rsi_hesapla(d1b["close"], MANUEL_RSI_PERIYOT), 1) if d1b is not None else None,
+        }
+
+    def _ani_plan_hesapla(aday, fiyat):
+        """Verilen fiyat için SL/TP/R-R planı (SL tavanı dahil). Veri yoksa ya da R/R yetersizse None."""
+        d1_sym = get_df(aday["symbol"], "1h", 150)
+        d4_sym = get_df(aday["symbol"], "4h", 150)
+        if d1_sym is None or d4_sym is None:
+            return None
+        return manuel_swing_sl_tp(d1_sym, d4_sym, fiyat, aday["yon"] == "long",
+                                  ANI_HAREKET_SL_TAVAN_PCT / 100.0 if ANI_HAREKET_SL_TAVAN_PCT > 0 else None)
+
     def ani_hareket_loop():
         while True:
             try:
                 time.sleep(ANI_HAREKET_ARALIK_SN)
                 if not ANI_HAREKET_AKTIF:
                     continue
-                bulunanlar = ani_hareket_tara()
-                if not bulunanlar:
-                    continue
-                d4b, d1b = get_df("BTC/USDT:USDT", "4h", 150), get_df("BTC/USDT:USDT", "1h", 150)
-                btc_baglam = {
-                    "y4": trend_yon(d4b) if d4b is not None else "?",
-                    "y1": trend_yon(d1b) if d1b is not None else "?",
-                    "r4": round(rsi_hesapla(d4b["close"], MANUEL_RSI_PERIYOT), 1) if d4b is not None else None,
-                    "r1": round(rsi_hesapla(d1b["close"], MANUEL_RSI_PERIYOT), 1) if d1b is not None else None,
-                }
                 simdi = time.time()
-                for aday in bulunanlar:
+                # 1) yeni sinyaller: plan geçerliyse cooldown başlar; teyit gerekiyorsa beklemeye alınır, gerekmiyorsa hemen gider
+                for aday in ani_hareket_tara():
                     anahtar = f"{aday['symbol']}:{aday['yon']}"
-                    son = ani_hareket_gecmis.get(anahtar, 0)
-                    if simdi - son < ANI_HAREKET_COOLDOWN_SN:
+                    if simdi - ani_hareket_gecmis.get(anahtar, 0) < ANI_HAREKET_COOLDOWN_SN:
                         continue
-                    long_mu = aday["yon"] == "long"
-                    d1_sym = get_df(aday["symbol"], "1h", 150)
-                    d4_sym = get_df(aday["symbol"], "4h", 150)
-                    if d1_sym is None or d4_sym is None:
-                        continue
-                    sonuc = manuel_swing_sl_tp(d1_sym, d4_sym, aday["fiyat"], long_mu,
-                                              ANI_HAREKET_SL_TAVAN_PCT / 100.0 if ANI_HAREKET_SL_TAVAN_PCT > 0 else None)
+                    sonuc = _ani_plan_hesapla(aday, aday["fiyat"])
                     if sonuc is None:
                         continue
-                    aday["sl"], aday["tp"], aday["rr"] = sonuc
                     ani_hareket_gecmis[anahtar] = simdi
-                    ani_hareket_gonder(aday, btc_baglam)
+                    if ANI_TEYIT_AKTIF and aday["yon"] in ANI_TEYIT_YONLER:
+                        ani_teyit_bekleyen[anahtar] = {"aday": aday, "zaman": simdi, "fiyat": aday["fiyat"]}
+                        log.info(f"[ANI_TEYIT] {anahtar} beklemeye alındı ({ANI_TEYIT_BEKLEME_SN} sn sonra yön devam ederse kart gidecek)")
+                        continue
+                    aday["sl"], aday["tp"], aday["rr"] = sonuc
+                    ani_hareket_gonder(aday, _btc_baglam_al())
+                # 2) bekleyen teyitler: süre dolduysa fiyatı sinyal fiyatıyla karşılaştır
+                for anahtar, b in list(ani_teyit_bekleyen.items()):
+                    gecen = simdi - b["zaman"]
+                    if gecen < ANI_TEYIT_BEKLEME_SN:
+                        continue
+                    ani_teyit_bekleyen.pop(anahtar, None)
+                    if gecen > ANI_TEYIT_BEKLEME_SN + ANI_TEYIT_PENCERE_SN:
+                        log.info(f"[ANI_TEYIT] {anahtar} süresi geçti, atlandı")
+                        continue
+                    aday = dict(b["aday"])
+                    long_mu = aday["yon"] == "long"
+                    guncel = safe((guncel_tickerlari_al().get(aday["symbol"]) or {}).get("last"))
+                    if guncel <= 0:
+                        continue
+                    if not ((guncel > b["fiyat"]) if long_mu else (guncel < b["fiyat"])):
+                        log.info(f"[ANI_TEYIT] {anahtar} teyit YOK ({b['fiyat']:.8g} -> {guncel:.8g}), sinyal düştü")
+                        continue
+                    sonuc = _ani_plan_hesapla(aday, guncel)
+                    if sonuc is None:
+                        continue
+                    aday["fiyat"] = guncel
+                    aday["sl"], aday["tp"], aday["rr"] = sonuc
+                    aday["teyit"] = (b["fiyat"], guncel, gecen)
+                    ani_hareket_gonder(aday, _btc_baglam_al())
             except Exception as e:
                 log.error(f"[ANI_HAREKET_LOOP] {e}")
                 time.sleep(30)
@@ -3475,6 +3934,66 @@ if bot:
         global ANI_HAREKET_AKTIF
         ANI_HAREKET_AKTIF = False
         bot.send_message(msg.chat.id, "🔕 Ani hareket alarmı kapatıldı.")
+
+    @bot.message_handler(commands=["momentumac"])
+    def momentumac_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        momentum_ac_kapat(True)
+        bot.send_message(msg.chat.id,
+            f"🤖 Otomatik momentum AÇIK. Her 5 dk'da son 30 dk >= %{MOMENTUM_HAREKET_PCT:g} ve hacim >= {MOMENTUM_HACIM_CARPANI:g}x yükselen coinlere "
+            f"{MOMENTUM_KALDIRAC}x İZOLE, ${MOMENTUM_MARJIN_USDT:g} marjinle piyasa emriyle LONG girer. SL %{MOMENTUM_SL_PCT:g}, iz sürme %{MOMENTUM_TRAIL_AKT_PCT:g}'te başlar "
+            f"(zirveden %{MOMENTUM_TRAIL_PAY_PCT:g} geride). En fazla {MOMENTUM_MAX_POS} momentum pozisyonu. İzole doğrulanamazsa işlem AÇILMAZ. "
+            f"Durdurmak için /momentumkapat ya da /durdur.")
+
+    @bot.message_handler(commands=["momentumkapat"])
+    def momentumkapat_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        momentum_ac_kapat(False)
+        bot.send_message(msg.chat.id, "🛑 Otomatik momentum KAPALI. Açık pozisyonlar SL/iz sürme ile yönetilmeye devam eder.")
+
+    @bot.message_handler(commands=["momentumkaldirac"])
+    def momentumkaldirac_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        try:
+            lev = int(msg.text.split()[1])
+            if not (1 <= lev <= 125):
+                raise ValueError
+        except Exception:
+            bot.send_message(msg.chat.id, "Kullanım: /momentumkaldirac 50  (1-125 arası; panelde 10/20/30/40/50 düğmeleri var)")
+            return
+        momentum_kaldirac_ayarla(lev)
+        bot.send_message(msg.chat.id, f"✅ Momentum kaldıracı {lev}x yapıldı (coin izin verdiği maksimumla sınırlıdır). Açık pozisyonlar etkilenmez.")
+
+    @bot.message_handler(commands=["momentumlimit"])
+    def momentumlimit_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        try:
+            n = int(msg.text.split()[1])
+            if n < 0:
+                raise ValueError
+        except Exception:
+            bot.send_message(msg.chat.id, "Kullanım: /momentumlimit 5  (0 = limitsiz)")
+            return
+        momentum_limit_ayarla(n)
+        bot.send_message(msg.chat.id, f"✅ Momentum deneme limiti: {n if n else 'limitsiz'}. Sayaç: {momentum_deneme['acilan']}. Sayacı sıfırlamak için panelde 'Yeni deneme'.")
+
+    @bot.message_handler(commands=["momentumdurum"])
+    def momentumdurum_komutu(msg):
+        if not yetkili_mi(msg):
+            return
+        with state_lock:
+            acik = [(k, d) for k, d in trade_state.items() if d.get("acilis_modu") == "momentum"]
+        satirlar = [f"🤖 Momentum: {'AÇIK' if MOMENTUM_OTO_AKTIF else 'KAPALI'}",
+                    f"Ayar: {MOMENTUM_KALDIRAC}x İzole, ${MOMENTUM_MARJIN_USDT:g} marjin, SL %{MOMENTUM_SL_PCT:g}, iz sürme %{MOMENTUM_TRAIL_AKT_PCT:g}/%{MOMENTUM_TRAIL_PAY_PCT:g}, "
+                    f"sinyal %{MOMENTUM_HAREKET_PCT:g}/{MOMENTUM_HACIM_CARPANI:g}x, max {MOMENTUM_MAX_POS} pozisyon",
+                    f"Açık momentum pozisyonu: {len(acik)}", momentum_deneme_ozeti()]
+        for k, d in acik:
+            satirlar.append(f"  {k.split('/')[0]} giriş {d['entry']:.8g} SL {d['sl']:.8g} iz sürme {'AKTİF' if d.get('trailing_aktif') else 'henüz değil'}")
+        bot.send_message(msg.chat.id, "\n".join(satirlar))
 
     @bot.message_handler(commands=["tara"])
     def tara_komutu(msg):
@@ -3665,7 +4184,8 @@ if bot:
             return
         global OTOMATIK_GIRIS_AKTIF
         OTOMATIK_GIRIS_AKTIF = False
-        bot.send_message(msg.chat.id, "🛑 Otomatik giriş durduruldu. Açık pozisyonlar yönetilmeye devam eder. Manuel /tara ve /ac her zaman çalışır.")
+        momentum_ac_kapat(False)            # v8.0: /durdur momentum otomatiğini de kapatır (acil durdurma), kalıcı
+        bot.send_message(msg.chat.id, "🛑 Otomatik giriş durduruldu (momentum dahil). Açık pozisyonlar yönetilmeye devam eder. Manuel /tara ve /ac her zaman çalışır.")
 
     @bot.message_handler(commands=["baslat"])
     def baslat_komutu(msg):
@@ -3824,7 +4344,10 @@ def manage_loop():
                 # pozisyonun TAMAMI korunuyor, sadece SL kârın gerisinden
                 # takip ediyor. Backtest'te (güncel veri) net kârı +121$'dan
                 # +519$'a çıkardığı doğrulandı.
-                if YUKSELEN_TRAILING_AKTIF and durum.get("acilis_modu") in ("yukselen", "manuel"):
+                if YUKSELEN_TRAILING_AKTIF and durum.get("acilis_modu") in ("yukselen", "manuel", "momentum"):
+                    # v8.0: iz sürme ayarı pozisyona özel olabilir (momentum: %1'de başlar, %0.3 geride)
+                    trail_act = durum.get("trail_act", YUKSELEN_TRAILING_AKTIVASYON_PCT)
+                    trail_pad = durum.get("trail_pad", YUKSELEN_TRAILING_PAYI_PCT)
                     en_yuksek = durum.get("en_yuksek_fiyat", durum["entry"])
                     yeni_en_yuksek = max(en_yuksek, guncel) if long_mu else min(en_yuksek, guncel)
                     if yeni_en_yuksek != en_yuksek:
@@ -3836,9 +4359,9 @@ def manage_loop():
 
                     ilerleme_pct = ((en_yuksek - durum["entry"]) / durum["entry"] if long_mu
                                      else (durum["entry"] - en_yuksek) / durum["entry"])
-                    if ilerleme_pct >= YUKSELEN_TRAILING_AKTIVASYON_PCT:
-                        yeni_sl = (en_yuksek * (1 - YUKSELEN_TRAILING_PAYI_PCT) if long_mu
-                                   else en_yuksek * (1 + YUKSELEN_TRAILING_PAYI_PCT))
+                    if ilerleme_pct >= trail_act:
+                        yeni_sl = (en_yuksek * (1 - trail_pad) if long_mu
+                                   else en_yuksek * (1 + trail_pad))
                         eski_sl = durum["sl"]
                         sl_iyilesti = (yeni_sl > eski_sl) if long_mu else (yeni_sl < eski_sl)
                         if sl_iyilesti:
@@ -3851,13 +4374,22 @@ def manage_loop():
                             kapanis_yonu_trail = "sell" if long_mu else "buy"
                             yeni_sl_fiyat = float(exchange.price_to_precision(sym, yeni_sl))
                             yeni_sl_id = None
-                            try:
-                                sl_emri = exchange.create_order(
-                                    sym, "market", kapanis_yonu_trail, durum["qty"], None,
-                                    {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
-                                yeni_sl_id = sl_emri.get("id")
-                            except Exception as e:
-                                log.warning(f"[TRAILING_SL_YENI] {sym}: {e}")
+                            for _deneme in range(3):
+                                try:
+                                    sl_emri = exchange.create_order(
+                                        sym, "market", kapanis_yonu_trail, durum["qty"], None,
+                                        {"reduceOnly": True, "stopLossPrice": yeni_sl_fiyat})
+                                    yeni_sl_id = sl_emri.get("id")
+                                except Exception as e:
+                                    log.warning(f"[TRAILING_SL_YENI] {sym} deneme {_deneme+1}/3: {e}")
+                                if yeni_sl_id:
+                                    break
+                                time.sleep(0.3)
+                            if not yeni_sl_id and eski_sl_id:
+                                # v8.0: eski stop iptal edildi ama yenisi kurulamadı -> pozisyon stopsuz kalmasın
+                                tg(f"🚨 {sym} iz sürme stopu yenilenemedi (eski stop iptal edilmişti), güvenlik için pozisyon kapatılıyor.")
+                                gercek_pozisyon_kapat(sym, "trailing_sl_hata")
+                                continue
                             if yeni_sl_id:
                                 ilk_aktivasyon = not durum.get("trailing_aktif", False)
                                 with state_lock:
@@ -3869,12 +4401,13 @@ def manage_loop():
                                 durum = trade_state.get(sym, durum)
                                 log.info(f"[TRAILING] {sym} SL güncellendi: {yeni_sl_fiyat:.6f} "
                                          f"(zirve: {en_yuksek:.6f})")
-                                # v5.6 TEŞHİS (yalnızca okur): eski stop'lar borsada değişiyor mu birikiyor mu?
+                                momentum_mu = durum.get("acilis_modu") == "momentum"
+                                # v5.6 TEŞHİS (yalnızca okur): eski stop'lar borsada değişiyor mu birikiyor mu? (momentum'da Telegram'a yazılmaz)
                                 sayac = durum.get("trailing_guncelleme_sayisi", 0) + 1
                                 with state_lock:
                                     if sym in trade_state:
                                         trade_state[sym]["trailing_guncelleme_sayisi"] = sayac
-                                if sayac in (1, 4):
+                                if sayac in (1, 4) and not momentum_mu:
                                     stoplar = borsa_stoplarini_oku(sym)
                                     if stoplar is not None:
                                         tetikler = [t for _, t, _ in stoplar]
@@ -3882,9 +4415,9 @@ def manage_loop():
                                         tg(f"🔎 [STOP TEŞHİS] {sym} (iz sürme güncellemesi #{sayac}): borsada "
                                            f"{len(stoplar)} stop/plan emri var, tetik fiyatları: {tetikler}\n"
                                            f"1 ise borsa eskiyi yeniyle değiştiriyor (iyi). 1'den fazlaysa eski stoplar birikiyor.")
-                                if ilk_aktivasyon:
+                                if ilk_aktivasyon and not momentum_mu:
                                     tg(f"🔒 [İZ SÜRME AKTİF] {sym}\n"
-                                       f"Kâr %{YUKSELEN_TRAILING_AKTIVASYON_PCT*100:.1f}'e ulaştı, "
+                                       f"Kâr %{trail_act*100:.1f}'e ulaştı, "
                                        f"SL kilitlendi: {yeni_sl_fiyat:.6f}\n"
                                        f"Zirve: {en_yuksek:.6f} | Bundan sonra sadece yükselecek, "
                                        f"düşerse bu kilitle çıkılır")
@@ -4116,7 +4649,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v7.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.1 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4139,6 +4672,7 @@ def tarama_loop():
        f"(Düzenle ya da /ac'te değiştirilebilir). Eski otomatik strateji: hisse/ETF {'DAHİL' if RWA_HISSE_DAHIL else 'dışlandı'}, "
        f"kovalama koruması (%{KOVALAMA_MAX_PCT:.1f}), aynı mumdan en fazla {AYNI_MUM_MAX_GIRIS} giriş, günlük zarar freni (%{GUNLUK_ZARAR_LIMIT_PCT*100:.0f}), /surtunme. "
        f"iz sürme stop teşhisi. Eşikler geçmiş veriye dayanır, canlıda henüz doğrulanmadı.\n\n"
+       f"🤖 Otomatik momentum: {'AÇIK' if MOMENTUM_OTO_AKTIF else 'KAPALI (panelden ya da /momentumac ile aç)'} — {MOMENTUM_KALDIRAC}x İZOLE, ${MOMENTUM_MARJIN_USDT:g} marjin, SL %{MOMENTUM_SL_PCT:g}, deneme {momentum_deneme['acilan']}/{MOMENTUM_MAX_ISLEM if MOMENTUM_MAX_ISLEM else '∞'}\n\n"
        f"📱 /panel yaz — tam menüyü görürsün.")
 
     baslangic_uzlastirma()
@@ -4223,8 +4757,9 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v7.3 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.1 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
+    momentum_ayar_yukle()
     cooldown_diskten_yukle()
     bloke_diskten_yukle()
     trade_log_yukle()
@@ -4232,6 +4767,7 @@ if __name__ == "__main__":
     threading.Thread(target=manuel_limit_loop, daemon=True).start()
     threading.Thread(target=otomatik_bildirim_loop, daemon=True).start()
     threading.Thread(target=ani_hareket_loop, daemon=True).start()
+    threading.Thread(target=momentum_loop, daemon=True).start()
     threading.Thread(target=web_panel_baslat, daemon=True).start()
     threading.Thread(target=telebot_polling_baslat, daemon=True).start()
     tarama_loop()
