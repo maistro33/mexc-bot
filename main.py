@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.11 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.12 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
@@ -2663,7 +2663,10 @@ def _momentum_acil_kapat(sym, qty, sebep):
         tg(f"🚨🚨 Momentum {sym}: {sebep} ve pozisyon KAPATILAMADI ({e}). BITGET'TE ELLE KAPAT!")
 
 
-def _momentum_ac_ic(sym, sinyal):
+_momentum_lev_tavan = {}      # v8.12: coin -> likidasyon SL'den önce geldiği için öğrenilen azami kaldıraç (0 = bu coin uygun değil)
+
+
+def _momentum_ac_ic(sym, sinyal, tekrar=False):
     fren, _, _ = gunluk_zarar_freni_mi()
     if fren:
         return False
@@ -2687,6 +2690,12 @@ def _momentum_ac_ic(sym, sinyal):
     # v8.4: Bitget bu coin için istenen kaldıraca izin vermeyebilir (40797 "Exceeded the maximum settable leverage").
     # Basamak basamak düşürerek dene; hiçbiri olmazsa işlem AÇILMAZ. Marjin hep aynı ($MOMENTUM_MARJIN_USDT), sadece pozisyon büyüklüğü küçülür.
     lev0 = sembol_max_kaldirac(sym, MOMENTUM_KALDIRAC)
+    if sym in _momentum_lev_tavan:
+        lev0 = min(lev0, _momentum_lev_tavan[sym])
+        if lev0 < max(MOMENTUM_MIN_KALDIRAC, 2):
+            log.info(f"[MOMENTUM] {sym} atlandı: likidasyon SL'den önce geliyor, güvenli kaldıraç yok")
+            _momentum_cooldown_koy(sym, 6 * 3600)
+            return False
     if MOMENTUM_KALDIRAC_DUSUR:
         basamaklar = [x for x in [lev0] + [y for y in (40, 30, 25, 20, 15, 10, 5, 3, 2) if y < lev0] if x >= MOMENTUM_MIN_KALDIRAC]
         if not basamaklar:
@@ -2763,10 +2772,23 @@ def _momentum_ac_ic(sym, sinyal):
         sorun = f"likidasyon ({liq:.8g}) SL'den ({sl:.8g}) önce geliyor"
     if sorun:
         _momentum_acil_kapat(sym, gqty, sorun)
+        if sorun.startswith("likidasyon") and liq and entry > 0 and not tekrar:
+            # v8.12: gerçek likidasyon mesafesinden bu coinin bakım marjinini öğren, SL'in rahatça içinde kalacak kaldıracı seç, bir kez daha dene
+            ofset = 1.0 / lev - (entry - liq) / entry
+            gerekli = MOMENTUM_SL_PCT / 100 * 1.3
+            yeni = 0
+            for aday in (50, 40, 30, 25, 20, 15, 10, 5, 3, 2):
+                if aday < lev and aday >= MOMENTUM_MIN_KALDIRAC and (1.0 / aday - ofset) >= gerekli:
+                    yeni = aday
+                    break
+            _momentum_lev_tavan[sym] = yeni
+            if yeni:
+                tg(f"ℹ️ Momentum {sym}: {lev}x'te likidasyon SL'den önce geliyordu; {yeni}x ile bir kez daha deneniyor.")
+                return _momentum_ac_ic(sym, sinyal, tekrar=True)
         _momentum_cooldown_koy(sym, 1800)
         if g_mod == "cross":
             momentum_ac_kapat(False)         # v8.10: izole sağlanamıyor (hesap modu): tekrar tekrar aç-kapa ücret yakmasın, momentum kalıcı KAPANIR
-            tg("⛔ Momentum otomatiği KAPATILDI: işlem CROSS açıldı (izole uygulanmıyor). Bitget'te varlık modunu (tek varlık / çoklu varlık) kontrol et; "
+            tg("⛔ Momentum otomatiği KAPATILDI: işlem CROSS açıldı (izole uygulanmıyor). Bitget'te coinin marjin modunu kontrol edip bana yaz; "
                "düzelince /momentumac ile aç.")
         return False
     # 5) borsada stop-loss
@@ -3487,7 +3509,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.11 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.12 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4824,7 +4846,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.11 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.12 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -4937,7 +4959,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.11 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.12 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
