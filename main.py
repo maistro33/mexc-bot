@@ -5,7 +5,7 @@ from telebot import types
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
-LEV_TAVAN= int(E("LEV_TAVAN", "15"))      # borsa izin verirse bu kadar (likidasyon SL'den sonra gelsin)
+LEV_TAVAN= int(E("LEV_TAVAN", "125"))     # coinin izin verdiği en yüksek kaldıraç denenir (bu sayıyı geçmez)
 SL_USDT  = float(E("SL_USDT", "0.8"))     # bu kadar zarara ulaşınca kapat
 TRAIL_ON = float(E("TRAIL_ON", "0.3"))    # kâr bu kadar olunca iz sürme başlar
 TRAIL_GERI = float(E("TRAIL_GERI", "0.15"))  # zirveden bu kadar geri verirse kapat
@@ -16,11 +16,14 @@ COIN_SAYI= int(E("COIN_SAYI", "150"))
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"marjin": MARJIN, "oto": True, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "calis": True}
+A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "calis": True}
+LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
+lev_cap = {}   # coin -> son başarılı kaldıraç
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
 try:
     d = json.load(open(DOSYA))
-    A.update(d.get("A", d) if isinstance(d, dict) else {}); acik.update(d.get("acik", {})); gecmis.extend(d.get("gecmis", []))
+    if d.get("A", {}).get("v") == 2: A.update(d["A"])      # eski sürüm ayarlarını (oto-büyüme, düşük kaldıraç) yok say
+    acik.update(d.get("acik", {})); gecmis.extend(d.get("gecmis", []))
 except Exception: pass
 def kaydet():
     try: json.dump({"A": A, "acik": acik, "gecmis": gecmis[-300:]}, open(DOSYA, "w"))
@@ -57,11 +60,23 @@ def sl_fiyat(yon, giris, adet, cs, usd):   # stop tutarı (USD) -> fiyat
     d = usd / (adet * cs)
     return giris - d if yon in ("buy", "long") else giris + d
 
+def kaldirac_ayarla(sym, lev, yon):
+    """Kaldıracı ayarla ve borsadaki GERÇEK değeri oku. Döner: gerçek kaldıraç (okunamazsa None)."""
+    taraf = "long" if yon == "buy" else "short"
+    for params in ({"marginMode": "isolated", "holdSide": taraf}, {"marginMode": "isolated"}, {}):
+        try: ex.set_leverage(lev, sym, params); break
+        except Exception: pass
+    try:
+        r = ex.fetch_leverage(sym, {"marginMode": "isolated"})
+        v = r.get(taraf + "Leverage") or r.get("leverage")
+        return float(v) if v else None
+    except Exception: return None
+
 def ac(sym, yon, son, hr=0.0):
-    for lev in [l for l in (50, 30, 25, 20, 15, 10, 5, 3, 2) if l <= A['lev']]:
-        try:
-            ex.set_leverage(lev, sym, params={"marginMode": "isolated", "holdSide": "long" if yon == "buy" else "short"}); break
-        except Exception: lev = 0
+    lev = 0
+    for l in [l for l in LADDER if l <= min(A['lev'], lev_cap.get(sym, 999))]:
+        g = kaldirac_ayarla(sym, l, yon)
+        if g is None or abs(g - l) < 0.5: lev = l; lev_cap[sym] = l; break      # tuttu (okunamıyorsa sonradan doğrulanır)
     if not lev: yasak[sym] = time.time() + 6 * 3600; return
     m = ex.market(sym)
     mj = marjin()
@@ -71,11 +86,23 @@ def ac(sym, yon, son, hr=0.0):
         ex.create_order(sym, "market", yon, float(adet), params={"marginMode": "isolated"})
     except Exception as e:
         yasak[sym] = time.time() + 3600; haber(f"⚠️ {sym.split(':')[0]} açılamadı: {str(e)[:120]}"); return
-    acik[sym] = {"zirve": 0.0, "mj": mj, "sl": round(A["sl"] * mj, 2), "son": 0.0}; kaydet()
-    cs = m.get("contractSize") or 1; sl = acik[sym]["sl"]
+    try:
+        p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
+        if abs(float(p.get("leverage") or lev) - lev) > 0.5 or float(p.get("initialMargin") or 0) > mj * 1.5:
+            kapat(sym, p, "KALDIRAÇ UYUŞMADI"); yasak[sym] = time.time() + 6 * 3600
+            haber(f"🚨 {sym.split(':')[0]}: istenen {lev}x ama borsada {p.get('leverage')}x oldu, pozisyonu kapattım"); return
+    except StopIteration: pass
+    except Exception: pass
+    cs = m.get("contractSize") or 1; sl = round(A["sl"] * mj, 2); not_ = ""
+    try:   # stop likidasyondan ÖNCE gelsin: likidasyon uzaklığının %70'ine daralt
+        liq, gir = float(p.get("liquidationPrice") or 0), float(p.get("entryPrice") or son)
+        if liq and sl / (float(adet) * cs) > 0.7 * abs(gir - liq):
+            sl = round(0.7 * abs(gir - liq) * float(adet) * cs, 3); not_ = " (likidasyona yakın olduğu için daraltıldı)"
+    except Exception: pass
+    acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0}; kaydet()
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
           f"Sebep: son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)\n"
-          f"Giriş ≈ {son:g} | Stop ≈ {sl_fiyat(yon, son, float(adet), cs, sl):g} (−{sl}$)\n"
+          f"Giriş ≈ {son:g} | Stop ≈ {sl_fiyat(yon, son, float(adet), cs, sl):g} (−{sl}${not_})\n"
           f"İz süren: kâr +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır")
 
 def yonet():
@@ -163,8 +190,8 @@ def cb(c):
         elif d == "m-": A["marjin"] = max(1.0, round(A["marjin"] - 0.5, 1))
         elif d == "p+": A["max_pos"] = min(10, A["max_pos"] + 1)
         elif d == "p-": A["max_pos"] = max(1, A["max_pos"] - 1)
-        elif d == "l+": A["lev"] = min(25, A["lev"] + 5)
-        elif d == "l-": A["lev"] = max(2, A["lev"] - 5)
+        elif d == "l+": A["lev"] = next((x for x in sorted(LADDER) if x > A["lev"]), 125)
+        elif d == "l-": A["lev"] = next((x for x in sorted(LADDER, reverse=True) if x < A["lev"]), 2)
         elif d == "s+": A["sl"] = min(0.9, round(A["sl"] + 0.05, 2))
         elif d == "s-": A["sl"] = max(0.2, round(A["sl"] - 0.05, 2))
         elif d == "hep":
