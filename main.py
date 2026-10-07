@@ -13,6 +13,7 @@ HAREKET  = float(E("HAREKET", "3"))       # son PENCERE dakikada % hareket
 PENCERE  = int(E("PENCERE", "10"))
 BEKLE    = int(E("BEKLE_DK", "30"))       # kapanan coine tekrar girmeden bekleme
 COIN_SAYI= int(E("COIN_SAYI", "150"))
+MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak olmalı; değilse kaldıraç düşürülür (0 = kapalı)
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
@@ -74,7 +75,7 @@ def kaldirac_ayarla(sym, lev, yon):
 
 def ac(sym, yon, son, hr=0.0):
     lev = 0
-    for l in [l for l in LADDER if l <= min(A['lev'], lev_cap.get(sym, 999))]:
+    for l in [l for l in LADDER if l <= min(A['lev'], lev_cap.get(sym, 999)) and 70 * (1 / l - 0.0105) >= MIN_SL_PCT]:
         g = kaldirac_ayarla(sym, l, yon)
         if g is None or abs(g - l) < 0.5: lev = l; lev_cap[sym] = l; break      # tuttu (okunamıyorsa sonradan doğrulanır)
     if not lev: yasak[sym] = time.time() + 6 * 3600; return
