@@ -17,7 +17,7 @@ MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
+A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "kademe": False, "lv": [0.35, 0.75, 1.5], "gunluk": 1.0, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 lev_cap = {}   # coin -> borsanın kabul ettiği en yüksek kaldıraç (kalıcı)
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
@@ -48,7 +48,29 @@ def haber(m):
     except Exception: pass
 
 def logla(sym, yon, pnl, neden, z=0.0):
-    gecmis.append({"t": int(time.time()), "s": sym.split(":")[0], "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(z, 2)}); kaydet()
+    try: mid = ex.market(sym)["id"]
+    except Exception: mid = sym.split(":")[0].replace("/", "")
+    gecmis.append({"t": int(time.time()), "s": sym.split(":")[0], "id": mid, "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(z, 2), "g": 0}); kaydet()
+
+hata_goster = [True]
+def gercek_pnl(mid, t):
+    """Borsanın pozisyon geçmişinden NET kâr/zarar (komisyon + fonlama dahil). Bulunamazsa None."""
+    try:
+        r = ex.private_mix_get_v2_mix_position_history_position({"productType": "USDT-FUTURES", "symbol": mid, "limit": "20"})
+        for x in (r.get("data") or {}).get("list", []):
+            if abs(int(x.get("utime") or 0) / 1000 - t) < 120:
+                return float(x.get("netProfit") if x.get("netProfit") not in (None, "") else x.get("pnl"))
+    except Exception as e:
+        if hata_goster[0]: hata_goster[0] = False; haber(f"⚠️ Gerçek kâr/zarar borsadan okunamadı (tahmin gösteriliyor): {str(e)[:150]}")
+    return None
+
+def duzelt():   # kapanışlardan ~20 sn sonra tahmini PnL'yi borsanın gerçek (komisyonlu) rakamıyla değiştir
+    for g in gecmis[-40:]:
+        if g.get("g", 1) == 0 and time.time() - g["t"] > 20 and time.time() - g.get("d", 0) > 15:
+            g["d"] = time.time(); v = gercek_pnl(g.get("id", ""), g["t"])
+            if v is not None: g["pnl"], g["g"] = round(v, 3), 1
+            elif time.time() - g["t"] > 900: g["g"] = 2     # bulunamadı, tahmin kalsın
+    kaydet()
 
 def kapat(sym, p, neden):
     yon = "sell" if p["side"] == "long" else "buy"
@@ -90,8 +112,9 @@ def ac(sym, yon, son, hr=0.0):
     adet = ex.amount_to_precision(sym, mj * lev / son / (m.get("contractSize") or 1))
     if float(adet) * son < 5.2: yasak[sym] = time.time() + 6 * 3600; return   # borsa min 5 USDT
     cs0 = m.get("contractSize") or 1; prm = {"marginMode": "isolated"}; tp_not = ""
-    if A["tp"] > 0:   # kâr al emri BORSADA durur: bot 2 sn geç kalsa da tepede kapanır
-        d = A["tp"] * mj / (float(adet) * cs0)
+    tp_oran = A["lv"][-1] if A["kademe"] else A["tp"]
+    if tp_oran > 0:   # kâr al emri BORSADA durur: bot 2 sn geç kalsa da tepede kapanır (kademeli modda SON hedef)
+        d = tp_oran * mj / (float(adet) * cs0)
         prm["takeProfit"] = {"triggerPrice": ex.price_to_precision(sym, son + d if yon == "buy" else son - d)}
     try:
         ex.create_order(sym, "market", yon, float(adet), params=prm)
@@ -116,11 +139,12 @@ def ac(sym, yon, son, hr=0.0):
             sl = round(0.7 * abs(gir - liq) * float(adet) * cs, 3); not_ = " (likidasyona yakın olduğu için daraltıldı)"
     except Exception: pass
     acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0}; kaydet()
+    kd = (" | Kademe kilidi: " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]) + " (aşılınca stop yukarı çekilir, satış sadece sonda)") if A["kademe"] else ""
     izm = f" | İz süren: +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır" if A["iz"] else ""
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
           f"Sebep: son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)\n"
           f"Giriş ≈ {son:g} | Stop ≈ {sl_fiyat(yon, son, float(adet), cs, sl):g} (−{sl}${not_})\n"
-          f"Kâr al (borsada): +{A['tp']*mj:.2f}${izm}{tp_not}")
+          f"Kâr al (borsada, hepsi): +{tp_oran*mj:.2f}${izm}{kd}{tp_not}")
 
 def yonet():
     pos = [p for p in ex.fetch_positions() if p.get("contracts")]
@@ -133,13 +157,25 @@ def yonet():
             mj = float(p.get("initialMargin") or MARJIN)
             acik[sym] = {"zirve": max(pnl, 0.0), "mj": mj, "sl": round(A["sl"] * mj, 2), "son": pnl}
         k = acik[sym]; k["son"] = pnl; k["zirve"] = max(k["zirve"], pnl)
-        if A["tp"] > 0 and pnl >= A["tp"] * k["mj"]: kapat(sym, p, "KÂR AL")
+        if A["kademe"]:                                  # satış yok: kademe aşılınca kilit yükselir, son hedefte hepsi satılır
+            lv = k.get("lv") or A["lv"]; k["lv"] = lv; a_ = k.get("asama", 0)
+            while a_ < len(lv) - 1 and pnl >= lv[a_] * k["mj"]: a_ += 1
+            if a_ != k.get("asama", 0):
+                k["asama"] = a_; k["kilit"] = 0.05 * k["mj"] if a_ == 1 else lv[a_ - 2] * k["mj"] * 0.95
+                haber(f"🔒 {sym.split(':')[0]} kademe {a_}/{len(lv)} aşıldı → stop yukarı çekildi: +{k['kilit']:.2f}$ (pnl {pnl:+.2f}$)")
+            if pnl >= lv[-1] * k["mj"]: kapat(sym, p, "SON HEDEF")
+            elif k.get("kilit") is not None and pnl <= k["kilit"]: kapat(sym, p, "KADEME KİLİDİ")
+            elif pnl <= -k["sl"] and k.get("kilit") is None: kapat(sym, p, "STOP")
+        elif A["tp"] > 0 and pnl >= A["tp"] * k["mj"]: kapat(sym, p, "KÂR AL")
         elif pnl <= -k["sl"]: kapat(sym, p, "STOP")
         elif A["iz"] and k["zirve"] >= TRAIL_ON * k["mj"] and pnl <= k["zirve"] - TRAIL_GERI * k["mj"]: kapat(sym, p, "İZ SÜREN")
     kaydet()
     return len(acik)
 
 def tara():
+    if A["calis"] and A["gunluk"] > 0 and gun_toplam() <= -A["gunluk"]:   # günlük zarar limiti: otomatik girişi durdur
+        A["calis"] = False; kaydet()
+        haber(f"🛑 Günlük zarar limiti doldu (≈{gun_toplam():+.2f}$ ≤ −{A['gunluk']}$). Otomatik giriş durdu, açık işlemler yönetilmeye devam ediyor. Yeniden başlatmak için /panel.")
     n = int(PENCERE * 60 / 10)
     tk = ex.fetch_tickers()
     top = sorted((t for s, t in tk.items() if s.endswith(":USDT") and t.get("last")), key=lambda t: -(t.get("quoteVolume") or 0))[:COIN_SAYI]
@@ -180,7 +216,7 @@ def ekran(e):
         return "📋 Pozisyonlar\n\n" + ("\n".join(sat) or "pozisyon yok"), k
     if e == "gec":
         k.row(geri); son = gecmis[-15:][::-1]
-        return ("📜 Son işlemler (PnL≈, komisyon hariç)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ (zirve {g.get('z', 0):+.2f}) {g['n']}" for g in son) or "henüz yok")), k
+        return ("📜 Son işlemler (✓ = borsadan gerçek net, komisyon dahil; ≈ = tahmin)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ {'✓' if g.get('g') == 1 else '≈'} (zirve {g.get('z', 0):+.2f}) {g['n']}" for g in son) or "henüz yok")), k
     if e == "ozet":
         k.row(geri); n = len(gecmis); w = sum(1 for g in gecmis if g["pnl"] > 0)
         return (f"📊 Özet\nBakiye {bakiye():.2f}$\nBugün ≈{gun_toplam():+.2f}$\nToplam ≈{sum(g['pnl'] for g in gecmis):+.2f}$ ({n} işlem, %{(w/n*100 if n else 0):.0f} kazanç)"), k
@@ -189,10 +225,13 @@ def ekran(e):
         k.row(*sec((50, 60, 70, 80), int(A["sl"] * 100), "sl", lambda v: f"SL %{v}"))
         k.row(*sec((0, 0.3, 0.35, 0.5, 1.0), A["tp"], "tp", lambda v: "TP yok" if not v else f"TP %{int(v*100)}"))
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
+        k.row(*sec((0.5, 1.0, 2.0, 0), A["gunluk"], "gl", lambda v: f"Günlük −{v}$" if v else "Limit yok"))
+        k.row(B("Kademeli kilit " + ("✅ AÇIK (kapat)" if A["kademe"] else "❌ KAPALI (aç)"), callback_data="kd"))
+        k.row(*sec(("35,75,150", "35,100,200", "50,100,200"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v))
         k.row(B("İz süren " + ("✅ AÇIK (kapat)" if A["iz"] else "❌ KAPALI (aç)"), callback_data="iz"))
         k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
         k.row(geri)
-        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nKâr al: {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: {'AÇIK (+%'+str(int(TRAIL_ON*100))+' başlar, %'+str(int(TRAIL_GERI*100))+' geri verirse kapatır)' if A['iz'] else 'KAPALI (tek TP)'}", k
+        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nGünlük zarar limiti: {('−'+str(A['gunluk'])+'$') if A['gunluk'] else 'yok'}\nKademeli kilit: {('AÇIK ' + ' → '.join('+%' + str(int(x * 100)) for x in A['lv']) + ' (satış sadece son hedefte)') if A['kademe'] else 'KAPALI'}\nKâr al (tek TP): {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: {'AÇIK (+%'+str(int(TRAIL_ON*100))+' başlar, %'+str(int(TRAIL_GERI*100))+' geri verirse kapatır)' if A['iz'] else 'KAPALI (tek TP)'}", k
     if e == "hep":
         k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
         return "🚨 Tüm pozisyonlar kapatılsın mı? (otomatik giriş de durur)", k
@@ -273,6 +312,9 @@ def cb(c):
         elif d == "iz": A["iz"] = not A["iz"]; e = "ayar"
         elif d == "oto": A["oto"] = not A["oto"]; e = "ayar"
         elif d.startswith("mj:"): A["marjin"] = float(d[3:]); e = "ayar"
+        elif d.startswith("gl:"): A["gunluk"] = float(d[3:]); e = "ayar"
+        elif d == "kd": A["kademe"] = not A["kademe"]; e = "ayar"
+        elif d.startswith("lvl:"): A["lv"] = [int(x) / 100 for x in d[4:].split(",")]; e = "ayar"
         elif d.startswith("tp:"): A["tp"] = float(d[3:]); e = "ayar"
         elif d.startswith("sl:"): A["sl"] = int(d[3:]) / 100; e = "ayar"
         elif d.startswith("lev:"): A["lev"] = int(d[4:])
@@ -294,7 +336,7 @@ if __name__ == "__main__":
     haber(f"Kısa bot hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A['sl']*100:.0f}, oto-büyüme {A['oto']}  → /panel")
     def izle():          # pozisyon takibi ayrı ve hızlı (2 sn): stop/iz süren gecikmesin
         while True:
-            try: yonet()
+            try: yonet(); duzelt()
             except Exception as e: print("hata yonet", e, flush=True)
             time.sleep(2)
     threading.Thread(target=izle, daemon=True).start()
