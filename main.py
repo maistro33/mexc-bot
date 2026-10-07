@@ -134,37 +134,61 @@ def tara():
         elif son <= hi * (1 - HAREKET / 100) and son <= lo * 1.003: ac(s, "sell", son, (1 - son / hi) * 100)
 
 POZ = {}   # düğme numarası -> sembol
+B = types.InlineKeyboardButton
+def sec(liste, mevcut, onek, fmt):   # seçenek satırı, seçili olan ✅
+    return [B(("✅ " if mevcut == v else "") + fmt(v), callback_data=f"{onek}:{v}") for v in liste]
 
-def metin():
+def pozlar():
     ps = [p for p in ex.fetch_positions() if p.get("contracts")]
-    POZ.clear(); satir = []
-    for n, p in enumerate(ps):
-        POZ[n] = p["symbol"]; k = acik.get(p["symbol"], {})
-        satir.append(f"{n+1}) {'🟢' if p['side']=='long' else '🔴'} {p['symbol'].split(':')[0]} {p['leverage'] or '?'}x  {p['unrealizedPnl']:+.2f}$  giriş {p.get('entryPrice') or 0:g} | stop {sl_fiyat(p['side'], p.get('entryPrice') or 0, p['contracts'], p.get('contractSize') or 1, k.get('sl', 0)):g} (−{k.get('sl', 0)}$)")
-    bug = time.strftime("%Y-%m-%d", time.localtime()); gun = sum(g["pnl"] for g in gecmis if time.strftime("%Y-%m-%d", time.localtime(g["t"])) == bug)
-    return (f"{'▶️ AÇIK' if A['calis'] else '⏹ DURDU'}  Bakiye {bakiye():.2f}$\nBugün ≈{gun:+.2f}$ | toplam ≈{sum(g['pnl'] for g in gecmis):+.2f}$ ({len(gecmis)} işlem)\n"
-            f"Marjin {marjin():.1f}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'}) | Max {A['max_pos']} | ≤{A['lev']}x | SL %{A['sl']*100:.0f}\n\n" + ("\n".join(satir) or "pozisyon yok"))
+    POZ.clear(); POZ.update({n: p["symbol"] for n, p in enumerate(ps)}); return ps
 
-def klavye():
-    b = lambda t, d: types.InlineKeyboardButton(t, callback_data=d)
-    k = types.InlineKeyboardMarkup(row_width=4)
-    for n, sym in POZ.items():
-        k.add(b(f"❌{n+1}", f"k{n}"), b(f"{n+1} lev−", f"a{n}"), b(f"{n+1} lev+", f"b{n}"), b(f"{n+1} SL−", f"c{n}"), b(f"{n+1} SL+", f"d{n}"))
-    k.add(b("⏹ Durdur" if A["calis"] else "▶️ Başlat", "tog"), b("🔄 Yenile", "yen"), b("📜 Geçmiş", "gec"))
-    k.add(b("Marjin −", "m-"), b("Oto " + ("✅" if A["oto"] else "❌"), "oto"), b("Marjin +", "m+"))
-    k.add(b("Max poz −", "p-"), b("Kaldıraç −", "l-"), b("Kaldıraç +", "l+"))
-    k.add(b("Max poz +", "p+"), b("SL% −", "s-"), b("SL% +", "s+"), b("🛑 Hepsini kapat", "hep"))
-    return k
+def gun_toplam():
+    bug = time.strftime("%Y-%m-%d", time.localtime())
+    return sum(g["pnl"] for g in gecmis if time.strftime("%Y-%m-%d", time.localtime(g["t"])) == bug)
 
-def gecmis_metin():
-    son = gecmis[-15:][::-1]
-    return "📜 Son işlemler (PnL≈, komisyon hariç)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ {g['n']}" for g in son) or "henüz yok")
+def ekran(e):
+    """Döner: (metin, klavye). Ekranlar: ana, poz, gec, ayar, ozet, hep"""
+    k = types.InlineKeyboardMarkup(); geri = B("⬅️ Menüye Dön", callback_data="ana")
+    if e == "poz":
+        ps = pozlar(); sat = []
+        for n, p in enumerate(ps):
+            a = acik.get(p["symbol"], {}); g = p.get("entryPrice") or 0
+            sat.append(f"{n+1}) {'🟢' if p['side']=='long' else '🔴'} {p['symbol'].split(':')[0]} {p['leverage'] or '?'}x  {p['unrealizedPnl']:+.2f}$\n"
+                       f"   giriş {g:g} | stop {sl_fiyat(p['side'], g, p['contracts'], p.get('contractSize') or 1, a.get('sl', 0)):g} (−{a.get('sl', 0)}$)")
+            k.row(B(f"❌ {n+1}", callback_data=f"k{n}"), B("lev−", callback_data=f"a{n}"), B("lev+", callback_data=f"b{n}"),
+                  B("SL−", callback_data=f"c{n}"), B("SL+", callback_data=f"d{n}"))
+        k.row(geri, B("🔄 Yenile", callback_data="poz"))
+        return "📋 Pozisyonlar\n\n" + ("\n".join(sat) or "pozisyon yok"), k
+    if e == "gec":
+        k.row(geri); son = gecmis[-15:][::-1]
+        return ("📜 Son işlemler (PnL≈, komisyon hariç)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ {g['n']}" for g in son) or "henüz yok")), k
+    if e == "ozet":
+        k.row(geri); n = len(gecmis); w = sum(1 for g in gecmis if g["pnl"] > 0)
+        return (f"📊 Özet\nBakiye {bakiye():.2f}$\nBugün ≈{gun_toplam():+.2f}$\nToplam ≈{sum(g['pnl'] for g in gecmis):+.2f}$ ({n} işlem, %{(w/n*100 if n else 0):.0f} kazanç)"), k
+    if e == "ayar":
+        k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"${v}"))
+        k.row(*sec((50, 60, 70, 80), int(A["sl"] * 100), "sl", lambda v: f"SL %{v}"))
+        k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
+        k.row(geri)
+        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nİz süren: +%{TRAIL_ON*100:.0f} başlar, %{TRAIL_GERI*100:.0f} geri verirse kapatır", k
+    if e == "hep":
+        k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
+        return "🚨 Tüm pozisyonlar kapatılsın mı? (otomatik giriş de durur)", k
+    # ana
+    n = len(pozlar())
+    k.row(B("📋 Pozisyonlar", callback_data="poz"), B("📜 Geçmiş", callback_data="gec"))
+    k.row(B("🛑 Otomatik Girişi Durdur" if A["calis"] else "▶️ Otomatik Girişi Başlat", callback_data="tog"))
+    k.row(B("📊 Özet", callback_data="ozet"), B("⚙️ Ayarlar", callback_data="ayar"))
+    k.row(*sec((10, 20, 50, 75, 125), A["lev"], "lev", lambda v: f"{v}x"))
+    k.row(*sec((1, 2, 3, 5, 6), A["max_pos"], "lim", lambda v: f"{v} işlem"))
+    k.row(B("🚨 Tümünü Kapat", callback_data="hep")); k.row(B("🔄 Yenile", callback_data="ana"))
+    return (f"{'▶️ OTOMATİK AÇIK' if A['calis'] else '⏹ DURDU'} | Bakiye {bakiye():.2f}$ | Bugün ≈{gun_toplam():+.2f}$\n"
+            f"Pozisyon {n}/{A['max_pos']} | Marjin {marjin():.1f}$ | kaldıraç tavanı {A['lev']}x"), k
 
 @bot.message_handler(commands=["panel", "start", "durum", "gecmis"])
 def pn(m):
     if m.chat.id != CHAT: return
-    if m.text.startswith("/gecmis"): return bot.send_message(CHAT, gecmis_metin())
-    t = metin(); bot.send_message(CHAT, t, reply_markup=klavye())
+    t, k = ekran("gec" if m.text.startswith("/gecmis") else "ana"); bot.send_message(CHAT, t, reply_markup=k)
 
 def pozisyon(n):
     sym = POZ.get(n)
@@ -173,34 +197,31 @@ def pozisyon(n):
 @bot.callback_query_handler(func=lambda c: True)
 def cb(c):
     if c.message.chat.id != CHAT: return
-    d, uyari = c.data, ""
+    d, uyari, e = c.data, "", "ana"
     try:
-        if d == "gec": return bot.send_message(CHAT, gecmis_metin()), bot.answer_callback_query(c.id)
-        if d[0] in "kabcd" and d[1:].isdigit():
-            sym, p = pozisyon(int(d[1:]))
+        if d in ("poz", "gec", "ozet", "ayar", "hep"): e = d
+        elif d[0] in "kabcd" and d[1:].isdigit():
+            e = "poz"; sym, p = pozisyon(int(d[1:]))
             if not p: uyari = "pozisyon yok, yenile"
             elif d[0] == "k": kapat(sym, p, "MANUEL")
             elif d[0] in "ab":
-                yeni = max(1, int(p["leverage"] or 1) + (-1 if d[0] == "a" else 1) * 5)
+                yeni = max(1, int(p["leverage"] or 1) + (-5 if d[0] == "a" else 5))
                 ex.set_leverage(yeni, sym, params={"marginMode": "isolated", "holdSide": p["side"]}); uyari = f"{yeni}x"
-            else: acik[sym]["sl"] = max(0.2, round(acik[sym]["sl"] + (-0.2 if d[0] == "c" else 0.2), 2))
+            else: acik[sym]["sl"] = max(0.1, round(acik[sym]["sl"] + (-0.1 if d[0] == "c" else 0.1), 2))
         elif d == "tog": A["calis"] = not A["calis"]
-        elif d == "oto": A["oto"] = not A["oto"]
-        elif d == "m+": A["marjin"] = round(A["marjin"] + 0.5, 1)
-        elif d == "m-": A["marjin"] = max(1.0, round(A["marjin"] - 0.5, 1))
-        elif d == "p+": A["max_pos"] = min(10, A["max_pos"] + 1)
-        elif d == "p-": A["max_pos"] = max(1, A["max_pos"] - 1)
-        elif d == "l+": A["lev"] = next((x for x in sorted(LADDER) if x > A["lev"]), 125)
-        elif d == "l-": A["lev"] = next((x for x in sorted(LADDER, reverse=True) if x < A["lev"]), 2)
-        elif d == "s+": A["sl"] = min(0.9, round(A["sl"] + 0.05, 2))
-        elif d == "s-": A["sl"] = max(0.2, round(A["sl"] - 0.05, 2))
-        elif d == "hep":
+        elif d == "oto": A["oto"] = not A["oto"]; e = "ayar"
+        elif d.startswith("mj:"): A["marjin"] = float(d[3:]); e = "ayar"
+        elif d.startswith("sl:"): A["sl"] = int(d[3:]) / 100; e = "ayar"
+        elif d.startswith("lev:"): A["lev"] = int(d[4:])
+        elif d.startswith("lim:"): A["max_pos"] = int(d[4:])
+        elif d == "hepE":
             A["calis"] = False
             for p in ex.fetch_positions():
                 if p.get("contracts"): kapat(p["symbol"], p, "MANUEL")
-    except Exception as e: uyari = str(e)[:150]
+    except Exception as x: uyari = str(x)[:150]
     kaydet()
-    try: bot.edit_message_text(metin(), c.message.chat.id, c.message.message_id, reply_markup=klavye())
+    try:
+        t, k = ekran(e); bot.edit_message_text(t, c.message.chat.id, c.message.message_id, reply_markup=k)
     except Exception: pass
     bot.answer_callback_query(c.id, uyari)
 
