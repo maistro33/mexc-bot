@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ════════════════════════════════════════════════════════
-LIVE BOT v8.13 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
+LIVE BOT v8.14 — MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET ALARMI (30.09.2026, kullanıcı kararı: otomatik
 strateji kendi başına işlem açmıyor; /tara ile aday bulunur, kullanıcı
 onaylarsa "Aç" butonuyla açılır — bkz. v6.0/v6.1/v6.2 notları aşağıda). Eski
 otomatik strateji kodu (1D+4H+1H uyum / günün en çok yükseleni, LONG-only)
@@ -2888,8 +2888,8 @@ def veri_indir_calistir(chat_id, gun=45, adet=100):
             try:
                 since = baslangic_ms
                 satirlar = {}
-                for _ in range(120):
-                    parti = exchange.fetch_ohlcv(sym, "5m", since=since, limit=1000)
+                for _ in range(gun * 288 // 150 + 20):          # v8.14: Bitget eski mumlarda en fazla 200 döndürüyor; limit=200 ile boşluksuz
+                    parti = exchange.fetch_ohlcv(sym, "5m", since=since, limit=200)
                     if not parti:
                         break
                     for c in parti:
@@ -3598,7 +3598,7 @@ def panel_ayarlar_metni():
         yon_basligi = "LONG-only"
         yon_aciklama = "  1) 1D, 4H, 1H üçü de YUKARI olmalı (SADECE LONG)\n"
 
-    return (f"⚙️ LIVE BOT v8.13 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
+    return (f"⚙️ LIVE BOT v8.14 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI'}) AYARLARI\n\n"
             f"🎯 ŞU ANKİ AKTİF MOD: {aktif_strateji_modu().upper()} "
             f"(STRATEJI_MODU ayarı: {STRATEJI_MODU})\n\n"
             f"Sürüm: v4.2 (22.09.2026 — erken güvenlik çıkışı eklendi: YUKSELEN "
@@ -4952,7 +4952,7 @@ def izleme_listesi_kontrol():
 
 
 def tarama_loop():
-    tg(f"⚡ LIVE BOT v8.13 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
+    tg(f"⚡ LIVE BOT v8.14 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET) başladı — GERÇEK PARA\n"
        f"🎛️ Otomatik giriş: {'AÇIK' if OTOMATIK_GIRIS_AKTIF else 'KAPALI (varsayılan) — /tara ile aday bul, ✅ Aç ile onayla'}\n"
        f"🎯 Şu anki aktif mod: {aktif_strateji_modu().upper()}\n"
        f"MAX_POS={MAX_POS} | Marjin: bakiyenin %{RISK_PCT_BAKIYE*100:.0f}'i (taban ${MARJIN_TABAN_USDT:.2f}, tavan ${MARJIN_TAVAN_USDT:.2f}), {LEV}x\n"
@@ -5065,7 +5065,7 @@ def tarama_loop():
 
 if __name__ == "__main__":
     etiket = "AÇIK" if OTOMATIK_GIRIS_AKTIF else "KAPALI"
-    print(f"LIVE BOT v8.13 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
+    print(f"LIVE BOT v8.14 (MANUEL ONAY PANELİ + WEB PANELİ + OTOMATİK BİLDİRİM + ANİ HAREKET, otomatik giriş {etiket}) BAŞLIYOR...")
     durumu_diskten_yukle()
     momentum_ayar_yukle()
     cooldown_diskten_yukle()
