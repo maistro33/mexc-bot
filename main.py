@@ -16,7 +16,7 @@ COIN_SAYI= int(E("COIN_SAYI", "150"))
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "calis": True}
+A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.5")), "calis": True}
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 lev_cap = {}   # coin -> son başarılı kaldıraç
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
@@ -46,15 +46,15 @@ def haber(m):
     try: bot.send_message(CHAT, m)
     except Exception: pass
 
-def logla(sym, yon, pnl, neden):
-    gecmis.append({"t": int(time.time()), "s": sym.split(":")[0], "y": yon, "pnl": round(pnl, 3), "n": neden}); kaydet()
+def logla(sym, yon, pnl, neden, z=0.0):
+    gecmis.append({"t": int(time.time()), "s": sym.split(":")[0], "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(z, 2)}); kaydet()
 
 def kapat(sym, p, neden):
     yon = "sell" if p["side"] == "long" else "buy"
     ex.create_order(sym, "market", yon, p["contracts"], params={"reduceOnly": True, "marginMode": "isolated"})
     yasak[sym] = time.time() + BEKLE * 60
-    acik.pop(sym, None); logla(sym, p['side'], p['unrealizedPnl'], neden)
-    haber(f"{'✅' if p['unrealizedPnl'] > 0 else '❌'} {sym.split(':')[0]} {neden} PnL≈{p['unrealizedPnl']:+.2f}$")
+    z = acik.pop(sym, {}).get("zirve", 0.0); logla(sym, p['side'], p['unrealizedPnl'], neden, z)
+    haber(f"{'✅' if p['unrealizedPnl'] > 0 else '❌'} {sym.split(':')[0]} {neden} PnL≈{p['unrealizedPnl']:+.2f}$ (gördüğü zirve {z:+.2f}$)")
 
 def sl_fiyat(yon, giris, adet, cs, usd):   # stop tutarı (USD) -> fiyat
     d = usd / (adet * cs)
@@ -82,10 +82,19 @@ def ac(sym, yon, son, hr=0.0):
     mj = marjin()
     adet = ex.amount_to_precision(sym, mj * lev / son / (m.get("contractSize") or 1))
     if float(adet) * son < 5.2: yasak[sym] = time.time() + 6 * 3600; return   # borsa min 5 USDT
+    cs0 = m.get("contractSize") or 1; prm = {"marginMode": "isolated"}; tp_not = ""
+    if A["tp"] > 0:   # kâr al emri BORSADA durur: bot 2 sn geç kalsa da tepede kapanır
+        d = A["tp"] * mj / (float(adet) * cs0)
+        prm["takeProfit"] = {"triggerPrice": ex.price_to_precision(sym, son + d if yon == "buy" else son - d)}
     try:
-        ex.create_order(sym, "market", yon, float(adet), params={"marginMode": "isolated"})
+        ex.create_order(sym, "market", yon, float(adet), params=prm)
     except Exception as e:
-        yasak[sym] = time.time() + 3600; haber(f"⚠️ {sym.split(':')[0]} açılamadı: {str(e)[:120]}"); return
+        if "takeProfit" in prm:      # borsa TP'yi kabul etmediyse TP'siz aç, bot takip etsin
+            prm.pop("takeProfit"); tp_not = "\n⚠️ Borsa tarafı TP konamadı, bot takip ediyor"
+            try: ex.create_order(sym, "market", yon, float(adet), params=prm); e = None
+            except Exception as e2: e = e2
+        if e:
+            yasak[sym] = time.time() + 3600; haber(f"⚠️ {sym.split(':')[0]} açılamadı: {str(e)[:120]}"); return
     try:
         p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
         if abs(float(p.get("leverage") or lev) - lev) > 0.5 or float(p.get("initialMargin") or 0) > mj * 1.5:
@@ -103,20 +112,21 @@ def ac(sym, yon, son, hr=0.0):
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
           f"Sebep: son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)\n"
           f"Giriş ≈ {son:g} | Stop ≈ {sl_fiyat(yon, son, float(adet), cs, sl):g} (−{sl}${not_})\n"
-          f"İz süren: kâr +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır")
+          f"Kâr al (borsada): +{A['tp']*mj:.2f}$ | İz süren: +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır{tp_not}")
 
 def yonet():
     pos = [p for p in ex.fetch_positions() if p.get("contracts")]
     var = {p["symbol"] for p in pos}
     for s in [s for s in acik if s not in var]:      # dışarıda (elle/likidasyon) kapanan
-        logla(s, "?", acik[s].get("son", 0.0), "DIŞARIDA KAPANDI"); acik.pop(s)
+        logla(s, "?", acik[s].get("son", 0.0), "BORSADA KAPANDI (TP/stop/elle)", acik[s].get("zirve", 0.0)); haber(f"ℹ️ {s.split(':')[0]} borsada kapandı, son görülen PnL≈{acik[s].get('son', 0.0):+.2f}$"); acik.pop(s)
     for p in pos:
         sym = p["symbol"]; pnl = p["unrealizedPnl"] or 0.0
         if sym not in acik:                          # bot kapanıp açılınca / elle açılan: devral
             mj = float(p.get("initialMargin") or MARJIN)
             acik[sym] = {"zirve": max(pnl, 0.0), "mj": mj, "sl": round(A["sl"] * mj, 2), "son": pnl}
         k = acik[sym]; k["son"] = pnl; k["zirve"] = max(k["zirve"], pnl)
-        if pnl <= -k["sl"]: kapat(sym, p, "STOP")
+        if A["tp"] > 0 and pnl >= A["tp"] * k["mj"]: kapat(sym, p, "KÂR AL")
+        elif pnl <= -k["sl"]: kapat(sym, p, "STOP")
         elif k["zirve"] >= TRAIL_ON * k["mj"] and pnl <= k["zirve"] - TRAIL_GERI * k["mj"]: kapat(sym, p, "İZ SÜREN")
     kaydet()
     return len(acik)
@@ -161,16 +171,17 @@ def ekran(e):
         return "📋 Pozisyonlar\n\n" + ("\n".join(sat) or "pozisyon yok"), k
     if e == "gec":
         k.row(geri); son = gecmis[-15:][::-1]
-        return ("📜 Son işlemler (PnL≈, komisyon hariç)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ {g['n']}" for g in son) or "henüz yok")), k
+        return ("📜 Son işlemler (PnL≈, komisyon hariç)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ (zirve {g.get('z', 0):+.2f}) {g['n']}" for g in son) or "henüz yok")), k
     if e == "ozet":
         k.row(geri); n = len(gecmis); w = sum(1 for g in gecmis if g["pnl"] > 0)
         return (f"📊 Özet\nBakiye {bakiye():.2f}$\nBugün ≈{gun_toplam():+.2f}$\nToplam ≈{sum(g['pnl'] for g in gecmis):+.2f}$ ({n} işlem, %{(w/n*100 if n else 0):.0f} kazanç)"), k
     if e == "ayar":
         k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"${v}"))
         k.row(*sec((50, 60, 70, 80), int(A["sl"] * 100), "sl", lambda v: f"SL %{v}"))
+        k.row(*sec((0, 0.3, 0.5, 0.7, 1.0), A["tp"], "tp", lambda v: "TP yok" if not v else f"TP %{int(v*100)}"))
         k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
         k.row(geri)
-        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nİz süren: +%{TRAIL_ON*100:.0f} başlar, %{TRAIL_GERI*100:.0f} geri verirse kapatır", k
+        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nKâr al: {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: +%{TRAIL_ON*100:.0f} başlar, %{TRAIL_GERI*100:.0f} geri verirse kapatır", k
     if e == "hep":
         k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
         return "🚨 Tüm pozisyonlar kapatılsın mı? (otomatik giriş de durur)", k
@@ -211,6 +222,7 @@ def cb(c):
         elif d == "tog": A["calis"] = not A["calis"]
         elif d == "oto": A["oto"] = not A["oto"]; e = "ayar"
         elif d.startswith("mj:"): A["marjin"] = float(d[3:]); e = "ayar"
+        elif d.startswith("tp:"): A["tp"] = float(d[3:]); e = "ayar"
         elif d.startswith("sl:"): A["sl"] = int(d[3:]) / 100; e = "ayar"
         elif d.startswith("lev:"): A["lev"] = int(d[4:])
         elif d.startswith("lim:"): A["max_pos"] = int(d[4:])
@@ -229,8 +241,13 @@ if __name__ == "__main__":
     ex.load_markets()
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
     haber(f"Kısa bot hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A['sl']*100:.0f}, oto-büyüme {A['oto']}  → /panel")
-    while True:
-        try:
-            tara(); yonet()
-        except Exception as e: print("hata", e, flush=True)
+    def izle():          # pozisyon takibi ayrı ve hızlı (2 sn): stop/iz süren gecikmesin
+        while True:
+            try: yonet()
+            except Exception as e: print("hata yonet", e, flush=True)
+            time.sleep(2)
+    threading.Thread(target=izle, daemon=True).start()
+    while True:          # tarama / giriş (10 sn)
+        try: tara()
+        except Exception as e: print("hata tara", e, flush=True)
         time.sleep(10)
