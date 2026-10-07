@@ -126,7 +126,7 @@ def yonet():
     pos = [p for p in ex.fetch_positions() if p.get("contracts")]
     var = {p["symbol"] for p in pos}
     for s in [s for s in acik if s not in var]:      # dışarıda (elle/likidasyon) kapanan
-        logla(s, "?", acik[s].get("son", 0.0), "BORSADA KAPANDI (TP/stop/elle)", acik[s].get("zirve", 0.0)); haber(f"ℹ️ {s.split(':')[0]} borsada kapandı, son görülen PnL≈{acik[s].get('son', 0.0):+.2f}$"); acik.pop(s)
+        logla(s, "?", acik[s].get("son", 0.0), "BORSADA KAPANDI (TP/stop/elle)", acik[s].get("zirve", 0.0)); haber(f"ℹ️ {s.split(':')[0]} borsada kapandı, son görülen PnL≈{acik[s].get('son', 0.0):+.2f}$"); acik.pop(s); yasak[s] = time.time() + BEKLE * 60   # borsada kapananı da bekleme listesine al
     for p in pos:
         sym = p["symbol"]; pnl = p["unrealizedPnl"] or 0.0
         if sym not in acik:                          # bot kapanıp açılınca / elle açılan: devral
