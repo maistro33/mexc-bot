@@ -19,15 +19,15 @@ CHAT = int(E("MY_CHAT_ID", "0"))
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
 A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
-lev_cap = {}   # coin -> son başarılı kaldıraç
+lev_cap = {}   # coin -> borsanın kabul ettiği en yüksek kaldıraç (kalıcı)
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
 try:
     d = json.load(open(DOSYA))
     if d.get("A", {}).get("v") == 2: A.update(d["A"])      # eski sürüm ayarlarını (oto-büyüme, düşük kaldıraç) yok say
-    acik.update(d.get("acik", {})); gecmis.extend(d.get("gecmis", []))
+    acik.update(d.get("acik", {})); gecmis.extend(d.get("gecmis", [])); lev_cap.update(d.get("cap", {}))
 except Exception: pass
 def kaydet():
-    try: json.dump({"A": A, "acik": acik, "gecmis": gecmis[-300:]}, open(DOSYA, "w"))
+    try: json.dump({"A": A, "acik": acik, "gecmis": gecmis[-300:], "cap": lev_cap}, open(DOSYA, "w"))
     except Exception: pass
 
 ex = ccxt.bitget({"apiKey": E("BITGET_API"), "secret": E("BITGET_SEC"), "password": E("BITGET_PASS"),
@@ -62,23 +62,29 @@ def sl_fiyat(yon, giris, adet, cs, usd):   # stop tutarı (USD) -> fiyat
     return giris - d if yon in ("buy", "long") else giris + d
 
 def kaldirac_ayarla(sym, lev, yon):
-    """Kaldıracı ayarla ve borsadaki GERÇEK değeri oku. Döner: gerçek kaldıraç (okunamazsa None)."""
-    taraf = "long" if yon == "buy" else "short"
-    for params in ({"marginMode": "isolated", "holdSide": taraf}, {"marginMode": "isolated"}, {}):
-        try: ex.set_leverage(lev, sym, params); break
+    """Kaldıracı ayarla, borsadaki GERÇEK değeri oku. Döner: (ayar_basarili, gercek_lev|None, hata)."""
+    taraf = "long" if yon == "buy" else "short"; ok, hata = False, ""
+    for params in ({"holdSide": taraf}, {}, {"marginMode": "isolated", "holdSide": taraf}):
+        try: ex.set_leverage(lev, sym, params); ok = True; break
+        except Exception as e: hata = str(e)[:150]
+    gercek = None
+    if ok:
+        try:
+            r = ex.fetch_leverage(sym, {"marginMode": "isolated"})
+            v = r.get(taraf + "Leverage") or r.get("leverage"); gercek = float(v) if v else None
         except Exception: pass
-    try:
-        r = ex.fetch_leverage(sym, {"marginMode": "isolated"})
-        v = r.get(taraf + "Leverage") or r.get("leverage")
-        return float(v) if v else None
-    except Exception: return None
+    return ok, gercek, hata
 
 def ac(sym, yon, son, hr=0.0):
-    lev = 0
+    lev, hata = 0, ""
     for l in [l for l in LADDER if l <= min(A['lev'], lev_cap.get(sym, 999)) and 70 * (1 / l - 0.0105) >= MIN_SL_PCT]:
-        g = kaldirac_ayarla(sym, l, yon)
-        if g is None or abs(g - l) < 0.5: lev = l; lev_cap[sym] = l; break      # tuttu (okunamıyorsa sonradan doğrulanır)
-    if not lev: yasak[sym] = time.time() + 6 * 3600; return
+        ok, g, h = kaldirac_ayarla(sym, l, yon); hata = h or hata
+        if ok and (g is None or abs(g - l) < 0.5): lev = l; break   # tuttu
+        if ok and g is not None and g < l: lev_cap[sym] = int(g)   # borsa daha düşüğünü uyguladı: öğren
+    if not lev:
+        yasak[sym] = time.time() + 6 * 3600
+        if hata: haber(f"⚠️ {sym.split(':')[0]} kaldıraç ayarlanamadı, atlandı: {hata}")
+        return
     m = ex.market(sym)
     mj = marjin()
     adet = ex.amount_to_precision(sym, mj * lev / son / (m.get("contractSize") or 1))
@@ -205,6 +211,33 @@ def ekran(e):
 def pn(m):
     if m.chat.id != CHAT: return
     t, k = ekran("gec" if m.text.startswith("/gecmis") else "ana"); bot.send_message(CHAT, t, reply_markup=k)
+
+def kaldirac_toplu(hedef):
+    """Tüm USDT-M kontratlarda kaldıracı hedefe ayarla; kabul etmeyenlerde borsanın izin verdiği en yükseği bul."""
+    syms = [x for x, mk in ex.markets.items() if mk.get("swap") and mk.get("quote") == "USDT" and mk.get("active", True)]
+    tam, dusuk, basarisiz, hatalar = 0, 0, [], {}
+    for n, x in enumerate(syms):
+        son = None
+        for l in [l for l in LADDER if l <= hedef]:
+            ok, g, h = kaldirac_ayarla(x, l, "buy")
+            if ok and (g is None or abs(g - l) < 0.5):
+                son = l; kaldirac_ayarla(x, l, "sell"); break
+            if h: hatalar[h[:90]] = hatalar.get(h[:90], 0) + 1
+        if son: lev_cap[x] = son; tam += son == hedef; dusuk += son != hedef
+        else: basarisiz.append(x.split("/")[0])
+        if n and n % 150 == 0: bot.send_message(CHAT, f"… {n}/{len(syms)}")
+    kaydet()
+    dus = sorted(((v, k.split("/")[0]) for k, v in lev_cap.items() if v < hedef))
+    bot.send_message(CHAT, f"✅ Kaldıraç ayarı bitti (hedef {hedef}x)\n{tam} kontratta {hedef}x tuttu\n{dusuk} kontrat {hedef}x kabul etmedi (en yüksek kabul edilen kaydedildi)\n"
+                     f"{len(basarisiz)} kontratta hiç ayarlanamadı\n" + ("\nDüşük olanlardan örnek: " + ", ".join(f"{k} {v}x" for v, k in dus[:15]) if dus else "")
+                     + ("\n\nHatalar:\n" + "\n".join(f"{c}× {k}" for k, c in list(hatalar.items())[:4]) if hatalar else ""))
+
+@bot.message_handler(commands=["kaldirac"])
+def kaldirac_kmd(m):   # /kaldirac 20  -> tüm coinlerde 20x'e ayarla (izin verilmeyenlerde en yükseği)
+    if m.chat.id != CHAT: return
+    a = m.text.split(); hedef = int(a[1]) if len(a) > 1 and a[1].isdigit() else 20
+    bot.send_message(CHAT, f"⏳ Tüm USDT-M kontratlarda {hedef}x ayarlanıyor, birkaç dakika sürebilir…")
+    threading.Thread(target=kaldirac_toplu, args=(hedef,), daemon=True).start()
 
 @bot.message_handler(commands=["haric"])
 def haric(m):   # /haric  |  /haric ekle PEPE FIL  |  /haric sil PEPE
