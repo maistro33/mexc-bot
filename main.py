@@ -232,7 +232,7 @@ def ekran(e):
         k.row(B("İz süren " + ("✅ AÇIK (kapat)" if A["iz"] else "❌ KAPALI (aç)"), callback_data="iz"))
         k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
         k.row(geri)
-        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nGünlük zarar limiti: {('−'+str(A['gunluk'])+'$') if A['gunluk'] else 'yok'}\nKademeli kilit: {('AÇIK ' + ' → '.join('+%' + str(int(x * 100)) for x in A['lv']) + ' (satış sadece son hedefte)') if A['kademe'] else 'KAPALI'}\nKâr al (tek TP): {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: {'AÇIK (+%'+str(int(TRAIL_ON*100))+' başlar, %'+str(int(TRAIL_GERI*100))+' geri verirse kapatır)' if A['iz'] else 'KAPALI (tek TP)'}", k
+        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nGünlük zarar limiti: {('−'+str(A['gunluk'])+'$') if A['gunluk'] else 'yok'}\nKademeli kilit: {('AÇIK ' + ' → '.join('+%' + str(int(x * 100)) for x in A['lv']) + ' (her basamakta stop bir geri kilitlenir, satış yok)') if A['kademe'] else 'KAPALI'}\nKâr al (tek TP): {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: {'AÇIK (+%'+str(int(TRAIL_ON*100))+' başlar, %'+str(int(TRAIL_GERI*100))+' geri verirse kapatır)' if A['iz'] else 'KAPALI (tek TP)'}", k
     if e == "hep":
         k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
         return "🚨 Tüm pozisyonlar kapatılsın mı? (otomatik giriş de durur)", k
