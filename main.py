@@ -135,7 +135,7 @@ def cb(c):
 if __name__ == "__main__":
     ex.load_markets()
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-    haber(f"Kısa bot hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A["sl"]*100:.0f}, oto-büyüme {A["oto"]}  → /panel")
+    haber(f"Kısa bot hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A['sl']*100:.0f}, oto-büyüme {A['oto']}  → /panel")
     while True:
         try:
             tara(); yonet()
