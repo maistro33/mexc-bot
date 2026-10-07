@@ -16,7 +16,7 @@ COIN_SAYI= int(E("COIN_SAYI", "150"))
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.5")), "calis": True}
+A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.5")), "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 lev_cap = {}   # coin -> son başarılı kaldıraç
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
@@ -137,6 +137,7 @@ def tara():
     top = sorted((t for s, t in tk.items() if s.endswith(":USDT") and t.get("last")), key=lambda t: -(t.get("quoteVolume") or 0))[:COIN_SAYI]
     for t in top:
         s, son = t["symbol"], t["last"]
+        if s.split("/")[0].lstrip("0123456789") in A["haric"]: continue   # hariç tutulan eski/yavaş coinler
         h = fiyat.setdefault(s, collections.deque(maxlen=n)); h.append(son)
         if len(h) < n or s in acik or time.time() < yasak.get(s, 0) or len(acik) >= A['max_pos'] or not A['calis']: continue
         lo, hi = min(h), max(h)
@@ -179,6 +180,7 @@ def ekran(e):
         k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"${v}"))
         k.row(*sec((50, 60, 70, 80), int(A["sl"] * 100), "sl", lambda v: f"SL %{v}"))
         k.row(*sec((0, 0.3, 0.5, 0.7, 1.0), A["tp"], "tp", lambda v: "TP yok" if not v else f"TP %{int(v*100)}"))
+        k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
         k.row(geri)
         return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nKâr al: {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: +%{TRAIL_ON*100:.0f} başlar, %{TRAIL_GERI*100:.0f} geri verirse kapatır", k
@@ -200,6 +202,18 @@ def ekran(e):
 def pn(m):
     if m.chat.id != CHAT: return
     t, k = ekran("gec" if m.text.startswith("/gecmis") else "ana"); bot.send_message(CHAT, t, reply_markup=k)
+
+@bot.message_handler(commands=["haric"])
+def haric(m):   # /haric  |  /haric ekle PEPE FIL  |  /haric sil PEPE
+    if m.chat.id != CHAT: return
+    a = m.text.split()[1:]
+    if len(a) > 1 and a[0] in ("ekle", "sil"):
+        for x in a[1:]:
+            x = x.upper().replace("USDT", "").lstrip("0123456789")
+            if a[0] == "ekle" and x not in A["haric"]: A["haric"].append(x)
+            if a[0] == "sil" and x in A["haric"]: A["haric"].remove(x)
+        kaydet()
+    bot.send_message(CHAT, "🚫 Hariç tutulan coinler (bot bunlara girmez):\n" + " ".join(sorted(A["haric"])) + "\n\nEkle: /haric ekle PEPE FIL\nÇıkar: /haric sil PEPE")
 
 def pozisyon(n):
     sym = POZ.get(n)
