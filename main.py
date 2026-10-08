@@ -2,6 +2,11 @@
 import os, time, json, threading, collections, ccxt, telebot
 from telebot import types
 
+# SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
+# v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
+#                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
+# v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
+VERSIYON = "v3.1 (08.10 16:40)"
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
@@ -17,7 +22,7 @@ MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "kademe": False, "lv": [0.30, 0.50, 0.75, 1.00], "gunluk": 1.0, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
+A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "kademe": False, "bs": False, "lv": [0.30, 0.50, 0.75, 1.00], "gunluk": 1.0, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 lev_cap = {}   # coin -> borsanın kabul ettiği en yüksek kaldıraç (kalıcı)
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
@@ -72,11 +77,33 @@ def duzelt():   # kapanışlardan ~20 sn sonra tahmini PnL'yi borsanın gerçek 
             elif time.time() - g["t"] > 900: g["g"] = 2     # bulunamadı, tahmin kalsın
     kaydet()
 
+def borsa_stop_iptal(sym, sid):
+    if not sid: return
+    for prm in ({"trigger": True}, {"stop": True}, {}):
+        try: ex.cancel_order(sid, sym, prm); return
+        except Exception: pass
+
+def borsa_stop(sym, p, k, kilit):
+    """Kilit seviyesine BORSADA stop-market (reduce-only) koy. Hata olursa bot-içi stop devam eder. Döner: başarılı mı."""
+    try:
+        qty = float(p["contracts"]); cs = ex.market(sym).get("contractSize") or 1
+        gir = float(p.get("entryPrice")); d = kilit / (qty * cs); uz = p["side"] == "long"
+        fy = ex.price_to_precision(sym, gir + d if uz else gir - d)
+        eski = k.get("sid")
+        o = ex.create_order(sym, "market", "sell" if uz else "buy", qty, params={"stopLossPrice": fy, "reduceOnly": True, "marginMode": "isolated"})
+        k["sid"] = o.get("id") or (o.get("info") or {}).get("orderId")
+        if eski: borsa_stop_iptal(sym, eski)
+        haber(f"🛡 {sym.split(':')[0]} borsada stop kondu: {fy} (kilit +{kilit:.2f}$)")
+        return True
+    except Exception as e:
+        haber(f"⚠️ {sym.split(':')[0]} borsa stop konamadı, bot takip ediyor: {str(e)[:110]}")
+        return False
+
 def kapat(sym, p, neden):
     yon = "sell" if p["side"] == "long" else "buy"
     ex.create_order(sym, "market", yon, p["contracts"], params={"reduceOnly": True, "marginMode": "isolated"})
     yasak[sym] = time.time() + BEKLE * 60
-    z = acik.pop(sym, {}).get("zirve", 0.0); logla(sym, p['side'], p['unrealizedPnl'], neden, z)
+    kk = acik.pop(sym, {}); borsa_stop_iptal(sym, kk.get("sid")); z = kk.get("zirve", 0.0); logla(sym, p['side'], p['unrealizedPnl'], neden, z)
     haber(f"{'✅' if p['unrealizedPnl'] > 0 else '❌'} {sym.split(':')[0]} {neden} PnL≈{p['unrealizedPnl']:+.2f}$ (gördüğü zirve {z:+.2f}$)")
 
 def sl_fiyat(yon, giris, adet, cs, usd):   # stop tutarı (USD) -> fiyat
@@ -153,7 +180,7 @@ def yonet():
     pos = [p for p in ex.fetch_positions() if p.get("contracts")]
     var = {p["symbol"] for p in pos}
     for s in [s for s in acik if s not in var]:      # dışarıda (elle/likidasyon) kapanan
-        logla(s, "?", acik[s].get("son", 0.0), "BORSADA KAPANDI (TP/stop/elle)", acik[s].get("zirve", 0.0)); haber(f"ℹ️ {s.split(':')[0]} borsada kapandı, son görülen PnL≈{acik[s].get('son', 0.0):+.2f}$"); acik.pop(s); yasak[s] = time.time() + BEKLE * 60   # borsada kapananı da bekleme listesine al
+        borsa_stop_iptal(s, acik[s].get("sid")); logla(s, "?", acik[s].get("son", 0.0), "BORSADA KAPANDI (TP/stop/elle)", acik[s].get("zirve", 0.0)); haber(f"ℹ️ {s.split(':')[0]} borsada kapandı, son görülen PnL≈{acik[s].get('son', 0.0):+.2f}$"); acik.pop(s); yasak[s] = time.time() + BEKLE * 60   # borsada kapananı da bekleme listesine al
     for p in pos:
         sym = p["symbol"]; pnl = p["unrealizedPnl"] or 0.0
         if sym not in acik:                          # bot kapanıp açılınca / elle açılan: devral
@@ -170,6 +197,8 @@ def yonet():
                 k["kilit"] = max(k["kilit"], 0.65 * k["zirve"])
             if a_ >= len(lv) and len(lv) > 1:   # son basamak aşıldı: satış yok, zirveyi bir basamak geriden izle
                 k["kilit"] = max(k.get("kilit") or 0, k["zirve"] - (lv[-1] - lv[-2]) * k["mj"])
+            if A.get("bs") and k.get("kilit") is not None and k["kilit"] >= k.get("bsk", -9) + 0.05 * k["mj"]:
+                borsa_stop(sym, p, k, k["kilit"]); k["bsk"] = k["kilit"]      # başarısız olsa da aynı seviyeyi tekrar deneme (mesaj yağmuru olmasın)
             if k.get("kilit") is not None and pnl <= k["kilit"]: kapat(sym, p, "KADEME KİLİDİ")
             elif pnl <= -k["sl"] and k.get("kilit") is None: kapat(sym, p, "STOP")
         elif A["tp"] > 0 and pnl >= A["tp"] * k["mj"]: kapat(sym, p, "KÂR AL")
@@ -233,6 +262,7 @@ def ekran(e):
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(*sec((0.5, 1.0, 2.0, 0), A["gunluk"], "gl", lambda v: f"Günlük −{v}$" if v else "Limit yok"))
         k.row(B("Kademeli kilit " + ("✅ AÇIK (kapat)" if A["kademe"] else "❌ KAPALI (aç)"), callback_data="kd"))
+        k.row(B("Borsa stop " + ("✅ AÇIK (kapat)" if A.get("bs") else "❌ KAPALI (aç) [deneme]"), callback_data="bs"))
         k.row(*sec(("30,50,75,100", "35,60,100,150", "50,100,150,250"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v))
         k.row(B("İz süren " + ("✅ AÇIK (kapat)" if A["iz"] else "❌ KAPALI (aç)"), callback_data="iz"))
         k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
@@ -249,7 +279,7 @@ def ekran(e):
     k.row(*sec((10, 20, 50, 75, 125), A["lev"], "lev", lambda v: f"{v}x"))
     k.row(*sec((1, 2, 3, 5, 6), A["max_pos"], "lim", lambda v: f"{v} işlem"))
     k.row(B("🚨 Tümünü Kapat", callback_data="hep")); k.row(B("🔄 Yenile", callback_data="ana"))
-    return (f"{'▶️ OTOMATİK AÇIK' if A['calis'] else '⏹ DURDU'} | Bakiye {bakiye():.2f}$ | Bugün ≈{gun_toplam():+.2f}$\n"
+    return (f"{'▶️ OTOMATİK AÇIK' if A['calis'] else '⏹ DURDU'} | {VERSIYON} | Bakiye {bakiye():.2f}$ | Bugün ≈{gun_toplam():+.2f}$\n"
             f"Pozisyon {n}/{A['max_pos']} | Marjin {marjin():.1f}$ | kaldıraç tavanı {A['lev']}x"), k
 
 @bot.message_handler(commands=["panel", "start", "durum", "gecmis"])
@@ -320,6 +350,7 @@ def cb(c):
         elif d.startswith("mj:"): A["marjin"] = float(d[3:]); e = "ayar"
         elif d.startswith("gl:"): A["gunluk"] = float(d[3:]); e = "ayar"
         elif d == "kd": A["kademe"] = not A["kademe"]; e = "ayar"
+        elif d == "bs": A["bs"] = not A.get("bs"); e = "ayar"
         elif d.startswith("lvl:"): A["lv"] = [int(x) / 100 for x in d[4:].split(",")]; e = "ayar"
         elif d.startswith("tp:"): A["tp"] = float(d[3:]); e = "ayar"
         elif d.startswith("sl:"): A["sl"] = int(d[3:]) / 100; e = "ayar"
@@ -339,7 +370,7 @@ def cb(c):
 if __name__ == "__main__":
     ex.load_markets()
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-    haber(f"Kısa bot hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A['sl']*100:.0f}, oto-büyüme {A['oto']}  → /panel")
+    haber(f"Kısa bot {VERSIYON} hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A['sl']*100:.0f}, oto-büyüme {A['oto']}  → /panel")
     def izle():          # pozisyon takibi ayrı ve hızlı (2 sn): stop/iz süren gecikmesin
         while True:
             try: yonet(); duzelt()
