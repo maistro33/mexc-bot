@@ -5,8 +5,9 @@ from telebot import types
 # SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
 # v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
 #                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
+# v3.2 08.10 21:05  Hisse/ETF sembolleri otomatik hariç (panelde aç/kapa), giriş penceresi 10dk→5dk (%3), basamak 1 = net ~0.30$ kalacak şekilde (ücret+kayma eklenir), kilit1 = net 0.30$
 # v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
-VERSIYON = "v3.1 (08.10 16:40)"
+VERSIYON = "v3.2 (08.10 21:05)"
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
@@ -15,14 +16,15 @@ SL_USDT  = float(E("SL_USDT", "0.8"))     # bu kadar zarara ulaşınca kapat
 TRAIL_ON = float(E("TRAIL_ON", "0.3"))    # kâr bu kadar olunca iz sürme başlar
 TRAIL_GERI = float(E("TRAIL_GERI", "0.15"))  # zirveden bu kadar geri verirse kapat
 HAREKET  = float(E("HAREKET", "3"))       # son PENCERE dakikada % hareket
-PENCERE  = int(E("PENCERE", "10"))
+PENCERE  = int(E("PENCERE", "5"))
 BEKLE    = int(E("BEKLE_DK", "30"))       # kapanan coine tekrar girmeden bekleme
 COIN_SAYI= int(E("COIN_SAYI", "150"))
 MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak olmalı; değilse kaldıraç düşürülür (0 = kapalı)
 CHAT = int(E("MY_CHAT_ID", "0"))
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "kademe": False, "bs": False, "lv": [0.30, 0.50, 0.75, 1.00], "gunluk": 1.0, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
+A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "kademe": False, "bs": False, "hk": True, "lv": [0.42, 0.50, 0.75, 1.00], "gunluk": 1.0, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
+HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())   # hisse/ETF perpetual sembolleri
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 lev_cap = {}   # coin -> borsanın kabul ettiği en yüksek kaldıraç (kalıcı)
 acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
@@ -188,10 +190,14 @@ def yonet():
             acik[sym] = {"zirve": max(pnl, 0.0), "mj": mj, "sl": round(A["sl"] * mj, 2), "son": pnl}
         k = acik[sym]; k["son"] = pnl; k["zirve"] = max(k["zirve"], pnl)
         if A["kademe"]:                                  # satış yok: kademe aşılınca kilit yükselir, son hedefte hepsi satılır
-            lv = k.get("lv") or A["lv"]; k["lv"] = lv; a_ = k.get("asama", 0)
-            while a_ < len(lv) and pnl >= lv[a_] * k["mj"]: a_ += 1
+            lv = k.get("lv") or A["lv"]; k["lv"] = lv; a_ = k.get("asama", 0); mj_ = k["mj"]
+            try: lev_ = float(p.get("leverage") or 20)
+            except Exception: lev_ = 20.0
+            kl1 = 0.30 * mj_ + 0.0012 * mj_ * lev_ + 0.03 * mj_        # net 0.30$ kalsın: + borsa ücreti (giriş+çıkış) + kayma payı
+            e0 = max(lv[0] * mj_, kl1 + 0.05 * mj_)                     # 1. basamak, kilidin en az 0.05$ üstünde olmalı
+            while a_ < len(lv) and pnl >= (e0 if a_ == 0 else lv[a_] * mj_): a_ += 1
             if a_ != k.get("asama", 0):
-                k["asama"] = a_; k["kilit"] = 0.12 * k["mj"] if a_ == 1 else lv[a_ - 2] * k["mj"] * 0.95
+                k["asama"] = a_; k["kilit"] = kl1 if a_ == 1 else (e0 if a_ == 2 else lv[a_ - 2] * mj_) * 0.95
                 haber(f"🔒 {sym.split(':')[0]} kademe {a_}/{len(lv)} aşıldı → stop yukarı çekildi: +{k['kilit']:.2f}$ (pnl {pnl:+.2f}$)")
             if a_ >= 2 and k.get("kilit") is not None:   # 2. basamaktan sonra kilit zirvenin en az %65'i: kârın çoğunu geri verme
                 k["kilit"] = max(k["kilit"], 0.65 * k["zirve"])
@@ -217,6 +223,7 @@ def tara():
     for t in top:
         s, son = t["symbol"], t["last"]
         if s.split("/")[0].lstrip("0123456789") in A["haric"]: continue   # hariç tutulan eski/yavaş coinler
+        if A.get("hk", True) and s.split("/")[0].lstrip("0123456789") in HISSE: continue   # hisse/ETF sembolleri kapalı
         h = fiyat.setdefault(s, collections.deque(maxlen=n)); h.append(son)
         if len(h) < n or s in acik or time.time() < yasak.get(s, 0) or len(acik) >= A['max_pos'] or not A['calis']: continue
         lo, hi = min(h), max(h)
@@ -262,8 +269,9 @@ def ekran(e):
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(*sec((0.5, 1.0, 2.0, 0), A["gunluk"], "gl", lambda v: f"Günlük −{v}$" if v else "Limit yok"))
         k.row(B("Kademeli kilit " + ("✅ AÇIK (kapat)" if A["kademe"] else "❌ KAPALI (aç)"), callback_data="kd"))
+        k.row(B("Hisse senetleri " + ("❌ KAPALI (aç)" if A.get("hk", True) else "✅ AÇIK (kapat)"), callback_data="hk"))
         k.row(B("Borsa stop " + ("✅ AÇIK (kapat)" if A.get("bs") else "❌ KAPALI (aç) [deneme]"), callback_data="bs"))
-        k.row(*sec(("30,50,75,100", "35,60,100,150", "50,100,150,250"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v))
+        k.row(*sec(("42,50,75,100", "35,60,100,150", "50,100,150,250"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v))
         k.row(B("İz süren " + ("✅ AÇIK (kapat)" if A["iz"] else "❌ KAPALI (aç)"), callback_data="iz"))
         k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
         k.row(geri)
@@ -351,6 +359,7 @@ def cb(c):
         elif d.startswith("gl:"): A["gunluk"] = float(d[3:]); e = "ayar"
         elif d == "kd": A["kademe"] = not A["kademe"]; e = "ayar"
         elif d == "bs": A["bs"] = not A.get("bs"); e = "ayar"
+        elif d == "hk": A["hk"] = not A.get("hk", True); e = "ayar"
         elif d.startswith("lvl:"): A["lv"] = [int(x) / 100 for x in d[4:].split(",")]; e = "ayar"
         elif d.startswith("tp:"): A["tp"] = float(d[3:]); e = "ayar"
         elif d.startswith("sl:"): A["sl"] = int(d[3:]) / 100; e = "ayar"
