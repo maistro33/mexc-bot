@@ -5,10 +5,11 @@ from telebot import types
 # SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
 # v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
 #                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
+# v3.4 08.10 22:30  Yeni giriş MOD=fitil (varsayılan): her 15 dk mum kapanışında 4 saatlik + 1 saatlik + 15 dk son kapanmış mumların HEPSİ aynı yönde fitil bırakmış ve fitil yönünde kapanmışsa gir (altta fitil+yeşil=LONG, üstte fitil+kırmızı=SHORT). Eski yöntemler: env MOD=mum / MOD=pencere
 # v3.3 08.10 21:20  Giriş: kayan pencere yerine 5 dk'lık MUM GÖVDESİ (açılış→kapanış) >= %3 ise, mum kapanır kapanmaz yeni mumun başında gir (MOD=mum; eski yöntem için env MOD=pencere)
 # v3.2 08.10 21:05  Hisse/ETF sembolleri otomatik hariç (panelde aç/kapa), giriş penceresi 10dk→5dk (%3), basamak 1 = net ~0.30$ kalacak şekilde (ücret+kayma eklenir), kilit1 = net 0.30$
 # v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
-VERSIYON = "v3.3 (08.10 21:20)"
+VERSIYON = "v3.4 (08.10 22:30)"
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
@@ -16,9 +17,10 @@ LEV_TAVAN= int(E("LEV_TAVAN", "125"))     # coinin izin verdiği en yüksek kald
 SL_USDT  = float(E("SL_USDT", "0.8"))     # bu kadar zarara ulaşınca kapat
 TRAIL_ON = float(E("TRAIL_ON", "0.3"))    # kâr bu kadar olunca iz sürme başlar
 TRAIL_GERI = float(E("TRAIL_GERI", "0.15"))  # zirveden bu kadar geri verirse kapat
+FITIL    = float(E("FITIL", "0.4"))     # fitil, mum boyunun (yüksek-düşük) en az bu kadarı olmalı
 HAREKET  = float(E("HAREKET", "3"))       # son PENCERE dakikada % hareket
 PENCERE  = int(E("PENCERE", "5"))
-MOD      = E("MOD", "mum")        # "mum": mum gövdesi sinyali (yeni mum başında giriş), "pencere": eski kayan pencere
+MOD      = E("MOD", "fitil")        # "mum": mum gövdesi sinyali (yeni mum başında giriş), "pencere": eski kayan pencere
 BEKLE    = int(E("BEKLE_DK", "30"))       # kapanan coine tekrar girmeden bekleme
 COIN_SAYI= int(E("COIN_SAYI", "150"))
 MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak olmalı; değilse kaldıraç düşürülür (0 = kapalı)
@@ -175,7 +177,8 @@ def ac(sym, yon, son, hr=0.0):
     acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0}; kaydet()
     kd = (" | Kademe kilidi: " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]) + " (her basamakta stop bir basamak geriye kilitlenir, satış yok)") if A["kademe"] else ""
     izm = f" | İz süren: +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır" if A["iz"] else ""
-    sebep = (f"{PENCERE} dk'lık mum {'+' if yon == 'buy' else '-'}%{hr:.1f} gövde, mum kapanınca yeni mumun başında giriş" if MOD == "mum"
+    sebep = ("4s + 1s + 15dk mumların hepsinde " + ("altta fitil, yeşil kapanış" if yon == "buy" else "üstte fitil, kırmızı kapanış") if MOD == "fitil" else
+             f"{PENCERE} dk'lık mum {'+' if yon == 'buy' else '-'}%{hr:.1f} gövde, mum kapanınca yeni mumun başında giriş" if MOD == "mum"
              else f"son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)")
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
           f"Sebep: {sebep}\n"
@@ -229,6 +232,25 @@ def mum_sinyal(s, son, simdi):
         bar[s] = (bid, son)
     return sonuc
 
+fitil_bid = [0]
+def mum_ok(c, d, minr):
+    """c = [ts, açılış, yüksek, düşük, kapanış, hacim]. d=1: altta fitil + yeşil, d=-1: üstte fitil + kırmızı."""
+    o, h, l, cl = c[1], c[2], c[3], c[4]; r = h - l
+    if not o or r <= 0 or r / o < minr: return False
+    if d == 1: return cl > o and (min(o, cl) - l) / r >= FITIL
+    return cl < o and (h - max(o, cl)) / r >= FITIL
+
+def fitil_yon(s):
+    """15 dk -> 1 saat -> 4 saat son KAPANMIŞ mumların hepsi aynı yönde fitil bırakmış mı. Döner: 'buy'/'sell'/None."""
+    k15 = ex.fetch_ohlcv(s, "15m", limit=3)
+    if len(k15) < 3: return None
+    d = 1 if mum_ok(k15[-2], 1, 0.005) else (-1 if mum_ok(k15[-2], -1, 0.005) else 0)
+    if not d: return None
+    for tf, minr in (("1h", 0.01), ("4h", 0.02)):
+        k = ex.fetch_ohlcv(s, tf, limit=3)
+        if len(k) < 3 or not mum_ok(k[-2], d, minr): return None
+    return "buy" if d == 1 else "sell"
+
 def tara():
     if A["calis"] and A["gunluk"] > 0 and gun_toplam() <= -A["gunluk"]:   # günlük zarar limiti: otomatik girişi durdur
         A["calis"] = False; kaydet()
@@ -236,10 +258,26 @@ def tara():
     n = int(PENCERE * 60 / 10)
     tk = ex.fetch_tickers()
     top = sorted((t for s, t in tk.items() if s.endswith(":USDT") and t.get("last")), key=lambda t: -(t.get("quoteVolume") or 0))[:COIN_SAYI]
+    if MOD == "fitil":
+        simdi = time.time(); bid = int(simdi // 900)
+        if fitil_bid[0] != bid and simdi - bid * 900 < 150 and A["calis"]:   # her 15 dk mum kapanışında bir kez tara (ilk 150 sn içinde)
+            fitil_bid[0] = bid; adet = 0
+            for t in top:
+                s, son = t["symbol"], t["last"]; b = s.split("/")[0].lstrip("0123456789")
+                if b in A["haric"] or (A.get("hk", True) and b in HISSE) or s in acik or time.time() < yasak.get(s, 0): continue
+                if len(acik) >= A["max_pos"]: break
+                try:
+                    yon = fitil_yon(s)
+                    if yon: ac(s, yon, son, 0.0); adet += 1
+                except Exception as e: print("hata fitil", s, e, flush=True)
+            print(f"fitil taraması bitti: {adet} giriş, {time.time()-simdi:.0f} sn", flush=True)
+        return
     for t in top:
         s, son = t["symbol"], t["last"]
         if s.split("/")[0].lstrip("0123456789") in A["haric"]: continue   # hariç tutulan eski/yavaş coinler
         if A.get("hk", True) and s.split("/")[0].lstrip("0123456789") in HISSE: continue   # hisse/ETF sembolleri kapalı
+        if MOD == "fitil":
+            continue
         if MOD == "mum":
             sg = mum_sinyal(s, son, time.time())
             if sg and s not in acik and time.time() >= yasak.get(s, 0) and len(acik) < A['max_pos'] and A['calis']: ac(s, sg[0], son, sg[1])
