@@ -5,9 +5,10 @@ from telebot import types
 # SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
 # v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
 #                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
+# v3.3 08.10 21:20  Giriş: kayan pencere yerine 5 dk'lık MUM GÖVDESİ (açılış→kapanış) >= %3 ise, mum kapanır kapanmaz yeni mumun başında gir (MOD=mum; eski yöntem için env MOD=pencere)
 # v3.2 08.10 21:05  Hisse/ETF sembolleri otomatik hariç (panelde aç/kapa), giriş penceresi 10dk→5dk (%3), basamak 1 = net ~0.30$ kalacak şekilde (ücret+kayma eklenir), kilit1 = net 0.30$
 # v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
-VERSIYON = "v3.2 (08.10 21:05)"
+VERSIYON = "v3.3 (08.10 21:20)"
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
@@ -17,6 +18,7 @@ TRAIL_ON = float(E("TRAIL_ON", "0.3"))    # kâr bu kadar olunca iz sürme başl
 TRAIL_GERI = float(E("TRAIL_GERI", "0.15"))  # zirveden bu kadar geri verirse kapat
 HAREKET  = float(E("HAREKET", "3"))       # son PENCERE dakikada % hareket
 PENCERE  = int(E("PENCERE", "5"))
+MOD      = E("MOD", "mum")        # "mum": mum gövdesi sinyali (yeni mum başında giriş), "pencere": eski kayan pencere
 BEKLE    = int(E("BEKLE_DK", "30"))       # kapanan coine tekrar girmeden bekleme
 COIN_SAYI= int(E("COIN_SAYI", "150"))
 MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak olmalı; değilse kaldıraç düşürülür (0 = kapalı)
@@ -173,8 +175,10 @@ def ac(sym, yon, son, hr=0.0):
     acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0}; kaydet()
     kd = (" | Kademe kilidi: " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]) + " (her basamakta stop bir basamak geriye kilitlenir, satış yok)") if A["kademe"] else ""
     izm = f" | İz süren: +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır" if A["iz"] else ""
+    sebep = (f"{PENCERE} dk'lık mum {'+' if yon == 'buy' else '-'}%{hr:.1f} gövde, mum kapanınca yeni mumun başında giriş" if MOD == "mum"
+             else f"son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)")
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
-          f"Sebep: son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)\n"
+          f"Sebep: {sebep}\n"
           f"Giriş ≈ {son:g} | Stop ≈ {sl_fiyat(yon, son, float(adet), cs, sl):g} (−{sl}${not_})\n"
           f"Kâr al: {('+'+format(tp_oran*mj,'.2f')+'$ (borsada)') if tp_oran else 'kademeli kilit'}{izm}{kd}{tp_not}")
 
@@ -213,6 +217,18 @@ def yonet():
     kaydet()
     return len(acik)
 
+bar = {}   # coin -> (mum_no, mum_açılış_fiyatı)
+def mum_sinyal(s, son, simdi):
+    """Her PENCERE dakikalık mum kapandığında önceki mumun açılış->kapanış gövdesine bak. Döner: (yon, yüzde) ya da None."""
+    bid = int(simdi // (PENCERE * 60)); o = bar.get(s); sonuc = None
+    if o is None or o[0] != bid:
+        if o is not None and o[0] == bid - 1 and o[1]:
+            mv = son / o[1] - 1
+            if mv >= HAREKET / 100: sonuc = ("buy", mv * 100)
+            elif mv <= -HAREKET / 100: sonuc = ("sell", -mv * 100)
+        bar[s] = (bid, son)
+    return sonuc
+
 def tara():
     if A["calis"] and A["gunluk"] > 0 and gun_toplam() <= -A["gunluk"]:   # günlük zarar limiti: otomatik girişi durdur
         A["calis"] = False; kaydet()
@@ -224,6 +240,10 @@ def tara():
         s, son = t["symbol"], t["last"]
         if s.split("/")[0].lstrip("0123456789") in A["haric"]: continue   # hariç tutulan eski/yavaş coinler
         if A.get("hk", True) and s.split("/")[0].lstrip("0123456789") in HISSE: continue   # hisse/ETF sembolleri kapalı
+        if MOD == "mum":
+            sg = mum_sinyal(s, son, time.time())
+            if sg and s not in acik and time.time() >= yasak.get(s, 0) and len(acik) < A['max_pos'] and A['calis']: ac(s, sg[0], son, sg[1])
+            continue
         h = fiyat.setdefault(s, collections.deque(maxlen=n)); h.append(son)
         if len(h) < n or s in acik or time.time() < yasak.get(s, 0) or len(acik) >= A['max_pos'] or not A['calis']: continue
         lo, hi = min(h), max(h)
