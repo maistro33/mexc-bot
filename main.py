@@ -123,6 +123,9 @@ def ac(sym, yon, son, hr=0.0):
             prm.pop("takeProfit"); tp_not = "\n⚠️ Borsa tarafı TP konamadı, bot takip ediyor"
             try: ex.create_order(sym, "market", yon, float(adet), params=prm); e = None
             except Exception as e2: e = e2
+        if e and "40797" in str(e):      # borsa bu coin için bu kaldıracı kabul etmiyor: bir basamak düşür, bir sonraki taramada tekrar dene
+            alt = [l for l in LADDER if l < lev]
+            if alt: lev_cap[sym] = alt[0]; yasak[sym] = time.time() + 20; haber(f"ℹ️ {sym.split(':')[0]} {lev}x kabul edilmedi, {alt[0]}x ile tekrar denenecek"); return
         if e:
             yasak[sym] = time.time() + 3600; haber(f"⚠️ {sym.split(':')[0]} açılamadı: {str(e)[:120]}"); return
     try:
@@ -161,8 +164,10 @@ def yonet():
             lv = k.get("lv") or A["lv"]; k["lv"] = lv; a_ = k.get("asama", 0)
             while a_ < len(lv) and pnl >= lv[a_] * k["mj"]: a_ += 1
             if a_ != k.get("asama", 0):
-                k["asama"] = a_; k["kilit"] = 0.05 * k["mj"] if a_ == 1 else lv[a_ - 2] * k["mj"] * 0.95
+                k["asama"] = a_; k["kilit"] = 0.12 * k["mj"] if a_ == 1 else lv[a_ - 2] * k["mj"] * 0.95
                 haber(f"🔒 {sym.split(':')[0]} kademe {a_}/{len(lv)} aşıldı → stop yukarı çekildi: +{k['kilit']:.2f}$ (pnl {pnl:+.2f}$)")
+            if a_ >= 2 and k.get("kilit") is not None:   # 2. basamaktan sonra kilit zirvenin en az %65'i: kârın çoğunu geri verme
+                k["kilit"] = max(k["kilit"], 0.65 * k["zirve"])
             if a_ >= len(lv) and len(lv) > 1:   # son basamak aşıldı: satış yok, zirveyi bir basamak geriden izle
                 k["kilit"] = max(k.get("kilit") or 0, k["zirve"] - (lv[-1] - lv[-2]) * k["mj"])
             if k.get("kilit") is not None and pnl <= k["kilit"]: kapat(sym, p, "KADEME KİLİDİ")
