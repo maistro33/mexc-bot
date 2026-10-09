@@ -5,6 +5,7 @@ from telebot import types
 # SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
 # v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
 #                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
+# v3.8 09.10 20:25  MOD=ters (varsayılan): TERSİNE strateji. 5 dk mum gövdesi >= %5 yükseldiyse SAT (short), >= %5 düştüyse AL (long); mum kapanınca yeni mumun başında giriş. Gösterge yok. env: TERS_ESIK (5). Önceki modlar: hibrit/mum15/fitil/mum/pencere
 # v3.7 09.10 12:40  (1) Açılışta HEMEN borsaya yedek zarar stopu (bot düşse/gecikse bile korur; Ayarlar>Borsa stop AÇIKsa; botun kendi stopundan %20 geniş, likidasyondan önce). (2) Kaldıraç uyuşmazsa pozisyonu kapatmak yerine fazlasını küçültüp devam et (marjin 1$ kalır). (3) Açılış mesajında gerçek dolum fiyatı
 # v3.6 09.10 02:20  MOD=hibrit (varsayılan): v3.5'teki 15 dk büyük mum formasyonu (aralık >= %6) + her 5 dk kapanışında 5 dk mumda SABAH/AKŞAM YILDIZI (aralık >= %4) ile daha sık işlem. env: MUM15_ARALIK (6), MUM5_ARALIK (4). MOD=mum15 ile sadece 15 dk
 # v3.5 08.10 22:55  Yeni giriş MOD=mum15 (varsayılan): her 15 dk kapanışında, 15 dk mum aralığı (yüksek-düşük) >= %8 olan ve YUTAN (engulfing) ya da SABAH/AKŞAM YILDIZI formasyonu yapan coine formasyon yönünde gir. env: MUM15_ARALIK (varsayılan 8). Önceki: MOD=fitil / mum / pencere
@@ -12,7 +13,7 @@ from telebot import types
 # v3.3 08.10 21:20  Giriş: kayan pencere yerine 5 dk'lık MUM GÖVDESİ (açılış→kapanış) >= %3 ise, mum kapanır kapanmaz yeni mumun başında gir (MOD=mum; eski yöntem için env MOD=pencere)
 # v3.2 08.10 21:05  Hisse/ETF sembolleri otomatik hariç (panelde aç/kapa), giriş penceresi 10dk→5dk (%3), basamak 1 = net ~0.30$ kalacak şekilde (ücret+kayma eklenir), kilit1 = net 0.30$
 # v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
-VERSIYON = "v3.7 (09.10 12:40)"
+VERSIYON = "v3.8 (09.10 20:25)"
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
@@ -22,10 +23,11 @@ TRAIL_ON = float(E("TRAIL_ON", "0.3"))    # kâr bu kadar olunca iz sürme başl
 TRAIL_GERI = float(E("TRAIL_GERI", "0.15"))  # zirveden bu kadar geri verirse kapat
 MUM15_ARALIK = float(E("MUM15_ARALIK", "6"))
 MUM5_ARALIK  = float(E("MUM5_ARALIK", "4"))   # 5 dk mum yıldız formasyonu için en az aralık %   # 15 dk mumun yüksek-düşük aralığı en az bu % olmalı
+TERS_ESIK = float(E("TERS_ESIK", "5"))      # MOD=ters: 5 dk mum gövdesi en az bu % ise tersine gir
 FITIL    = float(E("FITIL", "0.4"))     # fitil, mum boyunun (yüksek-düşük) en az bu kadarı olmalı
 HAREKET  = float(E("HAREKET", "3"))       # son PENCERE dakikada % hareket
 PENCERE  = int(E("PENCERE", "5"))
-MOD      = E("MOD", "hibrit")        # "mum": mum gövdesi sinyali (yeni mum başında giriş), "pencere": eski kayan pencere
+MOD      = E("MOD", "ters")        # "mum": mum gövdesi sinyali (yeni mum başında giriş), "pencere": eski kayan pencere
 BEKLE    = int(E("BEKLE_DK", "30"))       # kapanan coine tekrar girmeden bekleme
 COIN_SAYI= int(E("COIN_SAYI", "150"))
 MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak olmalı; değilse kaldıraç düşürülür (0 = kapalı)
@@ -198,7 +200,8 @@ def ac(sym, yon, son, hr=0.0):
     acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0}; kaydet()
     kd = (" | Kademe kilidi: " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]) + " (her basamakta stop bir basamak geriye kilitlenir, satış yok)") if A["kademe"] else ""
     izm = f" | İz süren: +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır" if A["iz"] else ""
-    sebep = (f"büyük mum (%{hr:.0f} aralık) yutan/yıldız formasyonu (15 dk yutan/yıldız ya da 5 dk yıldız), formasyon yönünde giriş" if MOD in ("mum15", "hibrit") else
+    sebep = (f"5 dk mum %{hr:.1f} {'yükseldi' if yon == 'sell' else 'düştü'} → TERSİNE {'SAT (short)' if yon == 'sell' else 'AL (long)'}, mum kapanınca yeni mumun başında giriş" if MOD == "ters" else
+             f"büyük mum (%{hr:.0f} aralık) yutan/yıldız formasyonu (15 dk yutan/yıldız ya da 5 dk yıldız), formasyon yönünde giriş" if MOD in ("mum15", "hibrit") else
              "4s + 1s + 15dk mumların hepsinde " + ("altta fitil, yeşil kapanış" if yon == "buy" else "üstte fitil, kırmızı kapanış") if MOD == "fitil" else
              f"{PENCERE} dk'lık mum {'+' if yon == 'buy' else '-'}%{hr:.1f} gövde, mum kapanınca yeni mumun başında giriş" if MOD == "mum"
              else f"son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)")
@@ -246,14 +249,15 @@ def yonet():
     return len(acik)
 
 bar = {}   # coin -> (mum_no, mum_açılış_fiyatı)
-def mum_sinyal(s, son, simdi):
+def mum_sinyal(s, son, simdi, esik=None):
     """Her PENCERE dakikalık mum kapandığında önceki mumun açılış->kapanış gövdesine bak. Döner: (yon, yüzde) ya da None."""
     bid = int(simdi // (PENCERE * 60)); o = bar.get(s); sonuc = None
     if o is None or o[0] != bid:
         if o is not None and o[0] == bid - 1 and o[1]:
             mv = son / o[1] - 1
-            if mv >= HAREKET / 100: sonuc = ("buy", mv * 100)
-            elif mv <= -HAREKET / 100: sonuc = ("sell", -mv * 100)
+            e_ = (esik if esik is not None else HAREKET) / 100
+            if mv >= e_: sonuc = ("buy", mv * 100)
+            elif mv <= -e_: sonuc = ("sell", -mv * 100)
         bar[s] = (bid, son)
     return sonuc
 
@@ -346,6 +350,10 @@ def tara():
         if s.split("/")[0].lstrip("0123456789") in A["haric"]: continue   # hariç tutulan eski/yavaş coinler
         if A.get("hk", True) and s.split("/")[0].lstrip("0123456789") in HISSE: continue   # hisse/ETF sembolleri kapalı
         if MOD in ("fitil", "mum15", "hibrit"):
+            continue
+        if MOD == "ters":
+            sg = mum_sinyal(s, son, time.time(), TERS_ESIK)
+            if sg and s not in acik and time.time() >= yasak.get(s, 0) and len(acik) < A['max_pos'] and A['calis']: ac(s, "sell" if sg[0] == "buy" else "buy", son, sg[1])
             continue
         if MOD == "mum":
             sg = mum_sinyal(s, son, time.time())
