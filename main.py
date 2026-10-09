@@ -1,51 +1,56 @@
-# Kısa momentum botu: yükselene LONG, düşene SHORT. İzole, her işlem 1 USDT marjin.
-import os, time, json, threading, collections, ccxt, telebot
+# GHOST KISA BOT  —  temiz yeniden yazım
+# Strateji (tek ve basit): 5 dk'lık mum gövdesi >= EŞİK % ise, mum kapanınca yeni mumun başında gir.
+#   TERSİNE : yükselene SAT (short), düşene AL (long)      [varsayılan]
+#   TAKİP   : yükselene AL (long),  düşene SAT (short)
+# Çıkış: kademeli kilit (+0.42 → +0.50 → +0.75 → +1.00$), BORSADA stop (açılışta hemen), satış yok.
+#
+# SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
+# v4.0 09.10 22:50  Sıfırdan temiz yazım: tek strateji çekirdeği (mum gövdesi, TERSİNE/TAKİP panelden), her 5 dk'da tek fiyat okuması,
+#                   açılışta zorunlu borsa stopu, kaldıraç doğrulama + fazlayı küçültme, günlük limit artık kalıcı kilit DEĞİL
+#                   (limit değişince/yeni günde bot otomatik devam eder), yeni panel, saat dilimi Stockholm
+# v4.1 09.10 22:45  Yeni mod "ARALIK": coinin son N saatlik (varsayılan 4s) aralığında dipteyse AL, tepedeyse SAT (yatay gezen coinler; geniş/trend
+#                   aralıklar atlanır). Panelden seçilir, 5 dk gövde modları duruyor.
+VERSIYON = "v4.1 (09.10 22:45)"
+
+import os, time, json, threading, datetime as dt
+import ccxt, telebot
 from telebot import types
 
-# SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
-# v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
-#                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
-# v3.8 09.10 20:25  MOD=ters (varsayılan): TERSİNE strateji. 5 dk mum gövdesi >= %5 yükseldiyse SAT (short), >= %5 düştüyse AL (long); mum kapanınca yeni mumun başında giriş. Gösterge yok. env: TERS_ESIK (5). Önceki modlar: hibrit/mum15/fitil/mum/pencere
-# v3.7 09.10 12:40  (1) Açılışta HEMEN borsaya yedek zarar stopu (bot düşse/gecikse bile korur; Ayarlar>Borsa stop AÇIKsa; botun kendi stopundan %20 geniş, likidasyondan önce). (2) Kaldıraç uyuşmazsa pozisyonu kapatmak yerine fazlasını küçültüp devam et (marjin 1$ kalır). (3) Açılış mesajında gerçek dolum fiyatı
-# v3.6 09.10 02:20  MOD=hibrit (varsayılan): v3.5'teki 15 dk büyük mum formasyonu (aralık >= %6) + her 5 dk kapanışında 5 dk mumda SABAH/AKŞAM YILDIZI (aralık >= %4) ile daha sık işlem. env: MUM15_ARALIK (6), MUM5_ARALIK (4). MOD=mum15 ile sadece 15 dk
-# v3.5 08.10 22:55  Yeni giriş MOD=mum15 (varsayılan): her 15 dk kapanışında, 15 dk mum aralığı (yüksek-düşük) >= %8 olan ve YUTAN (engulfing) ya da SABAH/AKŞAM YILDIZI formasyonu yapan coine formasyon yönünde gir. env: MUM15_ARALIK (varsayılan 8). Önceki: MOD=fitil / mum / pencere
-# v3.4 08.10 22:30  Yeni giriş MOD=fitil (varsayılan): her 15 dk mum kapanışında 4 saatlik + 1 saatlik + 15 dk son kapanmış mumların HEPSİ aynı yönde fitil bırakmış ve fitil yönünde kapanmışsa gir (altta fitil+yeşil=LONG, üstte fitil+kırmızı=SHORT). Eski yöntemler: env MOD=mum / MOD=pencere
-# v3.3 08.10 21:20  Giriş: kayan pencere yerine 5 dk'lık MUM GÖVDESİ (açılış→kapanış) >= %3 ise, mum kapanır kapanmaz yeni mumun başında gir (MOD=mum; eski yöntem için env MOD=pencere)
-# v3.2 08.10 21:05  Hisse/ETF sembolleri otomatik hariç (panelde aç/kapa), giriş penceresi 10dk→5dk (%3), basamak 1 = net ~0.30$ kalacak şekilde (ücret+kayma eklenir), kilit1 = net 0.30$
-# v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
-VERSIYON = "v3.8 (09.10 20:25)"
 E = os.getenv
-MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
-MAX_POS  = int(E("MAX_POS", "5"))
-LEV_TAVAN= int(E("LEV_TAVAN", "125"))     # coinin izin verdiği en yüksek kaldıraç denenir (bu sayıyı geçmez)
-SL_USDT  = float(E("SL_USDT", "0.8"))     # bu kadar zarara ulaşınca kapat
-TRAIL_ON = float(E("TRAIL_ON", "0.3"))    # kâr bu kadar olunca iz sürme başlar
-TRAIL_GERI = float(E("TRAIL_GERI", "0.15"))  # zirveden bu kadar geri verirse kapat
-MUM15_ARALIK = float(E("MUM15_ARALIK", "6"))
-MUM5_ARALIK  = float(E("MUM5_ARALIK", "4"))   # 5 dk mum yıldız formasyonu için en az aralık %   # 15 dk mumun yüksek-düşük aralığı en az bu % olmalı
-TERS_ESIK = float(E("TERS_ESIK", "5"))      # MOD=ters: 5 dk mum gövdesi en az bu % ise tersine gir
-FITIL    = float(E("FITIL", "0.4"))     # fitil, mum boyunun (yüksek-düşük) en az bu kadarı olmalı
-HAREKET  = float(E("HAREKET", "3"))       # son PENCERE dakikada % hareket
-PENCERE  = int(E("PENCERE", "5"))
-MOD      = E("MOD", "ters")        # "mum": mum gövdesi sinyali (yeni mum başında giriş), "pencere": eski kayan pencere
-BEKLE    = int(E("BEKLE_DK", "30"))       # kapanan coine tekrar girmeden bekleme
-COIN_SAYI= int(E("COIN_SAYI", "150"))
-MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu kadar uzak olmalı; değilse kaldıraç düşürülür (0 = kapalı)
-CHAT = int(E("MY_CHAT_ID", "0"))
+MARJIN    = float(E("MARJIN", "1"))          # USDT / işlem
+MAX_POS   = int(E("MAX_POS", "3"))
+LEV_TAVAN = int(E("LEV_TAVAN", "20"))        # coinin izin verdiği en yüksek kaldıraç denenir (bu sayıyı geçmez)
+SL_ORAN   = float(E("SL_ORAN", "0.8"))       # zarar stopu: marjinin bu oranı
+COIN_SAYI = int(E("COIN_SAYI", "150"))       # hacme göre ilk N coin izlenir
+MIN_SL_PCT = float(E("MIN_SL_PCT", "1.5"))   # stop fiyattan en az bu % uzak olmalı; değilse kaldıraç düşürülür
+CHAT      = int(E("MY_CHAT_ID", "0"))
+BAR       = 300                              # mum süresi (sn): 5 dakika
+
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo(E("TZ_ADI", "Europe/Stockholm")); dt.datetime.now(TZ)
+except Exception:
+    TZ = dt.timezone(dt.timedelta(hours=2))
+def gun(t=None): return dt.datetime.fromtimestamp(t or time.time(), TZ).strftime("%Y-%m-%d")
+def saat(t): return dt.datetime.fromtimestamp(t, TZ).strftime("%d.%m %H:%M")
 
 DOSYA = "/data/ayar.json" if os.path.isdir("/data") else "ayar.json"
-A = {"v": 2, "marjin": MARJIN, "oto": False, "oran": 0.07, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_USDT, "tp": float(E("TP", "0.35")), "iz": False, "kademe": False, "bs": False, "hk": True, "lv": [0.42, 0.50, 0.75, 1.00], "gunluk": 1.0, "haric": "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split(), "calis": True}
-HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())   # hisse/ETF perpetual sembolleri
+HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHIB PEPE".split()
+HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
-lev_cap = {}   # coin -> borsanın kabul ettiği en yüksek kaldıraç (kalıcı)
-acik, fiyat, yasak, gecmis = {}, {}, {}, []   # acik[sym]={zirve, mj, sl(USD), son}
+A = {"v": 3, "calis": True, "mod": "ters", "esik": 5.0, "marjin": MARJIN, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_ORAN,
+     "gunluk": 3.0, "bekle": 15, "pen": 48, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
+lev_cap = {}                 # coin -> borsanın kabul ettiği en yüksek kaldıraç
+acik, yasak, gecmis = {}, {}, []
+KIL = threading.RLock()
 try:
-    d = json.load(open(DOSYA))
-    if d.get("A", {}).get("v") == 2: A.update(d["A"])      # eski sürüm ayarlarını (oto-büyüme, düşük kaldıraç) yok say
+    d = json.load(open(DOSYA)); a0 = d.get("A", {})
+    if a0.get("v") == 3: A.update(a0)
+    elif a0.get("haric"): A["haric"] = a0["haric"]          # eski sürümden sadece hariç listesini al
     acik.update(d.get("acik", {})); gecmis.extend(d.get("gecmis", [])); lev_cap.update(d.get("cap", {}))
 except Exception: pass
 def kaydet():
-    try: json.dump({"A": A, "acik": acik, "gecmis": gecmis[-300:], "cap": lev_cap}, open(DOSYA, "w"))
+    try: json.dump({"A": A, "acik": acik, "gecmis": gecmis[-400:], "cap": lev_cap}, open(DOSYA, "w"))
     except Exception: pass
 
 ex = ccxt.bitget({"apiKey": E("BITGET_API"), "secret": E("BITGET_SEC"), "password": E("BITGET_PASS"),
@@ -56,15 +61,14 @@ def bakiye():
     try: return float(ex.fetch_balance()["USDT"]["total"])
     except Exception: return 0.0
 
-def marjin():   # oto: bakiyenin %oran'ı (kâr büyüdükçe büyür, 1$ altına inmez)
-    if not A["oto"]: return A["marjin"]
-    return max(A["marjin"], int(bakiye() * A["oran"] * 10) / 10)
-
 def haber(m):
     print(m, flush=True)
     try: bot.send_message(CHAT, m)
     except Exception: pass
 
+def temiz(s): return s.split("/")[0].lstrip("0123456789")
+
+# ───────────────────────── kayıt / gerçek kâr-zarar ─────────────────────────
 def logla(sym, yon, pnl, neden, z=0.0):
     try: mid = ex.market(sym)["id"]
     except Exception: mid = sym.split(":")[0].replace("/", "")
@@ -82,14 +86,28 @@ def gercek_pnl(mid, t):
         if hata_goster[0]: hata_goster[0] = False; haber(f"⚠️ Gerçek kâr/zarar borsadan okunamadı (tahmin gösteriliyor): {str(e)[:150]}")
     return None
 
-def duzelt():   # kapanışlardan ~20 sn sonra tahmini PnL'yi borsanın gerçek (komisyonlu) rakamıyla değiştir
+def duzelt():   # kapanıştan ~20 sn sonra tahmini PnL'yi borsanın gerçek (komisyonlu) rakamıyla değiştir
     for g in gecmis[-40:]:
         if g.get("g", 1) == 0 and time.time() - g["t"] > 20 and time.time() - g.get("d", 0) > 15:
             g["d"] = time.time(); v = gercek_pnl(g.get("id", ""), g["t"])
             if v is not None: g["pnl"], g["g"] = round(v, 3), 1
-            elif time.time() - g["t"] > 900: g["g"] = 2     # bulunamadı, tahmin kalsın
+            elif time.time() - g["t"] > 900: g["g"] = 2
     kaydet()
 
+def gun_toplam():
+    b = gun()
+    return sum(g["pnl"] for g in gecmis if gun(g["t"]) == b)
+
+def limit_doldu():
+    """Günlük zarar limiti dolu mu? (kalıcı kilit YOK: limit değişince ya da gün dönünce otomatik düzelir)"""
+    return A["gunluk"] > 0 and gun_toplam() <= -A["gunluk"]
+
+def durum():
+    if not A["calis"]: return "⏹ DURDU (elle)"
+    if limit_doldu(): return "⛔ LİMİT DOLDU (yeni giriş yok)"
+    return "▶️ ÇALIŞIYOR"
+
+# ───────────────────────── borsa işlemleri ─────────────────────────
 def borsa_stop_iptal(sym, sid):
     if not sid: return
     for prm in ({"trigger": True}, {"stop": True}, {}):
@@ -97,7 +115,7 @@ def borsa_stop_iptal(sym, sid):
         except Exception: pass
 
 def borsa_stop(sym, p, k, kilit):
-    """Kilit seviyesine BORSADA stop-market (reduce-only) koy. Hata olursa bot-içi stop devam eder. Döner: başarılı mı."""
+    """Borsada stop-market (reduce-only). kilit: kâr kilidi (+) ya da zarar stopu (−), $ olarak. Döner: başarılı mı."""
     try:
         qty = float(p["contracts"]); cs = ex.market(sym).get("contractSize") or 1
         gir = float(p.get("entryPrice")); d = kilit / (qty * cs); uz = p["side"] == "long"
@@ -106,20 +124,20 @@ def borsa_stop(sym, p, k, kilit):
         o = ex.create_order(sym, "market", "sell" if uz else "buy", qty, params={"stopLossPrice": fy, "reduceOnly": True, "marginMode": "isolated"})
         k["sid"] = o.get("id") or (o.get("info") or {}).get("orderId")
         if eski: borsa_stop_iptal(sym, eski)
-        haber(f"🛡 {sym.split(':')[0]} borsada stop kondu: {fy} ({'kilit' if kilit >= 0 else 'yedek zarar stopu'} {kilit:+.2f}$)")
-        return True
+        return fy
     except Exception as e:
-        haber(f"⚠️ {sym.split(':')[0]} borsa stop konamadı, bot takip ediyor: {str(e)[:110]}")
-        return False
+        haber(f"⚠️ {sym.split(':')[0]} borsa stopu konamadı, bot takip ediyor: {str(e)[:110]}")
+        return None
 
 def kapat(sym, p, neden):
     yon = "sell" if p["side"] == "long" else "buy"
     ex.create_order(sym, "market", yon, p["contracts"], params={"reduceOnly": True, "marginMode": "isolated"})
-    yasak[sym] = time.time() + BEKLE * 60
-    kk = acik.pop(sym, {}); borsa_stop_iptal(sym, kk.get("sid")); z = kk.get("zirve", 0.0); logla(sym, p['side'], p['unrealizedPnl'], neden, z)
-    haber(f"{'✅' if p['unrealizedPnl'] > 0 else '❌'} {sym.split(':')[0]} {neden} PnL≈{p['unrealizedPnl']:+.2f}$ (gördüğü zirve {z:+.2f}$)")
+    yasak[sym] = time.time() + A["bekle"] * 60
+    kk = acik.pop(sym, {}); borsa_stop_iptal(sym, kk.get("sid")); z = kk.get("zirve", 0.0)
+    logla(sym, p["side"], p["unrealizedPnl"], neden, z)
+    haber(f"{'✅' if p['unrealizedPnl'] > 0 else '❌'} {sym.split(':')[0]} kapandı: {neden}\nPnL ≈ {p['unrealizedPnl']:+.2f}$ (gördüğü zirve {z:+.2f}$)")
 
-def sl_fiyat(yon, giris, adet, cs, usd):   # stop tutarı (USD) -> fiyat
+def sl_fiyat(yon, giris, adet, cs, usd):
     d = usd / (adet * cs)
     return giris - d if yon in ("buy", "long") else giris + d
 
@@ -137,293 +155,245 @@ def kaldirac_ayarla(sym, lev, yon):
         except Exception: pass
     return ok, gercek, hata
 
-def ac(sym, yon, son, hr=0.0):
-    lev, hata = 0, ""
-    for l in [l for l in LADDER if l <= min(A['lev'], lev_cap.get(sym, 999)) and 70 * (1 / l - 0.0105) >= MIN_SL_PCT]:
+def ac(sym, yon, son, pct):
+    """Pozisyon aç. Döner: True/False."""
+    ad = sym.split(":")[0]
+    with KIL:
+        if sym in acik or len(acik) >= A["max_pos"]: return False
+    mj = A["marjin"]; lev, hata = 0, ""
+    for l in [l for l in LADDER if l <= min(A["lev"], lev_cap.get(sym, 999)) and 70 * (1 / l - 0.0105) >= MIN_SL_PCT]:
         ok, g, h = kaldirac_ayarla(sym, l, yon); hata = h or hata
-        if ok and (g is None or abs(g - l) < 0.5): lev = l; break   # tuttu
-        if ok and g is not None and g < l: lev_cap[sym] = int(g)   # borsa daha düşüğünü uyguladı: öğren
+        if ok and (g is None or abs(g - l) < 0.5): lev = l; break
+        if ok and g is not None and g < l: lev_cap[sym] = int(g)
     if not lev:
         yasak[sym] = time.time() + 6 * 3600
-        if hata: haber(f"⚠️ {sym.split(':')[0]} kaldıraç ayarlanamadı, atlandı: {hata}")
-        return
-    m = ex.market(sym)
-    mj = marjin()
-    adet = ex.amount_to_precision(sym, mj * lev / son / (m.get("contractSize") or 1))
-    if float(adet) * son < 5.2: yasak[sym] = time.time() + 6 * 3600; return   # borsa min 5 USDT
-    cs0 = m.get("contractSize") or 1; prm = {"marginMode": "isolated"}; tp_not = ""
-    tp_oran = 0 if A["kademe"] else A["tp"]
-    if tp_oran > 0:   # kâr al emri BORSADA durur: bot 2 sn geç kalsa da tepede kapanır (kademeli modda SON hedef)
-        d = tp_oran * mj / (float(adet) * cs0)
-        prm["takeProfit"] = {"triggerPrice": ex.price_to_precision(sym, son + d if yon == "buy" else son - d)}
+        if hata: haber(f"⚠️ {ad} kaldıraç ayarlanamadı, atlandı: {hata}")
+        return False
+    m = ex.market(sym); cs = m.get("contractSize") or 1
+    adet = ex.amount_to_precision(sym, mj * lev / son / cs)
+    if float(adet) * son < 5.2: yasak[sym] = time.time() + 6 * 3600; return False
     try:
-        ex.create_order(sym, "market", yon, float(adet), params=prm)
+        ex.create_order(sym, "market", yon, float(adet), params={"marginMode": "isolated"})
     except Exception as e:
-        if "takeProfit" in prm:      # borsa TP'yi kabul etmediyse TP'siz aç, bot takip etsin
-            prm.pop("takeProfit"); tp_not = "\n⚠️ Borsa tarafı TP konamadı, bot takip ediyor"
-            try: ex.create_order(sym, "market", yon, float(adet), params=prm); e = None
-            except Exception as e2: e = e2
-        if e and "40797" in str(e):      # borsa bu coin için bu kaldıracı kabul etmiyor: bir basamak düşür, bir sonraki taramada tekrar dene
+        if "40797" in str(e):      # borsa bu kaldıracı kabul etmiyor: bir basamak düşür, sonraki sinyalde dene
             alt = [l for l in LADDER if l < lev]
-            if alt: lev_cap[sym] = alt[0]; yasak[sym] = time.time() + 20; haber(f"ℹ️ {sym.split(':')[0]} {lev}x kabul edilmedi, {alt[0]}x ile tekrar denenecek"); return
-        if e:
-            yasak[sym] = time.time() + 3600; haber(f"⚠️ {sym.split(':')[0]} açılamadı: {str(e)[:120]}"); return
-    try:
-        p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
-        gl = float(p.get("leverage") or lev)
-        if abs(gl - lev) > 0.5 or float(p.get("initialMargin") or 0) > mj * 1.5:
-            kalan = float(ex.amount_to_precision(sym, float(p["contracts"]) * gl / lev)) if 0 < gl < lev else 0.0
-            fazla = float(ex.amount_to_precision(sym, float(p["contracts"]) - kalan)) if kalan else 0.0
-            if kalan and fazla > 0 and kalan * son >= 5.2:      # fazlayı küçült: marjin 1$ kalsın, işleme devam
-                try:
-                    ex.create_order(sym, "market", "sell" if p["side"] == "long" else "buy", fazla, params={"reduceOnly": True, "marginMode": "isolated"})
-                    lev_cap[sym] = int(gl); haber(f"ℹ️ {sym.split(':')[0]}: istenen {lev}x ama borsada {gl:g}x oldu, pozisyonun fazlası küçültüldü, {gl:g}x ile devam")
-                    lev = int(gl); adet = ex.amount_to_precision(sym, kalan)
-                    p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
-                except Exception as e_:
-                    p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
-                    kapat(sym, p, "KALDIRAÇ UYUŞMADI"); yasak[sym] = time.time() + 6 * 3600
-                    haber(f"🚨 {sym.split(':')[0]}: kaldıraç düzeltilemedi ({str(e_)[:80]}), pozisyonu kapattım"); return
+            if alt: lev_cap[sym] = alt[0]; yasak[sym] = time.time() + 20; haber(f"ℹ️ {ad} {lev}x kabul edilmedi, sonraki sinyalde {alt[0]}x denenecek"); return False
+        yasak[sym] = time.time() + 3600; haber(f"⚠️ {ad} açılamadı: {str(e)[:120]}"); return False
+    p = None
+    for _ in range(4):                   # pozisyonu borsadan doğrula
+        try: p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts")); break
+        except Exception: time.sleep(0.7)
+    if not p:
+        haber(f"🚨 {ad}: emir gitti ama pozisyon görünmedi. Bitget'ten kontrol et!"); yasak[sym] = time.time() + 3600; return False
+    gl = float(p.get("leverage") or lev)
+    if abs(gl - lev) > 0.5 or float(p.get("initialMargin") or 0) > mj * 1.5:     # kaldıraç uyuşmadı
+        kalan = float(ex.amount_to_precision(sym, float(p["contracts"]) * gl / lev)) if 0 < gl < lev else 0.0
+        fazla = float(ex.amount_to_precision(sym, float(p["contracts"]) - kalan)) if kalan else 0.0
+        try:
+            if kalan and fazla > 0 and kalan * son >= 5.2:     # fazlayı küçült: marjin kalsın, işleme devam
+                ex.create_order(sym, "market", "sell" if p["side"] == "long" else "buy", fazla, params={"reduceOnly": True, "marginMode": "isolated"})
+                lev_cap[sym] = int(gl); lev = int(gl); adet = ex.amount_to_precision(sym, kalan)
+                p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
+                haber(f"ℹ️ {ad}: {gl:g}x uygulandı, pozisyon küçültüldü, devam")
             else:
-                kapat(sym, p, "KALDIRAÇ UYUŞMADI"); yasak[sym] = time.time() + 6 * 3600
-                haber(f"🚨 {sym.split(':')[0]}: istenen {lev}x ama borsada {p.get('leverage')}x oldu, pozisyonu kapattım"); return
-    except StopIteration: pass
-    except Exception: pass
-    cs = m.get("contractSize") or 1; sl = round(A["sl"] * mj, 2); not_ = ""
-    try: gir_g = float(p.get("entryPrice") or son)
-    except Exception: gir_g = son
+                raise RuntimeError("küçültülemedi")
+        except Exception:
+            try: p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts")); kapat(sym, p, "KALDIRAÇ UYUŞMADI")
+            except Exception: pass
+            yasak[sym] = time.time() + 6 * 3600; haber(f"🚨 {ad}: kaldıraç uyuşmadı, pozisyon kapatıldı"); return False
+    gir = float(p.get("entryPrice") or son); adet_f = float(p["contracts"])
+    sl = round(A["sl"] * mj, 2); not_ = ""
     try:   # stop likidasyondan ÖNCE gelsin: likidasyon uzaklığının %70'ine daralt
-        liq, gir = float(p.get("liquidationPrice") or 0), float(p.get("entryPrice") or son)
-        if liq and sl / (float(adet) * cs) > 0.7 * abs(gir - liq):
-            sl = round(0.7 * abs(gir - liq) * float(adet) * cs, 3); not_ = " (likidasyona yakın olduğu için daraltıldı)"
+        liq = float(p.get("liquidationPrice") or 0)
+        if liq and sl / (adet_f * cs) > 0.7 * abs(gir - liq):
+            sl = round(0.7 * abs(gir - liq) * adet_f * cs, 3); not_ = " (likidasyona yakın, daraltıldı)"
     except Exception: pass
-    acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0}; kaydet()
-    kd = (" | Kademe kilidi: " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]) + " (her basamakta stop bir basamak geriye kilitlenir, satış yok)") if A["kademe"] else ""
-    izm = f" | İz süren: +{TRAIL_ON*mj:.2f}$ olunca başlar, zirveden {TRAIL_GERI*mj:.2f}$ geri verirse kapatır" if A["iz"] else ""
-    sebep = (f"5 dk mum %{hr:.1f} {'yükseldi' if yon == 'sell' else 'düştü'} → TERSİNE {'SAT (short)' if yon == 'sell' else 'AL (long)'}, mum kapanınca yeni mumun başında giriş" if MOD == "ters" else
-             f"büyük mum (%{hr:.0f} aralık) yutan/yıldız formasyonu (15 dk yutan/yıldız ya da 5 dk yıldız), formasyon yönünde giriş" if MOD in ("mum15", "hibrit") else
-             "4s + 1s + 15dk mumların hepsinde " + ("altta fitil, yeşil kapanış" if yon == "buy" else "üstte fitil, kırmızı kapanış") if MOD == "fitil" else
-             f"{PENCERE} dk'lık mum {'+' if yon == 'buy' else '-'}%{hr:.1f} gövde, mum kapanınca yeni mumun başında giriş" if MOD == "mum"
-             else f"son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)")
-    haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
+    with KIL:
+        acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0, "t": int(time.time()), "y": p["side"]}; kaydet()
+        fy = borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))     # ZORUNLU yedek stop: bot düşse bile korur
+    ters = A["mod"] == "ters"
+    sebep = f"5 dk mum %{pct:.1f} {'yükseldi' if (yon == 'sell') == ters else 'düştü'} → {'TERSİNE' if ters else 'TAKİP'}"
+    if A["mod"] == "aralik": sebep = f"{A['pen']*5//60} saatlik aralık (%{pct:.1f} geniş) {'dibinde' if yon == 'buy' else 'tepesinde'} → ARALIK"
+    haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {ad} · {lev}x izole · {mj}$\n"
           f"Sebep: {sebep}\n"
-          f"Giriş {gir_g:g} | Stop ≈ {sl_fiyat(yon, gir_g, float(adet), cs, sl):g} (−{sl}${not_})\n"
-          f"Kâr al: {('+'+format(tp_oran*mj,'.2f')+'$ (borsada)') if tp_oran else 'kademeli kilit'}{izm}{kd}{tp_not}")
-    if A.get("bs"):      # yedek zarar stopu BORSADA: botun kendi stopundan %20 geniş (bot normalde önce kapatır), likidasyondan önce
-        try: borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))
-        except Exception as e: print("hata yedek stop", e, flush=True)
+          f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl}${not_})\n"
+          f"{'🛡 Borsa yedek stopu: ' + str(fy) if fy else '⚠️ Borsa stopu YOK, bot takip ediyor'}\n"
+          f"Kâr: kademeli kilit " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]))
+    return True
 
 def yonet():
-    pos = [p for p in ex.fetch_positions() if p.get("contracts")]
-    var = {p["symbol"] for p in pos}
-    for s in [s for s in acik if s not in var]:      # dışarıda (elle/likidasyon) kapanan
-        borsa_stop_iptal(s, acik[s].get("sid")); logla(s, "?", acik[s].get("son", 0.0), "BORSADA KAPANDI (TP/stop/elle)", acik[s].get("zirve", 0.0)); haber(f"ℹ️ {s.split(':')[0]} borsada kapandı, son görülen PnL≈{acik[s].get('son', 0.0):+.2f}$"); acik.pop(s); yasak[s] = time.time() + BEKLE * 60   # borsada kapananı da bekleme listesine al
-    for p in pos:
-        sym = p["symbol"]; pnl = p["unrealizedPnl"] or 0.0
-        if sym not in acik:                          # bot kapanıp açılınca / elle açılan: devral
-            mj = float(p.get("initialMargin") or MARJIN)
-            acik[sym] = {"zirve": max(pnl, 0.0), "mj": mj, "sl": round(A["sl"] * mj, 2), "son": pnl}
-        k = acik[sym]; k["son"] = pnl; k["zirve"] = max(k["zirve"], pnl)
-        if A["kademe"]:                                  # satış yok: kademe aşılınca kilit yükselir, son hedefte hepsi satılır
+    """Açık pozisyonları yönet: kademeli kilit, stop. 2 sn'de bir çalışır."""
+    with KIL:
+        pos = [p for p in ex.fetch_positions() if p.get("contracts")]
+        var = {p["symbol"] for p in pos}
+        for s in [s for s in acik if s not in var]:      # dışarıda (borsa stopu/elle/likidasyon) kapanan
+            borsa_stop_iptal(s, acik[s].get("sid")); logla(s, acik[s].get("y", "?"), acik[s].get("son", 0.0), "BORSADA KAPANDI", acik[s].get("zirve", 0.0))
+            haber(f"ℹ️ {s.split(':')[0]} borsada kapandı (stop/elle), son görülen PnL ≈ {acik[s].get('son', 0.0):+.2f}$"); acik.pop(s); yasak[s] = time.time() + A["bekle"] * 60
+        for p in pos:
+            sym = p["symbol"]; pnl = p["unrealizedPnl"] or 0.0
+            if sym not in acik:                              # elle açılan: devral
+                mj = float(p.get("initialMargin") or A["marjin"])
+                acik[sym] = {"zirve": max(pnl, 0.0), "mj": mj, "sl": round(A["sl"] * mj, 2), "son": pnl, "t": int(time.time()), "y": p["side"]}
+            k = acik[sym]; k["son"] = pnl; k["zirve"] = max(k["zirve"], pnl)
             lv = k.get("lv") or A["lv"]; k["lv"] = lv; a_ = k.get("asama", 0); mj_ = k["mj"]
             try: lev_ = float(p.get("leverage") or 20)
             except Exception: lev_ = 20.0
-            kl1 = 0.30 * mj_ + 0.0012 * mj_ * lev_ + 0.03 * mj_        # net 0.30$ kalsın: + borsa ücreti (giriş+çıkış) + kayma payı
-            e0 = max(lv[0] * mj_, kl1 + 0.05 * mj_)                     # 1. basamak, kilidin en az 0.05$ üstünde olmalı
+            kl1 = 0.30 * mj_ + 0.0012 * mj_ * lev_ + 0.03 * mj_        # net ≈0.30$ kalsın: ücret + kayma payı
+            e0 = max(lv[0] * mj_, kl1 + 0.05 * mj_)
             while a_ < len(lv) and pnl >= (e0 if a_ == 0 else lv[a_] * mj_): a_ += 1
             if a_ != k.get("asama", 0):
                 k["asama"] = a_; k["kilit"] = kl1 if a_ == 1 else (e0 if a_ == 2 else lv[a_ - 2] * mj_) * 0.95
-                haber(f"🔒 {sym.split(':')[0]} kademe {a_}/{len(lv)} aşıldı → stop yukarı çekildi: +{k['kilit']:.2f}$ (pnl {pnl:+.2f}$)")
-            if a_ >= 2 and k.get("kilit") is not None:   # 2. basamaktan sonra kilit zirvenin en az %65'i: kârın çoğunu geri verme
-                k["kilit"] = max(k["kilit"], 0.65 * k["zirve"])
-            if a_ >= len(lv) and len(lv) > 1:   # son basamak aşıldı: satış yok, zirveyi bir basamak geriden izle
-                k["kilit"] = max(k.get("kilit") or 0, k["zirve"] - (lv[-1] - lv[-2]) * k["mj"])
-            if A.get("bs") and k.get("kilit") is not None and k["kilit"] >= k.get("bsk", -9) + 0.05 * k["mj"]:
-                borsa_stop(sym, p, k, k["kilit"]); k["bsk"] = k["kilit"]      # başarısız olsa da aynı seviyeyi tekrar deneme (mesaj yağmuru olmasın)
+                haber(f"🔒 {sym.split(':')[0]} kademe {a_}/{len(lv)} → stop yukarı çekildi: +{k['kilit']:.2f}$ (pnl {pnl:+.2f}$)")
+            if a_ >= 2 and k.get("kilit") is not None: k["kilit"] = max(k["kilit"], 0.65 * k["zirve"])
+            if a_ >= len(lv) and len(lv) > 1: k["kilit"] = max(k.get("kilit") or 0, k["zirve"] - (lv[-1] - lv[-2]) * k["mj"])
+            if k.get("kilit") is not None and k["kilit"] >= k.get("bsk", -9) + 0.05 * k["mj"]:
+                borsa_stop(sym, p, k, k["kilit"]); k["bsk"] = k["kilit"]     # başarısız olsa da aynı seviyeyi tekrar deneme
             if k.get("kilit") is not None and pnl <= k["kilit"]: kapat(sym, p, "KADEME KİLİDİ")
             elif pnl <= -k["sl"] and k.get("kilit") is None: kapat(sym, p, "STOP")
-        elif A["tp"] > 0 and pnl >= A["tp"] * k["mj"]: kapat(sym, p, "KÂR AL")
-        elif pnl <= -k["sl"]: kapat(sym, p, "STOP")
-        elif A["iz"] and k["zirve"] >= TRAIL_ON * k["mj"] and pnl <= k["zirve"] - TRAIL_GERI * k["mj"]: kapat(sym, p, "İZ SÜREN")
-    kaydet()
-    return len(acik)
+        kaydet()
 
-bar = {}   # coin -> (mum_no, mum_açılış_fiyatı)
-def mum_sinyal(s, son, simdi, esik=None):
-    """Her PENCERE dakikalık mum kapandığında önceki mumun açılış->kapanış gövdesine bak. Döner: (yon, yüzde) ya da None."""
-    bid = int(simdi // (PENCERE * 60)); o = bar.get(s); sonuc = None
-    if o is None or o[0] != bid:
-        if o is not None and o[0] == bid - 1 and o[1]:
-            mv = son / o[1] - 1
-            e_ = (esik if esik is not None else HAREKET) / 100
-            if mv >= e_: sonuc = ("buy", mv * 100)
-            elif mv <= -e_: sonuc = ("sell", -mv * 100)
-        bar[s] = (bid, son)
-    return sonuc
-
-fitil_bid = [0]
-def mum_ok(c, d, minr):
-    """c = [ts, açılış, yüksek, düşük, kapanış, hacim]. d=1: altta fitil + yeşil, d=-1: üstte fitil + kırmızı."""
-    o, h, l, cl = c[1], c[2], c[3], c[4]; r = h - l
-    if not o or r <= 0 or r / o < minr: return False
-    if d == 1: return cl > o and (min(o, cl) - l) / r >= FITIL
-    return cl < o and (h - max(o, cl)) / r >= FITIL
-
-def fitil_yon(s):
-    """15 dk -> 1 saat -> 4 saat son KAPANMIŞ mumların hepsi aynı yönde fitil bırakmış mı. Döner: 'buy'/'sell'/None."""
-    k15 = ex.fetch_ohlcv(s, "15m", limit=3)
-    if len(k15) < 3: return None
-    d = 1 if mum_ok(k15[-2], 1, 0.005) else (-1 if mum_ok(k15[-2], -1, 0.005) else 0)
-    if not d: return None
-    for tf, minr in (("1h", 0.01), ("4h", 0.02)):
-        k = ex.fetch_ohlcv(s, tf, limit=3)
-        if len(k) < 3 or not mum_ok(k[-2], d, minr): return None
-    return "buy" if d == 1 else "sell"
-
-def mum15_yon(s):
-    """Son 3 KAPANMIŞ 15 dk mum: c0 (en yeni), c1, c2. c0 aralığı >= MUM15_ARALIK % ve yutan ya da sabah/akşam yıldızı ise (yon, aralık%) döner."""
-    k = ex.fetch_ohlcv(s, "15m", limit=4)
-    if len(k) < 4: return None
-    c2, c1, c0 = k[-4], k[-3], k[-2]
-    o0, h0, l0, x0 = c0[1], c0[2], c0[3], c0[4]
-    if not o0 or (h0 - l0) / o0 * 100 < MUM15_ARALIK: return None
-    for d in (1, -1):
-        a0, b0, a1, b1, a2, b2 = (c0[1], c0[4], c1[1], c1[4], c2[1], c2[4]) if d == 1 else (-c0[1], -c0[4], -c1[1], -c1[4], -c2[1], -c2[4])
-        yutan = b0 > a0 and b1 < a1 and a0 <= b1 and b0 >= a1 and abs(b0 - a0) > abs(b1 - a1)
-        yildiz = b2 < a2 and abs(b1 - a1) < 0.3 * (c1[2] - c1[3] + 1e-12) and b0 > a0 and b0 > (a2 + b2) / 2
-        if yutan or yildiz: return ("buy" if d == 1 else "sell", (h0 - l0) / o0 * 100)
-    return None
-
-def mum5_yon(s):
-    """Son 3 KAPANMIŞ 5 dk mum: c0 aralığı >= MUM5_ARALIK % ve sabah/akşam yıldızı ise (yon, aralık%) döner."""
-    k = ex.fetch_ohlcv(s, "5m", limit=4)
-    if len(k) < 4: return None
-    c2, c1, c0 = k[-4], k[-3], k[-2]
-    o0, h0, l0 = c0[1], c0[2], c0[3]
-    if not o0 or (h0 - l0) / o0 * 100 < MUM5_ARALIK: return None
-    for d in (1, -1):
-        a0, b0, a1, b1, a2, b2 = (c0[1], c0[4], c1[1], c1[4], c2[1], c2[4]) if d == 1 else (-c0[1], -c0[4], -c1[1], -c1[4], -c2[1], -c2[4])
-        if b2 < a2 and abs(b1 - a1) < 0.3 * (c1[2] - c1[3] + 1e-12) and b0 > a0 and b0 > (a2 + b2) / 2: return ("buy" if d == 1 else "sell", (h0 - l0) / o0 * 100)
-    return None
-
-def tara():
-    if A["calis"] and A["gunluk"] > 0 and gun_toplam() <= -A["gunluk"]:   # günlük zarar limiti: otomatik girişi durdur
-        A["calis"] = False; kaydet()
-        haber(f"🛑 Günlük zarar limiti doldu (≈{gun_toplam():+.2f}$ ≤ −{A['gunluk']}$). Otomatik giriş durdu, açık işlemler yönetilmeye devam ediyor. Yeniden başlatmak için /panel.")
-    n = int(PENCERE * 60 / 10)
+# ───────────────────────── strateji: 5 dk mum gövdesi ─────────────────────────
+acilis = {}            # mum_no -> {sembol: fiyat, "_dogru": bool}
+tarama_bid = [0]
+hist = {}              # sembol -> son 5 dk kapanışları (aralık modu)
+son_tarama = [0.0]
+def fiyatlar():
     tk = ex.fetch_tickers()
     top = sorted((t for s, t in tk.items() if s.endswith(":USDT") and t.get("last")), key=lambda t: -(t.get("quoteVolume") or 0))[:COIN_SAYI]
-    if MOD == "hibrit":
-        simdi = time.time(); bid = int(simdi // 300)
-        if fitil_bid[0] != bid and simdi - bid * 300 < 100 and A["calis"]:   # her 5 dk kapanışında tara; 15 dk kapanışında 15 dk formasyonuna da bak
-            fitil_bid[0] = bid; adet = 0; k15 = (bid % 3 == 0)
-            for t in top:
-                s, son = t["symbol"], t["last"]; b = s.split("/")[0].lstrip("0123456789")
-                if b in A["haric"] or (A.get("hk", True) and b in HISSE) or s in acik or time.time() < yasak.get(s, 0): continue
-                if len(acik) >= A["max_pos"] or time.time() - simdi > 90: break
-                try:
-                    sg = (mum15_yon(s) if k15 else None) or mum5_yon(s)
-                    if sg: ac(s, sg[0], son, sg[1]); adet += 1
-                except Exception as e: print("hata hibrit", s, e, flush=True)
-            print(f"hibrit taraması bitti ({'5+15' if k15 else '5'} dk): {adet} giriş, {time.time()-simdi:.0f} sn", flush=True)
-        return
-    if MOD in ("fitil", "mum15"):
-        simdi = time.time(); bid = int(simdi // 900)
-        if fitil_bid[0] != bid and simdi - bid * 900 < 150 and A["calis"]:   # her 15 dk mum kapanışında bir kez tara (ilk 150 sn içinde)
-            fitil_bid[0] = bid; adet = 0
-            for t in top:
-                s, son = t["symbol"], t["last"]; b = s.split("/")[0].lstrip("0123456789")
-                if b in A["haric"] or (A.get("hk", True) and b in HISSE) or s in acik or time.time() < yasak.get(s, 0): continue
-                if len(acik) >= A["max_pos"]: break
-                try:
-                    if MOD == "mum15":
-                        sg = mum15_yon(s)
-                        if sg: ac(s, sg[0], son, sg[1]); adet += 1
-                    else:
-                        yon = fitil_yon(s)
-                        if yon: ac(s, yon, son, 0.0); adet += 1
-                except Exception as e: print("hata fitil", s, e, flush=True)
-            print(f"{MOD} taraması bitti: {adet} giriş, {time.time()-simdi:.0f} sn", flush=True)
-        return
-    for t in top:
-        s, son = t["symbol"], t["last"]
-        if s.split("/")[0].lstrip("0123456789") in A["haric"]: continue   # hariç tutulan eski/yavaş coinler
-        if A.get("hk", True) and s.split("/")[0].lstrip("0123456789") in HISSE: continue   # hisse/ETF sembolleri kapalı
-        if MOD in ("fitil", "mum15", "hibrit"):
-            continue
-        if MOD == "ters":
-            sg = mum_sinyal(s, son, time.time(), TERS_ESIK)
-            if sg and s not in acik and time.time() >= yasak.get(s, 0) and len(acik) < A['max_pos'] and A['calis']: ac(s, "sell" if sg[0] == "buy" else "buy", son, sg[1])
-            continue
-        if MOD == "mum":
-            sg = mum_sinyal(s, son, time.time())
-            if sg and s not in acik and time.time() >= yasak.get(s, 0) and len(acik) < A['max_pos'] and A['calis']: ac(s, sg[0], son, sg[1])
-            continue
-        h = fiyat.setdefault(s, collections.deque(maxlen=n)); h.append(son)
-        if len(h) < n or s in acik or time.time() < yasak.get(s, 0) or len(acik) >= A['max_pos'] or not A['calis']: continue
-        lo, hi = min(h), max(h)
-        if son >= lo * (1 + HAREKET / 100) and son >= hi * 0.997: ac(s, "buy", son, (son / lo - 1) * 100)
-        elif son <= hi * (1 - HAREKET / 100) and son <= lo * 1.003: ac(s, "sell", son, (1 - son / hi) * 100)
+    return {t["symbol"]: float(t["last"]) for t in top}
 
-POZ = {}   # düğme numarası -> sembol
+def uygun(s):
+    b = temiz(s)
+    if b in A["haric"] or (A["hk"] and b in HISSE): return False
+    return s not in acik and time.time() >= yasak.get(s, 0)
+
+def gecmis_yukle(px, butce=40):
+    """Aralık modu için eksik 5 dk geçmişini borsadan al (bir kerelik; her bar'da en fazla `butce` sn)."""
+    if A["mod"] != "aralik": return
+    t0 = time.time()
+    for sm in px:
+        if sm == "_dogru" or len(hist.get(sm, [])) >= A["pen"] or time.time() - t0 > butce: continue
+        try:
+            m = ex.fetch_ohlcv(sm, "5m", limit=A["pen"] + 1)[:-1]       # son (açık) mum hariç
+            hist[sm] = [float(x[4]) for x in m] + hist.get(sm, [])[-1:]
+        except Exception: hist.setdefault(sm, [])
+
+def aralik_girisleri(px):
+    aday = []
+    for sm, c in px.items():
+        h = hist.get(sm, [])
+        if sm == "_dogru" or len(h) < A["pen"] * 0.75 or not uygun(sm): continue
+        w = h[-A["pen"]:] + [c]; hi, lo = max(w), min(w)
+        gen = (hi / lo - 1) * 100
+        if gen < 2.0 or gen > A["gen"]: continue                 # çok dar: kâr alanı yok · çok geniş: trend var
+        pos = (c - lo) / (hi - lo)
+        if pos <= A["uc"] / 100: aday.append((gen, sm, "buy", c, pos))
+        elif pos >= 1 - A["uc"] / 100: aday.append((gen, sm, "sell", c, pos))
+    for gen, sm, yon, c, pos in sorted(aday, reverse=True):
+        with KIL:
+            if len(acik) >= A["max_pos"]: break
+        try: ac(sm, yon, c, gen)
+        except Exception as e: haber(f"⚠️ {sm.split(':')[0]} giriş hatası: {str(e)[:120]}")
+
+def tarama_adimi():
+    """Her 5 dk'lık mum başında BİR kez çalışır: tüm fiyatları oku, biten mumun gövdesine bak, sinyal varsa gir."""
+    simdi = time.time(); bid = int(simdi // BAR); gec = simdi - bid * BAR
+    if tarama_bid[0] == bid: return
+    tarama_bid[0] = bid
+    px = fiyatlar(); son_tarama[0] = time.time()
+    px["_dogru"] = gec < 20          # bu fiyatlar mumun gerçek açılışına yakın mı (restart ortası değil)
+    onceki = acilis.get(bid - 1); acilis[bid] = px
+    for b in [b for b in acilis if b < bid - 3]: acilis.pop(b)
+    for sm, c in px.items():
+        if sm != "_dogru": hist.setdefault(sm, []).append(c); del hist[sm][:-300]
+    if A["mod"] == "aralik":
+        try:
+            if px["_dogru"] and gec < 45 and A["calis"] and not limit_doldu(): aralik_girisleri(px)
+        finally: gecmis_yukle(px)
+        return
+    if not onceki or not onceki.get("_dogru") or gec > 45: return       # bir önceki mum güvenilir değilse ya da fiyat bayatsa girme
+    if not A["calis"] or limit_doldu(): return
+    sinyal = []
+    for s, c in px.items():
+        o = onceki.get(s)
+        if s == "_dogru" or not o or not uygun(s): continue
+        mv = (c / o - 1) * 100
+        if abs(mv) >= A["esik"]: sinyal.append((abs(mv), s, mv, c))
+    for _, s, mv, c in sorted(sinyal, reverse=True):
+        with KIL:
+            if len(acik) >= A["max_pos"]: break
+        yukari = mv > 0
+        yon = ("sell" if yukari else "buy") if A["mod"] == "ters" else ("buy" if yukari else "sell")
+        try: ac(s, yon, c, abs(mv))
+        except Exception as e: haber(f"⚠️ {s.split(':')[0]} giriş hatası: {str(e)[:120]}")
+
+# ───────────────────────── panel ─────────────────────────
 B = types.InlineKeyboardButton
-def sec(liste, mevcut, onek, fmt):   # seçenek satırı, seçili olan ✅
+POZ = {}
+def sec(liste, mevcut, onek, fmt):
     return [B(("✅ " if mevcut == v else "") + fmt(v), callback_data=f"{onek}:{v}") for v in liste]
 
 def pozlar():
     ps = [p for p in ex.fetch_positions() if p.get("contracts")]
     POZ.clear(); POZ.update({n: p["symbol"] for n, p in enumerate(ps)}); return ps
 
-def gun_toplam():
-    bug = time.strftime("%Y-%m-%d", time.localtime())
-    return sum(g["pnl"] for g in gecmis if time.strftime("%Y-%m-%d", time.localtime(g["t"])) == bug)
+def strateji_yazi():
+    if A["mod"] == "aralik": return f"ARALIK: son {A['pen']*5//60} saatlik aralığın alt %{A['uc']}'unda AL, üst %{A['uc']}'unda SAT (aralık %2–%{A['gen']:g})"
+    return f"{'TERSİNE (yükselene sat, düşene al)' if A['mod'] == 'ters' else 'TAKİP (yükselene al, düşene sat)'} · 5 dk mum ≥ %{A['esik']:g}"
 
 def ekran(e):
-    """Döner: (metin, klavye). Ekranlar: ana, poz, gec, ayar, ozet, hep"""
-    k = types.InlineKeyboardMarkup(); geri = B("⬅️ Menüye Dön", callback_data="ana")
+    k = types.InlineKeyboardMarkup(); geri = B("⬅️ Menü", callback_data="ana")
     if e == "poz":
         ps = pozlar(); sat = []
         for n, p in enumerate(ps):
-            a = acik.get(p["symbol"], {}); g = p.get("entryPrice") or 0
-            sat.append(f"{n+1}) {'🟢' if p['side']=='long' else '🔴'} {p['symbol'].split(':')[0]} {p['leverage'] or '?'}x  {p['unrealizedPnl']:+.2f}$\n"
-                       f"   giriş {g:g} | stop {sl_fiyat(p['side'], g, p['contracts'], p.get('contractSize') or 1, a.get('sl', 0)):g} (−{a.get('sl', 0)}$)")
-            k.row(B(f"❌ {n+1}", callback_data=f"k{n}"), B("lev−", callback_data=f"a{n}"), B("lev+", callback_data=f"b{n}"),
-                  B("SL−", callback_data=f"c{n}"), B("SL+", callback_data=f"d{n}"))
+            a = acik.get(p["symbol"], {}); g = p.get("entryPrice") or 0; adet = float(p["contracts"]); cs = p.get("contractSize") or 1
+            sl = a.get("kilit") if a.get("kilit") is not None else -a.get("sl", 0)
+            sat.append(f"{n+1}) {'🟢 LONG' if p['side'] == 'long' else '🔴 SHORT'} {p['symbol'].split(':')[0]} {p['leverage'] or '?'}x\n"
+                       f"   PnL {p['unrealizedPnl']:+.2f}$ (zirve {a.get('zirve', 0):+.2f}$)\n"
+                       f"   giriş {g:g} | stop {sl_fiyat(p['side'], g, adet, cs, -sl):g} ({'kilit +' if sl > 0 else ''}{sl:.2f}$)")
+            k.row(B(f"❌ {n+1}. kapat", callback_data=f"k{n}"))
         k.row(geri, B("🔄 Yenile", callback_data="poz"))
-        return "📋 Pozisyonlar\n\n" + ("\n".join(sat) or "pozisyon yok"), k
+        return "📋 AÇIK POZİSYONLAR\n\n" + ("\n\n".join(sat) or "Açık pozisyon yok."), k
     if e == "gec":
-        k.row(geri); son = gecmis[-15:][::-1]
-        return ("📜 Son işlemler (✓ = borsadan gerçek net, komisyon dahil; ≈ = tahmin)\n" + ("\n".join(f"{time.strftime('%d.%m %H:%M', time.localtime(g['t']))} {g['s']} {g['y']} {g['pnl']:+.2f}$ {'✓' if g.get('g') == 1 else '≈'} (zirve {g.get('z', 0):+.2f}) {g['n']}" for g in son) or "henüz yok")), k
+        k.row(geri, B("🔄 Yenile", callback_data="gec")); son = gecmis[-15:][::-1]
+        satirlar = [f"{'✅' if g['pnl'] > 0 else '❌'} {saat(g['t'])} {g['s']} {g['y']} {g['pnl']:+.2f}$ {'✓' if g.get('g') == 1 else '≈'} {g['n']}" for g in son]
+        return "📜 SON İŞLEMLER (✓ borsadan net, ≈ tahmin)\n\n" + ("\n".join(satirlar) or "Henüz işlem yok."), k
     if e == "ozet":
-        k.row(geri); n = len(gecmis); w = sum(1 for g in gecmis if g["pnl"] > 0)
-        return (f"📊 Özet\nBakiye {bakiye():.2f}$\nBugün ≈{gun_toplam():+.2f}$\nToplam ≈{sum(g['pnl'] for g in gecmis):+.2f}$ ({n} işlem, %{(w/n*100 if n else 0):.0f} kazanç)"), k
+        k.row(geri); n = len(gecmis); w = [g["pnl"] for g in gecmis if g["pnl"] > 0]; l = [g["pnl"] for g in gecmis if g["pnl"] <= 0]
+        top = sum(g["pnl"] for g in gecmis)
+        return (f"📊 ÖZET\n\nBakiye: {bakiye():.2f}$\nBugün: {gun_toplam():+.2f}$\nToplam: {top:+.2f}$ ({n} işlem)\n"
+                f"Kazanma: %{(len(w)/n*100 if n else 0):.0f} ({len(w)} kazanç / {len(l)} kayıp)\n"
+                f"Ort. kazanç: {(sum(w)/len(w) if w else 0):+.2f}$ | Ort. kayıp: {(sum(l)/len(l) if l else 0):+.2f}$"), k
     if e == "ayar":
-        k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"${v}"))
-        k.row(*sec((50, 60, 70, 80), int(A["sl"] * 100), "sl", lambda v: f"SL %{v}"))
-        k.row(*sec((0, 0.3, 0.35, 0.5, 1.0), A["tp"], "tp", lambda v: "TP yok" if not v else f"TP %{int(v*100)}"))
-        k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
-        k.row(*sec((0.5, 1.0, 2.0, 0), A["gunluk"], "gl", lambda v: f"Günlük −{v}$" if v else "Limit yok"))
-        k.row(B("Kademeli kilit " + ("✅ AÇIK (kapat)" if A["kademe"] else "❌ KAPALI (aç)"), callback_data="kd"))
-        k.row(B("Hisse senetleri " + ("❌ KAPALI (aç)" if A.get("hk", True) else "✅ AÇIK (kapat)"), callback_data="hk"))
-        k.row(B("Borsa stop " + ("✅ AÇIK (kapat)" if A.get("bs") else "❌ KAPALI (aç) [deneme]"), callback_data="bs"))
+        k.row(B("— Strateji —", callback_data="ayar"))
+        k.row(B(("✅ " if A["mod"] == "ters" else "") + "Tersine", callback_data="mod:ters"), B(("✅ " if A["mod"] == "takip" else "") + "Takip", callback_data="mod:takip"), B(("✅ " if A["mod"] == "aralik" else "") + "Aralık", callback_data="mod:aralik"))
+        k.row(*sec((24, 48, 96), A["pen"], "pn", lambda v: f"Pencere {v*5//60}s"), *sec((5, 10, 15), A["uc"], "uc", lambda v: f"Uç %{v}"))
+        k.row(*sec((3, 4, 5, 8), A["esik"], "es", lambda v: f"≥%{v}"))
+        k.row(B("— Risk —", callback_data="ayar"))
+        k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"{v}$"))
+        k.row(*sec((10, 20, 50), A["lev"], "lev", lambda v: f"{v}x"))
+        k.row(*sec((1, 2, 3, 5), A["max_pos"], "lim", lambda v: f"{v} işlem"))
+        k.row(*sec((2, 3, 5, 10), A["gunluk"], "gl", lambda v: f"Limit −{v}$") + [B(("✅ " if not A["gunluk"] else "") + "Yok", callback_data="gl:0")])
+        k.row(*sec((5, 15, 30), A["bekle"], "bk", lambda v: f"Bekle {v}dk"))
+        k.row(B("— Kâr kilidi —", callback_data="ayar"))
         k.row(*sec(("42,50,75,100", "35,60,100,150", "50,100,150,250"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v))
-        k.row(B("İz süren " + ("✅ AÇIK (kapat)" if A["iz"] else "❌ KAPALI (aç)"), callback_data="iz"))
-        k.row(B("Oto-büyüme " + ("✅ AÇIK (kapat)" if A["oto"] else "❌ KAPALI (aç)"), callback_data="oto"))
+        k.row(B("Hisse senetleri " + ("❌ KAPALI (aç)" if A["hk"] else "✅ AÇIK (kapat)"), callback_data="hk"))
+        k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(geri)
-        return f"⚙️ Ayarlar\nMarjin/işlem: {A['marjin']}$ ({'oto %'+str(int(A['oran']*100)) if A['oto'] else 'sabit'})\nStop: marjinin %{A['sl']*100:.0f}'i (likidasyona göre daralır)\nGünlük zarar limiti: {('−'+str(A['gunluk'])+'$') if A['gunluk'] else 'yok'}\nKademeli kilit: {('AÇIK ' + ' → '.join('+%' + str(int(x * 100)) for x in A['lv']) + ' (her basamakta stop bir geri kilitlenir, satış yok)') if A['kademe'] else 'KAPALI'}\nKâr al (tek TP): {'yok' if not A['tp'] else '+%'+str(int(A['tp']*100))+' (borsada durur)'}\nİz süren: {'AÇIK (+%'+str(int(TRAIL_ON*100))+' başlar, %'+str(int(TRAIL_GERI*100))+' geri verirse kapatır)' if A['iz'] else 'KAPALI (tek TP)'}", k
+        return (f"⚙️ AYARLAR\n\nStrateji: {strateji_yazi()}\nMarjin: {A['marjin']:g}$ · Kaldıraç tavanı {A['lev']}x · Max {A['max_pos']} işlem\n"
+                f"Zarar stopu: marjinin %{A['sl']*100:.0f}'i (borsada yedek stop her işlemde)\nGünlük zarar limiti: {('−' + str(A['gunluk']) + '$') if A['gunluk'] else 'yok'} (gün dönünce/değişince kendiliğinden devam)\n"
+                f"Kademeli kilit: " + " → ".join("+%" + str(int(x * 100)) for x in A["lv"]) + f"\nKapanan coine tekrar giriş beklemesi: {A['bekle']} dk"), k
     if e == "hep":
         k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
-        return "🚨 Tüm pozisyonlar kapatılsın mı? (otomatik giriş de durur)", k
-    # ana
+        return "🚨 Tüm pozisyonlar kapatılsın mı? (Otomatik giriş de durur)", k
     n = len(pozlar())
+    k.row(B("🛑 DURDUR" if A["calis"] else "▶️ BAŞLAT", callback_data="tog"))
     k.row(B("📋 Pozisyonlar", callback_data="poz"), B("📜 Geçmiş", callback_data="gec"))
-    k.row(B("🛑 Otomatik Girişi Durdur" if A["calis"] else "▶️ Otomatik Girişi Başlat", callback_data="tog"))
     k.row(B("📊 Özet", callback_data="ozet"), B("⚙️ Ayarlar", callback_data="ayar"))
-    k.row(*sec((10, 20, 50, 75, 125), A["lev"], "lev", lambda v: f"{v}x"))
-    k.row(*sec((1, 2, 3, 5, 6), A["max_pos"], "lim", lambda v: f"{v} işlem"))
-    k.row(B("🚨 Tümünü Kapat", callback_data="hep")); k.row(B("🔄 Yenile", callback_data="ana"))
-    return (f"{'▶️ OTOMATİK AÇIK' if A['calis'] else '⏹ DURDU'} | {VERSIYON} | Bakiye {bakiye():.2f}$ | Bugün ≈{gun_toplam():+.2f}$\n"
-            f"Pozisyon {n}/{A['max_pos']} | Marjin {marjin():.1f}$ | kaldıraç tavanı {A['lev']}x"), k
+    k.row(B("🚨 Tümünü Kapat", callback_data="hep"), B("🔄 Yenile", callback_data="ana"))
+    return (f"🤖 GHOST KISA · {VERSIYON}\n━━━━━━━━━━━━━━━━\n{durum()}\n\n"
+            f"💰 Bakiye {bakiye():.2f}$   📅 Bugün {gun_toplam():+.2f}$\n📌 Pozisyon {n}/{A['max_pos']}\n"
+            f"🎯 {strateji_yazi()}"), k
 
 @bot.message_handler(commands=["panel", "start", "durum", "gecmis"])
 def pn(m):
@@ -431,34 +401,27 @@ def pn(m):
     t, k = ekran("gec" if m.text.startswith("/gecmis") else "ana"); bot.send_message(CHAT, t, reply_markup=k)
 
 def kaldirac_toplu(hedef):
-    """Tüm USDT-M kontratlarda kaldıracı hedefe ayarla; kabul etmeyenlerde borsanın izin verdiği en yükseği bul."""
     syms = [x for x, mk in ex.markets.items() if mk.get("swap") and mk.get("quote") == "USDT" and mk.get("active", True)]
-    tam, dusuk, basarisiz, hatalar = 0, 0, [], {}
+    tam, dusuk, basarisiz = 0, 0, []
     for n, x in enumerate(syms):
         son = None
         for l in [l for l in LADDER if l <= hedef]:
             ok, g, h = kaldirac_ayarla(x, l, "buy")
-            if ok and (g is None or abs(g - l) < 0.5):
-                son = l; kaldirac_ayarla(x, l, "sell"); break
-            if h: hatalar[h[:90]] = hatalar.get(h[:90], 0) + 1
+            if ok and (g is None or abs(g - l) < 0.5): son = l; kaldirac_ayarla(x, l, "sell"); break
         if son: lev_cap[x] = son; tam += son == hedef; dusuk += son != hedef
         else: basarisiz.append(x.split("/")[0])
         if n and n % 150 == 0: bot.send_message(CHAT, f"… {n}/{len(syms)}")
-    kaydet()
-    dus = sorted(((v, k.split("/")[0]) for k, v in lev_cap.items() if v < hedef))
-    bot.send_message(CHAT, f"✅ Kaldıraç ayarı bitti (hedef {hedef}x)\n{tam} kontratta {hedef}x tuttu\n{dusuk} kontrat {hedef}x kabul etmedi (en yüksek kabul edilen kaydedildi)\n"
-                     f"{len(basarisiz)} kontratta hiç ayarlanamadı\n" + ("\nDüşük olanlardan örnek: " + ", ".join(f"{k} {v}x" for v, k in dus[:15]) if dus else "")
-                     + ("\n\nHatalar:\n" + "\n".join(f"{c}× {k}" for k, c in list(hatalar.items())[:4]) if hatalar else ""))
+    kaydet(); bot.send_message(CHAT, f"✅ Kaldıraç ayarı bitti (hedef {hedef}x): {tam} kontratta tuttu, {dusuk} kontrat daha düşük kabul etti, {len(basarisiz)} ayarlanamadı")
 
 @bot.message_handler(commands=["kaldirac"])
-def kaldirac_kmd(m):   # /kaldirac 20  -> tüm coinlerde 20x'e ayarla (izin verilmeyenlerde en yükseği)
+def kaldirac_kmd(m):
     if m.chat.id != CHAT: return
     a = m.text.split(); hedef = int(a[1]) if len(a) > 1 and a[1].isdigit() else 20
-    bot.send_message(CHAT, f"⏳ Tüm USDT-M kontratlarda {hedef}x ayarlanıyor, birkaç dakika sürebilir…")
+    bot.send_message(CHAT, f"⏳ Tüm USDT-M kontratlarda {hedef}x ayarlanıyor…")
     threading.Thread(target=kaldirac_toplu, args=(hedef,), daemon=True).start()
 
 @bot.message_handler(commands=["haric"])
-def haric(m):   # /haric  |  /haric ekle PEPE FIL  |  /haric sil PEPE
+def haric(m):
     if m.chat.id != CHAT: return
     a = m.text.split()[1:]
     if len(a) > 1 and a[0] in ("ekle", "sil"):
@@ -467,11 +430,7 @@ def haric(m):   # /haric  |  /haric ekle PEPE FIL  |  /haric sil PEPE
             if a[0] == "ekle" and x not in A["haric"]: A["haric"].append(x)
             if a[0] == "sil" and x in A["haric"]: A["haric"].remove(x)
         kaydet()
-    bot.send_message(CHAT, "🚫 Hariç tutulan coinler (bot bunlara girmez):\n" + " ".join(sorted(A["haric"])) + "\n\nEkle: /haric ekle PEPE FIL\nÇıkar: /haric sil PEPE")
-
-def pozisyon(n):
-    sym = POZ.get(n)
-    return sym, next((p for p in ex.fetch_positions() if p["symbol"] == sym and p.get("contracts")), None)
+    bot.send_message(CHAT, "🚫 Hariç tutulan coinler:\n" + " ".join(sorted(A["haric"])) + "\n\nEkle: /haric ekle PEPE FIL\nÇıkar: /haric sil PEPE")
 
 @bot.callback_query_handler(func=lambda c: True)
 def cb(c):
@@ -479,49 +438,59 @@ def cb(c):
     d, uyari, e = c.data, "", "ana"
     try:
         if d in ("poz", "gec", "ozet", "ayar", "hep"): e = d
-        elif d[0] in "kabcd" and d[1:].isdigit():
-            e = "poz"; sym, p = pozisyon(int(d[1:]))
+        elif d[0] == "k" and d[1:].isdigit():
+            e = "poz"; sym = POZ.get(int(d[1:]))
+            p = next((x for x in ex.fetch_positions() if x["symbol"] == sym and x.get("contracts")), None) if sym else None
             if not p: uyari = "pozisyon yok, yenile"
-            elif d[0] == "k": kapat(sym, p, "MANUEL")
-            elif d[0] in "ab":
-                yeni = max(1, int(p["leverage"] or 1) + (-5 if d[0] == "a" else 5))
-                ex.set_leverage(yeni, sym, params={"marginMode": "isolated", "holdSide": p["side"]}); uyari = f"{yeni}x"
-            else: acik[sym]["sl"] = max(0.1, round(acik[sym]["sl"] + (-0.1 if d[0] == "c" else 0.1), 2))
+            else:
+                with KIL: kapat(sym, p, "MANUEL")
         elif d == "tog": A["calis"] = not A["calis"]
-        elif d == "iz": A["iz"] = not A["iz"]; e = "ayar"
-        elif d == "oto": A["oto"] = not A["oto"]; e = "ayar"
+        elif d == "hk": A["hk"] = not A["hk"]; e = "ayar"
+        elif d.startswith("mod:"): A["mod"] = d[4:]; e = "ayar"
+        elif d.startswith("pn:"): A["pen"] = int(d[3:]); e = "ayar"
+        elif d.startswith("uc:"): A["uc"] = float(d[3:]); e = "ayar"
+        elif d.startswith("es:"): A["esik"] = float(d[3:]); e = "ayar"
         elif d.startswith("mj:"): A["marjin"] = float(d[3:]); e = "ayar"
+        elif d.startswith("lev:"): A["lev"] = int(d[4:]); e = "ayar"
+        elif d.startswith("lim:"): A["max_pos"] = int(d[4:]); e = "ayar"
         elif d.startswith("gl:"): A["gunluk"] = float(d[3:]); e = "ayar"
-        elif d == "kd": A["kademe"] = not A["kademe"]; e = "ayar"
-        elif d == "bs": A["bs"] = not A.get("bs"); e = "ayar"
-        elif d == "hk": A["hk"] = not A.get("hk", True); e = "ayar"
+        elif d.startswith("bk:"): A["bekle"] = int(d[3:]); e = "ayar"
         elif d.startswith("lvl:"): A["lv"] = [int(x) / 100 for x in d[4:].split(",")]; e = "ayar"
-        elif d.startswith("tp:"): A["tp"] = float(d[3:]); e = "ayar"
-        elif d.startswith("sl:"): A["sl"] = int(d[3:]) / 100; e = "ayar"
-        elif d.startswith("lev:"): A["lev"] = int(d[4:])
-        elif d.startswith("lim:"): A["max_pos"] = int(d[4:])
         elif d == "hepE":
             A["calis"] = False
-            for p in ex.fetch_positions():
-                if p.get("contracts"): kapat(p["symbol"], p, "MANUEL")
+            with KIL:
+                for p in ex.fetch_positions():
+                    if p.get("contracts"): kapat(p["symbol"], p, "MANUEL")
     except Exception as x: uyari = str(x)[:150]
     kaydet()
     try:
         t, k = ekran(e); bot.edit_message_text(t, c.message.chat.id, c.message.message_id, reply_markup=k)
     except Exception: pass
-    bot.answer_callback_query(c.id, uyari)
+    try: bot.answer_callback_query(c.id, uyari)
+    except Exception: pass
+
+# ───────────────────────── ana döngü ─────────────────────────
+def izle():          # pozisyon takibi: 2 sn'de bir
+    while True:
+        try: yonet(); duzelt()
+        except Exception as e: print("hata yonet", repr(e)[:200], flush=True)
+        time.sleep(2)
+
+def tarama():        # her 5 dk mum başında BİR kez fiyat oku + sinyal
+    hata_sayac = 0; son_kalp = 0.0
+    while True:
+        try:
+            tarama_adimi(); hata_sayac = 0
+        except Exception as e:
+            hata_sayac += 1; print("hata tarama", repr(e)[:200], flush=True)
+            if hata_sayac == 5: haber(f"⚠️ Fiyat okuma 5 kez üst üste hata verdi: {str(e)[:100]}")
+        if time.time() - son_kalp > 600:
+            son_kalp = time.time(); print(f"💓 {VERSIYON} {durum()} açık={len(acik)} bugün={gun_toplam():+.2f}$ son_tarama={int(time.time()-son_tarama[0]) if son_tarama[0] else -1}sn önce", flush=True)
+        time.sleep(0.25)
 
 if __name__ == "__main__":
     ex.load_markets()
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-    haber(f"Kısa bot {VERSIYON} hazır: {marjin()}$ izole, max {A['max_pos']}, ≤{A['lev']}x, SL %{A['sl']*100:.0f}, oto-büyüme {A['oto']}  → /panel")
-    def izle():          # pozisyon takibi ayrı ve hızlı (2 sn): stop/iz süren gecikmesin
-        while True:
-            try: yonet(); duzelt()
-            except Exception as e: print("hata yonet", e, flush=True)
-            time.sleep(2)
+    haber(f"🤖 GHOST KISA {VERSIYON} hazır\n{durum()}\n🎯 {strateji_yazi()}\n💰 {A['marjin']:g}$ izole · ≤{A['lev']}x · max {A['max_pos']} işlem · limit {('−' + str(A['gunluk']) + '$') if A['gunluk'] else 'yok'}\n→ /panel")
     threading.Thread(target=izle, daemon=True).start()
-    while True:          # tarama / giriş (10 sn)
-        try: tara()
-        except Exception as e: print("hata tara", e, flush=True)
-        time.sleep(10)
+    tarama()
