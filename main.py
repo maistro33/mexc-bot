@@ -11,7 +11,8 @@
 # v4.1 09.10 22:45  Yeni mod "ARALIK": coinin son N saatlik (varsayılan 4s) aralığında dipteyse AL, tepedeyse SAT (yatay gezen coinler; geniş/trend
 #                   aralıklar atlanır). Panelden seçilir, 5 dk gövde modları duruyor.
 # v4.2 09.10 22:45  Ayarlar ekranı sadeleştirildi: her ayarın kendi başlığı, kısa düğme yazıları, seçili moda göre sadece ilgili ayarlar.
-VERSIYON = "v4.2 (09.10 22:55)"
+# v4.3 09.10 22:50  Hisse/altın/emtia (Bitget isRwa=YES) otomatik tanınıyor; "Hisse senetleri KAPALI" artık hepsini (ASTS dahil) engeller.
+VERSIYON = "v4.3 (09.10 23:05)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -503,6 +504,16 @@ def tarama():        # her 5 dk mum başında BİR kez fiyat oku + sinyal
 
 if __name__ == "__main__":
     ex.load_markets()
+    try:        # hisse/altın/emtia (isRwa) otomatik tanı → "hisse senetleri kapalı" ayarı hepsini kapsasın
+        for m in ex.markets.values():
+            if str((m.get("info") or {}).get("isRwa", "")).upper() == "YES": HISSE.add(m.get("base"))
+    except Exception as e: print("rwa liste hatası (markets)", repr(e)[:100], flush=True)
+    try:
+        import requests
+        for x in requests.get("https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES", timeout=15).json().get("data") or []:
+            if x.get("isRwa") == "YES": HISSE.add(x["baseCoin"])
+    except Exception as e: print("rwa liste hatası (api)", repr(e)[:100], flush=True)
+    print(f"hisse/emtia listesi: {len(HISSE)} sembol", flush=True)
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
     haber(f"🤖 GHOST KISA {VERSIYON} hazır\n{durum()}\n🎯 {strateji_yazi()}\n💰 {A['marjin']:g}$ izole · ≤{A['lev']}x · max {A['max_pos']} işlem · limit {('−' + str(A['gunluk']) + '$') if A['gunluk'] else 'yok'}\n→ /panel")
     threading.Thread(target=izle, daemon=True).start()
