@@ -5,13 +5,14 @@ from telebot import types
 # SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
 # v3.0 08.10 16:25  4 basamaklı kademeli kilit (30/50/75/100), basamak 1 kilidi +0.12$, 2. basamaktan sonra stop zirvenin %65'i,
 #                   40797 kaldıraç hatasında bir basamak düşürüp tekrar dene, açılışta sürüm yazısı
+# v3.7 09.10 12:40  (1) Açılışta HEMEN borsaya yedek zarar stopu (bot düşse/gecikse bile korur; Ayarlar>Borsa stop AÇIKsa; botun kendi stopundan %20 geniş, likidasyondan önce). (2) Kaldıraç uyuşmazsa pozisyonu kapatmak yerine fazlasını küçültüp devam et (marjin 1$ kalır). (3) Açılış mesajında gerçek dolum fiyatı
 # v3.6 09.10 02:20  MOD=hibrit (varsayılan): v3.5'teki 15 dk büyük mum formasyonu (aralık >= %6) + her 5 dk kapanışında 5 dk mumda SABAH/AKŞAM YILDIZI (aralık >= %4) ile daha sık işlem. env: MUM15_ARALIK (6), MUM5_ARALIK (4). MOD=mum15 ile sadece 15 dk
 # v3.5 08.10 22:55  Yeni giriş MOD=mum15 (varsayılan): her 15 dk kapanışında, 15 dk mum aralığı (yüksek-düşük) >= %8 olan ve YUTAN (engulfing) ya da SABAH/AKŞAM YILDIZI formasyonu yapan coine formasyon yönünde gir. env: MUM15_ARALIK (varsayılan 8). Önceki: MOD=fitil / mum / pencere
 # v3.4 08.10 22:30  Yeni giriş MOD=fitil (varsayılan): her 15 dk mum kapanışında 4 saatlik + 1 saatlik + 15 dk son kapanmış mumların HEPSİ aynı yönde fitil bırakmış ve fitil yönünde kapanmışsa gir (altta fitil+yeşil=LONG, üstte fitil+kırmızı=SHORT). Eski yöntemler: env MOD=mum / MOD=pencere
 # v3.3 08.10 21:20  Giriş: kayan pencere yerine 5 dk'lık MUM GÖVDESİ (açılış→kapanış) >= %3 ise, mum kapanır kapanmaz yeni mumun başında gir (MOD=mum; eski yöntem için env MOD=pencere)
 # v3.2 08.10 21:05  Hisse/ETF sembolleri otomatik hariç (panelde aç/kapa), giriş penceresi 10dk→5dk (%3), basamak 1 = net ~0.30$ kalacak şekilde (ücret+kayma eklenir), kilit1 = net 0.30$
 # v3.1 08.10 16:40  Borsa tarafı kilit stopu (stop-market, reduce-only). VARSAYILAN KAPALI, panelde Ayarlar > Borsa stop ile açılır. Hata olursa bot-içi stop aynen devam eder.
-VERSIYON = "v3.6 (09.10 02:20)"
+VERSIYON = "v3.7 (09.10 12:40)"
 E = os.getenv
 MARJIN   = float(E("MARJIN", "1"))        # USDT / işlem
 MAX_POS  = int(E("MAX_POS", "5"))
@@ -103,7 +104,7 @@ def borsa_stop(sym, p, k, kilit):
         o = ex.create_order(sym, "market", "sell" if uz else "buy", qty, params={"stopLossPrice": fy, "reduceOnly": True, "marginMode": "isolated"})
         k["sid"] = o.get("id") or (o.get("info") or {}).get("orderId")
         if eski: borsa_stop_iptal(sym, eski)
-        haber(f"🛡 {sym.split(':')[0]} borsada stop kondu: {fy} (kilit +{kilit:.2f}$)")
+        haber(f"🛡 {sym.split(':')[0]} borsada stop kondu: {fy} ({'kilit' if kilit >= 0 else 'yedek zarar stopu'} {kilit:+.2f}$)")
         return True
     except Exception as e:
         haber(f"⚠️ {sym.split(':')[0]} borsa stop konamadı, bot takip ediyor: {str(e)[:110]}")
@@ -167,12 +168,28 @@ def ac(sym, yon, son, hr=0.0):
             yasak[sym] = time.time() + 3600; haber(f"⚠️ {sym.split(':')[0]} açılamadı: {str(e)[:120]}"); return
     try:
         p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
-        if abs(float(p.get("leverage") or lev) - lev) > 0.5 or float(p.get("initialMargin") or 0) > mj * 1.5:
-            kapat(sym, p, "KALDIRAÇ UYUŞMADI"); yasak[sym] = time.time() + 6 * 3600
-            haber(f"🚨 {sym.split(':')[0]}: istenen {lev}x ama borsada {p.get('leverage')}x oldu, pozisyonu kapattım"); return
+        gl = float(p.get("leverage") or lev)
+        if abs(gl - lev) > 0.5 or float(p.get("initialMargin") or 0) > mj * 1.5:
+            kalan = float(ex.amount_to_precision(sym, float(p["contracts"]) * gl / lev)) if 0 < gl < lev else 0.0
+            fazla = float(ex.amount_to_precision(sym, float(p["contracts"]) - kalan)) if kalan else 0.0
+            if kalan and fazla > 0 and kalan * son >= 5.2:      # fazlayı küçült: marjin 1$ kalsın, işleme devam
+                try:
+                    ex.create_order(sym, "market", "sell" if p["side"] == "long" else "buy", fazla, params={"reduceOnly": True, "marginMode": "isolated"})
+                    lev_cap[sym] = int(gl); haber(f"ℹ️ {sym.split(':')[0]}: istenen {lev}x ama borsada {gl:g}x oldu, pozisyonun fazlası küçültüldü, {gl:g}x ile devam")
+                    lev = int(gl); adet = ex.amount_to_precision(sym, kalan)
+                    p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
+                except Exception as e_:
+                    p = next(x for x in ex.fetch_positions([sym]) if x.get("contracts"))
+                    kapat(sym, p, "KALDIRAÇ UYUŞMADI"); yasak[sym] = time.time() + 6 * 3600
+                    haber(f"🚨 {sym.split(':')[0]}: kaldıraç düzeltilemedi ({str(e_)[:80]}), pozisyonu kapattım"); return
+            else:
+                kapat(sym, p, "KALDIRAÇ UYUŞMADI"); yasak[sym] = time.time() + 6 * 3600
+                haber(f"🚨 {sym.split(':')[0]}: istenen {lev}x ama borsada {p.get('leverage')}x oldu, pozisyonu kapattım"); return
     except StopIteration: pass
     except Exception: pass
     cs = m.get("contractSize") or 1; sl = round(A["sl"] * mj, 2); not_ = ""
+    try: gir_g = float(p.get("entryPrice") or son)
+    except Exception: gir_g = son
     try:   # stop likidasyondan ÖNCE gelsin: likidasyon uzaklığının %70'ine daralt
         liq, gir = float(p.get("liquidationPrice") or 0), float(p.get("entryPrice") or son)
         if liq and sl / (float(adet) * cs) > 0.7 * abs(gir - liq):
@@ -187,8 +204,11 @@ def ac(sym, yon, son, hr=0.0):
              else f"son {PENCERE} dk {'+' if yon == 'buy' else '-'}%{hr:.1f} hareket (momentum)")
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {sym.split(':')[0]} {lev}x izole, {mj}$\n"
           f"Sebep: {sebep}\n"
-          f"Giriş ≈ {son:g} | Stop ≈ {sl_fiyat(yon, son, float(adet), cs, sl):g} (−{sl}${not_})\n"
+          f"Giriş {gir_g:g} | Stop ≈ {sl_fiyat(yon, gir_g, float(adet), cs, sl):g} (−{sl}${not_})\n"
           f"Kâr al: {('+'+format(tp_oran*mj,'.2f')+'$ (borsada)') if tp_oran else 'kademeli kilit'}{izm}{kd}{tp_not}")
+    if A.get("bs"):      # yedek zarar stopu BORSADA: botun kendi stopundan %20 geniş (bot normalde önce kapatır), likidasyondan önce
+        try: borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))
+        except Exception as e: print("hata yedek stop", e, flush=True)
 
 def yonet():
     pos = [p for p in ex.fetch_positions() if p.get("contracts")]
