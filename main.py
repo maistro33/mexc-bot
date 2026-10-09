@@ -10,7 +10,8 @@
 #                   (limit değişince/yeni günde bot otomatik devam eder), yeni panel, saat dilimi Stockholm
 # v4.1 09.10 22:45  Yeni mod "ARALIK": coinin son N saatlik (varsayılan 4s) aralığında dipteyse AL, tepedeyse SAT (yatay gezen coinler; geniş/trend
 #                   aralıklar atlanır). Panelden seçilir, 5 dk gövde modları duruyor.
-VERSIYON = "v4.1 (09.10 22:45)"
+# v4.2 09.10 22:45  Ayarlar ekranı sadeleştirildi: her ayarın kendi başlığı, kısa düğme yazıları, seçili moda göre sadece ilgili ayarlar.
+VERSIYON = "v4.2 (09.10 22:55)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -365,18 +366,30 @@ def ekran(e):
                 f"Kazanma: %{(len(w)/n*100 if n else 0):.0f} ({len(w)} kazanç / {len(l)} kayıp)\n"
                 f"Ort. kazanç: {(sum(w)/len(w) if w else 0):+.2f}$ | Ort. kayıp: {(sum(l)/len(l) if l else 0):+.2f}$"), k
     if e == "ayar":
-        k.row(B("— Strateji —", callback_data="ayar"))
-        k.row(B(("✅ " if A["mod"] == "ters" else "") + "Tersine", callback_data="mod:ters"), B(("✅ " if A["mod"] == "takip" else "") + "Takip", callback_data="mod:takip"), B(("✅ " if A["mod"] == "aralik" else "") + "Aralık", callback_data="mod:aralik"))
-        k.row(*sec((24, 48, 96), A["pen"], "pn", lambda v: f"Pencere {v*5//60}s"), *sec((5, 10, 15), A["uc"], "uc", lambda v: f"Uç %{v}"))
-        k.row(*sec((3, 4, 5, 8), A["esik"], "es", lambda v: f"≥%{v}"))
-        k.row(B("— Risk —", callback_data="ayar"))
+        def bas(t): k.row(B(f"— {t} —", callback_data="ayar"))
+        bas("STRATEJİ")
+        k.row(B(("✅ " if A["mod"] == "ters" else "") + "Tersine", callback_data="mod:ters"), B(("✅ " if A["mod"] == "takip" else "") + "Takip", callback_data="mod:takip"))
+        k.row(B(("✅ " if A["mod"] == "aralik" else "") + "Aralık (dip/tepe)", callback_data="mod:aralik"))
+        if A["mod"] == "aralik":
+            bas("ARALIK: PENCERE")
+            k.row(*sec((24, 48, 96), A["pen"], "pn", lambda v: f"{v*5//60} saat"))
+            bas("ARALIK: UÇ BÖLGE")
+            k.row(*sec((5, 10, 15), A["uc"], "uc", lambda v: f"%{v}"))
+        else:
+            bas("MUM EŞİĞİ")
+            k.row(*sec((3, 4, 5, 8), A["esik"], "es", lambda v: f"%{v}"))
+        bas("MARJİN (işlem başı)")
         k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"{v}$"))
+        bas("KALDIRAÇ (en çok)")
         k.row(*sec((10, 20, 50), A["lev"], "lev", lambda v: f"{v}x"))
-        k.row(*sec((1, 2, 3, 5), A["max_pos"], "lim", lambda v: f"{v} işlem"))
-        k.row(*sec((2, 3, 5, 10), A["gunluk"], "gl", lambda v: f"Limit −{v}$") + [B(("✅ " if not A["gunluk"] else "") + "Yok", callback_data="gl:0")])
-        k.row(*sec((5, 15, 30), A["bekle"], "bk", lambda v: f"Bekle {v}dk"))
-        k.row(B("— Kâr kilidi —", callback_data="ayar"))
-        k.row(*sec(("42,50,75,100", "35,60,100,150", "50,100,150,250"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v))
+        bas("AYNI ANDA İŞLEM")
+        k.row(*sec((1, 2, 3, 5), A["max_pos"], "lim", lambda v: str(v)))
+        bas("GÜNLÜK ZARAR LİMİTİ")
+        k.row(*sec((2, 3, 5, 10), A["gunluk"], "gl", lambda v: f"-{v}$") + [B(("✅ " if not A["gunluk"] else "") + "Yok", callback_data="gl:0")])
+        bas("AYNI COİNE TEKRAR (bekleme)")
+        k.row(*sec((5, 15, 30), A["bekle"], "bk", lambda v: f"{v} dk"))
+        bas("KÂR KİLİDİ")
+        k.row(*sec(("42,50,75,100", "35,60,100,150", "50,100,150,250"), ",".join(str(int(x * 100)) for x in A["lv"]), "lvl", lambda v: v.replace(",", "/")[:9]))
         k.row(B("Hisse senetleri " + ("❌ KAPALI (aç)" if A["hk"] else "✅ AÇIK (kapat)"), callback_data="hk"))
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(geri)
