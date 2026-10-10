@@ -23,7 +23,10 @@
 #                   (NIL örneği: short sinyali, alış baskın → long). −0.10…+0.10 arası ve defter yoksa sinyal yönü korunur. ÇEVİR modunda spread filtresi uygulanmaz. Test edilmedi, deneysel.
 # v4.12 11.10 01:30  Yeni mod "DEFTER": aralık sinyali olmadan, emir defteri (ilk 10 kademe) belirgin yatıksa (varsayılan |imb| ≥ 0.5) ağır tarafta işlem açar
 #                   (alış ağır → long, satış ağır → short). Spread >%0.10 ise girmez. Her 5 dk'da en hareketli 40 coin taranır. Deneysel, backtest YOK.
-VERSIYON = "v4.12 (11.10 01:30)"
+# v4.13 11.10 02:00  BÜYÜK İŞLEM AKIŞI: her sinyalde son 1/5/15 dk'da gerçekleşen BÜYÜK alım/satım işlemlerinin net yönü (akis1/akis5/akis15, işlem yönünde +) ölçülüp
+#                   mikro.jsonl'ye yazılır ve açılış mesajında görünür (varsayılan sadece KAYIT). Panelde DEFTER modu için isteğe bağlı "AKIŞ ONAYI" (varsayılan KAPALI):
+#                   açıkken büyük akış (5 dk) işlem yönünün aleyhineyse Defter girişi atlanır. /mikro özetine akış karşılaştırması eklendi.
+VERSIYON = "v4.13 (11.10 02:00)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -52,7 +55,7 @@ HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHI
 HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 A = {"v": 3, "calis": True, "mod": "ters", "esik": 5.0, "marjin": MARJIN, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_ORAN,
-     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "yf": "kapali", "mf": "kapali", "dt": 0.5, "dn": 40, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
+     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "yf": "kapali", "mf": "kapali", "dt": 0.5, "dn": 40, "ao": False, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
 lev_cap = {}                 # coin -> borsanın kabul ettiği en yüksek kaldıraç
 acik, yasak, gecmis = {}, {}, []
 KIL = threading.RLock()
@@ -105,7 +108,26 @@ def mfm():
     if v in ("atla", "cevir"): return v
     return "kapali"
 
-def mikro_ozellik(sm, yon, c, oi=True):
+def akis_ozellik(sm, yon):
+    """Son 1/5/15 dk'da gerçekleşen BÜYÜK işlemlerin net yönü (-1..+1, işlem yönünde +). Büyük = max(50$, 4×medyan işlem). Veri yetmezse None."""
+    sg = 1 if yon == "buy" else -1; o = {"akis1": None, "akis5": None, "akis15": None, "kap": None}
+    try:
+        try: tr = ex.fetch_trades(sm, limit=500)
+        except Exception: tr = ex.fetch_trades(sm, limit=100)          # bazı borsa uçlarında üst sınır 100
+        tr = [t for t in tr if t.get("timestamp") and t.get("side") in ("buy", "sell") and (t.get("cost") or (t.get("price") or 0) * (t.get("amount") or 0)) > 0]
+        if len(tr) < 5: return o
+        maliyet = [float(t.get("cost") or t["price"] * t["amount"]) for t in tr]
+        med = sorted(maliyet)[len(maliyet) // 2]; esik = max(50.0, 4 * med)
+        simdi = time.time() * 1000; ilk = min(t["timestamp"] for t in tr); o["kap"] = round((simdi - ilk) / 60000, 1)      # elimizdeki işlem geçmişi kaç dakikalık
+        for ad, dk in (("akis1", 1), ("akis5", 5), ("akis15", 15)):
+            if (simdi - ilk) / 60000 < dk * 0.8: continue                                  # bu pencereyi kapsamıyor
+            al = sum(m for t, m in zip(tr, maliyet) if t["side"] == "buy" and m >= esik and simdi - t["timestamp"] <= dk * 60000)
+            sat = sum(m for t, m in zip(tr, maliyet) if t["side"] == "sell" and m >= esik and simdi - t["timestamp"] <= dk * 60000)
+            if al + sat > 0: o[ad] = round(sg * (al - sat) / (al + sat), 2)
+    except Exception: pass
+    return o
+
+def mikro_ozellik(sm, yon, c, oi=True, akis=True):
     """Sinyal anında emir defteri dengesizliği, spread, açık pozisyon (OI). Alınamazsa None (filtre devre dışı kalır)."""
     sg = 1 if yon == "buy" else -1; o = {"imb_y": None, "spread": None, "oi": None}
     try:
@@ -115,6 +137,7 @@ def mikro_ozellik(sm, yon, c, oi=True):
             if bv + av > 0: o["imb_y"] = round(sg * (bv - av) / (bv + av), 3)        # + : işlem yönünde baskı (long için alış ağır)
             o["spread"] = round((a[0][0] / b[0][0] - 1) * 100, 4)
     except Exception: pass
+    if akis: o.update(akis_ozellik(sm, yon))
     if not oi: return o
     try:
         import requests
@@ -272,7 +295,8 @@ def ac(sym, yon, son, pct):
           f"Sebep: {sebep}\n"
           f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl}${not_})\n"
           f"{'🛡 Borsa yedek stopu: ' + str(fy) if fy else '⚠️ Borsa stopu YOK, bot takip ediyor'}\n"
-          + (f"🔬 Emir defteri {mk0['imb_y']:+.2f} (işlem yönünde +) · spread %{mk0['spread']:.3f}\n" if mk0 and mk0.get("imb_y") is not None and mk0.get("spread") is not None else "") +
+          + (f"🔬 Emir defteri {mk0['imb_y']:+.2f} (işlem yönünde +) · spread %{mk0['spread']:.3f}\n" if mk0 and mk0.get("imb_y") is not None and mk0.get("spread") is not None else "")
+          + (f"🐋 Büyük işlem akışı 1/5/15dk: {'/'.join(('%+.2f' % mk0[k]) if mk0.get(k) is not None else '–' for k in ('akis1', 'akis5', 'akis15'))}\n" if mk0 and any(mk0.get(k) is not None for k in ('akis1', 'akis5', 'akis15')) else "") +
           f"Kâr: kademeli kilit " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]))
     return True
 
@@ -376,7 +400,7 @@ def defter_girisleri(px):
     for sm, c in list(px.items())[:A.get("dn", 40) + 1]:
         if time.time() - t0 > 40: break
         if sm == "_dogru" or not uygun(sm): continue
-        mk = mikro_ozellik(sm, "buy", c, oi=False)
+        mk = mikro_ozellik(sm, "buy", c, oi=False, akis=False)
         if mk["imb_y"] is None or mk["spread"] is None or mk["spread"] > 0.10 or abs(mk["imb_y"]) < A.get("dt", 0.5): continue
         aday.append((abs(mk["imb_y"]), sm, "buy" if mk["imb_y"] > 0 else "sell", c))
     for im, sm, yon, c in sorted(aday, reverse=True):
@@ -384,6 +408,8 @@ def defter_girisleri(px):
             if len(acik) >= A["max_pos"]: break
         mk = mikro_ozellik(sm, yon, c); mk["y"] = yon; mk["mod"] = "defter"
         if mk["imb_y"] is None or mk["imb_y"] < A.get("dt", 0.5) * 0.6 or (mk["spread"] or 0) > 0.10: continue      # girişte defter hâlâ aynı yönde mi
+        if A.get("ao") and mk.get("akis5") is not None and mk["akis5"] < 0:                                    # AKIŞ ONAYI: büyük işlemler yönün aleyhine
+            mikro_yaz({"e": "atla", "t": int(time.time()), "s": sm.split(":")[0], **mk}); continue
         MK[sm] = mk
         try: ac(sm, yon, c, im * 100)
         except Exception as e: haber(f"⚠️ {sm.split(':')[0]} giriş hatası: {str(e)[:120]}")
@@ -470,6 +496,8 @@ def ekran(e):
         if A["mod"] == "defter":
             bas("DEFTER: EŞİK (|denge|)")
             k.row(*sec((0.3, 0.5, 0.7), A.get("dt", 0.5), "dt", lambda v: f"{v:g}"))
+            bas("DEFTER: AKIŞ ONAYI (büyük işlemler aleyhteyse girme)")
+            k.row(B("✅ AÇIK (kapat)" if A.get("ao") else "❌ KAPALI (aç)", callback_data="ao"))
         if A["mod"] == "aralik":
             bas("ARALIK: PENCERE")
             k.row(*sec((24, 48, 96), A["pen"], "pn", lambda v: f"{v*5//60} saat"))
@@ -543,6 +571,8 @@ def mikro_ozet(m):
     t = [f"🔬 MİKRO KAYIT: {len(c)} kapanan işlem, {len(a)} atlanan sinyal"]
     t.append(f"Emir defteri işlem yönünde (imb>0): {ort([x for x in c if (x.get('imb_y') or 0) > 0])}")
     t.append(f"Emir defteri aleyhine (imb<0): {ort([x for x in c if (x.get('imb_y') or 0) < 0])}")
+    for k_, ad_ in (("akis1", "1dk"), ("akis5", "5dk"), ("akis15", "15dk")):
+        t.append(f"Büyük akış {ad_} işlem yönünde (+): {ort([x for x in c if (x.get(k_) or 0) > 0.2])} | aleyhine (−): {ort([x for x in c if (x.get(k_) or 0) < -0.2])}")
     t.append(f"Yönü çevrilen işlemler: {ort([x for x in c if x.get('cevrildi')])}")
     t.append(f"Spread ≤%0.05: {ort([x for x in c if x.get('spread') is not None and x['spread'] <= 0.05])}")
     t.append(f"Spread >%0.05: {ort([x for x in c if x.get('spread') is not None and x['spread'] > 0.05])}")
@@ -589,6 +619,7 @@ def cb(c):
         elif d.startswith("yf:"): A["yf"] = d[3:]; e = "ayar"
         elif d.startswith("nt:"): A["net"] = float(d[3:]); e = "ayar"
         elif d.startswith("pn:"): A["pen"] = int(d[3:]); e = "ayar"
+        elif d == "ao": A["ao"] = not A.get("ao"); e = "ayar"
         elif d.startswith("dt:"): A["dt"] = float(d[3:]); e = "ayar"
         elif d.startswith("uc:"): A["uc"] = float(d[3:]); e = "ayar"
         elif d.startswith("es:"): A["esik"] = float(d[3:]); e = "ayar"
