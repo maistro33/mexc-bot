@@ -18,7 +18,8 @@
 # v4.7 10.10 13:50  İlk açılışta bir kerelik "hiç durmasın" ayarı: Aralık modu, 1$ marjin, 5 işlem, uç %15, pencere 2 saat, bekleme 5 dk, limit -5$.
 # v4.8 10.10 22:20  Aralık modu için isteğe bağlı YÖN FİLTRESİ (Kapalı / 15dk dönüş / 4s trend+dönüş). Varsayılan KAPALI (backtestte fayda göstermedi).
 # v4.9 10.10 22:50  MİKRO: her sinyalde emir defteri dengesizliği, spread, açık pozisyon (OI) kaydedilir (mikro.jsonl, /mikro ile özet+dosya). MİKRO FİLTRE (varsayılan AÇIK): spread >%0.10 ya da emir defteri işlem yönünün aleyhineyse girmez.
-VERSIYON = "v4.9 (10.10 22:50)"
+# v4.10 10.10 22:55  Açılış mesajına emir defteri dengesizliği + spread satırı; mikro.jsonl'ye giriş kaydı da yazılır.
+VERSIYON = "v4.10 (10.10 22:55)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -248,6 +249,8 @@ def ac(sym, yon, son, pct):
     with KIL:
         acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0, "t": int(time.time()), "y": p["side"], "mk": MK.pop(sym, None)}; kaydet()
         fy = borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))     # ZORUNLU yedek stop: bot düşse bile korur
+    mk0 = (acik.get(sym) or {}).get("mk")
+    if mk0 is not None: mikro_yaz({"e": "giris", "t": int(time.time()), "s": sym.split(":")[0], "fiyat": gir, **mk0})
     ters = A["mod"] == "ters"
     sebep = f"5 dk mum %{pct:.1f} {'yükseldi' if (yon == 'sell') == ters else 'düştü'} → {'TERSİNE' if ters else 'TAKİP'}"
     if A["mod"] == "aralik": sebep = f"{A['pen']*5//60} saatlik aralık (%{pct:.1f} geniş) {'dibinde' if yon == 'buy' else 'tepesinde'} → ARALIK"
@@ -255,6 +258,7 @@ def ac(sym, yon, son, pct):
           f"Sebep: {sebep}\n"
           f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl}${not_})\n"
           f"{'🛡 Borsa yedek stopu: ' + str(fy) if fy else '⚠️ Borsa stopu YOK, bot takip ediyor'}\n"
+          + (f"🔬 Emir defteri {mk0['imb_y']:+.2f} (işlem yönünde +) · spread %{mk0['spread']:.3f}\n" if mk0 and mk0.get("imb_y") is not None and mk0.get("spread") is not None else "") +
           f"Kâr: kademeli kilit " + " → ".join(f"+{x*mj:.2f}$" for x in A["lv"]))
     return True
 
