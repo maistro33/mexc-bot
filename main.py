@@ -19,7 +19,11 @@
 # v4.8 10.10 22:20  Aralık modu için isteğe bağlı YÖN FİLTRESİ (Kapalı / 15dk dönüş / 4s trend+dönüş). Varsayılan KAPALI (backtestte fayda göstermedi).
 # v4.9 10.10 22:50  MİKRO: her sinyalde emir defteri dengesizliği, spread, açık pozisyon (OI) kaydedilir (mikro.jsonl, /mikro ile özet+dosya). MİKRO FİLTRE (varsayılan AÇIK): spread >%0.10 ya da emir defteri işlem yönünün aleyhineyse girmez.
 # v4.10 10.10 22:55  Açılış mesajına emir defteri dengesizliği + spread satırı; mikro.jsonl'ye giriş kaydı da yazılır.
-VERSIYON = "v4.10 (10.10 22:55)"
+# v4.11 11.10 01:10  MİKRO artık 3 modlu: KAPALI / ATLA (eski filtre) / ÇEVİR: sinyalde emir defteri işlem yönünün aleyhine ağırsa (imb ≤ −0.10) YÖN TERSİNE ÇEVRİLİR
+#                   (NIL örneği: short sinyali, alış baskın → long). −0.10…+0.10 arası ve defter yoksa sinyal yönü korunur. ÇEVİR modunda spread filtresi uygulanmaz. Test edilmedi, deneysel.
+# v4.12 11.10 01:30  Yeni mod "DEFTER": aralık sinyali olmadan, emir defteri (ilk 10 kademe) belirgin yatıksa (varsayılan |imb| ≥ 0.5) ağır tarafta işlem açar
+#                   (alış ağır → long, satış ağır → short). Spread >%0.10 ise girmez. Her 5 dk'da en hareketli 40 coin taranır. Deneysel, backtest YOK.
+VERSIYON = "v4.12 (11.10 01:30)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -48,7 +52,7 @@ HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHI
 HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 A = {"v": 3, "calis": True, "mod": "ters", "esik": 5.0, "marjin": MARJIN, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_ORAN,
-     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "yf": "kapali", "mf": True, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
+     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "yf": "kapali", "mf": "kapali", "dt": 0.5, "dn": 40, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
 lev_cap = {}                 # coin -> borsanın kabul ettiği en yüksek kaldıraç
 acik, yasak, gecmis = {}, {}, []
 KIL = threading.RLock()
@@ -94,7 +98,14 @@ def mikro_yaz(d):
         with open(MIKRO, "a") as f: f.write(json.dumps(d, ensure_ascii=False) + "\n")
     except Exception: pass
 
-def mikro_ozellik(sm, yon, c):
+def mfm():
+    """Mikro modu: eski ayar True/False ise ATLA/KAPALI sayılır."""
+    v = A.get("mf")
+    if v is True: return "atla"
+    if v in ("atla", "cevir"): return v
+    return "kapali"
+
+def mikro_ozellik(sm, yon, c, oi=True):
     """Sinyal anında emir defteri dengesizliği, spread, açık pozisyon (OI). Alınamazsa None (filtre devre dışı kalır)."""
     sg = 1 if yon == "buy" else -1; o = {"imb_y": None, "spread": None, "oi": None}
     try:
@@ -104,6 +115,7 @@ def mikro_ozellik(sm, yon, c):
             if bv + av > 0: o["imb_y"] = round(sg * (bv - av) / (bv + av), 3)        # + : işlem yönünde baskı (long için alış ağır)
             o["spread"] = round((a[0][0] / b[0][0] - 1) * 100, 4)
     except Exception: pass
+    if not oi: return o
     try:
         import requests
         r = requests.get("https://api.bitget.com/api/v2/mix/market/open-interest", params={"symbol": temiz(sm) + "USDT", "productType": "USDT-FUTURES"}, timeout=4).json()
@@ -254,6 +266,8 @@ def ac(sym, yon, son, pct):
     ters = A["mod"] == "ters"
     sebep = f"5 dk mum %{pct:.1f} {'yükseldi' if (yon == 'sell') == ters else 'düştü'} → {'TERSİNE' if ters else 'TAKİP'}"
     if A["mod"] == "aralik": sebep = f"{A['pen']*5//60} saatlik aralık (%{pct:.1f} geniş) {'dibinde' if yon == 'buy' else 'tepesinde'} → ARALIK"
+    if mk0 and mk0.get("cevrildi"): sebep = f"Sinyal {'AL' if mk0.get('sinyal_y') == 'buy' else 'SAT'} idi ama emir defteri aleyhine ağırdı → YÖN ÇEVRİLDİ"
+    if A["mod"] == "defter": sebep = f"Emir defteri {'alış' if yon == 'buy' else 'satış'} ağırlıklı (%{pct:.0f} denge) → DEFTER"
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {ad} · {lev}x izole · {mj}$\n"
           f"Sebep: {sebep}\n"
           f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl}${not_})\n"
@@ -345,11 +359,33 @@ def aralik_girisleri(px):
         with KIL:
             if len(acik) >= A["max_pos"]: break
         mk = mikro_ozellik(sm, yon, c); mk["gen"] = round(gen, 1); mk["pos"] = round(pos, 3); mk["y"] = yon
-        kotu = A.get("mf") and ((mk["spread"] is not None and mk["spread"] > 0.10) or (mk["imb_y"] is not None and mk["imb_y"] < 0))   # geniş spread ya da emir defteri işlem yönünün aleyhine
+        mod_mf = mfm()
+        if mod_mf == "cevir" and mk["imb_y"] is not None and mk["imb_y"] <= -0.10:     # emir defteri sinyalin aleyhine ağır → yönü çevir
+            yon = "sell" if yon == "buy" else "buy"; mk["imb_y"] = round(-mk["imb_y"], 3); mk["cevrildi"] = True; mk["sinyal_y"] = mk["y"]; mk["y"] = yon
+        kotu = mod_mf == "atla" and ((mk["spread"] is not None and mk["spread"] > 0.10) or (mk["imb_y"] is not None and mk["imb_y"] < 0))   # geniş spread ya da emir defteri işlem yönünün aleyhine
         if kotu:
             mikro_yaz({"e": "atla", "t": int(time.time()), "s": sm.split(":")[0], **mk}); continue
         MK[sm] = mk
         try: ac(sm, yon, c, gen)
+        except Exception as e: haber(f"⚠️ {sm.split(':')[0]} giriş hatası: {str(e)[:120]}")
+        MK.pop(sm, None)
+
+def defter_girisleri(px):
+    """DEFTER modu: emir defteri belirgin yatıksa ağır tarafta gir (alış ağır → long, satış ağır → short)."""
+    t0 = time.time(); aday = []
+    for sm, c in list(px.items())[:A.get("dn", 40) + 1]:
+        if time.time() - t0 > 40: break
+        if sm == "_dogru" or not uygun(sm): continue
+        mk = mikro_ozellik(sm, "buy", c, oi=False)
+        if mk["imb_y"] is None or mk["spread"] is None or mk["spread"] > 0.10 or abs(mk["imb_y"]) < A.get("dt", 0.5): continue
+        aday.append((abs(mk["imb_y"]), sm, "buy" if mk["imb_y"] > 0 else "sell", c))
+    for im, sm, yon, c in sorted(aday, reverse=True):
+        with KIL:
+            if len(acik) >= A["max_pos"]: break
+        mk = mikro_ozellik(sm, yon, c); mk["y"] = yon; mk["mod"] = "defter"
+        if mk["imb_y"] is None or mk["imb_y"] < A.get("dt", 0.5) * 0.6 or (mk["spread"] or 0) > 0.10: continue      # girişte defter hâlâ aynı yönde mi
+        MK[sm] = mk
+        try: ac(sm, yon, c, im * 100)
         except Exception as e: haber(f"⚠️ {sm.split(':')[0]} giriş hatası: {str(e)[:120]}")
         MK.pop(sm, None)
 
@@ -364,6 +400,9 @@ def tarama_adimi():
     for b in [b for b in acilis if b < bid - 3]: acilis.pop(b)
     for sm, c in px.items():
         if sm != "_dogru": hist.setdefault(sm, []).append(c); del hist[sm][:-300]
+    if A["mod"] == "defter":
+        if px["_dogru"] and gec < 45 and A["calis"] and not limit_doldu(): defter_girisleri(px)
+        return
     if A["mod"] == "aralik":
         try:
             if px["_dogru"] and gec < 45 and A["calis"] and not limit_doldu(): aralik_girisleri(px)
@@ -396,6 +435,7 @@ def pozlar():
     POZ.clear(); POZ.update({n: p["symbol"] for n, p in enumerate(ps)}); return ps
 
 def strateji_yazi():
+    if A["mod"] == "defter": return f"DEFTER: emir defteri |denge| ≥ {A.get('dt', 0.5):g} ise ağır tarafta işlem (en hareketli {A.get('dn', 40)} coin)"
     if A["mod"] == "aralik": return f"ARALIK: son {A['pen']*5//60} saatlik aralığın alt %{A['uc']}'unda AL, üst %{A['uc']}'unda SAT (aralık %2–%{A['gen']:g})"
     return f"{'TERSİNE (yükselene sat, düşene al)' if A['mod'] == 'ters' else 'TAKİP (yükselene al, düşene sat)'} · 5 dk mum ≥ %{A['esik']:g}"
 
@@ -426,7 +466,10 @@ def ekran(e):
         def bas(t): k.row(B(f"— {t} —", callback_data="ayar"))
         bas("STRATEJİ")
         k.row(B(("✅ " if A["mod"] == "ters" else "") + "Tersine", callback_data="mod:ters"), B(("✅ " if A["mod"] == "takip" else "") + "Takip", callback_data="mod:takip"))
-        k.row(B(("✅ " if A["mod"] == "aralik" else "") + "Aralık (dip/tepe)", callback_data="mod:aralik"))
+        k.row(B(("✅ " if A["mod"] == "aralik" else "") + "Aralık (dip/tepe)", callback_data="mod:aralik"), B(("✅ " if A["mod"] == "defter" else "") + "Defter (deneysel)", callback_data="mod:defter"))
+        if A["mod"] == "defter":
+            bas("DEFTER: EŞİK (|denge|)")
+            k.row(*sec((0.3, 0.5, 0.7), A.get("dt", 0.5), "dt", lambda v: f"{v:g}"))
         if A["mod"] == "aralik":
             bas("ARALIK: PENCERE")
             k.row(*sec((24, 48, 96), A["pen"], "pn", lambda v: f"{v*5//60} saat"))
@@ -438,8 +481,8 @@ def ekran(e):
         if A["mod"] == "aralik":
             bas("YÖN FİLTRESİ (test: fayda göstermedi)")
             k.row(*[B(("✅ " if A.get("yf") == v else "") + t, callback_data=f"yf:{v}") for v, t in (("kapali", "Kapalı"), ("donus", "15dk dönüş"), ("trend", "4s trend+dönüş"))])
-        bas("MİKRO FİLTRE (emir defteri + spread)")
-        k.row(B("✅ AÇIK (kapat)" if A.get("mf") else "❌ KAPALI (aç)", callback_data="mf"))
+        bas("MİKRO (emir defteri + spread)")
+        k.row(*[B(("✅ " if mfm() == v else "") + t, callback_data=f"mf:{v}") for v, t in (("kapali", "Kapalı"), ("atla", "Atla"), ("cevir", "Yönü çevir"))])
         bas("MARJİN (işlem başı)")
         k.row(*sec((1, 2, 3, 5), A["marjin"], "mj", lambda v: f"{v}$"))
         bas("KALDIRAÇ (en çok)")
@@ -500,6 +543,7 @@ def mikro_ozet(m):
     t = [f"🔬 MİKRO KAYIT: {len(c)} kapanan işlem, {len(a)} atlanan sinyal"]
     t.append(f"Emir defteri işlem yönünde (imb>0): {ort([x for x in c if (x.get('imb_y') or 0) > 0])}")
     t.append(f"Emir defteri aleyhine (imb<0): {ort([x for x in c if (x.get('imb_y') or 0) < 0])}")
+    t.append(f"Yönü çevrilen işlemler: {ort([x for x in c if x.get('cevrildi')])}")
     t.append(f"Spread ≤%0.05: {ort([x for x in c if x.get('spread') is not None and x['spread'] <= 0.05])}")
     t.append(f"Spread >%0.05: {ort([x for x in c if x.get('spread') is not None and x['spread'] > 0.05])}")
     bot.send_message(CHAT, "\n".join(t))
@@ -540,10 +584,12 @@ def cb(c):
         elif d == "tog": A["calis"] = not A["calis"]
         elif d == "hk": A["hk"] = not A["hk"]; e = "ayar"
         elif d.startswith("mod:"): A["mod"] = d[4:]; e = "ayar"
-        elif d == "mf": A["mf"] = not A.get("mf"); e = "ayar"
+        elif d == "mf": A["mf"] = "kapali" if mfm() != "kapali" else "atla"; e = "ayar"
+        elif d.startswith("mf:"): A["mf"] = d[3:]; e = "ayar"
         elif d.startswith("yf:"): A["yf"] = d[3:]; e = "ayar"
         elif d.startswith("nt:"): A["net"] = float(d[3:]); e = "ayar"
         elif d.startswith("pn:"): A["pen"] = int(d[3:]); e = "ayar"
+        elif d.startswith("dt:"): A["dt"] = float(d[3:]); e = "ayar"
         elif d.startswith("uc:"): A["uc"] = float(d[3:]); e = "ayar"
         elif d.startswith("es:"): A["esik"] = float(d[3:]); e = "ayar"
         elif d.startswith("mj:"): A["marjin"] = float(d[3:]); e = "ayar"
