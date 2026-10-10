@@ -12,7 +12,8 @@
 #                   aralıklar atlanır). Panelden seçilir, 5 dk gövde modları duruyor.
 # v4.2 09.10 22:45  Ayarlar ekranı sadeleştirildi: her ayarın kendi başlığı, kısa düğme yazıları, seçili moda göre sadece ilgili ayarlar.
 # v4.3 09.10 22:50  Hisse/altın/emtia (Bitget isRwa=YES) otomatik tanınıyor; "Hisse senetleri KAPALI" artık hepsini (ASTS dahil) engeller.
-VERSIYON = "v4.3 (09.10 23:05)"
+# v4.4 10.10 09:55  Hantal (en hacimli 40) coinler taramadan çıkarıldı; kalanlar 24s'te en çok oynayana göre sıralanır. Zararla kapanan coine 2 saat yasak.
+VERSIYON = "v4.4 (10.10 09:55)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -41,7 +42,7 @@ HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHI
 HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 A = {"v": 3, "calis": True, "mod": "ters", "esik": 5.0, "marjin": MARJIN, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_ORAN,
-     "gunluk": 3.0, "bekle": 15, "pen": 48, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
+     "gunluk": 3.0, "bekle": 15, "pen": 48, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
 lev_cap = {}                 # coin -> borsanın kabul ettiği en yüksek kaldıraç
 acik, yasak, gecmis = {}, {}, []
 KIL = threading.RLock()
@@ -134,7 +135,7 @@ def borsa_stop(sym, p, k, kilit):
 def kapat(sym, p, neden):
     yon = "sell" if p["side"] == "long" else "buy"
     ex.create_order(sym, "market", yon, p["contracts"], params={"reduceOnly": True, "marginMode": "isolated"})
-    yasak[sym] = time.time() + A["bekle"] * 60
+    yasak[sym] = time.time() + (A["bekle"] * 60 if p["unrealizedPnl"] > 0 else max(A["bekle"] * 60, 2 * 3600))   # zararla kapanan coine 2 saat yok
     kk = acik.pop(sym, {}); borsa_stop_iptal(sym, kk.get("sid")); z = kk.get("zirve", 0.0)
     logla(sym, p["side"], p["unrealizedPnl"], neden, z)
     haber(f"{'✅' if p['unrealizedPnl'] > 0 else '❌'} {sym.split(':')[0]} kapandı: {neden}\nPnL ≈ {p['unrealizedPnl']:+.2f}$ (gördüğü zirve {z:+.2f}$)")
@@ -260,9 +261,16 @@ tarama_bid = [0]
 hist = {}              # sembol -> son 5 dk kapanışları (aralık modu)
 son_tarama = [0.0]
 def fiyatlar():
+    """Hantal (en yüksek hacimli) coinleri at, kalanlar arasından 24 saatte en çok oynayanları (yüksek-düşük aralığı geniş) seç."""
     tk = ex.fetch_tickers()
-    top = sorted((t for s, t in tk.items() if s.endswith(":USDT") and t.get("last")), key=lambda t: -(t.get("quoteVolume") or 0))[:COIN_SAYI]
-    return {t["symbol"]: float(t["last"]) for t in top}
+    L = [t for s, t in tk.items() if s.endswith(":USDT") and t.get("last")]
+    L.sort(key=lambda t: -(t.get("quoteVolume") or 0))
+    L = [t for t in L[A.get("hantal", 40):] if (t.get("quoteVolume") or 0) >= 1_000_000]       # en hacimli N coin = hantal, atla; çok ölü coinleri de atla
+    def oynak(t):
+        h, l = t.get("high") or 0, t.get("low") or 0
+        return (h / l - 1) if h and l else 0
+    L.sort(key=lambda t: -oynak(t))
+    return {t["symbol"]: float(t["last"]) for t in L[:COIN_SAYI]}
 
 def uygun(s):
     b = temiz(s)
