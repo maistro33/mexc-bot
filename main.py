@@ -13,7 +13,10 @@
 # v4.2 09.10 22:45  Ayarlar ekranı sadeleştirildi: her ayarın kendi başlığı, kısa düğme yazıları, seçili moda göre sadece ilgili ayarlar.
 # v4.3 09.10 22:50  Hisse/altın/emtia (Bitget isRwa=YES) otomatik tanınıyor; "Hisse senetleri KAPALI" artık hepsini (ASTS dahil) engeller.
 # v4.4 10.10 09:55  Hantal (en hacimli 40) coinler taramadan çıkarıldı; kalanlar 24s'te en çok oynayana göre sıralanır. Zararla kapanan coine 2 saat yasak.
-VERSIYON = "v4.4 (10.10 09:55)"
+# v4.5 10.10 10:30  İlk kilit artık marjinden bağımsız: panelden "NET KÂR ($)" (varsayılan +0.30$). Ücret+kayma payı otomatik eklenir (2$ marjinde ilk kilit ≈0.51$'da).
+# v4.6 10.10 13:45  İlk kilit net seçeneği +0.10$ eklendi (+0.1 / +0.2 / +0.3 / +0.5).
+# v4.7 10.10 13:50  İlk açılışta bir kerelik "hiç durmasın" ayarı: Aralık modu, 1$ marjin, 5 işlem, uç %15, pencere 2 saat, bekleme 5 dk, limit -5$.
+VERSIYON = "v4.7 (10.10 13:50)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -42,7 +45,7 @@ HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHI
 HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 A = {"v": 3, "calis": True, "mod": "ters", "esik": 5.0, "marjin": MARJIN, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_ORAN,
-     "gunluk": 3.0, "bekle": 15, "pen": 48, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
+     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
 lev_cap = {}                 # coin -> borsanın kabul ettiği en yüksek kaldıraç
 acik, yasak, gecmis = {}, {}, []
 KIL = threading.RLock()
@@ -52,6 +55,8 @@ try:
     elif a0.get("haric"): A["haric"] = a0["haric"]          # eski sürümden sadece hariç listesini al
     acik.update(d.get("acik", {})); gecmis.extend(d.get("gecmis", [])); lev_cap.update(d.get("cap", {}))
 except Exception: pass
+if A.get("onayar") != "v4.7":      # v4.7: "hiç durmasın" ayarları BİR KERE uygulanır (sonra panelden değiştirilebilir)
+    A.update({"mod": "aralik", "marjin": 1, "max_pos": 5, "uc": 15.0, "pen": 24, "bekle": 5, "gunluk": 5.0, "onayar": "v4.7"})
 def kaydet():
     try: json.dump({"A": A, "acik": acik, "gecmis": gecmis[-400:], "cap": lev_cap}, open(DOSYA, "w"))
     except Exception: pass
@@ -241,8 +246,8 @@ def yonet():
             lv = k.get("lv") or A["lv"]; k["lv"] = lv; a_ = k.get("asama", 0); mj_ = k["mj"]
             try: lev_ = float(p.get("leverage") or 20)
             except Exception: lev_ = 20.0
-            kl1 = 0.30 * mj_ + 0.0012 * mj_ * lev_ + 0.03 * mj_        # net ≈0.30$ kalsın: ücret + kayma payı
-            e0 = max(lv[0] * mj_, kl1 + 0.05 * mj_)
+            kl1 = A["net"] + 0.0012 * mj_ * lev_ + 0.03 * mj_           # ilk kilit: NET hedef($) + ücret + kayma payı (marjinden bağımsız sabit net)
+            e0 = kl1 + 0.05 * mj_                                       # kilit bu kârı görünce devreye girer
             while a_ < len(lv) and pnl >= (e0 if a_ == 0 else lv[a_] * mj_): a_ += 1
             if a_ != k.get("asama", 0):
                 k["asama"] = a_; k["kilit"] = kl1 if a_ == 1 else (e0 if a_ == 2 else lv[a_ - 2] * mj_) * 0.95
@@ -395,6 +400,8 @@ def ekran(e):
         k.row(*sec((1, 2, 3, 5), A["max_pos"], "lim", lambda v: str(v)))
         bas("GÜNLÜK ZARAR LİMİTİ")
         k.row(*sec((2, 3, 5, 10), A["gunluk"], "gl", lambda v: f"-{v}$") + [B(("✅ " if not A["gunluk"] else "") + "Yok", callback_data="gl:0")])
+        bas("İLK KİLİT: NET KÂR ($)")
+        k.row(*sec((0.1, 0.2, 0.3, 0.5), A["net"], "nt", lambda v: f"+{v}$"))
         bas("AYNI COİNE TEKRAR (bekleme)")
         k.row(*sec((5, 15, 30), A["bekle"], "bk", lambda v: f"{v} dk"))
         bas("KÂR KİLİDİ")
@@ -469,6 +476,7 @@ def cb(c):
         elif d == "tog": A["calis"] = not A["calis"]
         elif d == "hk": A["hk"] = not A["hk"]; e = "ayar"
         elif d.startswith("mod:"): A["mod"] = d[4:]; e = "ayar"
+        elif d.startswith("nt:"): A["net"] = float(d[3:]); e = "ayar"
         elif d.startswith("pn:"): A["pen"] = int(d[3:]); e = "ayar"
         elif d.startswith("uc:"): A["uc"] = float(d[3:]); e = "ayar"
         elif d.startswith("es:"): A["esik"] = float(d[3:]); e = "ayar"
