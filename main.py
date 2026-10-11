@@ -26,7 +26,9 @@
 # v4.13 11.10 02:00  BÜYÜK İŞLEM AKIŞI: her sinyalde son 1/5/15 dk'da gerçekleşen BÜYÜK alım/satım işlemlerinin net yönü (akis1/akis5/akis15, işlem yönünde +) ölçülüp
 #                   mikro.jsonl'ye yazılır ve açılış mesajında görünür (varsayılan sadece KAYIT). Panelde DEFTER modu için isteğe bağlı "AKIŞ ONAYI" (varsayılan KAPALI):
 #                   açıkken büyük akış (5 dk) işlem yönünün aleyhineyse Defter girişi atlanır. /mikro özetine akış karşılaştırması eklendi.
-VERSIYON = "v4.13 (11.10 02:00)"
+# v4.14 11.10 14:30  GÖLGE (kâğıt üstü) İŞLEM: her DEFTER girişinde, aynı anda TERS yöndeki hayali işlem de aynı kaldıraç/stop/kademeli kilitle 1 dk'lık mumlarla takip edilir
+#                   (gerçek emir YOK). Sonuç mikro.jsonl'ye "golge" olarak yazılır; /mikro özeti gerçek ile gölge (ters yön) toplamını yan yana gösterir.
+VERSIYON = "v4.14 (11.10 14:30)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -100,6 +102,80 @@ def mikro_yaz(d):
     try:
         with open(MIKRO, "a") as f: f.write(json.dumps(d, ensure_ascii=False) + "\n")
     except Exception: pass
+
+GOLGE_DOSYA = DOSYA.replace("ayar.json", "golge.json")
+GOLGE = []                      # açık hayali işlemler
+GOLGE_KIL = threading.Lock()
+try: GOLGE.extend(json.load(open(GOLGE_DOSYA)))
+except Exception: pass
+GOLGE_MAKS_DK = 300             # hayali işlem en fazla bu kadar dakika izlenir
+
+def golge_kaydet():
+    try: json.dump(GOLGE, open(GOLGE_DOSYA, "w"))
+    except Exception: pass
+
+def golge_ac(sym, yon, gir, mj, lev, sl, t0):
+    """Gerçek işlemin TERSİ yönünde hayali işlem. yon: gerçek işlemin yönü ('buy'/'sell')."""
+    try:
+        y = -1 if yon == "buy" else 1                                     # ters yön
+        kl1 = A["net"] + 0.0012 * mj * lev + 0.03 * mj; e0 = kl1 + 0.05 * mj; lv = A["lv"]
+        g = {"s": sym, "y": y, "e": gir, "n": mj * lev / gir, "mj": mj, "lev": lev, "sl": sl, "kl1": kl1, "e0": e0,
+             "L": [e0, lv[1] * mj, lv[2] * mj, lv[3] * mj], "asama": 0, "kilit": None, "zirve": 0.0, "t0": t0, "ts": int(time.time() * 1000), "son": int(time.time() * 1000), "gy": yon}
+        with GOLGE_KIL: GOLGE.append(g); golge_kaydet()
+    except Exception as e: print("golge_ac hata", repr(e)[:150], flush=True)
+
+def golge_bar(g, hi, lo):
+    """Tek 1 dk'lık mum (kötü sıra: önce en kötü). Kapanırsa net PnL ($), kapanmazsa None."""
+    e, n, y, mj = g["e"], g["n"], g["y"], g["mj"]
+    wor = (lo - e) * n if y > 0 else (e - hi) * n; bes = (hi - e) * n if y > 0 else (e - lo) * n
+    if g["kilit"] is None and wor <= -g["sl"]: return -g["sl"]
+    if g["kilit"] is not None and wor <= g["kilit"]: return g["kilit"]
+    g["zirve"] = max(g["zirve"], bes); L = g["L"]
+    while g["asama"] < 4 and g["zirve"] >= L[g["asama"]]: g["asama"] += 1
+    a = g["asama"]
+    if a > 0:
+        if a == 1: kk = g["kl1"]
+        elif a == 2: kk = g["e0"] * 0.95
+        elif a == 3: kk = L[1] * 0.95
+        else: kk = max(L[2] * 0.95, g["zirve"] - (L[3] - L[2]))
+        if a >= 2: kk = max(kk, 0.65 * g["zirve"])
+        g["kilit"] = max(g["kilit"], kk) if g["kilit"] is not None else kk
+    return None
+
+def golge_adim():
+    """Açık hayali işlemleri yeni 1 dk'lık mumlarla ilerlet."""
+    with GOLGE_KIL: liste = list(GOLGE)
+    bitenler = []
+    for g in liste:
+        try:
+            bars = ex.fetch_ohlcv(g["s"], "1m", limit=15)
+            simdi = time.time() * 1000; son = g["son"]; pnl = None; neden = ""
+            for b in bars:
+                ts = float(b[0])
+                if ts <= son or ts + 60000 > simdi or ts < g["ts"]: continue       # tamamlanmamış mum / girişten önce başlayan mum
+                son = ts; r = golge_bar(g, float(b[2]), float(b[3])); g["son"] = son; g["c"] = float(b[4])
+                if r is not None: pnl = r; neden = "STOP" if g["kilit"] is None else "KİLİT"; break
+            if pnl is None and (simdi - g["ts"]) / 60000 >= GOLGE_MAKS_DK:
+                pnl = (g.get("c", g["e"]) - g["e"]) * g["n"] * g["y"]; neden = "SÜRE"
+            if pnl is not None:
+                net = pnl - 0.0032 * g["mj"] * g["lev"]
+                mikro_yaz({"e": "golge", "t": int(time.time()), "s": g["s"].split(":")[0], "t0": g["t0"], "y": "buy" if g["y"] > 0 else "sell", "gercek_y": g["gy"], "pnl": round(net, 3), "n": neden, "dk": round((simdi - g["ts"]) / 60000)})
+                bitenler.append(g)
+        except Exception as e: print("golge_adim hata", g.get("s"), repr(e)[:150], flush=True)
+    if bitenler:
+        with GOLGE_KIL:
+            for g in bitenler:
+                try: GOLGE.remove(g)
+                except ValueError: pass
+            golge_kaydet()
+    else:
+        with GOLGE_KIL: golge_kaydet()
+
+def golge_dongu():
+    while True:
+        try: golge_adim()
+        except Exception as e: print("golge hata", repr(e)[:150], flush=True)
+        time.sleep(60)
 
 def mfm():
     """Mikro modu: eski ayar True/False ise ATLA/KAPALI sayılır."""
@@ -286,6 +362,7 @@ def ac(sym, yon, son, pct):
         fy = borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))     # ZORUNLU yedek stop: bot düşse bile korur
     mk0 = (acik.get(sym) or {}).get("mk")
     if mk0 is not None: mikro_yaz({"e": "giris", "t": int(time.time()), "s": sym.split(":")[0], "fiyat": gir, **mk0})
+    if mk0 and mk0.get("mod") == "defter": golge_ac(sym, yon, gir, mj, lev, sl, mk0.get("t0", int(time.time())))        # TERS yönde hayali işlem
     ters = A["mod"] == "ters"
     sebep = f"5 dk mum %{pct:.1f} {'yükseldi' if (yon == 'sell') == ters else 'düştü'} → {'TERSİNE' if ters else 'TAKİP'}"
     if A["mod"] == "aralik": sebep = f"{A['pen']*5//60} saatlik aralık (%{pct:.1f} geniş) {'dibinde' if yon == 'buy' else 'tepesinde'} → ARALIK"
@@ -406,7 +483,7 @@ def defter_girisleri(px):
     for im, sm, yon, c in sorted(aday, reverse=True):
         with KIL:
             if len(acik) >= A["max_pos"]: break
-        mk = mikro_ozellik(sm, yon, c); mk["y"] = yon; mk["mod"] = "defter"
+        mk = mikro_ozellik(sm, yon, c); mk["y"] = yon; mk["mod"] = "defter"; mk["t0"] = int(time.time())
         if mk["imb_y"] is None or mk["imb_y"] < A.get("dt", 0.5) * 0.6 or (mk["spread"] or 0) > 0.10: continue      # girişte defter hâlâ aynı yönde mi
         if A.get("ao") and mk.get("akis5") is not None and mk["akis5"] < 0:                                    # AKIŞ ONAYI: büyük işlemler yönün aleyhine
             mikro_yaz({"e": "atla", "t": int(time.time()), "s": sm.split(":")[0], **mk}); continue
@@ -573,6 +650,12 @@ def mikro_ozet(m):
     t.append(f"Emir defteri aleyhine (imb<0): {ort([x for x in c if (x.get('imb_y') or 0) < 0])}")
     for k_, ad_ in (("akis1", "1dk"), ("akis5", "5dk"), ("akis15", "15dk")):
         t.append(f"Büyük akış {ad_} işlem yönünde (+): {ort([x for x in c if (x.get(k_) or 0) > 0.2])} | aleyhine (−): {ort([x for x in c if (x.get(k_) or 0) < -0.2])}")
+    gl = [x for x in L if x.get("e") == "golge"]
+    if gl:
+        ger = {(x.get("s"), x.get("t0")): x["pnl"] for x in c if x.get("mod") == "defter" and x.get("t0")}
+        es = [(ger[(x["s"], x["t0"])], x["pnl"]) for x in gl if (x["s"], x["t0"]) in ger]
+        t.append(f"👻 GÖLGE (defterin TERSİ, kâğıt üstü): {len(gl)} kapanan, toplam {sum(x['pnl'] for x in gl):+.2f}$, kazanç %{100*sum(x['pnl']>0 for x in gl)/len(gl):.0f}")
+        if es: t.append(f"   Eşleşen {len(es)} işlemde: gerçek {sum(a for a,_ in es):+.2f}$ · gölge {sum(b for _,b in es):+.2f}$")
     t.append(f"Yönü çevrilen işlemler: {ort([x for x in c if x.get('cevrildi')])}")
     t.append(f"Spread ≤%0.05: {ort([x for x in c if x.get('spread') is not None and x['spread'] <= 0.05])}")
     t.append(f"Spread >%0.05: {ort([x for x in c if x.get('spread') is not None and x['spread'] > 0.05])}")
@@ -676,4 +759,5 @@ if __name__ == "__main__":
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
     haber(f"🤖 GHOST KISA {VERSIYON} hazır\n{durum()}\n🎯 {strateji_yazi()}\n💰 {A['marjin']:g}$ izole · ≤{A['lev']}x · max {A['max_pos']} işlem · limit {('−' + str(A['gunluk']) + '$') if A['gunluk'] else 'yok'}\n→ /panel")
     threading.Thread(target=izle, daemon=True).start()
+    threading.Thread(target=golge_dongu, daemon=True).start()
     tarama()
