@@ -18,7 +18,10 @@
 # v5.0 11.10 22:50  Sıfırdan yazım: tek giriş kuralı (24s hareketlisi 1 saatte dönünce), iz süren kilit (zirveyi takip),
 #                   yeni panel (Adaylar, Özet, Günlük tablo, Ayarlar, Yardım), gece yarısı günlük rapor, /kayit işlem dosyası.
 #                   Eski modlar (tersine/takip/aralık/defter/mikro/gölge) tamamen kaldırıldı. Ayarlar yeni dosyada (ayar5.json), eski istatistik karışmaz.
-VERSIYON = "v5.0 (11.10 22:50)"
+# v5.1 11.10 23:20  SÜREKLİ MOD (varsayılan AÇIK, Ayarlar'dan kapatılır): dönüş sinyali yokken boş kalan yerler 15 dakikalık harekete göre doldurulur
+#                   (son 15 dk'da ≥%2.5 oynayan coine TERS yönde girilir). Amaç bot hiç boş durmasın. TEST: bu mod günde ~95 işlem açar ama
+#                   31 günlük veride günde −1.4$ ile −3.5$ arası ZARAR etti (1$ marjin). Özet ekranı Dönüş / Sürekli işlemlerini ayrı gösterir.
+VERSIYON = "v5.1 (11.10 23:20)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -47,11 +50,12 @@ HISSE = set()                               # hisse/altın/emtia: açılışta b
 
 # ───────────────────────── ayarlar ─────────────────────────
 A = {"v": 5, "calis": True, "marjin": 1.0, "lev": 20, "max_pos": 5, "sl": 0.8, "net": 0.10, "iz": 0.10,
-     "g24": 10.0, "d1": 4.0, "yon": "iki", "gunluk": 5.0, "bekle": 15, "elle": True, "hantal": 40, "haric": list(HARIC)}
+     "g24": 10.0, "d1": 4.0, "yon": "iki", "gunluk": 5.0, "bekle": 15, "elle": True, "surekli": True, "s15": 2.5, "hantal": 40, "haric": list(HARIC)}
 # panelde gösterilen ayarlar: anahtar -> (başlık, seçenekler, yazım)
 AYAR = {
     "g24":    ("24 SAATLİK HAREKET (en az)",            (5.0, 10.0, 15.0, 20.0),   lambda v: f"%{v:g}"),
     "d1":     ("1 SAATLİK DÖNÜŞ (en az)",               (3.0, 4.0, 5.0),           lambda v: f"%{v:g}"),
+    "s15":    ("SÜREKLİ MOD: 15 DK HAREKET (en az)",    (1.5, 2.5, 4.0),           lambda v: f"%{v:g}"),
     "yon":    ("YÖN",                                   ("iki", "long", "short"),  lambda v: {"iki": "İki yön", "long": "Sadece long", "short": "Sadece short"}[v]),
     "marjin": ("MARJİN (işlem başı)",                   (1.0, 2.0, 3.0, 5.0),      lambda v: f"{v:g}$"),
     "lev":    ("KALDIRAÇ (en çok)",                     (10, 20, 50),              lambda v: f"{v}x"),
@@ -101,7 +105,7 @@ def logla(sym, yon, pnl, neden, k):
     try: mid = ex.market(sym)["id"]
     except Exception: mid = ad(sym).replace("/", "")
     g = {"t": int(time.time()), "s": ad(sym), "id": mid, "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(k.get("zirve", 0.0), 2), "g": 0,
-         "t0": k.get("t"), "p24": k.get("p24"), "p1": k.get("p1")}
+         "t0": k.get("t"), "p24": k.get("p24"), "p1": k.get("p1"), "k": k.get("kural", "e" if k.get("elle") else "d")}
     gecmis.append(g); kaydet()
 
 hata_goster = [True]
@@ -191,7 +195,7 @@ def kaldirac_ayarla(sym, lev, yon):
 def poz_oku(sym):
     return next((x for x in ex.fetch_positions([sym]) if x.get("contracts")), None)
 
-def ac(sym, yon, son, p24, p1):
+def ac(sym, yon, son, p24, p1, kural="d"):
     """İzole pozisyon aç + borsaya zorunlu yedek stop koy. Döner: True/False."""
     with KIL:
         if sym in acik or len(acik) >= A["max_pos"]: return False
@@ -246,12 +250,12 @@ def ac(sym, yon, son, p24, p1):
             sl = round(0.7 * abs(gir - liq) * adet_f * cs, 3); not_ = " (likidasyona yakın, daraltıldı)"
     except Exception: pass
     with KIL:
-        acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0, "t": int(time.time()), "y": p["side"], "lev": lev, "p24": round(p24, 1), "p1": round(p1, 1)}
+        acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0, "t": int(time.time()), "y": p["side"], "lev": lev, "p24": round(p24, 1), "p1": round(p1, 1), "kural": kural}
         fy = borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))          # ZORUNLU yedek stop: bot düşse bile korur
         kaydet()
     kl1, e0 = kilit_seviye(mj, lev)
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {ad(sym)} · {lev}x izole · {mj:g}$\n"
-          f"Sebep: 24 saatte %{p24:+.1f}, son 1 saatte %{p1:+.1f} → dönüş yönünde\n"
+          + (f"Sebep: 24 saatte %{p24:+.1f}, son 1 saatte %{p1:+.1f} → dönüş yönünde\n" if kural == "d" else f"Sebep: son 15 dk'da %{p1:+.1f} → tersine (SÜREKLİ mod)\n") +
           f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl:g}${not_})\n"
           f"{'🛡 Borsa yedek stopu: ' + str(fy) if fy else '⚠️ Borsa stopu YOK, bot takip ediyor'}\n"
           f"Kâr: +{e0:.2f}$ görünce +{kl1:.2f}$ kilitlenir, sonra kilit zirvenin {A['iz'] * mj:.2f}$ gerisinden takip eder")
@@ -298,6 +302,7 @@ def yonet():
 
 # ───────────────────────── strateji: günün hareketlisi dönünce ─────────────────────────
 tarama_bid, son_tarama = [0], [0.0]
+PX = {}                                     # tarama_no -> {sembol: fiyat}  (sürekli mod: 15 dk önceki fiyat)
 
 def evren():
     """Taranacak coinler: hisse/emtia ve hariç listesi yok, en hacimli N (hantal) yok, hacmi 1M$ altı yok. Döner: [(sembol, fiyat, 24s %)]"""
@@ -339,7 +344,9 @@ def tarama_adimi():
     simdi = time.time(); bid = int(simdi // BAR)
     if tarama_bid[0] == bid: return
     tarama_bid[0] = bid; taze = simdi - bid * BAR < 45          # bot yeni açıldıysa ilk tarama sadece ekran için, giriş yok
-    hareketli = sorted([x for x in evren() if abs(x[2]) >= A["g24"]], key=lambda x: -abs(x[2]))[:ADAY_TAVAN]
+    ev = evren(); PX[bid] = {s: c for s, c, _ in ev}
+    for b_ in [b_ for b_ in PX if b_ < bid - 4]: PX.pop(b_)
+    hareketli = sorted([x for x in ev if abs(x[2]) >= A["g24"]], key=lambda x: -abs(x[2]))[:ADAY_TAVAN]
     liste, sinyal = [], []
     for s, c, p24 in hareketli:
         p1, p15 = bir_saat(s, c, bid)
@@ -354,6 +361,18 @@ def tarama_adimi():
             if len(acik) >= A["max_pos"]: break
         try: ac(s, y, c, p24, p1)
         except Exception as e: haber(f"⚠️ {ad(s)} giriş hatası: {str(e)[:120]}")
+    if not A["surekli"]: return
+    once = PX.get(bid - 3) or {}; dolgu = []                 # SÜREKLİ MOD: boş yerleri 15 dk hareketine TERS yönde doldur
+    for s, c, p24 in ev:
+        o = once.get(s)
+        if not o or not uygun(s): continue
+        p15 = (c / o - 1) * 100; y = "sell" if p15 > 0 else "buy"
+        if abs(p15) >= A["s15"] and A["yon"] in ("iki", "long" if y == "buy" else "short"): dolgu.append((abs(p15), s, y, c, p24, p15))
+    for _, s, y, c, p24, p15 in sorted(dolgu, reverse=True):
+        with KIL:
+            if len(acik) >= A["max_pos"]: break
+        try: ac(s, y, c, p24, p15, "s")
+        except Exception as e: haber(f"⚠️ {ad(s)} giriş hatası: {str(e)[:120]}")
 
 # ───────────────────────── panel ─────────────────────────
 B = types.InlineKeyboardButton
@@ -365,7 +384,8 @@ def pozlar():
 
 def strateji_yazi():
     y = {"iki": "iki yön", "long": "sadece long", "short": "sadece short"}[A["yon"]]
-    return f"24 saatte ≥%{A['g24']:g} oynamış coin 1 saatte ≥%{A['d1']:g} dönünce, dönüş yönünde ({y})"
+    return (f"24 saatte ≥%{A['g24']:g} oynamış coin 1 saatte ≥%{A['d1']:g} dönünce, dönüş yönünde ({y})"
+            + (f"\n♾ Sürekli mod AÇIK: boş yerler 15 dk'da ≥%{A['s15']:g} oynayana ters yönde doldurulur" if A["surekli"] else ""))
 
 def ist(L):
     """İşlem listesinin kısa istatistiği."""
@@ -418,6 +438,7 @@ def ekran(e):
                 f"Ort. kazanç: {ok_:+.2f}$ | Ort. kayıp: {oz:+.2f}$\n"
                 f"Başa baş için gereken kazanma: {bas}\n\n"
                 f"🟢 Long: {ist([g for g in gecmis if g['y'] in ('long', 'buy')])}\n🔴 Short: {ist([g for g in gecmis if g['y'] in ('short', 'sell')])}\n\n"
+                f"🔄 Dönüş kuralı: {ist([g for g in gecmis if g.get('k', 'd') == 'd'])}\n♾ Sürekli mod: {ist([g for g in gecmis if g.get('k') == 's'])}\n\n"
                 + (f"En iyi coin: {sira[-1][0]} {sira[-1][1]:+.2f}$\nEn kötü coin: {sira[0][0]} {sira[0][1]:+.2f}$" if sira else "")), k
     if e == "gunler":
         k.row(B("📊 Özet", callback_data="ozet"), geri); sat = []
@@ -429,6 +450,7 @@ def ekran(e):
         for a, (baslik, secenek, fmt) in AYAR.items():
             k.row(B(f"— {baslik} —", callback_data="ayar"))
             k.row(*[B(("✅ " if A[a] == v else "") + fmt(v), callback_data=f"s:{a}:{n}") for n, v in enumerate(secenek)])
+        k.row(B("♾ Sürekli mod: " + ("✅ AÇIK (hiç durmasın)" if A["surekli"] else "❌ KAPALI (sadece dönüş)"), callback_data="surekli"))
         k.row(B("Elle açtığım işlemler: " + ("✅ bot yönetsin" if A["elle"] else "❌ bot dokunmasın"), callback_data="elle"))
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(geri)
@@ -443,7 +465,9 @@ def ekran(e):
         return ("❓ YARDIM\n\nBot ne yapar: son 24 saatte çok oynamış küçük coinleri izler. Yükselmiş coin son 1 saatte düşmeye başlarsa SHORT, "
                 "düşmüş coin toparlanmaya başlarsa LONG açar. Her 5 dakikada bir tarar.\n\n"
                 "Çıkış: zarar stopu borsada durur. Kâr ilk kilide ulaşınca kilitlenir, sonra kilit zirveyi takip eder.\n\n"
-                "Dürüst not: 31 günlük gerçek veride bu kural başa baş çıktı. Kâr garantisi yoktur, küçük marjinle kullan.\n\n"
+                "Sürekli mod (Ayarlar'dan açılır/kapanır): dönüş sinyali yokken boş yerleri, son 15 dakikada sert oynayan coine ters yönde girerek doldurur.\n\n"
+                "Dürüst not: 31 günlük gerçek veride dönüş kuralı başa baş çıktı; sürekli mod ise günde −1.4$ ile −3.5$ arası zarar etti (1$ marjin). "
+                "Özet ekranında ikisinin sonucu ayrı görünür. Kâr garantisi yoktur.\n\n"
                 "Komutlar:\n/panel – ana menü\n/adaylar – izlenen coinler\n/gecmis – son işlemler\n/ozet – istatistik\n"
                 "/haric – hariç coin listesi (ekle/sil)\n/kayit – tüm işlemlerin dosyası"), k
     if e == "hep":
@@ -499,6 +523,7 @@ def cb(c):
                 else: kapat(sym, p, "MANUEL")
         elif d == "tog": A["calis"] = not A["calis"]
         elif d == "elle": A["elle"] = not A["elle"]; e = "ayar"
+        elif d == "surekli": A["surekli"] = not A["surekli"]; e = "ayar"
         elif d.startswith("s:"):
             _, a, n = d.split(":"); A[a] = AYAR[a][1][int(n)]; e = "ayar"
         elif d == "hepE":
