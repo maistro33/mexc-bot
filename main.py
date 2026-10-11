@@ -1,18 +1,17 @@
-# GHOST DÖNÜŞ BOT  —  sıfırdan temiz yazım (tek strateji, tek çıkış mantığı)
+# GHOST YÜKSELEN BOT  —  basit bot: sadece LONG, sadece borsanın en çok yükselenleri
 #
 # GİRİŞ (tek kural, indikatör yok):
-#   Son 24 saatte çok yükselmiş bir coin son 1 saatte belirgin DÜŞMEYE başladıysa  → SHORT
-#   Son 24 saatte çok düşmüş bir coin son 1 saatte belirgin YÜKSELMEYE başladıysa → LONG
-#   (yani günün hareketli coini dönünce, dönüş yönünde girilir). Her 5 dakikada bir taranır.
-#   Hantal (en hacimli 40) coinler, hisse/altın/emtia coinleri ve günlük hacmi 1M$ altı coinler taranmaz.
+#   Bitget USDT-M vadeli listesi 24 saatlik değişime göre sıralanır (borsadaki "Change" sıralamasının aynısı, hisse/altın/emtia hariç).
+#   İlk 30 (ayarlanabilir) coin sırayla denenir: boş yer varsa en üstteki uygun coine LONG açılır. Her 5 dakikada bir taranır.
+#   Short YOK. Hariç listesindeki coinler (BTC, ETH vb.) ve günlük hacmi 1M$ altı coinler alınmaz.
 # ÇIKIŞ:
 #   Zarar stopu (marjinin oranı) borsada emir olarak durur. Kâr ilk kilide ulaşınca kilitlenir,
 #   sonra kilit ZİRVEYİ TAKİP EDER (iz süren): kâr büyüdükçe kilit de yükselir.
 #
-# TEST (gerçek Bitget 1 dk verisi, 76 coin, 31 gün, komisyon + 1 dk gecikme dahil, 1$ marjin 20x):
-#   11 farklı basit giriş kuralı denendi; 10'u net zararda. Bu kural başa baş çıktı
-#   (son 14 gün hafif artı, önceki 17 gün hafif eksi; günde ~25 işlem, kazanma ~%75-80).
-#   Kanıtlanmış bir kâr avantajı YOK; en az kötü ve en tutarlı kural bu.
+# TEST (gerçek Bitget 1 dk verisi, 76 coin, 31 gün, komisyon + 1 dk gecikme dahil, 1$ marjin 20x, 5 işlem):
+#   "En çok yükselenlere long" günde ~100 işlem açtı. Son 14 günde her çıkış ayarında ZARAR (günde −3$ ile −5$),
+#   önceki 17 günde küçük kilitle zarar (−2$/gün), geniş kilitle başa baş. Kanıtlanmış kâr avantajı YOK.
+#   Not: test verisinde en hacimli 40 coin yoktu, canlı liste onları da içerir; yani test birebir aynı liste değil.
 #
 # SÜRÜM GEÇMİŞİ (her değişiklikte VERSIYON ve buraya bir satır eklenir)
 # v5.0 11.10 22:50  Sıfırdan yazım: tek giriş kuralı (24s hareketlisi 1 saatte dönünce), iz süren kilit (zirveyi takip),
@@ -21,7 +20,10 @@
 # v5.1 11.10 23:20  SÜREKLİ MOD (varsayılan AÇIK, Ayarlar'dan kapatılır): dönüş sinyali yokken boş kalan yerler 15 dakikalık harekete göre doldurulur
 #                   (son 15 dk'da ≥%2.5 oynayan coine TERS yönde girilir). Amaç bot hiç boş durmasın. TEST: bu mod günde ~95 işlem açar ama
 #                   31 günlük veride günde −1.4$ ile −3.5$ arası ZARAR etti (1$ marjin). Özet ekranı Dönüş / Sürekli işlemlerini ayrı gösterir.
-VERSIYON = "v5.1 (11.10 23:20)"
+# v5.2 12.10 00:00  BASİT BOT: dönüş kuralı ve sürekli mod KALDIRILDI. Tek kural: borsanın 24s en çok yükselenler listesinin ilk 30'una sırayla LONG.
+#                   Short yok. "Hantal = en hacimli 40" filtresi kaldırıldı (günün en çok yükselenlerini listeden atıyordu: CKB, MAGIC, S, LUMIA gibi);
+#                   hariç listesi (BTC, ETH vb.) ve hisse filtresi duruyor. Adaylar ekranı artık yükselenler sıralamasını gösterir.
+VERSIYON = "v5.2 (12.10 00:00)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -32,7 +34,6 @@ CHAT = int(E("MY_CHAT_ID", "0"))
 BAR = 300                                   # tarama aralığı (sn): 5 dakika
 MIN_SL_PCT = 1.5                            # stop fiyattan en az bu % uzak olmalı; değilse kaldıraç düşürülür
 MIN_HACIM = 1_000_000                       # 24s hacmi bundan düşük coinler taranmaz ($)
-ADAY_TAVAN = 40                             # her taramada en çok bu kadar coinin 1 saatlik hareketi okunur
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 
 try:
@@ -50,13 +51,11 @@ HISSE = set()                               # hisse/altın/emtia: açılışta b
 
 # ───────────────────────── ayarlar ─────────────────────────
 A = {"v": 5, "calis": True, "marjin": 1.0, "lev": 20, "max_pos": 5, "sl": 0.8, "net": 0.10, "iz": 0.10,
-     "g24": 10.0, "d1": 4.0, "yon": "iki", "gunluk": 5.0, "bekle": 15, "elle": True, "surekli": True, "s15": 2.5, "hantal": 40, "haric": list(HARIC)}
+     "liste": 30, "minp": 0.0, "gunluk": 5.0, "bekle": 15, "elle": True, "haric": list(HARIC)}
 # panelde gösterilen ayarlar: anahtar -> (başlık, seçenekler, yazım)
 AYAR = {
-    "g24":    ("24 SAATLİK HAREKET (en az)",            (5.0, 10.0, 15.0, 20.0),   lambda v: f"%{v:g}"),
-    "d1":     ("1 SAATLİK DÖNÜŞ (en az)",               (3.0, 4.0, 5.0),           lambda v: f"%{v:g}"),
-    "s15":    ("SÜREKLİ MOD: 15 DK HAREKET (en az)",    (1.5, 2.5, 4.0),           lambda v: f"%{v:g}"),
-    "yon":    ("YÖN",                                   ("iki", "long", "short"),  lambda v: {"iki": "İki yön", "long": "Sadece long", "short": "Sadece short"}[v]),
+    "liste":  ("YÜKSELENLER LİSTESİ (ilk kaç coin)",     (10, 20, 30),              lambda v: f"İlk {v}"),
+    "minp":   ("EN AZ 24 SAATLİK YÜKSELİŞ",              (0.0, 5.0, 10.0),          lambda v: f"%{v:g}" if v else "Fark etmez"),
     "marjin": ("MARJİN (işlem başı)",                   (1.0, 2.0, 3.0, 5.0),      lambda v: f"{v:g}$"),
     "lev":    ("KALDIRAÇ (en çok)",                     (10, 20, 50),              lambda v: f"{v}x"),
     "max_pos": ("AYNI ANDA İŞLEM",                      (1, 2, 3, 5, 8),           lambda v: str(v)),
@@ -105,7 +104,7 @@ def logla(sym, yon, pnl, neden, k):
     try: mid = ex.market(sym)["id"]
     except Exception: mid = ad(sym).replace("/", "")
     g = {"t": int(time.time()), "s": ad(sym), "id": mid, "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(k.get("zirve", 0.0), 2), "g": 0,
-         "t0": k.get("t"), "p24": k.get("p24"), "p1": k.get("p1"), "k": k.get("kural", "e" if k.get("elle") else "d")}
+         "t0": k.get("t"), "p24": k.get("p24"), "sira": k.get("sira"), "k": "e" if k.get("elle") else "y"}
     gecmis.append(g); kaydet()
 
 hata_goster = [True]
@@ -195,7 +194,7 @@ def kaldirac_ayarla(sym, lev, yon):
 def poz_oku(sym):
     return next((x for x in ex.fetch_positions([sym]) if x.get("contracts")), None)
 
-def ac(sym, yon, son, p24, p1, kural="d"):
+def ac(sym, yon, son, p24, sira):
     """İzole pozisyon aç + borsaya zorunlu yedek stop koy. Döner: True/False."""
     with KIL:
         if sym in acik or len(acik) >= A["max_pos"]: return False
@@ -250,12 +249,12 @@ def ac(sym, yon, son, p24, p1, kural="d"):
             sl = round(0.7 * abs(gir - liq) * adet_f * cs, 3); not_ = " (likidasyona yakın, daraltıldı)"
     except Exception: pass
     with KIL:
-        acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0, "t": int(time.time()), "y": p["side"], "lev": lev, "p24": round(p24, 1), "p1": round(p1, 1), "kural": kural}
+        acik[sym] = {"zirve": 0.0, "mj": mj, "sl": sl, "son": 0.0, "t": int(time.time()), "y": p["side"], "lev": lev, "p24": round(p24, 1), "sira": sira}
         fy = borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))          # ZORUNLU yedek stop: bot düşse bile korur
         kaydet()
     kl1, e0 = kilit_seviye(mj, lev)
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {ad(sym)} · {lev}x izole · {mj:g}$\n"
-          + (f"Sebep: 24 saatte %{p24:+.1f}, son 1 saatte %{p1:+.1f} → dönüş yönünde\n" if kural == "d" else f"Sebep: son 15 dk'da %{p1:+.1f} → tersine (SÜREKLİ mod)\n") +
+          f"Sebep: 24 saatte %{p24:+.1f}, yükselenler listesinde {sira}. sırada\n"
           f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl:g}${not_})\n"
           f"{'🛡 Borsa yedek stopu: ' + str(fy) if fy else '⚠️ Borsa stopu YOK, bot takip ediyor'}\n"
           f"Kâr: +{e0:.2f}$ görünce +{kl1:.2f}$ kilitlenir, sonra kilit zirvenin {A['iz'] * mj:.2f}$ gerisinden takip eder")
@@ -300,78 +299,42 @@ def yonet():
             elif k.get("kilit") is None and pnl <= -k["sl"]: kapat(sym, p, "STOP")
         kaydet()
 
-# ───────────────────────── strateji: günün hareketlisi dönünce ─────────────────────────
+# ───────────────────────── strateji: en çok yükselenlere long ─────────────────────────
 tarama_bid, son_tarama = [0], [0.0]
-PX = {}                                     # tarama_no -> {sembol: fiyat}  (sürekli mod: 15 dk önceki fiyat)
 
-def evren():
-    """Taranacak coinler: hisse/emtia ve hariç listesi yok, en hacimli N (hantal) yok, hacmi 1M$ altı yok. Döner: [(sembol, fiyat, 24s %)]"""
+def yukselenler():
+    """Borsanın 24s en çok yükselenler sıralaması (hisse/emtia, hariç listesi ve hacmi 1M$ altı olanlar yok). Döner: [(sembol, fiyat, 24s %)], en çok yükselen başta."""
     L = []
     for s, t in ex.fetch_tickers().items():
         if not s.endswith(":USDT") or not t.get("last"): continue
         b = temiz(s)
-        if b in HISSE or (ex.markets.get(s, {}).get("base") in HISSE): continue
+        if b in HISSE or (ex.markets.get(s, {}).get("base") in HISSE) or b in A["haric"]: continue
+        if float(t.get("quoteVolume") or 0) < MIN_HACIM: continue
         p24 = t.get("percentage")
         if p24 is None:
             try: p24 = float((t.get("info") or {}).get("change24h")) * 100
             except Exception: continue
-        L.append((float(t.get("quoteVolume") or 0), s, float(t["last"]), float(p24)))
+        if float(p24) > A["minp"]: L.append((float(p24), s, float(t["last"])))
     L.sort(reverse=True)
-    return [(s, c, p) for v, s, c, p in L[A["hantal"]:] if v >= MIN_HACIM and temiz(s) not in A["haric"]]
-
-def bir_saat(sym, son, bid):
-    """Son 1 saatlik ve 15 dakikalık değişim (%). 5 dk mumlardan, zaman damgasına göre. Okunamazsa (None, None)."""
-    try:
-        m = ex.fetch_ohlcv(sym, "5m", limit=16)
-        ac_ = {int(x[0]) // 1000: float(x[1]) for x in m}; t0 = bid * BAR
-        r60 = ac_.get(t0 - 3600); r15 = ac_.get(t0 - 900)
-        if r60 is None and len(m) >= 14: r60 = float(m[-13][1]) if int(m[-1][0]) // 1000 >= t0 else float(m[-12][1])
-        if not r60: return None, None
-        return (son / r60 - 1) * 100, ((son / r15 - 1) * 100 if r15 else None)
-    except Exception: return None, None
-
-def sinyal_yonu(p24, p1):
-    """Kuralın kendisi. Döner: 'buy' / 'sell' / None."""
-    if p24 >= A["g24"] and p1 <= -A["d1"]: return "sell"          # günün yükseleni düşmeye başladı
-    if p24 <= -A["g24"] and p1 >= A["d1"]: return "buy"           # günün düşeni toparlanmaya başladı
-    return None
+    return [(s, c, p) for p, s, c in L[:A["liste"]]]
 
 def uygun(s):
     return s not in acik and time.time() >= yasak.get(s, 0)
 
 def tarama_adimi():
-    """Her 5 dakikanın başında BİR kez çalışır: evreni oku, 24s hareketlilerin 1 saatlik dönüşüne bak, sinyal varsa gir."""
+    """Her 5 dakikanın başında BİR kez çalışır: yükselenler listesini oku, boş yer varsa sırayla en üstteki uygun coine LONG aç."""
     simdi = time.time(); bid = int(simdi // BAR)
     if tarama_bid[0] == bid: return
     tarama_bid[0] = bid; taze = simdi - bid * BAR < 45          # bot yeni açıldıysa ilk tarama sadece ekran için, giriş yok
-    ev = evren(); PX[bid] = {s: c for s, c, _ in ev}
-    for b_ in [b_ for b_ in PX if b_ < bid - 4]: PX.pop(b_)
-    hareketli = sorted([x for x in ev if abs(x[2]) >= A["g24"]], key=lambda x: -abs(x[2]))[:ADAY_TAVAN]
-    liste, sinyal = [], []
-    for s, c, p24 in hareketli:
-        p1, p15 = bir_saat(s, c, bid)
-        if p1 is None: continue
-        y = sinyal_yonu(p24, p1)
-        liste.append({"s": ad(s), "p24": p24, "p1": p1, "p15": p15, "y": y, "acik": s in acik, "yasak": time.time() < yasak.get(s, 0)})
-        if y and uygun(s) and A["yon"] in ("iki", "long" if y == "buy" else "short"): sinyal.append((abs(p1), s, y, c, p24, p1))
-    ADAY["t"], ADAY["liste"] = int(time.time()), liste; son_tarama[0] = time.time()
+    L = yukselenler()
+    ADAY["t"] = int(time.time()); son_tarama[0] = time.time()
+    ADAY["liste"] = [{"s": ad(s), "p24": p, "sira": n + 1, "acik": s in acik, "yasak": time.time() < yasak.get(s, 0)} for n, (s, c, p) in enumerate(L)]
     if not (taze and A["calis"]) or limit_doldu(): return
-    for _, s, y, c, p24, p1 in sorted(sinyal, reverse=True):          # dönüşü en güçlü olandan başla
+    for n, (s, c, p24) in enumerate(L):                         # sıralamanın en üstünden başla
         with KIL:
             if len(acik) >= A["max_pos"]: break
-        try: ac(s, y, c, p24, p1)
-        except Exception as e: haber(f"⚠️ {ad(s)} giriş hatası: {str(e)[:120]}")
-    if not A["surekli"]: return
-    once = PX.get(bid - 3) or {}; dolgu = []                 # SÜREKLİ MOD: boş yerleri 15 dk hareketine TERS yönde doldur
-    for s, c, p24 in ev:
-        o = once.get(s)
-        if not o or not uygun(s): continue
-        p15 = (c / o - 1) * 100; y = "sell" if p15 > 0 else "buy"
-        if abs(p15) >= A["s15"] and A["yon"] in ("iki", "long" if y == "buy" else "short"): dolgu.append((abs(p15), s, y, c, p24, p15))
-    for _, s, y, c, p24, p15 in sorted(dolgu, reverse=True):
-        with KIL:
-            if len(acik) >= A["max_pos"]: break
-        try: ac(s, y, c, p24, p15, "s")
+        if not uygun(s): continue
+        try: ac(s, "buy", c, p24, n + 1)
         except Exception as e: haber(f"⚠️ {ad(s)} giriş hatası: {str(e)[:120]}")
 
 # ───────────────────────── panel ─────────────────────────
@@ -383,9 +346,7 @@ def pozlar():
     POZ.clear(); POZ.update({n: p["symbol"] for n, p in enumerate(ps)}); return ps
 
 def strateji_yazi():
-    y = {"iki": "iki yön", "long": "sadece long", "short": "sadece short"}[A["yon"]]
-    return (f"24 saatte ≥%{A['g24']:g} oynamış coin 1 saatte ≥%{A['d1']:g} dönünce, dönüş yönünde ({y})"
-            + (f"\n♾ Sürekli mod AÇIK: boş yerler 15 dk'da ≥%{A['s15']:g} oynayana ters yönde doldurulur" if A["surekli"] else ""))
+    return f"Sadece LONG: 24 saatte en çok yükselen ilk {A['liste']} coine sırayla" + (f" (en az %{A['minp']:g} yükselmiş)" if A["minp"] else "")
 
 def ist(L):
     """İşlem listesinin kısa istatistiği."""
@@ -411,15 +372,11 @@ def ekran(e):
         k.row(geri, B("🔄 Yenile", callback_data="aday")); L = ADAY["liste"]
         if not ADAY["t"]: return "🔎 ADAYLAR\n\nHenüz tarama yapılmadı (ilk tarama en geç 5 dk içinde).", k
         sat = []
-        for x in L[:15]:
-            if x["y"]: im = ("🟢 LONG sinyali" if x["y"] == "buy" else "🔴 SHORT sinyali") + (" (açık)" if x["acik"] else " (beklemede)" if x["yasak"] else "")
-            else:
-                gerek = -A["d1"] if x["p24"] > 0 else A["d1"]
-                im = f"⏳ 1s %{gerek:+g} olunca {'short' if x['p24'] > 0 else 'long'}"
-            p15 = f" · 15dk %{x['p15']:+.1f}" if x.get("p15") is not None else ""
-            sat.append(f"{x['s'].split('/')[0]}: 24s %{x['p24']:+.1f} · 1s %{x['p1']:+.1f}{p15}\n   {im}")
-        return (f"🔎 ADAYLAR (son tarama {saat(ADAY['t'])[-5:]})\n24 saatte ≥%{A['g24']:g} oynamış {len(L)} coin izleniyor, {sum(1 for x in L if x['y'])} sinyal\n\n"
-                + ("\n".join(sat) or "Şu an eşiği geçen coin yok.")), k
+        for x in L[:30]:
+            im = "📌 açık" if x["acik"] else ("⏱ beklemede" if x["yasak"] else "")
+            sat.append(f"{x['sira']:>2}. {x['s'].split('/')[0]}  %{x['p24']:+.1f}  {im}")
+        return (f"🔎 YÜKSELENLER (son tarama {saat(ADAY['t'])[-5:]})\nBot boş yer oldukça listenin en üstündeki uygun coine LONG açar.\n\n"
+                + ("\n".join(sat) or "Şu an listeye giren coin yok.")), k
     if e == "gec":
         k.row(geri, B("🔄 Yenile", callback_data="gec")); son = gecmis[-15:][::-1]
         sat = [f"{'✅' if g['pnl'] > 0 else '❌'} {saat(g['t'])} {g['s'].split('/')[0]} {'L' if g['y'] in ('long', 'buy') else 'S'} {g['pnl']:+.2f}$ {'✓' if g.get('g') == 1 else '≈'} {g['n']}" for g in son]
@@ -438,7 +395,6 @@ def ekran(e):
                 f"Ort. kazanç: {ok_:+.2f}$ | Ort. kayıp: {oz:+.2f}$\n"
                 f"Başa baş için gereken kazanma: {bas}\n\n"
                 f"🟢 Long: {ist([g for g in gecmis if g['y'] in ('long', 'buy')])}\n🔴 Short: {ist([g for g in gecmis if g['y'] in ('short', 'sell')])}\n\n"
-                f"🔄 Dönüş kuralı: {ist([g for g in gecmis if g.get('k', 'd') == 'd'])}\n♾ Sürekli mod: {ist([g for g in gecmis if g.get('k') == 's'])}\n\n"
                 + (f"En iyi coin: {sira[-1][0]} {sira[-1][1]:+.2f}$\nEn kötü coin: {sira[0][0]} {sira[0][1]:+.2f}$" if sira else "")), k
     if e == "gunler":
         k.row(B("📊 Özet", callback_data="ozet"), geri); sat = []
@@ -450,7 +406,6 @@ def ekran(e):
         for a, (baslik, secenek, fmt) in AYAR.items():
             k.row(B(f"— {baslik} —", callback_data="ayar"))
             k.row(*[B(("✅ " if A[a] == v else "") + fmt(v), callback_data=f"s:{a}:{n}") for n, v in enumerate(secenek)])
-        k.row(B("♾ Sürekli mod: " + ("✅ AÇIK (hiç durmasın)" if A["surekli"] else "❌ KAPALI (sadece dönüş)"), callback_data="surekli"))
         k.row(B("Elle açtığım işlemler: " + ("✅ bot yönetsin" if A["elle"] else "❌ bot dokunmasın"), callback_data="elle"))
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(geri)
@@ -462,25 +417,24 @@ def ekran(e):
                 f"⏱ Tekrar giriş: kârdan sonra {A['bekle']} dk, zarardan sonra 2 saat"), k
     if e == "yardim":
         k.row(geri)
-        return ("❓ YARDIM\n\nBot ne yapar: son 24 saatte çok oynamış küçük coinleri izler. Yükselmiş coin son 1 saatte düşmeye başlarsa SHORT, "
-                "düşmüş coin toparlanmaya başlarsa LONG açar. Her 5 dakikada bir tarar.\n\n"
+        return ("❓ YARDIM\n\nBot ne yapar: Bitget vadeli listesini 24 saatlik yükselişe göre sıralar (borsadaki Change sıralaması, hisse/emtia hariç). "
+                "Boş yer oldukça listenin en üstündeki uygun coine LONG açar. Short açmaz. Her 5 dakikada bir tarar.\n\n"
                 "Çıkış: zarar stopu borsada durur. Kâr ilk kilide ulaşınca kilitlenir, sonra kilit zirveyi takip eder.\n\n"
-                "Sürekli mod (Ayarlar'dan açılır/kapanır): dönüş sinyali yokken boş yerleri, son 15 dakikada sert oynayan coine ters yönde girerek doldurur.\n\n"
-                "Dürüst not: 31 günlük gerçek veride dönüş kuralı başa baş çıktı; sürekli mod ise günde −1.4$ ile −3.5$ arası zarar etti (1$ marjin). "
-                "Özet ekranında ikisinin sonucu ayrı görünür. Kâr garantisi yoktur.\n\n"
-                "Komutlar:\n/panel – ana menü\n/adaylar – izlenen coinler\n/gecmis – son işlemler\n/ozet – istatistik\n"
+                "Dürüst not: 31 günlük gerçek veride bu kural son 14 günde günde 3-5$ zarar etti, önceki 17 günde zarar ile başa baş arasında kaldı (1$ marjin). "
+                "Kâr garantisi yoktur.\n\n"
+                "Komutlar:\n/panel – ana menü\n/adaylar – yükselenler listesi\n/gecmis – son işlemler\n/ozet – istatistik\n"
                 "/haric – hariç coin listesi (ekle/sil)\n/kayit – tüm işlemlerin dosyası"), k
     if e == "hep":
         k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
         return "🚨 Tüm pozisyonlar kapatılsın mı? (Otomatik giriş de durur)", k
     ps = pozlar(); n = len(ps); ucan = sum(p.get("unrealizedPnl") or 0 for p in ps)
     k.row(B("🛑 DURDUR" if A["calis"] else "▶️ BAŞLAT", callback_data="tog"))
-    k.row(B(f"📋 Pozisyonlar ({n})", callback_data="poz"), B("🔎 Adaylar", callback_data="aday"))
+    k.row(B(f"📋 Pozisyonlar ({n})", callback_data="poz"), B("🔎 Yükselenler", callback_data="aday"))
     k.row(B("📜 Geçmiş", callback_data="gec"), B("📊 Özet", callback_data="ozet"))
     k.row(B("⚙️ Ayarlar", callback_data="ayar"), B("❓ Yardım", callback_data="yardim"))
     k.row(B("🚨 Tümünü Kapat", callback_data="hep"), B("🔄 Yenile", callback_data="ana"))
     tr = f"{int(time.time() - son_tarama[0])} sn önce" if son_tarama[0] else "bekleniyor"
-    return (f"👻 GHOST DÖNÜŞ · {VERSIYON}\n━━━━━━━━━━━━━━━━\n{durum()}\n\n"
+    return (f"👻 GHOST YÜKSELEN · {VERSIYON}\n━━━━━━━━━━━━━━━━\n{durum()}\n\n"
             f"💰 Bakiye {bakiye():.2f}$\n📅 Bugün {gun_toplam():+.2f}$ ({sum(1 for g in gecmis if gun(g['t']) == gun())} işlem)\n"
             f"📌 Pozisyon {n}/{A['max_pos']}" + (f" · açık PnL {ucan:+.2f}$" if n else "") + f"\n🔎 Son tarama: {tr}\n\n🎯 {strateji_yazi()}"), k
 
@@ -523,7 +477,6 @@ def cb(c):
                 else: kapat(sym, p, "MANUEL")
         elif d == "tog": A["calis"] = not A["calis"]
         elif d == "elle": A["elle"] = not A["elle"]; e = "ayar"
-        elif d == "surekli": A["surekli"] = not A["surekli"]; e = "ayar"
         elif d.startswith("s:"):
             _, a, n = d.split(":"); A[a] = AYAR[a][1][int(n)]; e = "ayar"
         elif d == "hepE":
@@ -582,7 +535,7 @@ def hisse_yukle():
 if __name__ == "__main__":
     ex.load_markets(); hisse_yukle()
     threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True), daemon=True).start()
-    haber(f"👻 GHOST DÖNÜŞ {VERSIYON} hazır\n{durum()}\n🎯 {strateji_yazi()}\n"
+    haber(f"👻 GHOST YÜKSELEN {VERSIYON} hazır\n{durum()}\n🎯 {strateji_yazi()}\n"
           f"💵 {A['marjin']:g}$ izole · ≤{A['lev']}x · en çok {A['max_pos']} işlem · limit {('−' + format(A['gunluk'], 'g') + '$') if A['gunluk'] else 'yok'}\n→ /panel")
     threading.Thread(target=izle, daemon=True).start()
     tarama()
