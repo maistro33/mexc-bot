@@ -28,7 +28,12 @@
 #                   açıkken büyük akış (5 dk) işlem yönünün aleyhineyse Defter girişi atlanır. /mikro özetine akış karşılaştırması eklendi.
 # v4.14 11.10 14:30  GÖLGE (kâğıt üstü) İŞLEM: her DEFTER girişinde, aynı anda TERS yöndeki hayali işlem de aynı kaldıraç/stop/kademeli kilitle 1 dk'lık mumlarla takip edilir
 #                   (gerçek emir YOK). Sonuç mikro.jsonl'ye "golge" olarak yazılır; /mikro özeti gerçek ile gölge (ters yön) toplamını yan yana gösterir.
-VERSIYON = "v4.14 (11.10 14:30)"
+# v4.15 11.10 18:00  DÜZELTME: mikro.jsonl'deki "cikis" PnL'si borsada kapanan işlemlerde TAHMİNİ (komisyonsuz/kayma yok) idi, gerçeği olduğundan yüksek gösteriyordu
+#                   (CT örneği: kayıt +0.18$, Bitget net +0.09$). Artık borsanın gerçek net PnL'si gelince mikro.jsonl'ye "gercek" kaydı yazılır ve /mikro özeti
+#                   tahmini değil GERÇEK net PnL ile hesaplanır (gerçeği henüz gelmemiş kayıtlar ayrıca belirtilir).
+# v4.16 11.10 18:30  DEFTER YÖNÜ düğmesi (Aynı / Ters): "Ters" seçilirse Defter, emir defterinin ağır olduğu yönün TERSİNE işlem açar (gölge ölçüm iyi çıkarsa kullanılsın diye).
+#                   Varsayılan AYNI (davranış değişmez). Ters seçiliyken gölge takibi de ters çalışır (yani defter yönündeki hayali işlemi izler).
+VERSIYON = "v4.16 (11.10 18:30)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -57,7 +62,7 @@ HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHI
 HISSE = set("PLTR MRNA MSTU AAOI AXTI ORCL SOXL CRWV MUU TSLA NVDA AAPL MSFT AMZN GOOGL AMD INTC MSTR HOOD SPY QQQ NFLX BABA SMCI AVGO TSM MU PYPL UBER IONQ RGTI SOFI RIVN NIO".split())
 LADDER = (125, 100, 75, 50, 30, 25, 20, 15, 10, 5, 3, 2)
 A = {"v": 3, "calis": True, "mod": "ters", "esik": 5.0, "marjin": MARJIN, "max_pos": MAX_POS, "lev": LEV_TAVAN, "sl": SL_ORAN,
-     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "yf": "kapali", "mf": "kapali", "dt": 0.5, "dn": 40, "ao": False, "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
+     "gunluk": 3.0, "bekle": 15, "pen": 48, "net": 0.30, "yf": "kapali", "mf": "kapali", "dt": 0.5, "dn": 40, "ao": False, "dy": "ayni", "hantal": 40, "uc": 10, "gen": 8.0, "lv": [0.42, 0.50, 0.75, 1.00], "hk": True, "haric": list(HARIC)}
 lev_cap = {}                 # coin -> borsanın kabul ettiği en yüksek kaldıraç
 acik, yasak, gecmis = {}, {}, []
 KIL = threading.RLock()
@@ -92,9 +97,10 @@ def temiz(s): return s.split("/")[0].lstrip("0123456789")
 def logla(sym, yon, pnl, neden, z=0.0):
     try: mid = ex.market(sym)["id"]
     except Exception: mid = sym.split(":")[0].replace("/", "")
-    gecmis.append({"t": int(time.time()), "s": sym.split(":")[0], "id": mid, "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(z, 2), "g": 0}); kaydet()
+    tt = int(time.time())
+    gecmis.append({"t": tt, "s": sym.split(":")[0], "id": mid, "y": yon, "pnl": round(pnl, 3), "n": neden, "z": round(z, 2), "g": 0}); kaydet()
     mk = SON_MK.pop(sym, None) or (acik.get(sym) or {}).get("mk")
-    if mk is not None: mikro_yaz({"e": "cikis", "t": int(time.time()), "s": sym.split(":")[0], "pnl": round(pnl, 3), "n": neden, **mk})
+    if mk is not None: mikro_yaz({"e": "cikis", "t": tt, "ct": tt, "s": sym.split(":")[0], "pnl": round(pnl, 3), "n": neden, **mk})
 
 MIKRO = DOSYA.replace("ayar.json", "mikro.jsonl")
 MK, SON_MK = {}, {}          # giriş özellikleri (sembol -> dict), kapanış anında okunur
@@ -238,7 +244,9 @@ def duzelt():   # kapanıştan ~20 sn sonra tahmini PnL'yi borsanın gerçek (ko
     for g in gecmis[-40:]:
         if g.get("g", 1) == 0 and time.time() - g["t"] > 20 and time.time() - g.get("d", 0) > 15:
             g["d"] = time.time(); v = gercek_pnl(g.get("id", ""), g["t"])
-            if v is not None: g["pnl"], g["g"] = round(v, 3), 1
+            if v is not None:
+                g["pnl"], g["g"] = round(v, 3), 1
+                mikro_yaz({"e": "gercek", "s": g["s"], "ct": g["t"], "pnl": round(v, 3)})          # mikro özeti gerçek net PnL ile hesaplansın
             elif time.time() - g["t"] > 900: g["g"] = 2
     kaydet()
 
@@ -367,7 +375,7 @@ def ac(sym, yon, son, pct):
     sebep = f"5 dk mum %{pct:.1f} {'yükseldi' if (yon == 'sell') == ters else 'düştü'} → {'TERSİNE' if ters else 'TAKİP'}"
     if A["mod"] == "aralik": sebep = f"{A['pen']*5//60} saatlik aralık (%{pct:.1f} geniş) {'dibinde' if yon == 'buy' else 'tepesinde'} → ARALIK"
     if mk0 and mk0.get("cevrildi"): sebep = f"Sinyal {'AL' if mk0.get('sinyal_y') == 'buy' else 'SAT'} idi ama emir defteri aleyhine ağırdı → YÖN ÇEVRİLDİ"
-    if A["mod"] == "defter": sebep = f"Emir defteri {'alış' if yon == 'buy' else 'satış'} ağırlıklı (%{pct:.0f} denge) → DEFTER"
+    if A["mod"] == "defter": sebep = f"Emir defteri {'alış' if yon == 'buy' else 'satış'} ağırlıklı (%{pct:.0f} denge) → DEFTER" if not (mk0 and mk0.get("ters")) else f"Emir defteri {'satış' if yon == 'buy' else 'alış'} ağırlıklı (%{pct:.0f} denge) → TERSİNE ({'long' if yon == 'buy' else 'short'})"
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {ad} · {lev}x izole · {mj}$\n"
           f"Sebep: {sebep}\n"
           f"Giriş {gir:g} | Bot stopu ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g} (−{sl}${not_})\n"
@@ -485,6 +493,10 @@ def defter_girisleri(px):
             if len(acik) >= A["max_pos"]: break
         mk = mikro_ozellik(sm, yon, c); mk["y"] = yon; mk["mod"] = "defter"; mk["t0"] = int(time.time())
         if mk["imb_y"] is None or mk["imb_y"] < A.get("dt", 0.5) * 0.6 or (mk["spread"] or 0) > 0.10: continue      # girişte defter hâlâ aynı yönde mi
+        if A.get("dy") == "ters":                                                                              # DEFTER YÖNÜ: TERS → tüm işaretli ölçümleri çevir, yönü tersle
+            yon = "sell" if yon == "buy" else "buy"; mk["y"] = yon; mk["ters"] = True
+            for k_ in ("imb_y", "akis1", "akis5", "akis15"):
+                if mk.get(k_) is not None: mk[k_] = round(-mk[k_], 3)
         if A.get("ao") and mk.get("akis5") is not None and mk["akis5"] < 0:                                    # AKIŞ ONAYI: büyük işlemler yönün aleyhine
             mikro_yaz({"e": "atla", "t": int(time.time()), "s": sm.split(":")[0], **mk}); continue
         MK[sm] = mk
@@ -538,7 +550,7 @@ def pozlar():
     POZ.clear(); POZ.update({n: p["symbol"] for n, p in enumerate(ps)}); return ps
 
 def strateji_yazi():
-    if A["mod"] == "defter": return f"DEFTER: emir defteri |denge| ≥ {A.get('dt', 0.5):g} ise ağır tarafta işlem (en hareketli {A.get('dn', 40)} coin)"
+    if A["mod"] == "defter": return f"DEFTER: emir defteri |denge| ≥ {A.get('dt', 0.5):g} ise " + ("ağır tarafın TERSİNE işlem" if A.get("dy") == "ters" else "ağır tarafta işlem") + f" (en hareketli {A.get('dn', 40)} coin)"
     if A["mod"] == "aralik": return f"ARALIK: son {A['pen']*5//60} saatlik aralığın alt %{A['uc']}'unda AL, üst %{A['uc']}'unda SAT (aralık %2–%{A['gen']:g})"
     return f"{'TERSİNE (yükselene sat, düşene al)' if A['mod'] == 'ters' else 'TAKİP (yükselene al, düşene sat)'} · 5 dk mum ≥ %{A['esik']:g}"
 
@@ -573,6 +585,8 @@ def ekran(e):
         if A["mod"] == "defter":
             bas("DEFTER: EŞİK (|denge|)")
             k.row(*sec((0.3, 0.5, 0.7), A.get("dt", 0.5), "dt", lambda v: f"{v:g}"))
+            bas("DEFTER: YÖN (Aynı = defter yönünde, Ters = tersine)")
+            k.row(*[B(("✅ " if A.get("dy", "ayni") == v else "") + t, callback_data=f"dy:{v}") for v, t in (("ayni", "Aynı"), ("ters", "Ters"))])
             bas("DEFTER: AKIŞ ONAYI (büyük işlemler aleyhteyse girme)")
             k.row(B("✅ AÇIK (kapat)" if A.get("ao") else "❌ KAPALI (aç)", callback_data="ao"))
         if A["mod"] == "aralik":
@@ -638,14 +652,27 @@ def kaldirac_toplu(hedef):
         if n and n % 150 == 0: bot.send_message(CHAT, f"… {n}/{len(syms)}")
     kaydet(); bot.send_message(CHAT, f"✅ Kaldıraç ayarı bitti (hedef {hedef}x): {tam} kontratta tuttu, {dusuk} kontrat daha düşük kabul etti, {len(basarisiz)} ayarlanamadı")
 
+def mikro_duzelt(L):
+    """cikis kayıtlarının PnL'sini borsanın gerçek net PnL'siyle (varsa) değiştir. Döner: (liste, düzeltilen, düzeltilmemiş)."""
+    ger = {(x.get("s"), x.get("ct")): x["pnl"] for x in L if x.get("e") == "gercek" and x.get("ct")}
+    out, dz, tahmin = [], 0, 0
+    for x in L:
+        if x.get("e") == "cikis":
+            k = (x.get("s"), x.get("ct"))
+            if k in ger: x = {**x, "pnl": ger[k], "gercek": True}; dz += 1
+            else: tahmin += 1
+        out.append(x)
+    return out, dz, tahmin
+
 @bot.message_handler(commands=["mikro"])
 def mikro_ozet(m):
     if m.chat.id != CHAT: return
     try: L = [json.loads(x) for x in open(MIKRO) if x.strip()]
     except Exception: bot.send_message(CHAT, "Henüz mikro kayıt yok."); return
+    L, dz, tahmin = mikro_duzelt(L)
     c = [x for x in L if x.get("e") == "cikis"]; a = [x for x in L if x.get("e") == "atla"]
     def ort(z): return f"{sum(x['pnl'] for x in z)/len(z):+.3f}$ (n={len(z)}, kaz %{100*sum(x['pnl']>0 for x in z)/len(z):.0f})" if z else "veri yok"
-    t = [f"🔬 MİKRO KAYIT: {len(c)} kapanan işlem, {len(a)} atlanan sinyal"]
+    t = [f"🔬 MİKRO KAYIT: {len(c)} kapanan işlem, {len(a)} atlanan sinyal", f"PnL: {dz} işlemde borsanın GERÇEK net rakamı, {tahmin} işlemde tahmini (gerçeği alınamadı / eski kayıt, olduğundan yüksek olabilir)"]
     t.append(f"Emir defteri işlem yönünde (imb>0): {ort([x for x in c if (x.get('imb_y') or 0) > 0])}")
     t.append(f"Emir defteri aleyhine (imb<0): {ort([x for x in c if (x.get('imb_y') or 0) < 0])}")
     for k_, ad_ in (("akis1", "1dk"), ("akis5", "5dk"), ("akis15", "15dk")):
@@ -703,6 +730,7 @@ def cb(c):
         elif d.startswith("nt:"): A["net"] = float(d[3:]); e = "ayar"
         elif d.startswith("pn:"): A["pen"] = int(d[3:]); e = "ayar"
         elif d == "ao": A["ao"] = not A.get("ao"); e = "ayar"
+        elif d.startswith("dy:"): A["dy"] = d[3:]; e = "ayar"
         elif d.startswith("dt:"): A["dt"] = float(d[3:]); e = "ayar"
         elif d.startswith("uc:"): A["uc"] = float(d[3:]); e = "ayar"
         elif d.startswith("es:"): A["esik"] = float(d[3:]); e = "ayar"
