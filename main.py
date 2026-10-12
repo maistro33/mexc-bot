@@ -24,7 +24,9 @@
 #                   hariç listesi (BTC, ETH vb.) ve hisse filtresi duruyor. Adaylar ekranı artık yükselenler sıralamasını gösterir.
 # v6.0 12.10 14:10  YENİ STRATEJİ "DİP": en çok düşen 30 coin içinden son 1 saatte toparlanmaya başlayana LONG. 10x, zarar stopu YOK (varsayılan),
 #                   sabit kâr al (+0.50$ / 1$ marjin). Kademeli/iz süren kilit kaldırıldı. Varsayılan en çok 3 işlem. Ayarlar yeni dosyada (ayar6.json).
-VERSIYON = "v6.0 (12.10 14:10)"
+# v6.1 12.10 14:30  ÇIKIŞ SEÇENEĞİ: "Kâr kilitle + iz süren" (varsayılan) veya "Sabit kâr al". Kilit modunda kâr +0.30$ net (1$ marjin) seviyesine
+#                   gelince kilitlenir ve borsaya stop olarak konur, sonra kilit zirvenin 0.30$ gerisinden yukarı taşınır. Test: sabit kâr al ile benzer sonuç.
+VERSIYON = "v6.1 (12.10 14:30)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -51,14 +53,17 @@ HARIC = "BTC ETH XRP ADA DOGE SOL BNB LTC BCH TRX LINK DOT AVAX XLM ETC ATOM SHI
 HISSE = set()                               # hisse/altın/emtia: açılışta borsadan otomatik doldurulur (isRwa)
 
 # ───────────────────────── ayarlar ─────────────────────────
-A = {"v": 6, "calis": True, "marjin": 1.0, "lev": 10, "max_pos": 3, "sl": 0.0, "tp": 0.5,
+A = {"v": 6, "calis": True, "marjin": 1.0, "lev": 10, "max_pos": 3, "sl": 0.0, "tp": 0.5, "cikis": "kilit", "net": 0.3, "iz": 0.3,
      "liste": 30, "minp": 10.0, "don": 1.0, "gunluk": 5.0, "bekle": 15, "elle": True, "haric": list(HARIC)}
 # panelde gösterilen ayarlar: anahtar -> (başlık, seçenekler, yazım)
 AYAR = {
     "liste":  ("DÜŞENLER LİSTESİ (ilk kaç coin)",        (10, 20, 30),              lambda v: f"İlk {v}"),
     "minp":   ("EN AZ 24 SAATLİK DÜŞÜŞ",                 (5.0, 10.0, 15.0, 20.0),   lambda v: f"%-{v:g}"),
     "don":    ("DİBİ GÖRMÜŞ: SON 1 SAATTE TOPARLANMA",    (0.0, 1.0, 2.0),           lambda v: f"≥%{v:g}" if v else "Bakma"),
-    "tp":     ("KÂR AL (1$ marjin için)",                (0.3, 0.5, 0.8, 1.0),      lambda v: f"+{v:g}$"),
+    "cikis":  ("ÇIKIŞ ŞEKLİ",                            ("kilit", "tp"),           lambda v: {"kilit": "Kâr kilitle + iz süren", "tp": "Sabit kâr al"}[v]),
+    "net":    ("KİLİT: NET KÂR (1$ marjin için)",         (0.2, 0.3, 0.5),           lambda v: f"+{v:g}$"),
+    "iz":     ("İZ SÜREN: ZİRVEDEN GERİ PAY (1$ için)",   (0.2, 0.3, 0.5),           lambda v: f"{v:g}$"),
+    "tp":     ("SABİT KÂR AL (1$ marjin için)",           (0.3, 0.5, 0.8, 1.0),      lambda v: f"+{v:g}$"),
     "sl":     ("ZARAR STOPU (marjinin oranı)",           (0.0, 0.5, 0.8),           lambda v: f"%{v*100:g}" if v else "Yok"),
     "marjin": ("MARJİN (işlem başı)",                   (1.0, 2.0, 3.0, 5.0),      lambda v: f"{v:g}$"),
     "lev":    ("KALDIRAÇ (en çok)",                     (5, 10, 20),               lambda v: f"{v}x"),
@@ -253,13 +258,22 @@ def ac(sym, yon, son, p24, sira, p1=None):
                      "p1": round(p1, 1) if p1 is not None else None}
         if sl: fy = borsa_stop(sym, p, acik[sym], -min(sl * 1.2, 0.85 * mj))
         kaydet()
-    tp = A["tp"] * mj; tp_f = gir + tp / (adet_f * cs) * (1 if yon == "buy" else -1)
     haber(f"{'🟢 LONG' if yon == 'buy' else '🔴 SHORT'} {ad(sym)} · {lev}x izole · {mj:g}$\n"
           f"Sebep: 24 saatte %{p24:+.1f} (düşenlerde {sira}. sıra)" + (f", son 1 saatte %{p1:+.1f} toparlandı" if p1 is not None else "") + "\n"
-          f"Giriş {gir:g}\n🎯 Kâr al: +{tp:.2f}$ ≈ {tp_f:g}\n"
+          f"Giriş {gir:g}\n" + cikis_yazi(mj, lev) + "\n"
           + (f"🛑 Stop −{sl:g}${not_} ≈ {sl_fiyat(yon, gir, adet_f, cs, sl):g}" + (f" (borsada: {fy})" if fy else "") if sl
              else f"🛑 Stop YOK · likidasyon ≈ {liq:g} (zarar en fazla {mj:g}$)"))
     return True
+
+def kilit_seviye(mj, lev):
+    """İlk kilit ($, brüt): net hedef + komisyon + kayma payı. e0: kilidin devreye girdiği kâr."""
+    kl1 = (A["net"] + 0.0012 * lev + 0.03) * mj
+    return kl1, kl1 + 0.05 * mj
+
+def cikis_yazi(mj, lev):
+    if A["cikis"] == "tp": return f"🎯 Kâr al: +{A['tp'] * mj:.2f}$ (≈ fiyat +%{A['tp'] * 100 / lev:.1f})"
+    kl1, e0 = kilit_seviye(mj, lev)
+    return f"🔒 Kâr +{e0:.2f}$ olunca +{kl1:.2f}$ kilitlenir (net ≈ +{A['net'] * mj:.2f}$), sonra zirvenin {A['iz'] * mj:.2f}$ gerisinden takip"
 
 def yonet():
     """Açık pozisyonları yönet: kâr al (+tp), stop açıksa zarar stopu. 2 sn'de bir çalışır."""
@@ -268,7 +282,8 @@ def yonet():
         var = {p["symbol"] for p in pos}
         for s in [s for s in acik if s not in var]:          # borsada kapanmış (stop emri / elle / likidasyon)
             k = acik.pop(s); borsa_stop_iptal(s, k.get("sid")); son = k.get("son", 0.0)
-            if son <= -0.6 * k.get("mj", 1): neden = "LİKİDASYON" if not k.get("sl") else "STOP (borsa)"
+            if k.get("kilit") is not None: son, neden = k["kilit"], "KİLİT (borsa)"          # borsadaki kilit stopu çalıştı
+            elif son <= -0.6 * k.get("mj", 1): neden = "LİKİDASYON" if not k.get("sl") else "STOP (borsa)"
             else: neden = "BORSADA KAPANDI"
             logla(s, k.get("y", "?"), son, neden, k)
             yasak[s] = time.time() + (A["bekle"] * 60 if son > 0 else max(A["bekle"] * 60, 2 * 3600))
@@ -281,8 +296,20 @@ def yonet():
                 acik[sym] = {"zirve": max(pnl, 0.0), "mj": mj, "sl": round(A["sl"] * mj, 3) if A["sl"] else None, "son": pnl, "t": int(time.time()), "y": p["side"], "elle": True}
                 haber(f"ℹ️ {ad(sym)}: elle açılan pozisyon devralındı (kâr al +{A['tp'] * mj:.2f}$, " + (f"stop −{acik[sym]['sl']:g}$)" if acik[sym]["sl"] else "stop yok)"))
             k = acik[sym]; k["son"] = pnl; k["zirve"] = max(k["zirve"], pnl); mj = k["mj"]
-            if pnl >= A["tp"] * mj: kapat(sym, p, "KÂR AL")
-            elif k.get("sl") and pnl <= -k["sl"]: kapat(sym, p, "STOP")
+            if A["cikis"] == "tp":
+                if pnl >= A["tp"] * mj: kapat(sym, p, "KÂR AL"); continue
+            else:
+                try: lev = float(p.get("leverage") or k.get("lev") or 10)
+                except Exception: lev = 10.0
+                kl1, e0 = kilit_seviye(mj, lev)
+                if k["zirve"] >= e0:                           # kilit: en az ilk kilit, sonra zirvenin "iz" kadar gerisi
+                    yeni = max(kl1, k["zirve"] - A["iz"] * mj)
+                    if k.get("kilit") is None: haber(f"🔒 {ad(sym)} kâr kilitlendi: +{yeni:.2f}$ (pnl {pnl:+.2f}$), kilit zirveyi takip edecek")
+                    k["kilit"] = max(k.get("kilit") or 0.0, yeni)
+                if k.get("kilit") is not None and k["kilit"] >= k.get("bsk", -9) + 0.05 * mj:
+                    borsa_stop(sym, p, k, k["kilit"]); k["bsk"] = k["kilit"]          # borsaya kilit stopu (başarısız olsa da aynı seviyeyi tekrar deneme)
+                if k.get("kilit") is not None and pnl <= k["kilit"]: kapat(sym, p, "KİLİT"); continue
+            if k.get("sl") and k.get("kilit") is None and pnl <= -k["sl"]: kapat(sym, p, "STOP")
         kaydet()
 
 # ───────────────────────── strateji: en çok düşüp dibi görmüş coinlere long ─────────────────────────
@@ -346,7 +373,8 @@ def pozlar():
 
 def strateji_yazi():
     return (f"Sadece LONG: 24 saatte en az %{A['minp']:g} düşmüş ilk {A['liste']} coin"
-            + (f", son 1 saatte ≥%{A['don']:g} toparlananlar" if A["don"] else "") + f" · kâr al +{A['tp'] * A['marjin']:.2f}$ · "
+            + (f", son 1 saatte ≥%{A['don']:g} toparlananlar" if A["don"] else "")
+            + (f" · kâr al +{A['tp'] * A['marjin']:.2f}$ · " if A["cikis"] == "tp" else f" · kâr kilidi +{A['net'] * A['marjin']:.2f}$ + iz süren · ")
             + (f"stop −{A['sl'] * A['marjin']:.2f}$" if A["sl"] else "stop YOK"))
 
 def ist(L):
@@ -367,7 +395,9 @@ def ekran(e):
             except Exception: liq = 0.0
             sat.append(f"{n+1}) {'🟢 LONG' if p['side'] == 'long' else '🔴 SHORT'} {ad(p['symbol'])} {p.get('leverage') or '?'}x · {dk} dk\n"
                        f"   PnL {(p.get('unrealizedPnl') or 0):+.2f}$ (zirve {a.get('zirve', 0):+.2f}$)\n"
-                       f"   giriş {g:g} | kâr al {sl_fiyat(p['side'], g, adet, cs, -tp):g} (+{tp:.2f}$)\n"
+                       + (f"   giriş {g:g} | 🔒 kilit +{a['kilit']:.2f}$ ≈ {sl_fiyat(p['side'], g, adet, cs, -a['kilit']):g}\n" if a.get("kilit") is not None
+                          else f"   giriş {g:g} | kâr al {sl_fiyat(p['side'], g, adet, cs, -tp):g} (+{tp:.2f}$)\n" if A["cikis"] == "tp"
+                          else f"   giriş {g:g} | kilit +{kilit_seviye(mj, float(p.get('leverage') or 10))[1]:.2f}$'da başlar\n")
                        + (f"   stop {sl_fiyat(p['side'], g, adet, cs, sl):g} (−{sl:.2f}$)" if sl else f"   stop yok · likidasyon {liq:g}"))
             k.row(B(f"❌ {n+1}. {ad(p['symbol']).split('/')[0]} kapat", callback_data=f"k{n}"))
         k.row(geri, B("🔄 Yenile", callback_data="poz"))
@@ -414,9 +444,8 @@ def ekran(e):
         k.row(B("Elle açtığım işlemler: " + ("✅ bot yönetsin" if A["elle"] else "❌ bot dokunmasın"), callback_data="elle"))
         k.row(B(f"🚫 Hariç coinler ({len(A['haric'])}) → /haric", callback_data="ayar"))
         k.row(geri)
-        tp = A["tp"] * A["marjin"]
         return (f"⚙️ AYARLAR\n\n🎯 {strateji_yazi()}\n\n💵 {A['marjin']:g}$ izole · ≤{A['lev']}x · en çok {A['max_pos']} işlem\n"
-                f"🎯 Kâr al: +{tp:.2f}$ (≈ fiyat +%{A['tp'] * 100 / A['lev']:.1f})\n"
+                + cikis_yazi(A["marjin"], A["lev"]) + "\n"
                 + (f"🛑 Zarar stopu: −{A['sl'] * A['marjin']:.2f}$ (borsada da durur)\n" if A["sl"] else f"🛑 Zarar stopu YOK: işlem başı zarar en fazla marjin ({A['marjin']:g}$), likidasyonla kapanır\n")
                 + f"📉 Günlük zarar limiti: {('−' + format(A['gunluk'], 'g') + '$') if A['gunluk'] else 'yok'}\n"
                 f"⏱ Tekrar giriş: kârdan sonra {A['bekle']} dk, zarardan sonra 2 saat"), k
@@ -424,7 +453,7 @@ def ekran(e):
         k.row(geri)
         return ("❓ YARDIM\n\nBot ne yapar: Bitget vadeli listesini 24 saatlik değişime göre sıralar ve en çok düşen coinlere bakar (hisse/emtia hariç). "
                 "Son 1 saatte toparlanmaya başlamış olanlara (dibi görmüş) LONG açar. Short açmaz. Her 5 dakikada bir tarar.\n\n"
-                "Çıkış: kâr hedefe gelince kapatır. Zarar stopu varsayılan olarak YOK: işlem ters giderse likidasyonla kapanır ve o işlemin marjini kaybedilir.\n\n"
+                "Çıkış: varsayılan olarak kâr belli seviyeye gelince KİLİTLENİR (borsaya stop konur) ve kilit zirveyi takip eder; panelden sabit kâr al da seçilebilir. Zarar stopu varsayılan olarak YOK: işlem ters giderse likidasyonla kapanır ve o işlemin marjini kaybedilir.\n\n"
                 "Dürüst not: 31 günlük gerçek veride bu kural başa baş civarında çıktı (bir dönem hafif eksi, bir dönem hafif artı). "
                 "İşlemlerin yaklaşık dörtte biri likidasyonla kapandı. Kâr garantisi yoktur.\n\n"
                 "Komutlar:\n/panel – ana menü\n/adaylar – düşenler listesi\n/gecmis – son işlemler\n/ozet – istatistik\n"
