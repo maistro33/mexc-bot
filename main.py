@@ -33,7 +33,14 @@
 # v7.1 12.10 22:50  SHORT SİNYALLERİ: en çok yükselen 30 coin (24s ≥ eşik) içinden son 1 saatte ≥%1 geri düşen = "tepe yaptı" → 🔴 SHORT sinyali.
 #                   Panelde sinyaller (SHORT aç düğmesiyle) ve "Tepe adayları" listesi, Telegram bildirimi. Bot short'a kendisi GİRMEZ:
 #                   short'ları kullanıcı panelden açar (test edilmedi).
-VERSIYON = "v7.1 (12.10 22:50)"
+# v7.2 13.10 18:30  BORSA SIRALAMASI: panelde borsanın 24s en çok yükselen İLK 5 ve en çok düşen SON 5 coini (hisse/hariç/1M$ altı yok),
+#                   her birinin "ne zamandır" o listede olduğu, son 1 saat değişimi ve LONG/SHORT aç düğmeleriyle. Süre bot açılınca sıfırlanır.
+#                   "Durdur" düğmesi "🤖 Oto giriş: AÇIK/KAPALI" oldu (kapalıyken bot kendi açmaz; sinyal, elle açma ve pozisyon yönetimi sürer).
+# v7.3 13.10 18:45  TEPE / DİP ZAMANI: sıralamada ve tepe/dip listelerinde her coinin son 7 günün zirvesini (yükselenler) ya da dibini
+#                   (düşenler) NE ZAMAN gördüğü ("3 sa önce", "2 gün önce") ve şu an o tepenin ne kadar altında / dibin ne kadar üstünde olduğu.
+#                   Bilgi coin adının altında (telefonda taşmaz); LONG/SHORT düğmeleri alt alta. Panel başlığında CANLI SAAT (İsveç saati,
+#                   saniyede bir) ve "son güncelleme" göstergesi; sürüm ayrı yazılır (eskiden sürüm tarihi saat sanılabiliyordu).
+VERSIYON = "v7.3 (13.10 18:45)"
 
 import os, time, json, threading, datetime as dt
 import ccxt, telebot
@@ -153,7 +160,7 @@ def limit_doldu():
     return A["gunluk"] > 0 and gun_toplam() <= -A["gunluk"]
 
 def durum():
-    if not A["calis"]: return "⏹ DURDU (elle)"
+    if not A["calis"]: return "🤖 OTO GİRİŞ KAPALI (sinyal + elle işlem)"
     if limit_doldu(): return "⛔ GÜNLÜK LİMİT DOLDU (yeni giriş yok)"
     return "▶️ ÇALIŞIYOR"
 
@@ -348,10 +355,44 @@ def dusenler():
         if p24 is None:
             try: p24 = float((t.get("info") or {}).get("change24h")) * 100
             except Exception: continue
+        HEPSI.append((float(p24), s, float(t["last"])))
         if float(p24) <= -A["minp"]: L.append((float(p24), s, float(t["last"])))
         if float(p24) >= A["minp"]: YUK.append((float(p24), s, float(t["last"])))
     L.sort()
     return [(s, c, p) for p, s, c in L[:A["liste"]]]
+
+HEPSI = []                                  # dusenler() taramasında uygun TÜM coinler (borsa sıralaması için)
+SIRA = {"ilk": [], "son": [], "t": 0}       # borsa sıralaması: ilk 5 yükselen / son 5 düşen
+SIRA_T = {"ilk": {}, "son": {}}             # sembol -> o listeye giriş zamanı
+BOT_T0 = time.time()
+ZB = {}                                     # sembol -> (bid, bilgi): tepe/dip zamanı önbelleği (5 dk'da bir)
+def zirve(sym, c, bid):
+    """Son 7 günün (1s mumlar) zirvesi ve dibi: kaç saat önce görüldü, şu an ondan % uzaklık. Döner dict veya None."""
+    o = ZB.get(sym)
+    if o and o[0] == bid: return o[1]
+    try:
+        m = ex.fetch_ohlcv(sym, "1h", limit=168)
+        if not m: return None
+        hi = max(m, key=lambda x: float(x[2])); lo = min(m, key=lambda x: float(x[3]))
+        H_, L_ = max(float(hi[2]), c), min(float(lo[3]), c); simdi = time.time()
+        th = 0 if c >= float(hi[2]) else max(0, (simdi - int(hi[0]) / 1000 - 1800) / 3600)   # mumun ortası
+        tl = 0 if c <= float(lo[3]) else max(0, (simdi - int(lo[0]) / 1000 - 1800) / 3600)
+        b_ = {"tz": round(th, 1), "tf": round((c / H_ - 1) * 100, 1), "dz": round(tl, 1), "df": round((c / L_ - 1) * 100, 1)}
+        ZB[sym] = (bid, b_); return b_
+    except Exception: return None
+
+def sira_guncelle(bid):
+    L = sorted(HEPSI, reverse=True); HEPSI.clear()
+    if len(L) < 10: return
+    simdi = time.time()
+    for ad_, grup in (("ilk", L[:5]), ("son", L[-5:][::-1])):
+        eski = SIRA_T[ad_]; yeni = {}; out = []
+        for n, (p, s, c) in enumerate(grup):
+            yeni[s] = eski.get(s, simdi)
+            out.append({"s": ad(s).split("/")[0], "sym": s, "p24": round(p, 1), "p1": bir_saat(s, c, bid), "sira": n + 1,
+                        "dk": int((simdi - yeni[s]) / 60), "en_az": yeni[s] <= BOT_T0 + 60, "z": zirve(s, c, bid)})
+        SIRA_T[ad_] = yeni; SIRA[ad_] = out
+    SIRA["t"] = int(simdi)
 
 YUK = []                                    # dusenler() taramasında toplanan yükselenler (tepe adayları için)
 def yukselenler():
@@ -380,7 +421,9 @@ def tarama_adimi():
     simdi = time.time(); bid = int(simdi // BAR)
     if tarama_bid[0] == bid: return
     tarama_bid[0] = bid; taze = simdi - bid * BAR < 45          # bot yeni açıldıysa ilk tarama sadece ekran için, giriş yok
-    YUK.clear(); L = dusenler(); T_ = yukselenler(); liste = []
+    YUK.clear(); HEPSI.clear(); L = dusenler(); T_ = yukselenler(); liste = []
+    try: sira_guncelle(bid)
+    except Exception as e: print("sıralama hatası:", e)
     for n, (s, c, p) in enumerate(L):
         p1 = bir_saat(s, c, bid) if A["don"] else None
         hazir = (not A["don"]) or (p1 is not None and p1 >= A["don"])
@@ -390,6 +433,8 @@ def tarama_adimi():
         p1 = bir_saat(s, c, bid) if A["don"] else None
         hazir = (not A["don"]) or (p1 is not None and p1 <= -A["don"])
         tepe.append({"s": ad(s), "sym": s, "c": c, "p24": p, "p1": p1, "sira": n + 1, "hazir": hazir, "acik": s in acik, "yasak": time.time() < yasak.get(s, 0), "yon": "sell"})
+    for x in liste[:15] + tepe[:15]:
+        x["z"] = zirve(x["sym"], x["c"], bid)
     ADAY["t"], ADAY["liste"], ADAY["tepe"] = int(time.time()), liste, tepe; son_tarama[0] = time.time()
     if not taze: return
     if not A["calis"] or limit_doldu(): sinyal_bildir(liste); sinyal_bildir(tepe); return
@@ -518,7 +563,7 @@ def ekran(e):
         k.row(B("✅ Evet, HEPSİNİ kapat", callback_data="hepE"), B("❌ Vazgeç", callback_data="ana"))
         return "🚨 Tüm pozisyonlar kapatılsın mı? (Otomatik giriş de durur)", k
     ps = pozlar(); n = len(ps); ucan = sum(p.get("unrealizedPnl") or 0 for p in ps)
-    k.row(B("🛑 DURDUR" if A["calis"] else "▶️ BAŞLAT", callback_data="tog"))
+    k.row(B("🤖 Oto giriş: AÇIK → kapat" if A["calis"] else "🤖 Oto giriş: KAPALI → aç", callback_data="tog"))
     k.row(B(f"📋 Pozisyonlar ({n})", callback_data="poz"), B("🔎 Düşenler", callback_data="aday"))
     k.row(B("📜 Geçmiş", callback_data="gec"), B("📊 Özet", callback_data="ozet"))
     k.row(B("⚙️ Ayarlar", callback_data="ayar"), B("❓ Yardım", callback_data="yardim"))
@@ -639,14 +684,14 @@ def api_veri():
         p1 = x.get("p1"); kalan = round(A["don"] - p1, 2) if (A["don"] and p1 is not None and p1 < A["don"]) else None
         d = "acik" if x["sym"] in acik else ("yasak" if time.time() < yasak.get(x["sym"], 0) else
              ("hazir" if x["hazir"] else ("dusuyor" if (p1 is not None and p1 < 0) else "bek")))
-        adaylar.append({"s": x["s"].split("/")[0], "sym": x["sym"], "p24": round(x["p24"], 1), "p1": round(p1, 2) if p1 is not None else None, "kalan": kalan, "d": d,
+        adaylar.append({"s": x["s"].split("/")[0], "sym": x["sym"], "p24": round(x["p24"], 1), "p1": round(p1, 2) if p1 is not None else None, "kalan": kalan, "d": d, "z": x.get("z"),
                         "dol": 100 if x["hazir"] else (max(0, min(100, p1 / A["don"] * 100)) if (A["don"] and p1 is not None) else 0)})
     tepeler = []
     for x in ADAY.get("tepe", []):
         p1 = x.get("p1"); kalan = round(A["don"] + p1, 2) if (A["don"] and p1 is not None and p1 > -A["don"]) else None
         d = "acik" if x["sym"] in acik else ("yasak" if time.time() < yasak.get(x["sym"], 0) else
              ("hazir" if x["hazir"] else ("yukseliyor" if (p1 is not None and p1 > 0) else "bek")))
-        tepeler.append({"s": x["s"].split("/")[0], "sym": x["sym"], "p24": round(x["p24"], 1), "p1": round(p1, 2) if p1 is not None else None, "kalan": kalan, "d": d,
+        tepeler.append({"s": x["s"].split("/")[0], "sym": x["sym"], "p24": round(x["p24"], 1), "p1": round(p1, 2) if p1 is not None else None, "kalan": kalan, "d": d, "z": x.get("z"),
                         "dol": 100 if x["hazir"] else (max(0, min(100, -p1 / A["don"] * 100)) if (A["don"] and p1 is not None) else 0)})
     bugun = [g for g in G if gun(g["t"]) == gun()]
     return {"v": VERSIYON, "calis": A["calis"], "durum": durum(), "limit": limit_doldu(),
@@ -654,7 +699,8 @@ def api_veri():
             "poz": P, "oto": oto_sayi(), "max_pos": A["max_pos"], "acik_pnl": round(sum(x["pnl"] for x in P), 3),
             "ozet": {"n": len(G), "kaz": len(w), "kaz_y": round(len(w) / len(G) * 100) if G else None, "gerek": round(abs(oz) / (abs(oz) + ok_) * 100) if w and l else None,
                      "ort_k": round(ok_, 2), "ort_z": round(oz, 2), "top": round(sum(g["pnl"] for g in G), 2)},
-            "egri": EGRI[-400:], "aday": adaylar, "tepe": tepeler, "short_oto": bool(A.get("short_oto")), "tarama": max(0, int(time.time() - son_tarama[0])) if son_tarama[0] else None, "don": A["don"],
+            "egri": EGRI[-400:], "sira": {"ilk": [dict(x, p1=round(x["p1"], 2) if x["p1"] is not None else None) for x in SIRA["ilk"]],
+                                    "son": [dict(x, p1=round(x["p1"], 2) if x["p1"] is not None else None) for x in SIRA["son"]]}, "aday": adaylar, "tepe": tepeler, "short_oto": bool(A.get("short_oto")), "tarama": max(0, int(time.time() - son_tarama[0])) if son_tarama[0] else None, "don": A["don"],
             "gec": [{"s": g["s"].split("/")[0], "y": g["y"], "pnl": g["pnl"], "n": g["n"], "t": g["t"], "sure": int((g["t"] - g["t0"]) / 60) if g.get("t0") else None,
                      "kesin": g.get("g") == 1} for g in G[-40:][::-1]],
             "strateji": strateji_yazi(), "cikis_yazi": cikis_yazi(A["marjin"], A["lev"]),
@@ -673,8 +719,8 @@ def islem(d):
     """Panelden gelen komut. Döner: (ok, mesaj)."""
     act = d.get("act"); sym = d.get("sym")
     if act == "tog":
-        A["calis"] = not A["calis"]; kaydet(); haber(f"{'▶️ Bot başlatıldı' if A['calis'] else '⏸ Bot durduruldu'} (web paneli)")
-        return True, "Bot çalışıyor" if A["calis"] else "Bot durduruldu (açık işlemler yönetilmeye devam eder)"
+        A["calis"] = not A["calis"]; kaydet(); haber(f"{'🤖 Otomatik giriş AÇILDI' if A['calis'] else '🤖 Otomatik giriş KAPATILDI (sinyaller ve elle işlem devam)'} (web paneli)")
+        return True, "Otomatik giriş açık" if A["calis"] else "Otomatik giriş kapalı: bot kendi açmaz, sinyaller/elle açma/yönetim sürer"
     if act == "ayar":
         degisen = []
         for a, v in (d.get("ayar") or {}).items():
@@ -811,6 +857,11 @@ th:first-child,td:first-child{text-align:left}td{text-align:right;padding:9px 6p
 .ac{background:linear-gradient(135deg,#22d39b,#14a57a);color:#fff;border:0;border-radius:8px;padding:5px 10px;font-weight:800;font-size:12px;cursor:pointer;margin-left:6px}
 .dp{display:flex;align-items:center;gap:8px;justify-content:flex-end}.dbar{flex:1;height:8px;border-radius:99px;background:#0d1326;overflow:hidden;min-width:50px}.dbar i{display:block;height:100%;border-radius:99px}.dp span{font-size:12px;white-space:nowrap}
 .sinyal{display:flex;align-items:center;gap:10px;border:1px solid rgba(34,211,155,.35);background:linear-gradient(135deg,rgba(34,211,155,.12),rgba(91,140,255,.08));border-radius:14px;padding:10px 12px;margin-bottom:8px}
+.dp{flex-wrap:wrap;row-gap:4px}.dp .dbar{flex:1 1 60px;min-width:50px}.zz{font-size:11px;color:var(--soluk);font-weight:500;margin-top:2px;white-space:normal}.nw{white-space:nowrap}
+table.sira td:nth-child(2),td.cz{text-align:left;max-width:150px}.ikib{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.saat{font-variant-numeric:tabular-nums;font-weight:700;color:var(--metin,#e8ecf8)}
+.ikili{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:700px){.ikili{grid-template-columns:1fr}}.sbas{font-weight:700;font-size:14px;margin:4px 0 6px}
+.sira td .mini{border:0;border-radius:8px;padding:4px 7px;font-weight:700;font-size:10px;color:#fff;cursor:pointer;margin:0}.mini.l{background:linear-gradient(135deg,#22d39b,#14a97a)}.mini.s{background:linear-gradient(135deg,#ff5c7a,#d93a5c)}
 .sinyal.ss{border-color:rgba(255,92,122,.4);background:linear-gradient(135deg,rgba(255,92,122,.12),rgba(165,107,255,.08))}.sinyal b{font-size:16px}.sinyal .btn{margin-left:auto}
 .ayar{margin-bottom:12px}.ayar .bas{font-size:12px;color:var(--soluk);margin-bottom:6px;display:flex;justify-content:space-between;gap:8px}
 .seg{display:flex;gap:6px;flex-wrap:wrap}.seg span{flex:1;min-width:52px;text-align:center;padding:9px 6px;border-radius:10px;background:#0f1630;border:1px solid var(--cizgi);font-weight:700;font-size:13px;color:#c5cbe0;cursor:pointer;user-select:none}
@@ -830,8 +881,8 @@ input{width:100%;background:#0f1630;border:1px solid var(--cizgi);border-radius:
 svg text{fill:var(--soluk)}
 @media(max-width:820px){.kartlar{grid-template-columns:repeat(2,1fr)}.iki{grid-template-columns:1fr}.k .d{font-size:20px}}
 </style></head><body><div class="sar">
-<header><div><div class="logo">🌊 GHOST DİP</div><div class="alt" id="alt">CANLI HESAP · yükleniyor…</div></div>
-<div class="sag"><span class="pill p-ok" id="durum"><span class="nokta"></span><span id="durumy">…</span></span><button class="btn b-dur" id="tog" onclick="tog()">⏸ Durdur</button></div></header>
+<header><div><div class="logo">🌊 GHOST DİP</div><div class="alt">🕒 <span class="saat" id="saat">--:--:--</span> İsveç · <span id="guncel">bağlanıyor…</span></div><div class="alt" id="alt">CANLI HESAP · yükleniyor…</div></div>
+<div class="sag"><span class="pill p-ok" id="durum"><span class="nokta"></span><span id="durumy">…</span></span><button class="btn b-dur" id="tog" onclick="tog()">🤖 Oto giriş</button></div></header>
 <div class="uyari" id="uyari"></div>
 <div class="kartlar">
  <div class="k" style="--renk:var(--mavi)"><div class="e">Bakiye</div><div class="d" id="bak">–</div><div class="a" id="bos"></div></div>
@@ -846,6 +897,9 @@ svg text{fill:var(--soluk)}
  <div class="pan" id="adaylar"><h2>🎯 Düşenler · dip adayları <span class="r">her 5 dk</span></h2>
   <div class="alt" style="margin-bottom:8px" id="aday_acik"></div><div id="aday"></div></div>
 </div>
+<div class="pan" id="sira"><h2>🏆 Borsa sıralaması <span class="r">24 saat · her 5 dk</span></h2>
+ <div class="alt" style="margin-bottom:8px">Borsada en çok yükselen ilk 5 ve en çok düşen son 5 coin. Coin adının altında: son 7 günün tepesini/dibini <b>ne zaman</b> gördü, şu an ondan ne kadar uzakta ve ne zamandır listede.</div>
+ <div class="ikili"><div><div class="sbas art">🚀 En çok yükselen 5</div><div id="sira_ilk"></div></div><div><div class="sbas eks">💥 En çok düşen 5</div><div id="sira_son"></div></div></div></div>
 <div class="pan" id="tepeler"><h2>📉 Yükselenler · tepe adayları <span class="r">SHORT için · her 5 dk</span></h2>
  <div class="alt" style="margin-bottom:8px">Çok yükselmiş bir coin son 1 saatte <b>%1 geri düşünce</b> "tepe yaptı" sayılır ve 🔴 SHORT sinyali çıkar. Bot bunlara girmez, sen açarsın.</div><div id="tepe"></div></div>
 <div class="pan" id="elle"><h2>➕ Elle işlem aç <span class="r">istediğin coine, sen karar ver</span></h2>
@@ -863,7 +917,7 @@ svg text{fill:var(--soluk)}
 </div>
 <div class="pan" id="gecmis"><h2>📜 Kapanan işlemler <span class="r" id="gec_r"></span></h2><div id="gec"></div></div>
 </div>
-<div class="nav"><a href="#"><b>🏠</b>Özet</a><a href="#pozisyon"><b>💼</b>Pozisyon</a><a href="#adaylar"><b>🎯</b>Dip</a><a href="#tepeler"><b>📉</b>Tepe</a><a href="#elle"><b>➕</b>Elle aç</a><a href="#ayarlar"><b>⚙️</b>Ayarlar</a><a href="#gecmis"><b>📜</b>Geçmiş</a></div>
+<div class="nav"><a href="#"><b>🏠</b>Özet</a><a href="#pozisyon"><b>💼</b>Pozisyon</a><a href="#adaylar"><b>🎯</b>Dip</a><a href="#tepeler"><b>📉</b>Tepe</a><a href="#sira"><b>🏆</b>Sıra</a><a href="#elle"><b>➕</b>Elle aç</a><a href="#ayarlar"><b>⚙️</b>Ayarlar</a><a href="#gecmis"><b>📜</b>Geçmiş</a></div>
 <div class="toast" id="toast"></div>
 <script>
 let D=null,COIN={},ayarDegisti=false,ayarCizildi=false,eYon='buy',eMj=null,eLev=null;
@@ -874,7 +928,7 @@ const fy=x=>x==null||!isFinite(x)?'–':(x>=100?f(x,2):x>=1?f(x,4):Number(x).toL
 const sure=m=>m==null?'':(m>=60?Math.floor(m/60)+' sa '+(m%60)+' dk':m+' dk');
 function toast(m,ok=true){const t=$('toast');t.textContent=m;t.style.borderColor=ok?'var(--yesil)':'var(--kirmizi)';t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
 async function post(d){try{const r=await fetch('api/islem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});const j=await r.json();toast(j.msg,j.ok);yenile();return j}catch(e){toast('Bağlantı hatası',false)}}
-function tog(){if(!D)return;if(confirm(D.calis?'Bot durdurulsun mu?\n(Yeni işlem açmaz; açık işlemleri yönetmeye devam eder.)':'Bot başlatılsın mı?'))post({act:'tog'})}
+function tog(){if(!D)return;if(confirm(D.calis?'Otomatik giriş KAPATILSIN mı?\nBot kendi işlem açmaz. Sinyaller, elle açma ve açık işlemlerin yönetimi devam eder.':'Otomatik giriş AÇILSIN mı?\nBot sinyallere kendisi de LONG açar.'))post({act:'tog'})}
 function kapat(sym,s,p){if(confirm(`${s} pozisyonu şimdi kapatılsın mı?\nŞu anki sonuç: ${sg(p)} $`))post({act:'kapat',sym})}
 function koru(sym,s,p){if(confirm(`${s}: kâr korunsun mu?\nFiyat geri düşerse işlem yaklaşık ${sg(p)} $ kârla kapanır (borsaya stop konur).`))post({act:'koru',sym})}
 function stopEkle(sym,s){if(confirm(`${s} pozisyonuna zarar stopu eklensin mi?\n(Zarar yaklaşık 0,50 $'ı geçmesin diye; zaten bunun ötesindeyse biraz daha aşağıya konur.)`))post({act:'stop',sym})}
@@ -902,28 +956,41 @@ function pozKart(p){const L=p.y=='long';const kir=p.pnl<0;
  <div class="alt2">${b1}<button class="btn b-dur" onclick="kapat('${p.sym}','${p.s}',${p.pnl})">✕ Kapat</button></div></div>`}
 function adayCiz(d){const A=d.aday;$('aday_acik').innerHTML=d.don?`Bot, sert düşmüş bir coin son 1 saatte <b>%${f(d.don,0)} toparlanınca</b> "dip yaptı" sayar ve alır. Çubuk o noktaya ne kadar kaldığını gösterir.`:'Toparlanma şartı kapalı: listedeki coinler hemen alınabilir.';
  if(!A.length){$('aday').innerHTML='<div class="bos">Şu an eşiği geçen düşüş yok.</div>';return}
- $('aday').innerHTML='<table><tr><th>Coin</th><th>24s</th><th style="width:48%">Dip yapmaya</th></tr>'+A.slice(0,15).map(x=>{let h;
+ $('aday').innerHTML='<table><tr><th style="text-align:left">Coin</th><th>24s</th><th style="width:44%">Dip yapmaya</th></tr>'+A.slice(0,15).map(x=>{let h;
   if(x.d=='acik')h='<span class="chip c-m">📌 işlemde</span>';else if(x.d=='yasak')h='<span class="chip c-g">⏱ beklemede</span>';
   else if(x.d=='hazir')h=`<div class="dbar"><i style="width:100%;background:var(--yesil)"></i></div><span class="art">✅ dip yaptı</span><button class="ac" onclick="sinyalAc('${x.sym}','${x.s}')">Aç</button>`;
   else if(x.d=='dusuyor')h=`<div class="dbar"><i style="width:0"></i></div><span class="eks">↓ düşüyor</span>`;
   else h=`<div class="dbar"><i style="width:${x.dol}%;background:${x.dol>=50?'var(--sari)':'var(--soluk)'}"></i></div><span style="color:${x.dol>=50?'var(--sari)':'var(--soluk)'}">${x.kalan!=null?'%'+f(x.kalan,1)+' kaldı':'veri yok'}</span>`;
-  return `<tr><td><b>${x.s}</b></td><td class="eks">%${f(x.p24,1)}</td><td><div class="dp">${h}</div></td></tr>`}).join('')+'</table>'}
+  return `<tr><td class="cz"><b>${x.s}</b>${zD(x.z)}</td><td class="eks nw">%${f(x.p24,1)}</td><td><div class="dp">${h}</div></td></tr>`}).join('')+'</table>'}
 function sinyalCiz(d){const HL=d.aday.filter(x=>x.d=='hazir'),HS=(d.tepe||[]).filter(x=>x.d=='hazir');let h='';
  h+=HL.length?HL.map(x=>`<div class="sinyal"><div><b>${x.s}</b> <span class="rozet L">🟢 LONG</span><div class="alt">24s %${f(x.p24,1)} · son 1 saat %${sg(x.p1,1)} · dip yaptı</div></div><button class="btn b-bas" onclick="sinyalAc('${x.sym}','${x.s}','buy')">LONG aç</button></div>`).join('')+
-  `<div class="alt" style="margin-bottom:10px">🟢 ${!d.calis?'Bot durdurulmuş: LONG sinyallerine kendisi girmiyor.':(d.oto>=d.max_pos?`Bot dolu (${d.oto}/${d.max_pos}): bu LONG'lara kendisi giremiyor, sen açabilirsin.`:'Bot boş yer bulunca LONG sinyallerine kendisi de girer.')}</div>`
+  `<div class="alt" style="margin-bottom:10px">🟢 ${!d.calis?'Oto giriş kapalı: LONG sinyallerini sen açarsın.':(d.oto>=d.max_pos?`Bot dolu (${d.oto}/${d.max_pos}): bu LONG'lara kendisi giremiyor, sen açabilirsin.`:'Bot boş yer bulunca LONG sinyallerine kendisi de girer.')}</div>`
   :(()=>{const y=d.aday.filter(x=>x.d=='bek'&&x.kalan!=null).sort((a,b)=>a.kalan-b.kalan)[0];return `<div class="alt" style="padding:4px 0 10px">🟢 LONG sinyali yok.${y?` En yakın: <b>${y.s}</b>, dip yapmaya %${f(y.kalan,1)} kaldı.`:''}</div>`})();
  h+=HS.length?HS.map(x=>`<div class="sinyal ss"><div><b>${x.s}</b> <span class="rozet S">🔴 SHORT</span><div class="alt">24s %${sg(x.p24,1)} · son 1 saat %${sg(x.p1,1)} · tepe yaptı</div></div><button class="btn b-dur" onclick="sinyalAc('${x.sym}','${x.s}','sell')">SHORT aç</button></div>`).join('')+
   '<div class="alt">🔴 SHORT sinyallerine bot girmez, sen açarsın. (Bu kural test edilmedi.)</div>'
   :(()=>{const y=(d.tepe||[]).filter(x=>x.d=='bek'&&x.kalan!=null).sort((a,b)=>a.kalan-b.kalan)[0];return `<div class="alt" style="padding:4px 0">🔴 SHORT sinyali yok.${y?` En yakın: <b>${y.s}</b>, tepe yapmaya %${f(y.kalan,1)} kaldı.`:''}</div>`})();
  $('sin').innerHTML=h}
+let SONV=0;const SAATF=new Intl.DateTimeFormat('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit',second:'2-digit'}),GUNF=new Intl.DateTimeFormat('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit'});
+function saatYaz(){const n=new Date();$('saat').textContent=GUNF.format(n)+' '+SAATF.format(n);const g=SONV?Math.round((Date.now()-SONV)/1000):null;
+ $('guncel').innerHTML=g==null?'bağlanıyor…':(g<15?'<span class="art">● canlı</span>':`<span class="eks">● ${g} sn önce güncellendi</span>`)}
+setInterval(saatYaz,1000);setTimeout(saatYaz,50);
+function sureY(dk,ea){const t=dk<60?`${dk} dk`:(dk<1440?`${Math.floor(dk/60)} sa ${dk%60} dk`:`${Math.floor(dk/1440)} gün ${Math.floor(dk%1440/60)} sa`);return (ea?'≥ ':'')+t}
+function zaman(h){return h==null?'–':(h<1?'şimdi':(h<24?`${Math.round(h)} sa önce`:`${Math.floor(h/24)} gün ${Math.round(h%24)} sa önce`))}
+function zT(z){return !z?'':'<div class="zz">'+(z.tz<1&&z.tf>-0.5?'<span class="art">🔺 şu an tepede</span>':`🔺 ${zaman(z.tz)} · <span class="nw">tepeden %${f(z.tf,1)}</span>`)+'</div>'}
+function zD(z){return !z?'':'<div class="zz">'+(z.dz<1&&z.df<0.5?'<span class="eks">🔻 şu an dipte</span>':`🔻 ${zaman(z.dz)} · <span class="nw">dipten %+${f(z.df,1)}</span>`)+'</div>'}
+function siraCiz(d){const S=d.sira||{};const tab=(A,ilk)=>!A||!A.length?'<div class="bos">Veri bekleniyor (ilk tarama).</div>':
+ '<table class="sira"><tr><th>#</th><th style="text-align:left">Coin</th><th>24s</th><th>1 sa</th><th></th></tr>'+A.map(x=>
+ `<tr><td>${x.sira}</td><td><b>${x.s}</b>${ilk?zT(x.z):zD(x.z)}<div class="zz">⏱ listede ${sureY(x.dk,x.en_az)}</div></td><td class="${ilk?'art':'eks'} nw">%${sg(x.p24,1)}</td><td class="${rk(x.p1)} nw">${x.p1!=null?'%'+sg(x.p1,1):'–'}</td>`+
+ `<td><div class="ikib"><button class="mini l" onclick="sinyalAc('${x.sym}','${x.s}','buy')">LONG</button><button class="mini s" onclick="sinyalAc('${x.sym}','${x.s}','sell')">SHORT</button></div></td></tr>`).join('')+'</table>';
+ $('sira_ilk').innerHTML=tab(S.ilk,true);$('sira_son').innerHTML=tab(S.son,false)}
 function tepeCiz(d){const A=d.tepe||[];
  if(!A.length){$('tepe').innerHTML='<div class="bos">Şu an eşiği geçen yükseliş yok.</div>';return}
- $('tepe').innerHTML='<table><tr><th>Coin</th><th>24s</th><th style="width:48%">Tepe yapmaya</th></tr>'+A.slice(0,15).map(x=>{let h;
+ $('tepe').innerHTML='<table><tr><th style="text-align:left">Coin</th><th>24s</th><th style="width:44%">Tepe yapmaya</th></tr>'+A.slice(0,15).map(x=>{let h;
   if(x.d=='acik')h='<span class="chip c-m">📌 işlemde</span>';else if(x.d=='yasak')h='<span class="chip c-g">⏱ beklemede</span>';
   else if(x.d=='hazir')h=`<div class="dbar"><i style="width:100%;background:var(--kirmizi)"></i></div><span class="eks">✅ tepe yaptı</span><button class="ac" style="background:linear-gradient(135deg,#ff5c7a,#d93a5c)" onclick="sinyalAc('${x.sym}','${x.s}','sell')">Short</button>`;
   else if(x.d=='yukseliyor')h=`<div class="dbar"><i style="width:0"></i></div><span class="art">↑ yükseliyor</span>`;
   else h=`<div class="dbar"><i style="width:${x.dol}%;background:${x.dol>=50?'var(--sari)':'var(--soluk)'}"></i></div><span style="color:${x.dol>=50?'var(--sari)':'var(--soluk)'}">${x.kalan!=null?'%'+f(x.kalan,1)+' kaldı':'veri yok'}</span>`;
-  return `<tr><td><b>${x.s}</b></td><td class="art">%${sg(x.p24,1)}</td><td><div class="dp">${h}</div></td></tr>`}).join('')+'</table>'}
+  return `<tr><td class="cz"><b>${x.s}</b>${zT(x.z)}</td><td class="art nw">%${sg(x.p24,1)}</td><td><div class="dp">${h}</div></td></tr>`}).join('')+'</table>'}
 function ayarCiz(d){$('a_seg').innerHTML='';const sol=document.createElement('div'),sag=document.createElement('div');
  d.ayar.forEach((a,i)=>{const el=document.createElement('div');el.className='ayar';el.innerHTML=`<div class="bas"><span>${a.t}</span></div><div class="seg" data-k="${a.k}">`+a.o.map(o=>`<span data-v='${JSON.stringify(o.v)}' class="${JSON.stringify(o.v)==JSON.stringify(a.cur)?'on':''}">${o.l}</span>`).join('')+'</div>';(i%2?sag:sol).appendChild(el)});
  $('a_seg').append(sol,sag);$('a_elle').className='tog'+(d.elle?'':' off');
@@ -940,9 +1007,9 @@ function elleAc(){const q=$('e_coin').value.trim().toUpperCase().replace('USDT',
  const mj=+(eMj||D.mj_def),lev=+(eLev||D.lev_def);if(confirm(`${q} ${eYon=='buy'?'🟢 LONG':'🔴 SHORT'} açılsın mı?\n${f(mj,0)} $ marjin × ${lev}x = ${f(mj*lev,0)} $ pozisyon (gerçek para)`))post({act:'ac',sym:c.sym,yon:eYon,mj,lev})}
 async function coinler(){try{const L=await (await fetch('api/coinler')).json();COIN={};L.forEach(c=>COIN[c.s]=c);$('coinler').innerHTML=L.map(c=>`<option value="${c.s}">`).join('')}catch(e){}}
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json();if(d.hata)throw d.hata;D=d;
- $('alt').textContent=`CANLI HESAP · ${d.v} · Bitget USDT-M · izole`;
- const dur=!d.calis||d.limit;$('durum').className='pill '+(dur?'p-dur':'p-ok');$('durumy').textContent=!d.calis?'DURDU':(d.limit?'GÜNLÜK LİMİT':'ÇALIŞIYOR');
- $('tog').textContent=d.calis?'⏸ Durdur':'▶ Başlat';$('tog').className='btn '+(d.calis?'b-dur':'b-bas');
+ $('alt').textContent=`CANLI HESAP · sürüm ${d.v.split(' ')[0]} · Bitget USDT-M · izole`;SONV=Date.now();
+ const dur=!d.calis||d.limit;$('durum').className='pill '+(dur?'p-dur':'p-ok');$('durumy').textContent=!d.calis?'SİNYAL + ELLE':(d.limit?'GÜNLÜK LİMİT':'ÇALIŞIYOR');
+ $('tog').textContent=d.calis?'🤖 Oto giriş: AÇIK':'🤖 Oto giriş: KAPALI';$('tog').className='btn '+(d.calis?'b-dur':'b-bas');
  $('bak').textContent=f(d.bak)+' $';$('bos').textContent='kullanılabilir '+f(d.bos)+' $';
  $('bug').textContent=sg(d.bugun)+' $';$('bug').className='d '+rk(d.bugun);$('kbug').style.setProperty('--renk',d.bugun>=0?'var(--yesil)':'var(--kirmizi)');
  $('bugn').textContent=`${d.bugun_n} işlem · limit ${d.gunluk?'−'+f(d.gunluk,0)+' $':'yok'}`;
@@ -950,7 +1017,7 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  const o=d.ozet;$('kaz').textContent=o.kaz_y!=null?'%'+o.kaz_y:'–';$('ger').textContent=o.n?(o.gerek!=null?`gereken %${o.gerek} · ${o.n} işlem`:`${o.n} işlem`):'henüz işlem yok';
  $('gi').style.width=(o.kaz_y||0)+'%';if(o.gerek!=null){$('gb').style.display='block';$('gb').style.left=o.gerek+'%'}
  $('tarama').textContent=d.tarama!=null?`son tarama ${d.tarama} sn önce`:'tarama bekleniyor';
- egri(d.egri);sinyalCiz(d);adayCiz(d);tepeCiz(d);
+ egri(d.egri);sinyalCiz(d);adayCiz(d);tepeCiz(d);siraCiz(d);
  $('poz').innerHTML=d.poz.length?d.poz.map(pozKart).join('')+`<button class="btn b-dur genis" onclick="hepsi()">🚨 Tümünü kapat</button>`:'<div class="bos">Açık pozisyon yok.</div>';
  if(!ayarDegisti)ayarCiz(d);
  $('a_ozet').innerHTML=`<b>${d.strateji}</b><br>${d.cikis_yazi}`;
@@ -958,7 +1025,7 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  $('gec_r').innerHTML=o.n?`toplam <span class="${rk(o.top)}">${sg(o.top)} $</span> · ort ${sg(o.ort_k)} / ${sg(o.ort_z)}`:'';
  $('gec').innerHTML=d.gec.length?'<table><tr><th>Coin</th><th>Süre</th><th>Çıkış</th><th>Sonuç</th></tr>'+d.gec.slice(0,25).map(g=>{const n=g.n||'';let c='c-g',e='';
   if(/KİLİT|KÂR/.test(n)){c='c-y';e='🔒 '}else if(/LİKİDASYON/.test(n)){c='c-k';e='💥 '}else if(/STOP/.test(n)){c='c-k';e='🛑 '}else if(/MANUEL/.test(n)){c='c-m';e='✋ '}
-  return `<tr><td><b>${g.s}</b><span class="rozet ${g.y=='long'||g.y=='buy'?'L':'S'}">${g.y=='long'||g.y=='buy'?'L':'S'}</span><div class="alt">${new Date(g.t*1000).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div></td><td>${sure(g.sure)}</td><td><span class="chip ${c}">${e}${n.toLowerCase()}</span></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl)} $</b><div class="alt">${g.kesin?'borsadan net':'tahmini'}</div></td></tr>`}).join('')+'</table>':'<div class="bos">Henüz kapanan işlem yok.</div>';
+  return `<tr><td><b>${g.s}</b><span class="rozet ${g.y=='long'||g.y=='buy'?'L':'S'}">${g.y=='long'||g.y=='buy'?'L':'S'}</span><div class="alt">${new Date(g.t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div></td><td>${sure(g.sure)}</td><td><span class="chip ${c}">${e}${n.toLowerCase()}</span></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl)} $</b><div class="alt">${g.kesin?'borsadan net':'tahmini'}</div></td></tr>`}).join('')+'</table>':'<div class="bos">Henüz kapanan işlem yok.</div>';
  $('uyari').style.display='none';
 }catch(e){$('uyari').style.display='block';$('uyari').textContent='⚠️ Bağlantı yok ya da bot yeniden başlıyor, tekrar deneniyor…'}}
 document.querySelectorAll('#e_yon span').forEach(s=>s.onclick=()=>{document.querySelectorAll('#e_yon span').forEach(x=>x.classList.remove('on','yl','kr'));s.classList.add('on',s.dataset.v=='buy'?'yl':'kr');eYon=s.dataset.v;eOzet()});
