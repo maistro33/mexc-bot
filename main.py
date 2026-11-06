@@ -1,12 +1,12 @@
 # 📡 SİNYAL KAĞIT BOTU — v1.0 (06.11.2026)
 # Sadık: Telegram sinyal kanalını kağıtta test et. GERÇEK EMİR YOK: Bitget anahtarları hiç okunmaz, sadece herkese açık fiyat kullanılır.
 # Kanal mesajı gelir gelmez o anki gerçek fiyattan (alış/satış fiyatı) sanal işlem açar; sonradan düzenlenen/silinen mesajlar sonucu değiştirmez.
-# Kural: 100 $ kasa · işlem başı 10 $ marj × 10x · hedeflere eşit parçalarla kapatır · TP1 sonrası stop girişe · 7 gün en uzun.
+# Kural (v1.3): 100 $ kasa · işlem başı 10 $ marj × 10x · kanaldan SADECE coin + yön · stop / iz süren stopu bot seçer (çıkış yarışı) · 24 sa en uzun.
 import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.1 (06.11 22:55)"
+VERSIYON = "v1.3 (07.11 01:00)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -17,6 +17,9 @@ try:
     _d = json.load(open(DOSYA))
     if _d.get("v") == 1: S.update(_d)
 except Exception: pass
+if any("iz" not in p for p in S["acik"]) or any("ayar" not in g for g in S["gecmis"]):        # v1.3: eski biçim (kanal TP/DCA) → arşivle, sıfırdan başla
+    S.setdefault("arsiv", []).append({"kanal": S.get("kanal", "Signals - Bitcoin and Ethereum"), "gecmis": S["gecmis"], "acik": S["acik"], "nakit": S["nakit"], "bitis": int(time.time())})
+    S.update({"nakit": KASA, "acik": [], "gecmis": [], "mesaj": [], "egri": [], "kur": int(time.time()), "islenen": [], "golge": [], "yaris": []})
 D = {"tg": "başlamadı", "kanal": "", "hata": "", "fiyat": {}, "bid": {}, "ask": {}, "semboller": set(), "adim": None, "telefon": "", "hash": "", "oturum_goster": ""}
 
 def kaydet():
@@ -48,8 +51,27 @@ def sayi(t):
     else: t = t.replace(",", "")
     return float(t)
 
+DCA_PAY = 0.015                                                                   # v1.2: kanal stop vermezse stop = son DCA'nın %1,5 ötesi (bizim kuralımız)
+def coz_bullets(metin):
+    """v1.2: '#OP | Open Short / Current price / TP 1..6 / DCA: 1. x 2. y 3. z' biçimi (Bitcoin Bullets / Predictum)."""
+    m = re.search(r"#([A-Z0-9]{2,15})\s*\|\s*Open\s+(Long|Short)", metin, re.I); m_c = re.search(r"Current\s*price\s*:\s*([\d.,]+)", metin, re.I)
+    if not (m and m_c): return None
+    coin = m.group(1).upper().replace("USDT", ""); yon = m.group(2).lower(); giris = sayi(m_c.group(1))
+    hed = [sayi(x) for x in re.findall(r"TP\s*\d+\s*:\s*([\d.,]+)", metin, re.I)]
+    m_d = re.search(r"DCA\s*:(.*?)(?:\n\s*\n|ID:|$)", metin, re.I | re.S)
+    dca = [sayi(x) for x in re.findall(r"\d\.\s+([\d]+\.[\d]+|[\d]+)", m_d.group(1))] if m_d else []
+    if coin + "USDT" not in D["semboller"]: return {"hata": f"{coin} Bitget'te yok"}
+    hed = [h for h in hed if (h < giris if yon == "short" else h > giris)]
+    dca = [x for x in dca if (x > giris if yon == "short" else x < giris)]
+    son = dca[-1] if dca else giris * (1.05 if yon == "short" else 0.95)
+    stop = son * (1 + DCA_PAY if yon == "short" else 1 - DCA_PAY)
+    return {"coin": coin, "yon": yon, "giris": giris, "hedefler": hed[:6], "stop": stop, "dca": dca[:3]}
+
 def coz(metin):
     """Döner: dict(coin, yon, giris, hedefler, stop) ya da None."""
+    if re.search(r"Report\s+on\s+#", metin, re.I): return None
+    b = coz_bullets(metin)
+    if b: return b
     m_g = re.search(r"(?:entry|enter)(?:\s*price)?\s*[:\-–]?\s*([\d][\d.,]*)", metin, re.I)       # v1.1: "Enter - 225.68" de
     m_s = re.search(r"(?:stop(?:\s*loss)?|\bSL\b)\s*[:\-–]?\s*([\d][\d.,]*)", metin, re.I)
     m_t = re.search(r"(?:targets?|\bTPs?\b)\s*[:\-–]?\s*([\d][\d.,/\s|;-]*)", metin, re.I)
@@ -74,20 +96,45 @@ def coz(metin):
     hed.sort(reverse=(yon == "short"))
     return {"coin": coin, "yon": yon, "giris": giris, "hedefler": hed[:6], "stop": stop}
 
-# ───────────── kağıt işlem ─────────────
+# ───────────── kağıt işlem (v1.3: kanaldan sadece coin + yön; stop / iz'i bot kendisi seçer) ─────────────
+# Çıkış yarışı (Tepe gibi): her sinyal 27 ayarla gölgede takip edilir; en az 10 sinyal bitince son 50 sinyalde toplamı en iyi ayar kullanılır.
+AYARLAR = [(sl, akt, iz) for sl in (2.0, 3.0, 5.0) for akt in (1.0, 2.0, 3.0) for iz in (0.5, 1.0, 2.0)]
+VARSAYILAN, YARIS_MIN, YARIS_PENCERE, SURE = (3.0, 2.0, 1.0), 10, 50, 24 * 3600
+
+def secili_ayar():
+    Y = S.get("yaris", [])[-YARIS_PENCERE:]
+    if len(Y) < YARIS_MIN: return VARSAYILAN
+    top = [sum(y["r"][i] for y in Y) for i in range(len(AYARLAR))]
+    return AYARLAR[max(range(len(AYARLAR)), key=lambda i: top[i])]
+
+def iz_baslat(yon, giris, ayar):
+    u = 1 if yon == "long" else -1
+    return {"stop": giris * (1 - u * ayar[0] / 100), "en": giris, "aktif": False, "bitti": None}
+
+def iz_adim(st, yon, giris, ayar, yuksek, dusuk):
+    """Bir fiyat aralığı: önce stop (temkinli), sonra en iyi fiyat + iz. Döner: çıkış fiyatı ya da None."""
+    sl, akt, iz = ayar; uzun = yon == "long"
+    if (uzun and dusuk <= st["stop"]) or (not uzun and yuksek >= st["stop"]): return st["stop"] * (1 - KAYMA if uzun else 1 + KAYMA)
+    st["en"] = max(st["en"], yuksek) if uzun else min(st["en"], dusuk)
+    if not st["aktif"] and ((uzun and st["en"] >= giris * (1 + akt / 100)) or (not uzun and st["en"] <= giris * (1 - akt / 100))): st["aktif"] = True
+    if st["aktif"]:
+        yeni = max(giris * (1 + 2 * UCRET), st["en"] * (1 - iz / 100)) if uzun else min(giris * (1 - 2 * UCRET), st["en"] * (1 + iz / 100))
+        st["stop"] = max(st["stop"], yeni) if uzun else min(st["stop"], yeni)
+    return None
+
+def yuzde(yon, giris, cikis): return ((cikis / giris - 1) * (1 if yon == "long" else -1) - 2 * UCRET) * 100
+
 def poz_ac(sg, metin, c, t):
     sym = sg["coin"] + "USDT"; yon = sg["yon"]
-    if any(p["sym"] == sym and p["yon"] == yon for p in S["acik"]): return None, "bu coinde aynı yönde açık işlem var"
-    if len(S["acik"]) >= MAXA: return None, f"en çok {MAXA} açık"
-    if S["nakit"] < MJ: return None, "nakit yetmiyor"
-    h1 = sg["hedefler"][0]
-    if (yon == "long" and (c >= h1 or c <= sg["stop"])) or (yon == "short" and (c <= h1 or c >= sg["stop"])): return None, f"geç kalındı: fiyat {c:g} zaten TP1/stop ötesinde"
-    adet = MJ * LEV / c; uc = adet * c * UCRET
-    S["nakit"] -= MJ + uc
-    p = {"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg["giris"], "hedefler": sg["hedefler"], "stop": sg["stop"],
-         "ilk_stop": sg["stop"], "adet": adet, "kalan": adet, "parca": adet / len(sg["hedefler"]), "vurulan": 0, "t": int(t), "gerceklesen": -uc, "ucret": uc, "metin": metin[:200]}
+    if any(p["sym"] == sym for p in S["acik"]): return None, "bu coinde açık işlem var"
+    ayar = secili_ayar()
+    S.setdefault("golge", []).append({"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "t": int(t), "g": [iz_baslat(yon, c, a) for a in AYARLAR]})
+    if len(S["acik"]) >= MAXA: return None, f"en çok {MAXA} açık (yarışa yine de eklendi)"
+    if S["nakit"] < MJ: return None, "nakit yetmiyor (yarışa yine de eklendi)"
+    S["nakit"] -= MJ
+    p = {"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg.get("giris", c), "t": int(t), "ayar": list(ayar), "iz": iz_baslat(yon, c, ayar), "metin": metin[:200]}
     S["acik"].append(p)
-    return p, f"✅ AÇILDI {sg['coin']} {yon.upper()} @ {c:g} (sinyal {sg['giris']:g}, fark %{(c / sg['giris'] - 1) * 100:+.2f})"
+    return p, f"✅ AÇILDI {sg['coin']} {yon.upper()} @ {c:g} · bizim ayar: stop %{ayar[0]:g}, %{ayar[1]:g} kârda iz, %{ayar[2]:g} geriden"
 
 def ac(sg, metin):
     with KIL:
@@ -95,24 +142,33 @@ def ac(sg, metin):
         if not c: return "fiyat yok"
         return poz_ac(sg, metin, c, time.time())[1]
 
-def mum_adim(p, yuksek, dusuk, t=None):
-    """Bir fiyat aralığında stop/hedef kontrolü (önce stop — temkinli). Döner: True = kapandı."""
-    uzun = p["yon"] == "long"
-    if (uzun and dusuk <= p["stop"]) or (not uzun and yuksek >= p["stop"]):
-        parca_kapat(p, p["kalan"], p["stop"] * (1 - KAYMA if uzun else 1 + KAYMA), "başa baş stop" if p["vurulan"] else "stop", t); return True
-    while p["vurulan"] < len(p["hedefler"]):
-        h = p["hedefler"][p["vurulan"]]
-        if not ((uzun and yuksek >= h) or (not uzun and dusuk <= h)): break
-        p["vurulan"] += 1; son = p["vurulan"] == len(p["hedefler"])
-        parca_kapat(p, p["kalan"] if son else p["parca"], h, f"TP{p['vurulan']} (son hedef)" if son else f"TP{p['vurulan']}", t)
-        if son: return True
-        if p["vurulan"] == 1: p["stop"] = p["giris"]
-    return False
+def kapat(p, f, neden, t=None):
+    r = yuzde(p["yon"], p["giris"], f); pnl = MJ * LEV * r / 100
+    S["nakit"] += MJ + pnl; S["acik"].remove(p)
+    S["gecmis"].append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "cikis": f, "t0": p["t"], "t": int(t or time.time()),
+                        "pnl": round(pnl, 3), "yuzde": round(r, 2), "neden": neden, "ayar": p["ayar"]})
+    del S["gecmis"][:-500]; S["egri"].append([int(time.time()), round(ozsermaye(), 2)]); del S["egri"][:-800]
+
+def adim_hepsi(sym, yuksek, dusuk, kapanis, t=None):
+    """Gerçek pozisyon + gölgeler için bir fiyat aralığı."""
+    simdi = t or time.time()
+    for p in [x for x in S["acik"] if x["sym"] == sym]:
+        f = iz_adim(p["iz"], p["yon"], p["giris"], p["ayar"], yuksek, dusuk)
+        if f: kapat(p, f, ("iz süren stop" if p["iz"]["aktif"] else "stop"), t)
+        elif simdi - p["t"] > SURE: kapat(p, kapanis, "süre doldu (24 sa)", t)
+    for g in [x for x in S.get("golge", []) if x["sym"] == sym]:
+        for i, st in enumerate(g["g"]):
+            if st["bitti"] is not None: continue
+            f = iz_adim(st, g["yon"], g["giris"], AYARLAR[i], yuksek, dusuk)
+            if f is None and simdi - g["t"] > SURE: f = kapanis
+            if f is not None: st["bitti"] = round(yuzde(g["yon"], g["giris"], f), 3)
+        if all(st["bitti"] is not None for st in g["g"]):
+            S["golge"].remove(g); S.setdefault("yaris", []).append({"coin": g["coin"], "t": g["t"], "r": [st["bitti"] for st in g["g"]]}); del S["yaris"][:-200]
 
 def gecmis_oynat(sg, metin, t_msg):
-    """v1.1: kaçırılan sinyali mesaj saatinden itibaren 1 dk mumlarla oynat (giriş = mesajdan sonraki ilk dakikanın açılışı)."""
+    """Kaçırılan sinyali mesaj saatinden itibaren 1 dk mumlarla oynat (giriş = mesajdan sonraki ilk dakikanın açılışı)."""
     sym = sg["coin"] + "USDT"; mum = []; bas = int(t_msg // 60 * 60 + 60) * 1000
-    while bas < time.time() * 1000 - 60000 and len(mum) < 20000:
+    while bas < time.time() * 1000 - 60000 and len(mum) < 3000:
         d = requests.get(API + "history-candles", params={"symbol": sym, "productType": "USDT-FUTURES", "granularity": "1m", "startTime": str(bas),
                                                           "endTime": str(bas + 200 * 60000), "limit": "200"}, timeout=15).json().get("data") or []
         if not d: break
@@ -121,40 +177,28 @@ def gecmis_oynat(sg, metin, t_msg):
     if not mum: return "geçmiş mum alınamadı"
     with KIL:
         p, sonuc = poz_ac(sg, metin, mum[0][1], mum[0][0] / 1000)
-        if not p: return sonuc
-        for x in mum:
-            if mum_adim(p, x[2], x[3], x[0] / 1000): break
-            if time.time() - p["t"] > SURE: break
-    return sonuc + " · geçmişten oynatıldı" + (" → kapandı" if p not in S["acik"] else " → açık, takipte")
-
-def parca_kapat(p, adet, fiyat, neden, t=None):
-    yon = 1 if p["yon"] == "long" else -1
-    kz = (fiyat - p["giris"]) * adet * yon - adet * fiyat * UCRET
-    p["gerceklesen"] += kz; p["ucret"] += adet * fiyat * UCRET; p["kalan"] -= adet
-    S["nakit"] += MJ * adet / p["adet"] + (fiyat - p["giris"]) * adet * yon - adet * fiyat * UCRET
-    if p["kalan"] <= p["adet"] * 1e-6:
-        S["acik"].remove(p)
-        S["gecmis"].append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "cikis": fiyat, "t0": p["t"], "t": int(t or time.time()),
-                            "pnl": round(p["gerceklesen"], 3), "neden": neden, "vurulan": p["vurulan"], "hedef_n": len(p["hedefler"]), "ilk_stop": p["ilk_stop"]})
-        del S["gecmis"][:-500]
-        S["egri"].append([int(time.time()), round(ozsermaye(), 2)]); del S["egri"][:-800]
+        for x in mum: adim_hepsi(sym, x[2], x[3], x[4], x[0] / 1000)
+    return sonuc + " · geçmişten oynatıldı" + ((" → kapandı" if p not in S["acik"] else " → açık, takipte") if p else "")
 
 def yonet():
     with KIL:
-        for p in list(S["acik"]):
-            c = D["fiyat"].get(p["sym"])
-            if not c: continue
-            if mum_adim(p, c, c): continue
-            if time.time() - p["t"] > SURE:
-                uzun = p["yon"] == "long"; parca_kapat(p, p["kalan"], D["bid"].get(p["sym"], c) if uzun else D["ask"].get(p["sym"], c), "süre doldu (7 gün)")
+        for sym in set([p["sym"] for p in S["acik"]] + [g["sym"] for g in S.get("golge", [])]):
+            c = D["fiyat"].get(sym)
+            if c: adim_hepsi(sym, c, c, c)
         if not S["egri"] or time.time() - S["egri"][-1][0] >= 3600: S["egri"].append([int(time.time()), round(ozsermaye(), 2)])
 
 def ozsermaye():
     t = S["nakit"]
     for p in S["acik"]:
-        c = D["fiyat"].get(p["sym"]) or p["giris"]; yon = 1 if p["yon"] == "long" else -1
-        t += MJ * p["kalan"] / p["adet"] + (c - p["giris"]) * p["kalan"] * yon
+        c = D["fiyat"].get(p["sym"]) or p["giris"]; t += MJ + MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100
     return t
+
+def yaris_veri():
+    Y = S.get("yaris", [])[-YARIS_PENCERE:]; sec = secili_ayar()
+    top = [round(sum(y["r"][i] for y in Y), 2) for i in range(len(AYARLAR))]
+    kaz = [sum(1 for y in Y if y["r"][i] > 0) for i in range(len(AYARLAR))]
+    L = sorted([{"k": list(AYARLAR[i]), "top": top[i], "kaz": kaz[i], "secili": AYARLAR[i] == sec} for i in range(len(AYARLAR))], key=lambda x: -x["top"])
+    return {"n": len(Y), "min": YARIS_MIN, "secili": list(sec), "liste": L[:8], "takipte": len(S.get("golge", []))}
 
 # ───────────── Telegram (Telethon, kullanıcı hesabıyla okur) ─────────────
 LOOP = asyncio.new_event_loop(); TG = {"c": None, "adminler": set()}
@@ -174,7 +218,7 @@ async def tg_basla():
 async def tg_dinle():
     from telethon import events
     from telethon.tl.types import ChannelParticipantsAdmins
-    c = TG["c"]; ara = (os.getenv("TG_KANAL") or "Signals - Bitcoin").strip(); hedef = None
+    c = TG["c"]; ara = (os.getenv("TG_KANAL") or "BITCOIN BULLETS").strip(); hedef = None        # v1.2: kanal değişti
     try:
         if ara.startswith("@") or "t.me/" in ara: hedef = await c.get_entity(ara)
         else:
@@ -183,6 +227,11 @@ async def tg_dinle():
     except Exception as e: D["hata"] = "kanal: " + str(e)[:120]
     if not hedef: D["tg"] = f"❓ Kanal bulunamadı: '{ara}' — gruba/kanala katıl ya da TG_KANAL'ı düzelt"; return
     D["kanal"] = getattr(hedef, "title", ara)
+    with KIL:                                                                              # v1.2: kanal değiştiyse eski sonuçları arşivle, sıfırdan başla
+        if S.get("kanal", "Signals - Bitcoin and Ethereum") != D["kanal"] and (S["gecmis"] or S["acik"] or S["mesaj"]):
+            S.setdefault("arsiv", []).append({"kanal": S.get("kanal", "Signals - Bitcoin and Ethereum"), "oz": round(ozsermaye(), 2), "gecmis": S["gecmis"], "acik": S["acik"], "bitis": int(time.time())})
+            S.update({"nakit": KASA, "acik": [], "gecmis": [], "mesaj": [], "egri": [], "kur": int(time.time()), "islenen": []})
+        S["kanal"] = D["kanal"]
     try: TG["adminler"] = {u.id async for u in c.iter_participants(hedef, filter=ChannelParticipantsAdmins)}
     except Exception: TG["adminler"] = set()
 
@@ -191,7 +240,7 @@ async def tg_dinle():
         if m.id in S.setdefault("islenen", []): return
         S["islenen"].append(m.id); del S["islenen"][:-300]
         if TG["adminler"] and m.sender_id not in TG["adminler"] and not m.post: return          # sadece yönetici / kanal mesajı
-        if not re.search(r"entry|enter|stop|target|\bTP\b|\bSL\b", metin, re.I): return
+        if not re.search(r"entry|enter|stop|target|\bTP\b|\bSL\b|open\s+(long|short)", metin, re.I) or re.search(r"Report\s+on\s+#", metin, re.I): return
         sg = coz(metin)
         if not sg: sonuc = "çözülemedi (giriş/hedef/stop eksik)"
         elif "hata" in sg: sonuc = "atlandı: " + sg["hata"]
@@ -249,13 +298,13 @@ def veri():
     with KIL:
         G = S["gecmis"]; oz = ozsermaye(); acik = []
         for p in S["acik"]:
-            c = D["fiyat"].get(p["sym"]) or p["giris"]; yon = 1 if p["yon"] == "long" else -1
-            acik.append({**{k: p[k] for k in ("coin", "yon", "giris", "sinyal_giris", "hedefler", "stop", "vurulan", "t")}, "c": c,
-                         "pnl": round(p["gerceklesen"] + (c - p["giris"]) * p["kalan"] * yon, 3)})
+            c = D["fiyat"].get(p["sym"]) or p["giris"]
+            acik.append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "t": p["t"], "c": c, "ayar": p["ayar"],
+                         "stop": p["iz"]["stop"], "aktif": p["iz"]["aktif"], "pnl": round(MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100, 3)})
         return {"v": VERSIYON, "tg": D["tg"], "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
-                "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[-50:][::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"],
+                "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[-50:][::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"], "yaris": yaris_veri(),
                 "ozet": {"n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0), "toplam": round(sum(g["pnl"] for g in G), 2),
-                         "stop": sum(1 for g in G if g["neden"] == "stop"), "tp1": sum(1 for g in G if g["vurulan"] >= 1), "hepsi": sum(1 for g in G if g["vurulan"] == g["hedef_n"])}}
+                         "stop": sum(1 for g in G if g["neden"] == "stop"), "iz": sum(1 for g in G if g["neden"] == "iz süren stop")}}
 
 SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sinyal Testi</title>
 <style>:root{--bg:#0b1020;--kart:#141b31;--cizgi:#26304f;--yazi:#e8ecf8;--soluk:#8b95b5;--yesil:#22d39b;--kirmizi:#ff5c7a;--sari:#ffc857;--mavi:#5b8cff}
@@ -271,10 +320,11 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ</div><div class="alt" id="alt">yükleniyor…</div>
 <div class="pan"><b id="tg">…</b><div class="alt" id="hata"></div><div id="giris"></div></div>
-<div class="pan"><div class="alt">Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · hedeflere eşit parçalarla kapatır · <b>TP1 sonrası stop girişe</b> · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 7 gün. <b>Gerçek emir yok.</b></div></div>
+<div class="pan"><div class="alt">Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
+<div class="pan"><h2>🏁 Çıkış yarışı</h2><div id="yr"></div></div>
 <div class="pan"><h2>💬 Son sinyal mesajları</h2><div id="msg"></div></div>
 </div><script>
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
@@ -293,9 +343,10 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d">${f(d.oz)} $</div><div class="alt">başlangıç ${f(d.baslangic,0)} $ · boşta ${f(d.nakit)} $</div></div>
  <div class="k"><div class="e">Kâr / zarar</div><div class="d ${rk(d.oz-d.baslangic)}">${sg(d.oz-d.baslangic)} $</div><div class="alt">kapanan ${sg(o.toplam)} $</div></div>
  <div class="k"><div class="e">İşlem</div><div class="d">${o.n}</div><div class="alt">kârlı ${o.n?'%'+f(o.kaz/o.n*100,0):'–'} · açık ${d.acik.length}</div></div>
- <div class="k"><div class="e">Hedefler</div><div class="d" style="font-size:16px">TP1 ${o.tp1} · hepsi ${o.hepsi}</div><div class="alt">direkt stop ${o.stop}</div></div>`;
- $('acik').innerHTML=d.acik.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span><div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">stop ${fy(p.stop)}${p.vurulan?' (girişte)':''}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div><div class="tp">${p.hedefler.map((h,i)=>`<span class="${i<p.vurulan?'v':''}">TP${i+1} ${fy(h)}</span>`).join('')}</div></div>`).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
- $('gec').innerHTML=d.gecmis.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+d.gecmis.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}</div></td><td>${g.neden}<div class="alt">${g.vurulan}/${g.hedef_n} hedef</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';
+ <div class="k"><div class="e">Bizim ayar</div><div class="d" style="font-size:16px">stop %${f(d.yaris.secili[0],0)} · iz %${f(d.yaris.secili[1],0)}/%${f(d.yaris.secili[2],1)}</div><div class="alt">${d.yaris.n<d.yaris.min?`yarış öğreniyor ${d.yaris.n}/${d.yaris.min}`:'yarışın seçtiği'} · stop ${o.stop} · iz ${o.iz}</div></div>`;
+ const y=d.yaris;$('yr').innerHTML=`<div class="alt" style="margin-bottom:6px">${y.n} biten sinyal · ${y.takipte} takipte · birim: fiyat % (ücret dahil)</div><table><tr><th>Stop / iz başlar / geriden</th><th>Kârlı</th><th>Toplam</th></tr>`+y.liste.map(x=>`<tr><td>${x.secili?'👉 ':''}%${x.k[0]} / %${x.k[1]} / %${x.k[2]}</td><td>${x.kaz}/${y.n}</td><td class="${rk(x.top)}"><b>${sg(x.top)}%</b></td></tr>`).join('')+'</table>';
+ $('acik').innerHTML=d.acik.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span><div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">${p.aktif?'🔒 iz süren stop':'⛔ stop'} ${fy(p.stop)} · ayar %${p.ayar[0]}/%${p.ayar[1]}/%${p.ayar[2]}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div></div></div>`).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
+ $('gec').innerHTML=d.gecmis.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+d.gecmis.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';
  $('msg').innerHTML=d.mesaj.map(m=>`<div class="msg"><span class="alt">${ts(m.t)}</span> ${es(m.m.slice(0,160))}<b>${es(m.s)}</b></div>`).join('')||'<div class="alt">Henüz sinyal mesajı gelmedi.</div>';
 }catch(e){$('tg').textContent='⚠️ bağlantı yok'}}
 yenile();setInterval(yenile,8000);
