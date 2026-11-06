@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.4 (07.11 00:45)"
+VERSIYON = "v1.5 (07.11 01:10)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -308,7 +308,7 @@ def veri():
             c = D["fiyat"].get(p["sym"]) or p["giris"]
             acik.append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "t": p["t"], "c": c, "ayar": p["ayar"],
                          "stop": p["iz"]["stop"], "aktif": p["iz"]["aktif"], "pnl": round(MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100, 3)})
-        return {"v": VERSIYON, "tg": D["tg"], "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
+        return {"v": VERSIYON, "tg": D["tg"], "lider": L["durum"], "liderler": L["liste"], "lider_tarama": int(time.time() - L["tarama_t"]) if L["tarama_t"] else -1, "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
                 "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[-50:][::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"], "yaris": yaris_veri(),
                 "ozet": {"n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0), "toplam": round(sum(g["pnl"] for g in G), 2),
                          "stop": sum(1 for g in G if g["neden"] == "stop"), "iz": sum(1 for g in G if g["neden"] == "iz süren stop")}}
@@ -325,14 +325,14 @@ SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta nam
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;border-bottom:1px solid var(--cizgi);text-align:right}td:first-child,th:first-child{text-align:left}th{color:var(--soluk);font-size:11px}
 .msg{font-size:12px;border-bottom:1px solid var(--cizgi);padding:6px 0;white-space:pre-wrap}.msg b{display:block;margin-top:2px}input,button{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--cizgi);background:#0d1326;color:var(--yazi);width:100%;margin-top:6px}button{background:linear-gradient(135deg,#5b8cff,#22d39b);border:0;font-weight:800;cursor:pointer}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
-<div class="logo">📡 SİNYAL TESTİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="pan"><b id="tg">…</b><div class="alt" id="hata"></div><div id="giris"></div></div>
-<div class="pan"><div class="alt">Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
+<div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
+<div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading'in herkese açık lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
 <div class="pan"><h2>🏁 Çıkış yarışı</h2><div id="yr"></div></div>
-<div class="pan"><h2>💬 Son sinyal mesajları</h2><div id="msg"></div></div>
+<div class="pan"><h2>💬 Son sinyaller (lider + kanal)</h2><div id="msg"></div></div>
 </div><script>
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
 const fy=x=>x>=100?f(x,2):x>=1?f(x,4):Number(x).toLocaleString('tr-TR',{maximumSignificantDigits:4});
@@ -346,7 +346,7 @@ function girisCiz(adim){if(adim===girisCizildi)return;girisCizildi=adim;const g=
  else if(adim==='sifre')g.innerHTML='<input id="kod" placeholder="kod (tekrar)"><input id="sif" type="password" placeholder="iki adımlı doğrulama şifren"><button onclick="gonder(\'giris/kod\',{kod:$(\'kod\').value,sifre:$(\'sif\').value})">Giriş</button>';
  else if(!g.querySelector('.uy'))g.innerHTML='';}
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json(),o=d.ozet;
- $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri`;$('tg').textContent=d.tg;$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
+ $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(düşüş %${f(x.mdd,0)}, kaz %${f(x.kaz,0)})</span>`).join(' · ');$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
  $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d">${f(d.oz)} $</div><div class="alt">başlangıç ${f(d.baslangic,0)} $ · boşta ${f(d.nakit)} $</div></div>
  <div class="k"><div class="e">Kâr / zarar</div><div class="d ${rk(d.oz-d.baslangic)}">${sg(d.oz-d.baslangic)} $</div><div class="alt">kapanan ${sg(o.toplam)} $</div></div>
  <div class="k"><div class="e">İşlem</div><div class="d">${o.n}</div><div class="alt">kârlı ${o.n?'%'+f(o.kaz/o.n*100,0):'–'} · açık ${d.acik.length}</div></div>
@@ -383,6 +383,56 @@ class H(BaseHTTPRequestHandler):
             self._yaz(403, json.dumps({"ok": False, "mesaj": "şu an izin yok"}, ensure_ascii=False))
         except Exception as e: self._yaz(200, json.dumps({"ok": False, "mesaj": "hata: " + str(e)[:150]}, ensure_ascii=False))
 
+# ───────────── 👥 Binance lider takibi (v1.5) ─────────────
+# Binance Copy Trading'in herkese açık lider trader'ları: anlık açık pozisyonlar. Bir lider YENİ pozisyon açınca aynı coin + yönde kağıt işlem açılır;
+# çıkışı (stop / iz) bizim çıkış yarışı yönetir. Lider seçimi: son 30 günde ROI'ye göre, ama takipçileri de kâr etmiş (copierPnl > 0),
+# en büyük düşüş < %40, kazanma oranı ≥ %55 ve pozisyonlarını gösteren ilk 15 lider. Liste saatte bir yenilenir.
+BN = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/"
+L = {"liste": [], "onceki": {}, "liste_t": 0, "tarama_t": 0, "durum": "başlamadı"}
+def lider_liste():
+    aday = []
+    for sayfa in range(1, 11):
+        r = requests.post(BN + "home-page/query-list", json={"pageNumber": sayfa, "pageSize": 20, "timeRange": "30D", "dataType": "ROI", "favoriteOnly": False,
+                          "hideFull": False, "nickname": "", "order": "DESC", "userAsset": 0, "portfolioType": "PUBLIC"}, timeout=15).json()
+        aday += (r.get("data") or {}).get("list") or []; time.sleep(0.5)
+    sec = []
+    for x in aday:
+        if float(x.get("copierPnl") or 0) < 50 or float(x.get("mdd") or 100) >= 40 or float(x.get("winRate") or 0) < 55: continue
+        r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["leadPortfolioId"]}, timeout=15).json(); time.sleep(0.4)
+        if not r.get("data"): continue                                                   # pozisyonlarını gizliyor
+        sec.append({"id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0), "mdd": round(float(x["mdd"]), 1),
+                    "kaz": round(float(x["winRate"]), 0), "takipci_kar": round(float(x["copierPnl"]), 0)})
+        if len(sec) >= 15: break
+    return sec
+
+def lider_dongu():
+    time.sleep(20)
+    while True:
+        try:
+            if time.time() - L["liste_t"] > 3600 or not L["liste"]:
+                L["liste"] = lider_liste(); L["liste_t"] = time.time()
+                L["onceki"] = {k: v for k, v in L["onceki"].items() if k in {x["id"] for x in L["liste"]}}
+            for x in L["liste"]:
+                r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["id"]}, timeout=15).json(); time.sleep(1)
+                if r.get("code") != "000000": continue
+                simdi = {}
+                for p in r.get("data") or []:
+                    a = float(p.get("positionAmount") or 0)
+                    if a: simdi[(p["symbol"], "long" if a > 0 else "short")] = float(p.get("entryPrice") or 0)
+                if x["id"] not in L["onceki"]: L["onceki"][x["id"]] = simdi; continue          # ilk görüş: eski pozisyonlara girilmez
+                for (sym, yon), gir in simdi.items():
+                    if (sym, yon) in L["onceki"][x["id"]] or not sym.endswith("USDT"): continue
+                    coin = sym[:-4]; metin = f"👥 {x['ad']} (30g ROI %{x['roi']:g}) yeni {yon.upper()} açtı: {coin} @ {gir:g}"
+                    if sym not in D["semboller"]: sonuc = "atlandı: Bitget'te yok"
+                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir}, metin)
+                    with KIL: log_mesaj(metin, sonuc)
+                    kaydet()
+                L["onceki"][x["id"]] = simdi
+            L["tarama_t"] = time.time()
+            L["durum"] = f"✅ Binance lider takibi · {len(L['liste'])} lider izleniyor"
+        except Exception as e: L["durum"] = "⚠️ Lider takibi hatası (tekrar denenecek): " + str(e)[:120]
+        time.sleep(15)
+
 def kayit_dongu():
     while True:
         time.sleep(60); kaydet()
@@ -392,4 +442,5 @@ if __name__ == "__main__":
     threading.Thread(target=fiyat_dongu, daemon=True).start()
     threading.Thread(target=tg_dongu, daemon=True).start()
     threading.Thread(target=kayit_dongu, daemon=True).start()
+    threading.Thread(target=lider_dongu, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), H).serve_forever()
