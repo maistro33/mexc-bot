@@ -1,14 +1,2 @@
-ccxt
-pandas
-numpy
 requests
-pyTelegramBotAPI
-supabase
-xgboost
-scikit-learn
-matplotlib
 telethon
-websocket-client
-flask
-
-
