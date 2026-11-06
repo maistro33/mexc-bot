@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.5 (07.11 01:10)"
+VERSIYON = "v1.5.1 (07.11 00:55)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -132,7 +132,7 @@ def poz_ac(sg, metin, c, t):
     if len(S["acik"]) >= MAXA: return None, f"en çok {MAXA} açık (yarışa yine de eklendi)"
     if S["nakit"] < MJ: return None, "nakit yetmiyor (yarışa yine de eklendi)"
     S["nakit"] -= MJ
-    p = {"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg.get("giris", c), "t": int(t), "ayar": list(ayar), "iz": iz_baslat(yon, c, ayar), "metin": metin[:200]}
+    p = {"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg.get("giris", c), "t": int(t), "ayar": list(ayar), "iz": iz_baslat(yon, c, ayar), "metin": metin[:200], "kaynak": sg.get("kaynak", "Telegram")}
     S["acik"].append(p)
     return p, f"✅ AÇILDI {sg['coin']} {yon.upper()} @ {c:g} · bizim ayar: stop %{ayar[0]:g}, %{ayar[1]:g} kârda iz, %{ayar[2]:g} geriden"
 
@@ -146,7 +146,7 @@ def kapat(p, f, neden, t=None):
     r = yuzde(p["yon"], p["giris"], f); pnl = MJ * LEV * r / 100
     S["nakit"] += MJ + pnl; S["acik"].remove(p)
     S["gecmis"].append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "cikis": f, "t0": p["t"], "t": int(t or time.time()),
-                        "pnl": round(pnl, 3), "yuzde": round(r, 2), "neden": neden, "ayar": p["ayar"]})
+                        "pnl": round(pnl, 3), "yuzde": round(r, 2), "neden": neden, "ayar": p["ayar"], "kaynak": p.get("kaynak", "")})
     del S["gecmis"][:-500]; S["egri"].append([int(time.time()), round(ozsermaye(), 2)]); del S["egri"][:-800]
 
 def adim_hepsi(sym, yuksek, dusuk, kapanis, t=None):
@@ -307,7 +307,7 @@ def veri():
         for p in S["acik"]:
             c = D["fiyat"].get(p["sym"]) or p["giris"]
             acik.append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "t": p["t"], "c": c, "ayar": p["ayar"],
-                         "stop": p["iz"]["stop"], "aktif": p["iz"]["aktif"], "pnl": round(MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100, 3)})
+                         "stop": p["iz"]["stop"], "aktif": p["iz"]["aktif"], "kaynak": p.get("kaynak", ""), "pnl": round(MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100, 3)})
         return {"v": VERSIYON, "tg": D["tg"], "lider": L["durum"], "liderler": L["liste"], "lider_tarama": int(time.time() - L["tarama_t"]) if L["tarama_t"] else -1, "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
                 "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[-50:][::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"], "yaris": yaris_veri(),
                 "ozet": {"n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0), "toplam": round(sum(g["pnl"] for g in G), 2),
@@ -352,8 +352,8 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  <div class="k"><div class="e">İşlem</div><div class="d">${o.n}</div><div class="alt">kârlı ${o.n?'%'+f(o.kaz/o.n*100,0):'–'} · açık ${d.acik.length}</div></div>
  <div class="k"><div class="e">Bizim ayar</div><div class="d" style="font-size:16px">stop %${f(d.yaris.secili[0],0)} · iz %${f(d.yaris.secili[1],0)}/%${f(d.yaris.secili[2],1)}</div><div class="alt">${d.yaris.n<d.yaris.min?`yarış öğreniyor ${d.yaris.n}/${d.yaris.min}`:'yarışın seçtiği'} · stop ${o.stop} · iz ${o.iz}</div></div>`;
  const y=d.yaris;$('yr').innerHTML=`<div class="alt" style="margin-bottom:6px">${y.n} biten sinyal · ${y.takipte} takipte · birim: fiyat % (ücret dahil)</div><table><tr><th>Stop / iz başlar / geriden</th><th>Kârlı</th><th>Toplam</th></tr>`+y.liste.map(x=>`<tr><td>${x.secili?'👉 ':''}%${x.k[0]} / %${x.k[1]} / %${x.k[2]}</td><td>${x.kaz}/${y.n}</td><td class="${rk(x.top)}"><b>${sg(x.top)}%</b></td></tr>`).join('')+'</table>';
- $('acik').innerHTML=d.acik.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span><div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">${p.aktif?'🔒 iz süren stop':'⛔ stop'} ${fy(p.stop)} · ayar %${p.ayar[0]}/%${p.ayar[1]}/%${p.ayar[2]}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div></div></div>`).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
- $('gec').innerHTML=d.gecmis.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+d.gecmis.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';
+ $('acik').innerHTML=d.acik.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span>${p.kaynak?`<div class="alt"><b>${es(p.kaynak)}</b></div>`:''}<div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">${p.aktif?'🔒 iz süren stop':'⛔ stop'} ${fy(p.stop)} · ayar %${p.ayar[0]}/%${p.ayar[1]}/%${p.ayar[2]}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div></div></div>`).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
+ $('gec').innerHTML=d.gecmis.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+d.gecmis.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}${g.kaynak?' · '+es(g.kaynak):''}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';
  $('msg').innerHTML=d.mesaj.map(m=>`<div class="msg"><span class="alt">${ts(m.t)}</span> ${es(m.m.slice(0,160))}<b>${es(m.s)}</b></div>`).join('')||'<div class="alt">Henüz sinyal mesajı gelmedi.</div>';
 }catch(e){$('tg').textContent='⚠️ bağlantı yok'}}
 yenile();setInterval(yenile,8000);
@@ -424,7 +424,7 @@ def lider_dongu():
                     if (sym, yon) in L["onceki"][x["id"]] or not sym.endswith("USDT"): continue
                     coin = sym[:-4]; metin = f"👥 {x['ad']} (30g ROI %{x['roi']:g}) yeni {yon.upper()} açtı: {coin} @ {gir:g}"
                     if sym not in D["semboller"]: sonuc = "atlandı: Bitget'te yok"
-                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir}, metin)
+                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir, "kaynak": "👥 " + x["ad"]}, metin)
                     with KIL: log_mesaj(metin, sonuc)
                     kaydet()
                 L["onceki"][x["id"]] = simdi
