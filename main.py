@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.0 (06.11 02:30)"
+VERSIYON = "v1.1 (06.11 22:55)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -50,7 +50,7 @@ def sayi(t):
 
 def coz(metin):
     """Döner: dict(coin, yon, giris, hedefler, stop) ya da None."""
-    m_g = re.search(r"entry(?:\s*price)?\s*[:\-–]?\s*([\d][\d.,\s]*)", metin, re.I)
+    m_g = re.search(r"(?:entry|enter)(?:\s*price)?\s*[:\-–]?\s*([\d][\d.,]*)", metin, re.I)       # v1.1: "Enter - 225.68" de
     m_s = re.search(r"(?:stop(?:\s*loss)?|\bSL\b)\s*[:\-–]?\s*([\d][\d.,]*)", metin, re.I)
     m_t = re.search(r"(?:targets?|\bTPs?\b)\s*[:\-–]?\s*([\d][\d.,/\s|;-]*)", metin, re.I)
     if not (m_g and m_s and m_t): return None
@@ -75,31 +75,66 @@ def coz(metin):
     return {"coin": coin, "yon": yon, "giris": giris, "hedefler": hed[:6], "stop": stop}
 
 # ───────────── kağıt işlem ─────────────
-def ac(sg, metin):
+def poz_ac(sg, metin, c, t):
     sym = sg["coin"] + "USDT"; yon = sg["yon"]
-    with KIL:
-        if any(p["sym"] == sym and p["yon"] == yon for p in S["acik"]): return "bu coinde aynı yönde açık işlem var"
-        if len(S["acik"]) >= MAXA: return f"en çok {MAXA} açık"
-        if S["nakit"] < MJ: return "nakit yetmiyor"
-        c = D["ask"].get(sym) if yon == "long" else D["bid"].get(sym)
-        if not c: return "fiyat yok"
-        h1 = sg["hedefler"][0]
-        if (yon == "long" and (c >= h1 or c <= sg["stop"])) or (yon == "short" and (c <= h1 or c >= sg["stop"])): return f"geç kalındı: fiyat {c:g} zaten TP1/stop ötesinde"
-        adet = MJ * LEV / c; uc = adet * c * UCRET
-        S["nakit"] -= MJ + uc
-        S["acik"].append({"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg["giris"], "hedefler": sg["hedefler"], "stop": sg["stop"],
-                          "ilk_stop": sg["stop"], "adet": adet, "kalan": adet, "parca": adet / len(sg["hedefler"]), "vurulan": 0, "t": int(time.time()),
-                          "gerceklesen": -uc, "ucret": uc, "metin": metin[:200]})
-    return f"✅ AÇILDI {sg['coin']} {yon.upper()} @ {c:g} (sinyal {sg['giris']:g}, fark %{(c / sg['giris'] - 1) * 100:+.2f})"
+    if any(p["sym"] == sym and p["yon"] == yon for p in S["acik"]): return None, "bu coinde aynı yönde açık işlem var"
+    if len(S["acik"]) >= MAXA: return None, f"en çok {MAXA} açık"
+    if S["nakit"] < MJ: return None, "nakit yetmiyor"
+    h1 = sg["hedefler"][0]
+    if (yon == "long" and (c >= h1 or c <= sg["stop"])) or (yon == "short" and (c <= h1 or c >= sg["stop"])): return None, f"geç kalındı: fiyat {c:g} zaten TP1/stop ötesinde"
+    adet = MJ * LEV / c; uc = adet * c * UCRET
+    S["nakit"] -= MJ + uc
+    p = {"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg["giris"], "hedefler": sg["hedefler"], "stop": sg["stop"],
+         "ilk_stop": sg["stop"], "adet": adet, "kalan": adet, "parca": adet / len(sg["hedefler"]), "vurulan": 0, "t": int(t), "gerceklesen": -uc, "ucret": uc, "metin": metin[:200]}
+    S["acik"].append(p)
+    return p, f"✅ AÇILDI {sg['coin']} {yon.upper()} @ {c:g} (sinyal {sg['giris']:g}, fark %{(c / sg['giris'] - 1) * 100:+.2f})"
 
-def parca_kapat(p, adet, fiyat, neden):
+def ac(sg, metin):
+    with KIL:
+        c = D["ask"].get(sg["coin"] + "USDT") if sg["yon"] == "long" else D["bid"].get(sg["coin"] + "USDT")
+        if not c: return "fiyat yok"
+        return poz_ac(sg, metin, c, time.time())[1]
+
+def mum_adim(p, yuksek, dusuk, t=None):
+    """Bir fiyat aralığında stop/hedef kontrolü (önce stop — temkinli). Döner: True = kapandı."""
+    uzun = p["yon"] == "long"
+    if (uzun and dusuk <= p["stop"]) or (not uzun and yuksek >= p["stop"]):
+        parca_kapat(p, p["kalan"], p["stop"] * (1 - KAYMA if uzun else 1 + KAYMA), "başa baş stop" if p["vurulan"] else "stop", t); return True
+    while p["vurulan"] < len(p["hedefler"]):
+        h = p["hedefler"][p["vurulan"]]
+        if not ((uzun and yuksek >= h) or (not uzun and dusuk <= h)): break
+        p["vurulan"] += 1; son = p["vurulan"] == len(p["hedefler"])
+        parca_kapat(p, p["kalan"] if son else p["parca"], h, f"TP{p['vurulan']} (son hedef)" if son else f"TP{p['vurulan']}", t)
+        if son: return True
+        if p["vurulan"] == 1: p["stop"] = p["giris"]
+    return False
+
+def gecmis_oynat(sg, metin, t_msg):
+    """v1.1: kaçırılan sinyali mesaj saatinden itibaren 1 dk mumlarla oynat (giriş = mesajdan sonraki ilk dakikanın açılışı)."""
+    sym = sg["coin"] + "USDT"; mum = []; bas = int(t_msg // 60 * 60 + 60) * 1000
+    while bas < time.time() * 1000 - 60000 and len(mum) < 20000:
+        d = requests.get(API + "history-candles", params={"symbol": sym, "productType": "USDT-FUTURES", "granularity": "1m", "startTime": str(bas),
+                                                          "endTime": str(bas + 200 * 60000), "limit": "200"}, timeout=15).json().get("data") or []
+        if not d: break
+        d = sorted([[int(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4])] for x in d]); mum += [x for x in d if not mum or x[0] > mum[-1][0]]
+        bas = d[-1][0] + 60000; time.sleep(0.2)
+    if not mum: return "geçmiş mum alınamadı"
+    with KIL:
+        p, sonuc = poz_ac(sg, metin, mum[0][1], mum[0][0] / 1000)
+        if not p: return sonuc
+        for x in mum:
+            if mum_adim(p, x[2], x[3], x[0] / 1000): break
+            if time.time() - p["t"] > SURE: break
+    return sonuc + " · geçmişten oynatıldı" + (" → kapandı" if p not in S["acik"] else " → açık, takipte")
+
+def parca_kapat(p, adet, fiyat, neden, t=None):
     yon = 1 if p["yon"] == "long" else -1
     kz = (fiyat - p["giris"]) * adet * yon - adet * fiyat * UCRET
     p["gerceklesen"] += kz; p["ucret"] += adet * fiyat * UCRET; p["kalan"] -= adet
     S["nakit"] += MJ * adet / p["adet"] + (fiyat - p["giris"]) * adet * yon - adet * fiyat * UCRET
     if p["kalan"] <= p["adet"] * 1e-6:
         S["acik"].remove(p)
-        S["gecmis"].append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "cikis": fiyat, "t0": p["t"], "t": int(time.time()),
+        S["gecmis"].append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "cikis": fiyat, "t0": p["t"], "t": int(t or time.time()),
                             "pnl": round(p["gerceklesen"], 3), "neden": neden, "vurulan": p["vurulan"], "hedef_n": len(p["hedefler"]), "ilk_stop": p["ilk_stop"]})
         del S["gecmis"][:-500]
         S["egri"].append([int(time.time()), round(ozsermaye(), 2)]); del S["egri"][:-800]
@@ -107,21 +142,11 @@ def parca_kapat(p, adet, fiyat, neden):
 def yonet():
     with KIL:
         for p in list(S["acik"]):
-            sym = p["sym"]; uzun = p["yon"] == "long"
-            c = D["fiyat"].get(sym)
+            c = D["fiyat"].get(p["sym"])
             if not c: continue
-            if (uzun and c <= p["stop"]) or (not uzun and c >= p["stop"]):              # stop (borsa stopu gibi: stop fiyatı + kayma)
-                f = p["stop"] * (1 - KAYMA if uzun else 1 + KAYMA)
-                parca_kapat(p, p["kalan"], f, "başa baş stop" if p["vurulan"] else "stop"); continue
-            while p["vurulan"] < len(p["hedefler"]):                                       # hedefler (limit emir gibi: hedef fiyatından)
-                h = p["hedefler"][p["vurulan"]]
-                if not ((uzun and c >= h) or (not uzun and c <= h)): break
-                p["vurulan"] += 1; son = p["vurulan"] == len(p["hedefler"])
-                parca_kapat(p, p["kalan"] if son else p["parca"], h, f"TP{p['vurulan']} (son hedef)" if son else f"TP{p['vurulan']}")
-                if son: break
-                if p["vurulan"] == 1: p["stop"] = p["giris"]                                 # TP1 → stop girişe
-            if p in S["acik"] and time.time() - p["t"] > SURE:
-                parca_kapat(p, p["kalan"], D["bid"].get(sym, c) if uzun else D["ask"].get(sym, c), "süre doldu (7 gün)")
+            if mum_adim(p, c, c): continue
+            if time.time() - p["t"] > SURE:
+                uzun = p["yon"] == "long"; parca_kapat(p, p["kalan"], D["bid"].get(p["sym"], c) if uzun else D["ask"].get(p["sym"], c), "süre doldu (7 gün)")
         if not S["egri"] or time.time() - S["egri"][-1][0] >= 3600: S["egri"].append([int(time.time()), round(ozsermaye(), 2)])
 
 def ozsermaye():
@@ -161,18 +186,31 @@ async def tg_dinle():
     try: TG["adminler"] = {u.id async for u in c.iter_participants(hedef, filter=ChannelParticipantsAdmins)}
     except Exception: TG["adminler"] = set()
 
+    def isle(m, gecmis=False):
+        metin = m.raw_text or ""
+        if m.id in S.setdefault("islenen", []): return
+        S["islenen"].append(m.id); del S["islenen"][:-300]
+        if TG["adminler"] and m.sender_id not in TG["adminler"] and not m.post: return          # sadece yönetici / kanal mesajı
+        if not re.search(r"entry|enter|stop|target|\bTP\b|\bSL\b", metin, re.I): return
+        sg = coz(metin)
+        if not sg: sonuc = "çözülemedi (giriş/hedef/stop eksik)"
+        elif "hata" in sg: sonuc = "atlandı: " + sg["hata"]
+        elif gecmis: sonuc = gecmis_oynat(sg, metin, m.date.timestamp())
+        else: sonuc = ac(sg, metin)
+        with KIL: log_mesaj(metin, sonuc)
+        if gecmis: S["mesaj"][-1]["t"] = int(m.date.timestamp())
+        kaydet()
+
+    try:                                                                                     # v1.1: son 24 sa'te kaçırılan sinyaller
+        eski = [m async for m in c.iter_messages(hedef, limit=60) if time.time() - m.date.timestamp() < 86400]
+        for m in reversed(eski):
+            await asyncio.get_event_loop().run_in_executor(None, isle, m, True)
+        with KIL: S["mesaj"].sort(key=lambda x: x["t"])
+    except Exception as e: D["hata"] = "geçmiş tarama: " + str(e)[:120]
+
     @c.on(events.NewMessage(chats=hedef))
     async def yeni(ev):
-        try:
-            metin = ev.raw_text or ""
-            if TG["adminler"] and ev.sender_id not in TG["adminler"] and not ev.post: return          # sadece yönetici / kanal mesajı
-            if not re.search(r"entry|stop|target|\bTP\b|\bSL\b", metin, re.I): return
-            sg = coz(metin)
-            if not sg: sonuc = "çözülemedi (giriş/hedef/stop eksik)"
-            elif "hata" in sg: sonuc = "atlandı: " + sg["hata"]
-            else: sonuc = ac(sg, metin)
-            with KIL: log_mesaj(metin, sonuc)
-            kaydet()
+        try: await asyncio.get_event_loop().run_in_executor(None, isle, ev.message, False)
         except Exception as e: D["hata"] = "mesaj: " + str(e)[:120]
     D["tg"] = f"✅ Bağlı · dinleniyor: {D['kanal']}" + (f" · {len(TG['adminler'])} yönetici" if TG["adminler"] else ""); D["adim"] = None
 
