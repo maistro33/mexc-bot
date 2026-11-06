@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.3 (07.11 01:00)"
+VERSIYON = "v1.4 (07.11 00:45)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -218,7 +218,14 @@ async def tg_basla():
 async def tg_dinle():
     from telethon import events
     from telethon.tl.types import ChannelParticipantsAdmins
-    c = TG["c"]; ara = (os.getenv("TG_KANAL") or "BITCOIN BULLETS").strip(); hedef = None        # v1.2: kanal değişti
+    c = TG["c"]; ara = (os.getenv("TG_KANAL") or "").strip(); hedef = None                       # v1.4: Bitcoin Bullets kapatıldı (sinyalleri ~1 gün geç paylaşıyor); yeni kanal bekleniyor
+    if not ara:
+        with KIL:
+            if S["gecmis"] or S["acik"] or S["mesaj"]:
+                S.setdefault("arsiv", []).append({"kanal": S.get("kanal", "?"), "oz": round(ozsermaye(), 2), "gecmis": S["gecmis"], "acik": S["acik"], "bitis": int(time.time())})
+                S.update({"nakit": KASA, "acik": [], "gecmis": [], "mesaj": [], "egri": [], "kur": int(time.time()), "golge": [], "yaris": []})
+            S["kanal"] = ""
+        kaydet(); D["tg"] = "📭 Telegram bağlı · kanal seçilmedi (yeni kanal bekleniyor)"; D["adim"] = None; return
     try:
         if ara.startswith("@") or "t.me/" in ara: hedef = await c.get_entity(ara)
         else:
