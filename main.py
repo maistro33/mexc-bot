@@ -6,11 +6,11 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.6 (07.11 01:45)"
+VERSIYON = "v1.6.1 (07.11 11:25)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
-MJ, LEV, KASA, MAXA, UCRET, KAYMA, SURE = 10.0, 10, 100.0, 10, 0.0006, 0.0005, 7 * 86400
+MJ, LEV, KASA, MAXA, UCRET, KAYMA, SURE = 10.0, 10, 100.0, 20, 0.0006, 0.0005, 7 * 86400
 KIL = threading.RLock()
 S = {"v": 1, "nakit": KASA, "baslangic": KASA, "acik": [], "gecmis": [], "mesaj": [], "egri": [], "kur": int(time.time())}
 try:
