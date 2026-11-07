@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.6.2 (07.11 11:35)"
+VERSIYON = "v1.6.3 (07.11 11:40)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -370,6 +370,14 @@ class H(BaseHTTPRequestHandler):
         yol = self.path.split("?")[0].rstrip("/")
         if yol in ("", "/"): return self._yaz(200, SAYFA, "text/html; charset=utf-8")
         if yol == "/api": return self._yaz(200, json.dumps(veri(), ensure_ascii=False))
+        if yol == "/deneme_bybit":                                                         # v1.6.3: Bybit kopya trading erişim testi (salt okunur)
+            q = "pageNo=1&pageSize=5&dataDuration=DATA_DURATION_THIRTY_DAY&sortField=LEADER_SORT_FIELD_SORT_ROI"; out = {}
+            ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "Accept": "application/json"}
+            for u in ("https://api2.bybit.com/fapi/beehive/public/v1/common/dynamic-leader-list?" + q, "https://www.bybit.com/x-api/fapi/beehive/public/v1/common/dynamic-leader-list?" + q,
+                      "https://api2.bybitglobal.com/fapi/beehive/public/v1/common/dynamic-leader-list?" + q, "https://www.bybitglobal.com/x-api/fapi/beehive/public/v1/common/dynamic-leader-list?" + q):
+                try: r = requests.get(u, headers=ua, timeout=15); out[u.split("/fapi")[0]] = [r.status_code, r.text[:500]]
+                except Exception as e: out[u.split("/fapi")[0]] = ["hata", str(e)[:200]]
+            return self._yaz(200, json.dumps(out, ensure_ascii=False))
         self._yaz(404, "{}")
     def do_POST(self):
         yol = self.path.split("?")[0].rstrip("/")
