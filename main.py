@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.5.1 (07.11 00:55)"
+VERSIYON = "v1.6 (07.11 01:45)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -308,7 +308,7 @@ def veri():
             c = D["fiyat"].get(p["sym"]) or p["giris"]
             acik.append({"coin": p["coin"], "yon": p["yon"], "giris": p["giris"], "sinyal_giris": p["sinyal_giris"], "t": p["t"], "c": c, "ayar": p["ayar"],
                          "stop": p["iz"]["stop"], "aktif": p["iz"]["aktif"], "kaynak": p.get("kaynak", ""), "pnl": round(MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100, 3)})
-        return {"v": VERSIYON, "tg": D["tg"], "lider": L["durum"], "liderler": L["liste"], "lider_tarama": int(time.time() - L["tarama_t"]) if L["tarama_t"] else -1, "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
+        return {"v": VERSIYON, "tg": D["tg"], "lider": L["durum"], "liderler": L["liste"], "lider_tarama": int(time.time() - L["tarama_t"]) if L["tarama_t"] else -1, "lider_sonuc": lider_sonuc(), "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
                 "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[-50:][::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"], "yaris": yaris_veri(),
                 "ozet": {"n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0), "toplam": round(sum(g["pnl"] for g in G), 2),
                          "stop": sum(1 for g in G if g["neden"] == "stop"), "iz": sum(1 for g in G if g["neden"] == "iz süren stop")}}
@@ -327,10 +327,11 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
 <div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
-<div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading'in herkese açık lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
+<div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55) + <b>OKX</b> lider trader'ları (resmi açık API; en az 30 gün liderlik, kazanma ≥%55, kârda). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
+<div class="pan"><h2>🏆 Lider bazında sonuç</h2><div id="lsn"></div></div>
 <div class="pan"><h2>🏁 Çıkış yarışı</h2><div id="yr"></div></div>
 <div class="pan"><h2>💬 Son sinyaller (lider + kanal)</h2><div id="msg"></div></div>
 </div><script>
@@ -346,7 +347,8 @@ function girisCiz(adim){if(adim===girisCizildi)return;girisCizildi=adim;const g=
  else if(adim==='sifre')g.innerHTML='<input id="kod" placeholder="kod (tekrar)"><input id="sif" type="password" placeholder="iki adımlı doğrulama şifren"><button onclick="gonder(\'giris/kod\',{kod:$(\'kod\').value,sifre:$(\'sif\').value})">Giriş</button>';
  else if(!g.querySelector('.uy'))g.innerHTML='';}
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json(),o=d.ozet;
- $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(düşüş %${f(x.mdd,0)}, kaz %${f(x.kaz,0)})</span>`).join(' · ');$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
+ $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`<b>${x.borsa}</b> ${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(${x.mdd!=null?'düşüş %'+f(x.mdd,0)+', ':''}kaz %${f(x.kaz,0)})</span>`).join(' · ');
+ const ls=d.lider_sonuc||[];$('lsn').innerHTML=ls.length?'<table><tr><th>Kaynak</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>'+ls.map(t=>`<tr><td>${es(t.kaynak)}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top,2)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan işlem yok.</div>';$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
  $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d">${f(d.oz)} $</div><div class="alt">başlangıç ${f(d.baslangic,0)} $ · boşta ${f(d.nakit)} $</div></div>
  <div class="k"><div class="e">Kâr / zarar</div><div class="d ${rk(d.oz-d.baslangic)}">${sg(d.oz-d.baslangic)} $</div><div class="alt">kapanan ${sg(o.toplam)} $</div></div>
  <div class="k"><div class="e">İşlem</div><div class="d">${o.n}</div><div class="alt">kârlı ${o.n?'%'+f(o.kaz/o.n*100,0):'–'} · açık ${d.acik.length}</div></div>
@@ -389,21 +391,58 @@ class H(BaseHTTPRequestHandler):
 # en büyük düşüş < %40, kazanma oranı ≥ %55 ve pozisyonlarını gösteren ilk 15 lider. Liste saatte bir yenilenir.
 BN = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/"
 L = {"liste": [], "onceki": {}, "liste_t": 0, "tarama_t": 0, "durum": "başlamadı"}
+OKX = "https://www.okx.com/api/v5/copytrading/"
 def lider_liste():
+    sec = []
+    # Binance: takipçileri de kâr etmiş, düşüş < %40, kazanma ≥ %55, pozisyonlarını gösteren ilk 15
     aday = []
     for sayfa in range(1, 11):
         r = requests.post(BN + "home-page/query-list", json={"pageNumber": sayfa, "pageSize": 20, "timeRange": "30D", "dataType": "ROI", "favoriteOnly": False,
                           "hideFull": False, "nickname": "", "order": "DESC", "userAsset": 0, "portfolioType": "PUBLIC"}, timeout=15).json()
         aday += (r.get("data") or {}).get("list") or []; time.sleep(0.5)
-    sec = []
+    n = 0
     for x in aday:
         if float(x.get("copierPnl") or 0) < 50 or float(x.get("mdd") or 100) >= 40 or float(x.get("winRate") or 0) < 55: continue
         r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["leadPortfolioId"]}, timeout=15).json(); time.sleep(0.4)
-        if not r.get("data"): continue                                                   # pozisyonlarını gizliyor
-        sec.append({"id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0), "mdd": round(float(x["mdd"]), 1),
-                    "kaz": round(float(x["winRate"]), 0), "takipci_kar": round(float(x["copierPnl"]), 0)})
-        if len(sec) >= 15: break
+        if not r.get("data"): continue
+        sec.append({"borsa": "Binance", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0), "mdd": round(float(x["mdd"]), 1),
+                    "kaz": round(float(x["winRate"]), 0)}); n += 1
+        if n >= 15: break
+    # v1.6 OKX: resmi açık API — en az 30 gün liderlik, kazanma ≥ %55, kârda, pozisyonlarını gösteren ilk 10
+    try:
+        aday = []
+        for sayfa in (1, 2, 3):
+            r = requests.get(OKX + "public-lead-traders", params={"instType": "SWAP", "sortType": "pnl_ratio", "limit": "20", "page": str(sayfa)}, timeout=15).json()
+            aday += (r.get("data") or [{}])[0].get("ranks") or []; time.sleep(0.5)
+        n = 0
+        for x in aday:
+            if int(x.get("leadDays") or 0) < 30 or float(x.get("winRatio") or 0) < 0.55 or float(x.get("pnlRatio") or 0) <= 0: continue
+            r = requests.get(OKX + "public-current-subpositions", params={"instType": "SWAP", "uniqueCode": x["uniqueCode"], "limit": "50"}, timeout=15).json(); time.sleep(0.4)
+            if r.get("code") != "0" or any(not q.get("instId") for q in r.get("data") or []): continue       # gizli
+            sec.append({"borsa": "OKX", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
+                        "kaz": round(float(x["winRatio"]) * 100, 0)}); n += 1
+            if n >= 10: break
+    except Exception as e: L["durum"] = "⚠️ OKX listesi alınamadı: " + str(e)[:80]
     return sec
+
+def lider_pozlar(x):
+    """Döner: {(BTCUSDT, long/short): giriş} ya da None (hata)."""
+    simdi = {}
+    if x.get("borsa", "Binance") == "Binance":
+        r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["id"]}, timeout=15).json()
+        if r.get("code") != "000000": return None
+        for p in r.get("data") or []:
+            a = float(p.get("positionAmount") or 0)
+            if a: simdi[(p["symbol"], "long" if a > 0 else "short")] = float(p.get("entryPrice") or 0)
+    else:
+        r = requests.get(OKX + "public-current-subpositions", params={"instType": "SWAP", "uniqueCode": x["id"], "limit": "50"}, timeout=15).json()
+        if r.get("code") != "0": return None
+        for p in r.get("data") or []:
+            if not p.get("instId", "").endswith("-USDT-SWAP"): continue
+            ps = p.get("posSide"); a = float(p.get("subPos") or 0)
+            yon = ps if ps in ("long", "short") else ("long" if a > 0 else "short")
+            simdi[(p["instId"].replace("-USDT-SWAP", "") + "USDT", yon)] = float(p.get("openAvgPx") or 0)
+    return simdi
 
 def lider_dongu():
     time.sleep(20)
@@ -413,25 +452,28 @@ def lider_dongu():
                 L["liste"] = lider_liste(); L["liste_t"] = time.time()
                 L["onceki"] = {k: v for k, v in L["onceki"].items() if k in {x["id"] for x in L["liste"]}}
             for x in L["liste"]:
-                r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["id"]}, timeout=15).json(); time.sleep(1)
-                if r.get("code") != "000000": continue
-                simdi = {}
-                for p in r.get("data") or []:
-                    a = float(p.get("positionAmount") or 0)
-                    if a: simdi[(p["symbol"], "long" if a > 0 else "short")] = float(p.get("entryPrice") or 0)
+                simdi = lider_pozlar(x); time.sleep(0.8)
+                if simdi is None: continue
                 if x["id"] not in L["onceki"]: L["onceki"][x["id"]] = simdi; continue          # ilk görüş: eski pozisyonlara girilmez
                 for (sym, yon), gir in simdi.items():
                     if (sym, yon) in L["onceki"][x["id"]] or not sym.endswith("USDT"): continue
-                    coin = sym[:-4]; metin = f"👥 {x['ad']} (30g ROI %{x['roi']:g}) yeni {yon.upper()} açtı: {coin} @ {gir:g}"
+                    coin = sym[:-4]; metin = f"👥 {x['borsa']} · {x['ad']} (30g ROI %{x['roi']:g}) yeni {yon.upper()} açtı: {coin} @ {gir:g}"
                     if sym not in D["semboller"]: sonuc = "atlandı: Bitget'te yok"
-                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir, "kaynak": "👥 " + x["ad"]}, metin)
+                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir, "kaynak": f"👥 {x['borsa']} · {x['ad']}"}, metin)
                     with KIL: log_mesaj(metin, sonuc)
                     kaydet()
                 L["onceki"][x["id"]] = simdi
             L["tarama_t"] = time.time()
-            L["durum"] = f"✅ Binance lider takibi · {len(L['liste'])} lider izleniyor"
+            nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance"); L["durum"] = f"✅ Lider takibi · Binance {nb} + OKX {len(L['liste']) - nb} lider izleniyor"
         except Exception as e: L["durum"] = "⚠️ Lider takibi hatası (tekrar denenecek): " + str(e)[:120]
-        time.sleep(15)
+        time.sleep(10)
+
+def lider_sonuc():
+    T = {}
+    for g in S["gecmis"]:
+        k = g.get("kaynak") or "Telegram"; t = T.setdefault(k, {"kaynak": k, "n": 0, "kaz": 0, "top": 0.0})
+        t["n"] += 1; t["kaz"] += 1 if g["pnl"] > 0 else 0; t["top"] = round(t["top"] + g["pnl"], 3)
+    return sorted(T.values(), key=lambda t: -t["top"])
 
 def kayit_dongu():
     while True:
