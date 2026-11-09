@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.11 (09.11 18:05)"
+VERSIYON = "v1.12 (09.11 18:40)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -374,7 +374,7 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  $('acik').innerHTML=d.acik.map(p=>{const tm=p.adim_t?new Date(p.adim_t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'}):'';
   return `<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span>${p.kaynak?` <span class="alt">${es(p.kaynak)}</span>`:''}<div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">ayar: stop %${p.ayar[0]} · %${p.ayar[1]} kârda iz · %${p.ayar[2]} geriden</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
   ${p.aktif?`<div class="iz"><span>🔒</span><span class="tik">${'▲'.repeat(Math.max(0,Math.min(p.adim,12)-1))}${p.adim?'<b>▲</b>':''}${p.adim>12?'…':''}</span><span class="alt">${p.adim?`kilit <b class="art">${p.adim}×</b> ilerledi · son ${tm} → stop <span class="art">${fy(p.stop)}</span>`:'iz başladı'}</span></div><div class="ucl" style="margin-top:4px"><span>giriş ${fy(p.giris)} → ${fy(p.c)}</span><span class="${rk(p.kilit)}">kilitli kâr ${sg(p.kilit,3)} $</span></div>`
-  :`<div class="yol"><i style="left:calc(${p.konum}% - 2px)"></i></div><div class="ucl"><span class="eks">⛔ stop ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span class="art">🔓 iz başlar ${fy(p.izb)}</span></div>`}</div>`}).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
+  :`<div class="yol"><i style="left:calc(${p.konum}% - 2px)"></i></div><div class="ucl"><span class="eks">⛔ stop ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span class="art">🔓 iz başlar ${fy(p.izb)}</span></div><div class="alt" style="text-align:center;margin-top:6px">🔓 İz <b class="art">${fy(p.izb)}</b> fiyatında başlayacak · <b>%${f(Math.abs(p.izb/p.c-1)*100,2)}</b> kaldı</div>`}</div>`}).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
  GEC=d.gecmis;gecCiz();
  $('msg').innerHTML=d.mesaj.map(m=>`<div class="msg"><span class="alt">${ts(m.t)}</span> ${es(m.m.slice(0,160))}<b>${es(m.s)}</b></div>`).join('')||'<div class="alt">Henüz sinyal mesajı gelmedi.</div>';
 }catch(e){$('tg').textContent='⚠️ bağlantı yok'}}
