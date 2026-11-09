@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.12 (09.11 18:40)"
+VERSIYON = "v1.13 (09.11 19:15)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -364,7 +364,7 @@ function gecSayfa(n){SAY=Math.max(0,Math.min(n,Math.ceil(GEC.length/SB)-1));gecC
 function gecCiz(){const t=Math.max(1,Math.ceil(GEC.length/SB));if(SAY>=t)SAY=t-1;const L=GEC.slice(SAY*SB,SAY*SB+SB);
  $('gec').innerHTML=GEC.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+L.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}${g.kaynak?' · '+es(g.kaynak):''}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>'+`<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><button style="width:auto;padding:6px 14px" onclick="gecSayfa(SAY-1)" ${SAY==0?'disabled':''}>◀</button><span class="alt">sayfa ${SAY+1} / ${t} · ${GEC.length} işlem</span><button style="width:auto;padding:6px 14px" onclick="gecSayfa(SAY+1)" ${SAY>=t-1?'disabled':''}>▶</button></div>`:'<div class="alt">Henüz yok.</div>'}
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json(),o=d.ozet;
- $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri · kayıt: ${d.klasor}`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`<b>${x.borsa}</b> ${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(${x.mdd!=null?'düşüş %'+f(x.mdd,0)+', ':''}kaz %${f(x.kaz,0)})</span>`).join(' · ');
+ $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri · kayıt: ${d.klasor}`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`${x.grup||''}<b>${x.borsa}</b> ${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(${x.mdd!=null?'düşüş %'+f(x.mdd,0)+', ':''}kaz %${f(x.kaz,0)})</span>`).join(' · ');
  const ls=d.lider_sonuc||[];$('lsn').innerHTML=ls.length?'<table><tr><th>Kaynak</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>'+ls.map(t=>`<tr><td>${es(t.kaynak)}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top,2)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan işlem yok.</div>';$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
  $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d">${f(d.oz)} $</div><div class="alt">başlangıç ${f(d.baslangic,0)} $ · boşta ${f(d.nakit)} $</div></div>
  <div class="k"><div class="e">Kâr / zarar</div><div class="d ${rk(d.oz-d.baslangic)}">${sg(d.oz-d.baslangic)} $</div><div class="alt">kapanan ${sg(o.toplam)} $</div></div>
@@ -436,6 +436,15 @@ def lider_liste():
         sec.append({"borsa": "Binance", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0), "mdd": round(float(x["mdd"]), 1),
                     "kaz": round(float(x["winRate"]), 0)}); n += 1
         if n >= 15: break
+    # v1.13 (Sadık): 🚀 Yüksek ROI grubu — filtresiz en yüksek ROI'li 10 lider (pozisyonları görünen); bizim stop/iz korur
+    secili = {x["id"] for x in sec}; n = 0
+    for x in sorted(aday, key=lambda x: -float(x.get("roi") or 0)):
+        if x["leadPortfolioId"] in secili: continue
+        r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["leadPortfolioId"]}, timeout=15).json(); time.sleep(0.4)
+        if not r.get("data"): continue
+        sec.append({"borsa": "Binance", "grup": "🚀", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0),
+                    "mdd": round(float(x.get("mdd") or 0), 1), "kaz": round(float(x.get("winRate") or 0), 0)}); n += 1
+        if n >= 10: break
     # v1.6 OKX: resmi açık API — en az 30 gün liderlik, kazanma ≥ %55, kârda, pozisyonlarını gösteren ilk 10
     try:
         aday = []
@@ -450,6 +459,14 @@ def lider_liste():
             sec.append({"borsa": "OKX", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
                         "kaz": round(float(x["winRatio"]) * 100, 0)}); n += 1
             if n >= 10: break
+        secili = {x["id"] for x in sec}; n = 0                                                  # v1.13: 🚀 OKX en yüksek 5 (filtresiz)
+        for x in sorted(aday, key=lambda x: -float(x.get("pnlRatio") or 0)):
+            if x["uniqueCode"] in secili: continue
+            r = requests.get(OKX + "public-current-subpositions", params={"instType": "SWAP", "uniqueCode": x["uniqueCode"], "limit": "50"}, timeout=15).json(); time.sleep(0.4)
+            if r.get("code") != "0" or any(not q.get("instId") for q in r.get("data") or []): continue
+            sec.append({"borsa": "OKX", "grup": "🚀", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
+                        "kaz": round(float(x.get("winRatio") or 0) * 100, 0)}); n += 1
+            if n >= 5: break
     except Exception as e: L["durum"] = "⚠️ OKX listesi alınamadı: " + str(e)[:80]
     return sec
 
@@ -485,14 +502,15 @@ def lider_dongu():
                 if x["id"] not in L["onceki"]: L["onceki"][x["id"]] = simdi; continue          # ilk görüş: eski pozisyonlara girilmez
                 for (sym, yon), gir in simdi.items():
                     if (sym, yon) in L["onceki"][x["id"]] or not sym.endswith("USDT"): continue
-                    coin = sym[:-4]; metin = f"👥 {x['borsa']} · {x['ad']} (30g ROI %{x['roi']:g}) yeni {yon.upper()} açtı: {coin} @ {gir:g}"
+                    coin = sym[:-4]; gr = x.get("grup", "👥"); metin = f"{gr} {x['borsa']} · {x['ad']} (30g ROI %{x['roi']:g}) yeni {yon.upper()} açtı: {coin} @ {gir:g}"
                     if sym not in D["semboller"]: sonuc = "atlandı: Bitget'te yok"
-                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir, "kaynak": f"👥 {x['borsa']} · {x['ad']}"}, metin)
+                    else: sonuc = ac({"coin": coin, "yon": yon, "giris": gir, "kaynak": f"{gr} {x['borsa']} · {x['ad']}"}, metin)
                     with KIL: log_mesaj(metin, sonuc)
                     kaydet()
                 L["onceki"][x["id"]] = simdi
             L["tarama_t"] = time.time()
-            nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance"); L["durum"] = f"✅ Lider takibi · Binance {nb} + OKX {len(L['liste']) - nb} lider izleniyor"
+            nr = sum(1 for x in L["liste"] if x.get("grup") == "🚀"); nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance" and x.get("grup") != "🚀")
+            L["durum"] = f"✅ Lider takibi · 👥 Binance {nb} + OKX {len(L['liste']) - nb - nr} · 🚀 yüksek ROI {nr} lider izleniyor"
         except Exception as e: L["durum"] = "⚠️ Lider takibi hatası (tekrar denenecek): " + str(e)[:120]
         time.sleep(10)
 
