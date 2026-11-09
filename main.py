@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.9 (09.11 17:20)"
+VERSIYON = "v1.10 (09.11 17:55)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -332,8 +332,10 @@ SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta nam
 .tp{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}.tp span{font-size:11px;padding:2px 6px;border-radius:6px;background:#1c2542;color:var(--soluk)}.tp span.v{background:rgba(34,211,155,.2);color:var(--yesil)}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;border-bottom:1px solid var(--cizgi);text-align:right}td:first-child,th:first-child{text-align:left}th{color:var(--soluk);font-size:11px}
 .msg{font-size:12px;border-bottom:1px solid var(--cizgi);padding:6px 0;white-space:pre-wrap}.msg b{display:block;margin-top:2px}input,button{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--cizgi);background:#0d1326;color:var(--yazi);width:100%;margin-top:6px}button{background:linear-gradient(135deg,#5b8cff,#22d39b);border:0;font-weight:800;cursor:pointer}
+.sek{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.sek a{display:block;text-align:center;padding:10px;border-radius:12px;background:var(--kart);border:1px solid var(--cizgi);color:var(--soluk);text-decoration:none;font-weight:700;font-size:14px}.sek a.on{background:linear-gradient(135deg,#5b8cff,#22d39b);color:#fff;border:0}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="sek"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi (kağıt)</a></div>
 <div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
 <div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55) + <b>OKX</b> lider trader'ları (resmi açık API; en az 30 gün liderlik, kazanma ≥%55, kârda). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
