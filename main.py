@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.8 (09.11 17:20)"
+VERSIYON = "v1.9 (09.11 17:20)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -317,7 +317,7 @@ def veri():
                          "stop": p["iz"]["stop"], "aktif": p["iz"]["aktif"], "kaynak": p.get("kaynak", ""),
                          "adim": len(p["iz"].get("adim", [])), "adim_t": (p["iz"].get("adim") or [0])[-1], "kilit": round(MJ * LEV * yuzde(p["yon"], p["giris"], p["iz"]["stop"]) / 100, 3), "pnl": round(MJ * LEV * yuzde(p["yon"], p["giris"], c) / 100, 3)})
         return {"v": VERSIYON, "klasor": KLASOR, "tg": D["tg"], "lider": L["durum"], "liderler": L["liste"], "lider_tarama": int(time.time() - L["tarama_t"]) if L["tarama_t"] else -1, "lider_sonuc": lider_sonuc(), "kanal": D["kanal"], "hata": D["hata"], "adim": D["adim"], "oz": round(oz, 2), "baslangic": S["baslangic"],
-                "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[-50:][::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"], "yaris": yaris_veri(),
+                "nakit": round(S["nakit"], 2), "acik": acik, "gecmis": G[::-1], "mesaj": S["mesaj"][-25:][::-1], "kur": S["kur"], "yaris": yaris_veri(),
                 "ozet": {"n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0), "toplam": round(sum(g["pnl"] for g in G), 2),
                          "stop": sum(1 for g in G if g["neden"] == "stop"), "iz": sum(1 for g in G if g["neden"] == "iz süren stop")}}
 
@@ -354,6 +354,10 @@ function girisCiz(adim){if(adim===girisCizildi)return;girisCizildi=adim;const g=
  else if(adim==='kod')g.innerHTML='<input id="kod" placeholder="Telegram\'dan gelen kod"><input id="sif" type="password" placeholder="iki adımlı şifre (varsa)"><button onclick="gonder(\'giris/kod\',{kod:$(\'kod\').value,sifre:$(\'sif\').value})">Giriş</button>';
  else if(adim==='sifre')g.innerHTML='<input id="kod" placeholder="kod (tekrar)"><input id="sif" type="password" placeholder="iki adımlı doğrulama şifren"><button onclick="gonder(\'giris/kod\',{kod:$(\'kod\').value,sifre:$(\'sif\').value})">Giriş</button>';
  else if(!g.querySelector('.uy'))g.innerHTML='';}
+let GEC=[],SAY=0;const SB=10;
+function gecSayfa(n){SAY=Math.max(0,Math.min(n,Math.ceil(GEC.length/SB)-1));gecCiz()}
+function gecCiz(){const t=Math.max(1,Math.ceil(GEC.length/SB));if(SAY>=t)SAY=t-1;const L=GEC.slice(SAY*SB,SAY*SB+SB);
+ $('gec').innerHTML=GEC.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+L.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}${g.kaynak?' · '+es(g.kaynak):''}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>'+`<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><button style="width:auto;padding:6px 14px" onclick="gecSayfa(SAY-1)" ${SAY==0?'disabled':''}>◀</button><span class="alt">sayfa ${SAY+1} / ${t} · ${GEC.length} işlem</span><button style="width:auto;padding:6px 14px" onclick="gecSayfa(SAY+1)" ${SAY>=t-1?'disabled':''}>▶</button></div>`:'<div class="alt">Henüz yok.</div>'}
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json(),o=d.ozet;
  $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri · kayıt: ${d.klasor}`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`<b>${x.borsa}</b> ${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(${x.mdd!=null?'düşüş %'+f(x.mdd,0)+', ':''}kaz %${f(x.kaz,0)})</span>`).join(' · ');
  const ls=d.lider_sonuc||[];$('lsn').innerHTML=ls.length?'<table><tr><th>Kaynak</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>'+ls.map(t=>`<tr><td>${es(t.kaynak)}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top,2)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan işlem yok.</div>';$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
@@ -363,7 +367,7 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  <div class="k"><div class="e">Bizim ayar</div><div class="d" style="font-size:16px">stop %${f(d.yaris.secili[0],0)} · iz %${f(d.yaris.secili[1],0)}/%${f(d.yaris.secili[2],1)}</div><div class="alt">${d.yaris.n<d.yaris.min?`yarış öğreniyor ${d.yaris.n}/${d.yaris.min}`:'yarışın seçtiği'} · stop ${o.stop} · iz ${o.iz}</div></div>`;
  const y=d.yaris;$('yr').innerHTML=`<div class="alt" style="margin-bottom:6px">${y.n} biten sinyal · ${y.takipte} takipte · birim: fiyat % (ücret dahil)</div><table><tr><th>Stop / iz başlar / geriden</th><th>Kârlı</th><th>Toplam</th></tr>`+y.liste.map(x=>`<tr><td>${x.secili?'👉 ':''}%${x.k[0]} / %${x.k[1]} / %${x.k[2]}</td><td>${x.kaz}/${y.n}</td><td class="${rk(x.top)}"><b>${sg(x.top)}%</b></td></tr>`).join('')+'</table>';
  $('acik').innerHTML=d.acik.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span>${p.kaynak?`<div class="alt"><b>${es(p.kaynak)}</b></div>`:''}<div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">${p.aktif?'🔒 iz süren stop':'⛔ stop'} ${fy(p.stop)} · ayar %${p.ayar[0]}/%${p.ayar[1]}/%${p.ayar[2]}</div>${p.aktif?`<div class="alt" style="margin-top:4px">🔒 <span class="art">${'▲'.repeat(Math.min(p.adim,12))}${p.adim>12?'…':''}</span> kilit <b class="art">${p.adim}×</b> ilerledi${p.adim?' · son '+new Date(p.adim_t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'}):''} · kilitli kâr <b class="${rk(p.kilit)}">${sg(p.kilit,3)} $</b></div>`:''}</div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div></div></div>`).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
- $('gec').innerHTML=d.gecmis.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+d.gecmis.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}${g.kaynak?' · '+es(g.kaynak):''}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';
+ GEC=d.gecmis;gecCiz();
  $('msg').innerHTML=d.mesaj.map(m=>`<div class="msg"><span class="alt">${ts(m.t)}</span> ${es(m.m.slice(0,160))}<b>${es(m.s)}</b></div>`).join('')||'<div class="alt">Henüz sinyal mesajı gelmedi.</div>';
 }catch(e){$('tg').textContent='⚠️ bağlantı yok'}}
 yenile();setInterval(yenile,8000);
