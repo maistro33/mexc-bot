@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.7 (09.11 17:10)"
+VERSIYON = "v1.8 (09.11 17:20)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -20,6 +20,15 @@ except Exception: pass
 if any("iz" not in p for p in S["acik"]) or any("ayar" not in g for g in S["gecmis"]):        # v1.3: eski biçim (kanal TP/DCA) → arşivle, sıfırdan başla
     S.setdefault("arsiv", []).append({"kanal": S.get("kanal", "Signals - Bitcoin and Ethereum"), "gecmis": S["gecmis"], "acik": S["acik"], "nakit": S["nakit"], "bitis": int(time.time())})
     S.update({"nakit": KASA, "acik": [], "gecmis": [], "mesaj": [], "egri": [], "kur": int(time.time()), "islenen": [], "golge": [], "yaris": []})
+if not S.get("geri_v18"):                                                          # v1.8: hatayla arşivlenen lider takibi verisini geri yükle (bir kerelik)
+    A = [a for a in S.get("arsiv", []) if a.get("kanal") == "" and a.get("gecmis") is not None]
+    if A:
+        a = A[-1]; S["arsiv"].remove(a)
+        eski = a.get("gecmis", []); S["gecmis"] = sorted(eski + S["gecmis"], key=lambda g: g.get("t", 0))[-500:]
+        var = {p["sym"] for p in S["acik"]}; S["acik"] = [p for p in a.get("acik", []) if p.get("sym") not in var] + S["acik"]
+        S["nakit"] = KASA + sum(g["pnl"] for g in S["gecmis"]) - MJ * len(S["acik"])
+        if eski: S["kur"] = min(S["kur"], min(g.get("t0", g.get("t", S["kur"])) for g in eski))
+    S["geri_v18"] = 1
 D = {"tg": "başlamadı", "kanal": "", "hata": "", "fiyat": {}, "bid": {}, "ask": {}, "semboller": set(), "adim": None, "telefon": "", "hash": "", "oturum_goster": ""}
 
 def kaydet():
@@ -222,13 +231,8 @@ async def tg_dinle():
     from telethon import events
     from telethon.tl.types import ChannelParticipantsAdmins
     c = TG["c"]; ara = (os.getenv("TG_KANAL") or "").strip(); hedef = None                       # v1.4: Bitcoin Bullets kapatıldı (sinyalleri ~1 gün geç paylaşıyor); yeni kanal bekleniyor
-    if not ara:
-        with KIL:
-            if S["gecmis"] or S["acik"] or S["mesaj"]:
-                S.setdefault("arsiv", []).append({"kanal": S.get("kanal", "?"), "oz": round(ozsermaye(), 2), "gecmis": S["gecmis"], "acik": S["acik"], "bitis": int(time.time())})
-                S.update({"nakit": KASA, "acik": [], "gecmis": [], "mesaj": [], "egri": [], "kur": int(time.time()), "golge": [], "yaris": []})
-            S["kanal"] = ""
-        kaydet(); D["tg"] = "📭 Telegram bağlı · kanal seçilmedi (yeni kanal bekleniyor)"; D["adim"] = None; return
+    if not ara:                                                                        # v1.8: HATA DÜZELTİLDİ — kanal yokken artık hiçbir şey sıfırlanmaz
+        D["tg"] = "📭 Telegram bağlı · kanal seçilmedi (lider takibi çalışıyor)"; D["adim"] = None; return
     try:
         if ara.startswith("@") or "t.me/" in ara: hedef = await c.get_entity(ara)
         else:
