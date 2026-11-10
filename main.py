@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.14 (10.11 10:15)"
+VERSIYON = "v1.15 (10.11 10:25)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -589,6 +589,9 @@ def grid_veri():
             out["tur"] = {"t0": T["t0"], "p0": T["p0"], "hi": T["L"][-1], "lo": T["L"][0], "adim": T["L"][1] - T["L"][0], "q": T["q"], "n": T["n"], "gerc": round(T["gerc"], 3),
                           "acik": round(ak, 3), "oz": round(GR_MJ + T["gerc"] + ak, 3), "ucret": round(T["ucret"], 3), "tut": len(tut),
                           "net_poz": round(sum(T["q"] * (1 if T["g"][i]["mod"] == "long" else -1) for i in tut), 4), "son": T["son"][::-1],
+                          "acik_l": [dict(yon=T["g"][i]["mod"], giris=(T["L"][i] if T["g"][i]["mod"] == "long" else T["L"][i + 1]),          # v1.15: açık grid işlemleri
+                                          hedef=(T["L"][i + 1] if T["g"][i]["mod"] == "long" else T["L"][i]), sinir=(T["L"][0] if T["g"][i]["mod"] == "long" else T["L"][-1]),
+                                          pnl=round(((c - T["L"][i]) if T["g"][i]["mod"] == "long" else (T["L"][i + 1] - c)) * T["q"], 4)) for i in tut],
                           "adim_kar": round((T["L"][1] - T["L"][0]) * T["q"] - 2 * T["q"] * T["p0"] * GR_MAKER, 4), "konum": max(0, min(100, (c - T["L"][0]) / (T["L"][-1] - T["L"][0]) * 100))}
         return out
 
@@ -598,6 +601,7 @@ GRID_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<t
 <div class="pan"><div class="alt">Elirox demo'daki gibi <b>BTC nötr grid</b>, Bitget fiyatlarıyla: aralık fiyatın <b>%3,0 üstü – %2,5 altı</b>, <b>40 seviye</b>; fiyat düşerken alır (bir üst seviyede satar), yükselirken satar (bir alt seviyede geri alır). Marj <b>10 $ × 125x</b> (Bitget BTC en yüksek), limit emir ücreti %0,02. <b>Koruma:</b> fiyat aralık dışına çıkarsa ya da tur zararı %30'a ulaşırsa hepsi market kapanır ve yeni fiyatla yeni tur başlar. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>📍 Fiyat aralıkta nerede</h2><div id="yer"></div></div>
+<div class="pan"><h2>💼 Açık grid işlemleri</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Son kapanan grid işlemleri</h2><div id="son"></div></div>
 <div class="pan"><h2>🔁 Biten turlar</h2><div id="tur"></div></div>
 </div><script>
@@ -611,6 +615,10 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  <div class="k"><div class="e">Açık pozisyon</div><div class="d ${rk(T.acik)}">${sg(T.acik,3)} $</div><div class="alt">${T.tut} seviye dolu · net ${sg(T.net_poz,4)} BTC</div></div>
  <div class="k"><div class="e">Tüm turlar toplam</div><div class="d ${rk(d.toplam)}">${sg(d.toplam,3)} $</div><div class="alt">${d.turlar.length} tur bitti</div></div>`;
  $('yer').innerHTML=`<div class="yol"><i style="left:calc(${T.konum}% - 2px)"></i></div><div class="ucl"><span class="eks">⬇ ${f(T.lo,0)}</span><span>başlangıç ${f(T.p0,0)} · şimdi ${f(d.c,0)}</span><span class="eks">⬆ ${f(T.hi,0)}</span></div><div class="alt" style="margin-top:6px;text-align:center">40 seviye · adım ${f(T.adim,1)} $ · seviye başı ${T.q} BTC · aralık dışına çıkarsa tur kapanır</div>`;
+ $('acik').innerHTML=(T.acik_l||[]).map(p=>{const u=p.yon=='long'?1:-1,k=Math.max(0,Math.min(100,(d.c-p.sinir)/(p.hedef-p.sinir)*100));
+  return `<div class="pz"><div class="ust"><div><b>BTC</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} ${d.lev}x</span><div class="alt">giriş ${f(p.giris,1)} → şimdi ${f(d.c,1)} · ${T.q} BTC</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
+  <div class="yol"><i style="left:calc(${k}% - 2px)"></i></div><div class="ucl"><span class="eks">⛔ aralık ${p.yon=='long'?'altı':'üstü'} ${f(p.sinir,0)}</span><span>giriş ${f(p.giris,1)}</span><span class="art">🎯 hedef ${f(p.hedef,1)}</span></div>
+  <div class="alt" style="text-align:center;margin-top:6px">🎯 Hedef <b class="art">${f(p.hedef,1)}</b> · <b>%${f(Math.abs(p.hedef/d.c-1)*100,2)}</b> kaldı · kâr ~${f((Math.abs(p.hedef-p.giris))*T.q,3)} $</div></div>`}).join('')||'<div class="alt">Açık grid işlemi yok.</div>';
  $('son').innerHTML=T.son.length?'<table><tr><th>Zaman</th><th>İşlem</th><th>Kâr (ücret öncesi)</th></tr>'+T.son.slice(0,15).map(x=>`<tr><td>${ts(x[0])}</td><td><span class="chip ${x[1]=='long'?'c-l':'c-s'}">${x[1].toUpperCase()}</span> ${f(x[2],1)} → ${f(x[3],1)}</td><td class="art"><b>${sg(x[4],3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanış yok; fiyat bir seviye gidip dönünce ilk kâr gelir.</div>';
  $('tur').innerHTML=d.turlar.length?'<table><tr><th>Tur</th><th>Neden</th><th>Sonuç</th></tr>'+d.turlar.map(x=>`<tr><td>${ts(x.t0)} → ${ts(x.t)}<div class="alt">${x.n} kapanış</div></td><td>${x.neden}</td><td class="${rk(x.sonuc)}"><b>${sg(x.sonuc,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz biten tur yok.</div>';
 }catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
