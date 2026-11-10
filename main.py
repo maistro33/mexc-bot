@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.20 (10.11 20:35)"
+VERSIYON = "v1.21 (10.11 20:50)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -494,7 +494,8 @@ def lider_liste():
             sec.append({"borsa": "OKX", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
                         "kaz": round(float(x["winRatio"]) * 100, 0)}); n += 1
             if n >= 10: break
-        for uid, ad_ in (("b0b246728fb43a53a396", "Armandino"), ("bcbd487f89b53b55ad93", "Hedge-Trader"), ("b1b648748fb23d57a292", "woshiguaizi")):   # v1.20 💰 Bitget
+        for uid, ad_ in (("b0b246728fb43a53a396", "Armandino"), ("bcbd487f89b53b55ad93", "Hedge-Trader"), ("b1b648748fb23d57a292", "woshiguaizi"),
+                         ("bfb44a7788b73d57a793", "盗野"), ("bbb34f7f89b73d50ac91", "狙盘手安迪"), ("b0bd497f8eb3395ead90", "小z必定暴富")):   # v1.20 💰 Bitget
             if not any(x["id"] == uid for x in sec): sec.append({"borsa": "Bitget", "grup": "💰", "id": uid, "ad": ad_, "roi": 0, "mdd": None, "kaz": None})
         for uc, ad_ in (("F2BCA22ABBB69F57", "Mine13"), ("35F888C7BB441B2B", "Shallow-Pair-Frog"), ("94FC2CF4A047C10E", "Xiaoyao Lee")):   # v1.19 💰 OKX
             if not any(x["id"] == uc for x in sec):
