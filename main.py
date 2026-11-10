@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.18 (10.11 18:45)"
+VERSIYON = "v1.19 (10.11 19:10)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -444,16 +444,33 @@ def lider_liste():
         sec.append({"borsa": "Binance", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0), "mdd": round(float(x["mdd"]), 1),
                     "kaz": round(float(x["winRate"]), 0)}); n += 1
         if n >= 15: break
-    # v1.18 (Sadık): takipçilerine en çok kazandıran + işlemleri görünen liderler — her zaman listede
-    for pid, ad_ in (("5080774020661703169", "TrendPyramid"), ("5076854789130646529", "Leo-Hamsters")):
-        if any(x["id"] == pid for x in sec): continue
-        try:
-            d_ = requests.get(BN + "lead-data/positions", params={"portfolioId": pid}, timeout=15).json(); time.sleep(0.4)
-            if d_.get("data") is None: continue
-            y = next((x for x in aday if x["leadPortfolioId"] == pid), {})
-            sec.append({"borsa": "Binance", "id": pid, "ad": ad_, "roi": round(float(y.get("roi") or 0), 0), "mdd": round(float(y.get("mdd") or 0), 1),
-                        "kaz": round(float(y.get("winRate") or 0), 0), "sabit": True})
-        except Exception: pass
+    # v1.19 (Sadık): 💰 Takipçilerine en çok kazandıran Binance liderleri (90 ve 30 günde takipçi kârda, takipçi getirisi en yüksek,
+    # düşüş < %40, en az 90 gün). Pozisyonlarını gizleyenler de dahil: açık işlemleri "pozisyon geçmişi"nden (kapanmamış olanlar) okunur.
+    try:
+        cp = {}
+        for tr in ("90D", "30D"):
+            for sayfa in range(1, 6):
+                r = requests.post(BN + "home-page/query-list", json={"pageNumber": sayfa, "pageSize": 20, "timeRange": tr, "dataType": "COPIER_PNL", "favoriteOnly": False,
+                                  "hideFull": False, "nickname": "", "order": "DESC", "userAsset": 0, "portfolioType": "PUBLIC"}, timeout=15).json()
+                for x in (r.get("data") or {}).get("list") or []: cp.setdefault(x["leadPortfolioId"], {})[tr] = x
+                time.sleep(0.4)
+        ad_l = []
+        for pid, v in cp.items():
+            a9, a3 = v.get("90D"), v.get("30D")
+            if not a9 or not a3 or float(a9.get("copyAum") or 0) < 20000: continue
+            if float(a9["copierPnl"]) <= 0 or float(a3["copierPnl"]) <= 0 or float(a9.get("mdd") or 100) >= 40: continue
+            if time.time() * 1000 - float(a9.get("startTime") or 0) < 90 * 86400000: continue
+            ad_l.append((float(a9["copierPnl"]) / float(a9["copyAum"]), a9))
+        secili = {x["id"] for x in sec}; n = 0
+        for oran, x in sorted(ad_l, key=lambda t: -t[0]):
+            if n >= 8: break
+            if x["leadPortfolioId"] in secili: continue
+            r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["leadPortfolioId"]}, timeout=15).json(); time.sleep(0.4)
+            if r.get("code") != "000000": continue
+            sec.append({"borsa": "Binance", "grup": "💰", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0),
+                        "mdd": round(float(x.get("mdd") or 0), 1), "kaz": round(float(x.get("winRate") or 0), 0), "takipci": round(oran * 100, 0),
+                        "gizli": not any(float(p.get("positionAmount") or 0) for p in r.get("data") or [])}); n += 1
+    except Exception as e: L["durum"] = "⚠️ 💰 listesi alınamadı: " + str(e)[:80]
     # v1.13 (Sadık): 🚀 Yüksek ROI grubu — filtresiz en yüksek ROI'li 10 lider (pozisyonları görünen); bizim stop/iz korur
     secili = {x["id"] for x in sec}; n = 0
     for x in sorted(aday, key=lambda x: -float(x.get("roi") or 0)):
@@ -477,6 +494,11 @@ def lider_liste():
             sec.append({"borsa": "OKX", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
                         "kaz": round(float(x["winRatio"]) * 100, 0)}); n += 1
             if n >= 10: break
+        for uc, ad_ in (("F2BCA22ABBB69F57", "Mine13"), ("35F888C7BB441B2B", "Shallow-Pair-Frog"), ("94FC2CF4A047C10E", "Xiaoyao Lee")):   # v1.19 💰 OKX
+            if not any(x["id"] == uc for x in sec):
+                y = next((x for x in aday if x["uniqueCode"] == uc), {})
+                sec.append({"borsa": "OKX", "grup": "💰", "id": uc, "ad": ad_, "roi": round(float(y.get("pnlRatio") or 0) * 100, 0), "mdd": None,
+                            "kaz": round(float(y.get("winRatio") or 0) * 100, 0)})
         secili = {x["id"] for x in sec}; n = 0                                                  # v1.13: 🚀 OKX en yüksek 5 (filtresiz)
         for x in sorted(aday, key=lambda x: -float(x.get("pnlRatio") or 0)):
             if x["uniqueCode"] in secili: continue
@@ -497,6 +519,13 @@ def lider_pozlar(x):
         for p in r.get("data") or []:
             a = float(p.get("positionAmount") or 0)
             if a: simdi[(p["symbol"], "long" if a > 0 else "short")] = float(p.get("entryPrice") or 0)
+        if x.get("gizli") and not simdi:                                                    # v1.19: gizli lider → geçmişte kapanmamış pozisyonlar
+            h = requests.post(BN + "lead-portfolio/position-history", json={"pageNumber": 1, "pageSize": 30, "portfolioId": x["id"]}, timeout=15).json()
+            if h.get("code") != "000000": return None
+            for p in (h.get("data") or {}).get("list") or []:
+                if p.get("closed") is None and p.get("status") != "All Closed" and p.get("side") in ("Long", "Short") \
+                        and time.time() * 1000 - float(p.get("opened") or 0) < 15 * 60000:          # sadece son 15 dk'da açılanlar (eski/kayan kayıtlar yeni sanılmasın)
+                    simdi[(p["symbol"], p["side"].lower())] = float(p.get("avgCost") or 0)
     else:
         r = requests.get(OKX + "public-current-subpositions", params={"instType": "SWAP", "uniqueCode": x["id"], "limit": "50"}, timeout=15).json()
         if r.get("code") != "0": return None
@@ -527,8 +556,9 @@ def lider_dongu():
                     kaydet()
                 L["onceki"][x["id"]] = simdi
             L["tarama_t"] = time.time()
-            nr = sum(1 for x in L["liste"] if x.get("grup") == "🚀"); nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance" and x.get("grup") != "🚀")
-            L["durum"] = f"✅ Lider takibi · 👥 Binance {nb} + OKX {len(L['liste']) - nb - nr} · 🚀 yüksek ROI {nr} lider izleniyor"
+            nr = sum(1 for x in L["liste"] if x.get("grup") == "🚀"); nm = sum(1 for x in L["liste"] if x.get("grup") == "💰")
+            nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance" and not x.get("grup"))
+            L["durum"] = f"✅ Lider takibi · 👥 Binance {nb} + OKX {len(L['liste']) - nb - nr - nm} · 💰 takipçisine kazandıran {nm} · 🚀 yüksek ROI {nr} lider izleniyor"
         except Exception as e: L["durum"] = "⚠️ Lider takibi hatası (tekrar denenecek): " + str(e)[:120]
         time.sleep(10)
 
