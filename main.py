@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.15 (10.11 10:25)"
+VERSIYON = "v1.16 (10.11 13:50)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a><a href="akilli/">🧠 Akıllı grid</a></div>
 <div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
 <div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55) + <b>OKX</b> lider trader'ları (resmi açık API; en az 30 gün liderlik, kazanma ≥%55, kârda). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
@@ -394,6 +394,10 @@ class H(BaseHTTPRequestHandler):
             self.send_response(301); self.send_header("Location", "/grid/"); self.end_headers(); return
         if yol == "/grid": return self._yaz(200, GRID_SAYFA, "text/html; charset=utf-8")         # v1.14
         if yol == "/grid/api": return self._yaz(200, json.dumps(grid_veri(), ensure_ascii=False))
+        if yol == "/akilli" and not self.path.split("?")[0].endswith("/"):
+            self.send_response(301); self.send_header("Location", "/akilli/"); self.end_headers(); return
+        if yol == "/akilli": return self._yaz(200, AKILLI_SAYFA, "text/html; charset=utf-8")    # v1.16
+        if yol == "/akilli/api": return self._yaz(200, json.dumps(akilli_veri(), ensure_ascii=False))
         if yol == "/deneme_bybit":                                                         # v1.6.3: Bybit kopya trading erişim testi (salt okunur)
             q = "pageNo=1&pageSize=5&dataDuration=DATA_DURATION_THIRTY_DAY&sortField=LEADER_SORT_FIELD_SORT_ROI"; out = {}
             ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "Accept": "application/json"}
@@ -597,7 +601,7 @@ def grid_veri():
 
 GRID_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Grid</title>") + r"""<body><div class="sar">
 <div class="logo">🔲 GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🔲 Grid</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🔲 Grid</a><a href="../akilli/">🧠 Akıllı grid</a></div>
 <div class="pan"><div class="alt">Elirox demo'daki gibi <b>BTC nötr grid</b>, Bitget fiyatlarıyla: aralık fiyatın <b>%3,0 üstü – %2,5 altı</b>, <b>40 seviye</b>; fiyat düşerken alır (bir üst seviyede satar), yükselirken satar (bir alt seviyede geri alır). Marj <b>10 $ × 125x</b> (Bitget BTC en yüksek), limit emir ücreti %0,02. <b>Koruma:</b> fiyat aralık dışına çıkarsa ya da tur zararı %30'a ulaşırsa hepsi market kapanır ve yeni fiyatla yeni tur başlar. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>📍 Fiyat aralıkta nerede</h2><div id="yer"></div></div>
@@ -625,6 +629,111 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
 yenile();setInterval(yenile,6000);
 </script></body></html>"""
 
+# ───────────── 🧠 AKILLI GRID (v1.16, kağıt) ─────────────
+# Sadık: "kendini ayarlasın, fiyat dışarı çıkmasın, peşinden gitsin, iz süren SL gibi". Testte (BTC 1dk 14 gün) iki haftada da kârlı olan ayar:
+# adım %0,3 (sabit kafes, merkez fiyatı izler: fiyat merkezden %3 uzaklaşınca merkez fiyata kayar) · merkezin altında LONG, üstünde SHORT ·
+# her işlem hedefi 1 adım (limit, %0,02), stopu 5 adım (market %0,06 + kayma) · TREND FİLTRESİ: fiyat 12 saatlik EMA'dan %0,3'ten fazla
+# uzaksa yeni işlem açılmaz · en çok 20 açık · 20 $ × 50x · bakiye %30 düşerse hepsi kapanır, sıfırdan başlar.
+AG_S, AG_K, AG_T, AG_M, AG_MJ, AG_LEV, AG_EMA, AG_ESIK, AG_KAY = 0.003, 5, 0.03, 20, 20.0, 50, 720, 0.003, 0.0003
+AGD = {"ema": None, "ema_dk": 0, "hata": ""}
+
+def ag_ema_kur():
+    m = []; t = int(time.time() // 60 * 60) * 1000 - 1000 * 60000
+    while t < time.time() * 1000 - 60000:
+        d = requests.get(API + "history-candles", params={"symbol": "BTCUSDT", "productType": "USDT-FUTURES", "granularity": "1m", "startTime": str(t),
+                                                          "endTime": str(t + 200 * 60000), "limit": "200"}, timeout=15).json().get("data") or []
+        if not d: t += 200 * 60000; continue
+        m += [float(x[4]) for x in sorted(d, key=lambda x: int(x[0]))]; t = int(sorted(d, key=lambda x: int(x[0]))[-1][0]) + 60000; time.sleep(0.2)
+    a = 2 / (AG_EMA + 1); e = None
+    for c in m: e = c if e is None else e + a * (c - e)
+    AGD["ema"] = e; AGD["ema_dk"] = int(time.time() // 60)
+
+def ag_not(): return AG_MJ * AG_LEV / AG_M
+def ag_kz(q, p): return ((p / q["g"] - 1) if q["y"] == 1 else (1 - p / q["g"])) * ag_not()
+
+def ag_kapat(A, q, f, neden, ucret):
+    A["P"].remove(q); kz = ag_kz(q, f) - ag_not() * (ucret + AG_MAK)
+    A["r"] += kz; A["n" if neden == "hedef" else "ns"] += 1
+    A["son"].append([int(time.time()), "long" if q["y"] == 1 else "short", round(q["g"], 1), round(f, 1), round(kz, 4), neden]); del A["son"][:-40]
+
+AG_MAK, AG_TAK = 0.0002, 0.0006
+def ag_adim(p):
+    A = S.setdefault("akilli", None)
+    if not A: A = S["akilli"] = {"cen": p, "prev": p, "P": [], "r": 0.0, "n": 0, "ns": 0, "son": [], "t0": int(time.time()), "turlar": []}; return
+    s = AG_S; cen = A["cen"]
+    for q in A["P"][:]:                                                                     # çıkışlar
+        if q["y"] == 1:
+            if p <= q["st"]: ag_kapat(A, q, q["st"] * (1 - AG_KAY), "stop", AG_TAK)
+            elif p >= q["h"]: ag_kapat(A, q, q["h"], "hedef", AG_MAK)
+        else:
+            if p >= q["st"]: ag_kapat(A, q, q["st"] * (1 + AG_KAY), "stop", AG_TAK)
+            elif p <= q["h"]: ag_kapat(A, q, q["h"], "hedef", AG_MAK)
+    e = AGD["ema"]; izin = e is not None and abs(p / e - 1) < AG_ESIK
+    ix = lambda v: math.floor((v - cen) / (s * cen)); a, b = ix(A["prev"]), ix(p)
+    if izin and b != a:                                                                     # girişler (geçilen seviyeler)
+        rng = range(a, b, -1) if b < a else range(a + 1, b + 1)
+        for j in rng:
+            L = cen + j * s * cen; y = 1 if b < a else -1
+            if ((y == 1 and L < cen) or (y == -1 and L > cen)) and len(A["P"]) < AG_M and not any(abs(q["g"] - L) < s * cen * 0.5 for q in A["P"]):
+                A["P"].append({"y": y, "g": L, "h": L * (1 + y * s), "st": L * (1 - y * AG_K * s), "t": int(time.time())})
+    if p > cen * (1 + AG_T) or p < cen * (1 - AG_T): A["cen"] = p                            # merkez fiyatın peşinden kayar
+    A["prev"] = p
+    oz = AG_MJ + A["r"] + sum(ag_kz(q, p) for q in A["P"])
+    if oz <= AG_MJ * 0.7:                                                                   # koruma: %30
+        for q in A["P"][:]: ag_kapat(A, q, p, "koruma %30", AG_TAK)
+        A["turlar"].append({"t0": A["t0"], "t": int(time.time()), "sonuc": round(A["r"], 3)}); A.update({"r": 0.0, "cen": p, "t0": int(time.time())})
+
+def akilli_dongu():
+    time.sleep(20)
+    while AGD["ema"] is None:
+        try: ag_ema_kur()
+        except Exception as e: AGD["hata"] = "EMA: " + str(e)[:100]; time.sleep(30)
+    while True:
+        try:
+            c = D["fiyat"].get("BTCUSDT")
+            if c:
+                dk = int(time.time() // 60)
+                if dk > AGD["ema_dk"]: AGD["ema"] += (2 / (AG_EMA + 1)) * (c - AGD["ema"]); AGD["ema_dk"] = dk
+                with KIL: ag_adim(c)
+        except Exception as e: AGD["hata"] = "akıllı grid: " + str(e)[:120]
+        time.sleep(2)
+
+def akilli_veri():
+    with KIL:
+        A = S.get("akilli") or {}; c = D["fiyat"].get("BTCUSDT") or 0; e = AGD["ema"]
+        P = [{"yon": "long" if q["y"] == 1 else "short", "giris": q["g"], "hedef": q["h"], "stop": q["st"], "pnl": round(ag_kz(q, c), 4), "t": q.get("t", 0)} for q in A.get("P", [])]
+        acik = sum(x["pnl"] for x in P); sap = (c / e - 1) * 100 if e and c else None
+        return {"v": VERSIYON, "c": c, "ema": e, "sapma": sap, "izin": sap is not None and abs(sap) < AG_ESIK * 100, "esik": AG_ESIK * 100, "cen": A.get("cen"),
+                "r": round(A.get("r", 0), 3), "acik": round(acik, 3), "oz": round(AG_MJ + A.get("r", 0) + acik, 3), "n": A.get("n", 0), "ns": A.get("ns", 0), "t0": A.get("t0"),
+                "P": P, "son": (A.get("son") or [])[::-1], "turlar": (A.get("turlar") or [])[::-1], "mj": AG_MJ, "lev": AG_LEV, "s": AG_S * 100, "k": AG_K, "hata": AGD["hata"]}
+
+AKILLI_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Akıllı Grid</title>") + r"""<body><div class="sar">
+<div class="logo">🧠 AKILLI GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../grid/">🔲 Grid</a><a class="on" href="./">🧠 Akıllı grid</a></div>
+<div class="pan"><div class="alt"><b>Kendini ayarlayan grid:</b> her <b>%0,3</b>'te bir seviye; merkezin altında LONG, üstünde SHORT açar, hedef <b>1 adım</b> (limit). Her işlemin kendi <b>stopu 5 adım</b>. Fiyat merkezden %3 uzaklaşınca <b>grid fiyatın peşinden kayar</b>. <b>Trend filtresi:</b> fiyat 12 saatlik ortalamadan %0,3'ten fazla uzaksa (trend var) yeni işlem açmaz, sadece açıkları yönetir. 20 $ × 50x, en çok 20 açık, bakiye %30 düşerse hepsi kapanır. Gerçek emir yok.</div></div>
+<div class="pan"><b id="filtre">…</b></div>
+<div class="kartlar" id="kart"></div>
+<div class="pan"><h2>💼 Açık grid işlemleri</h2><div id="acik"></div></div>
+<div class="pan"><h2>📒 Son kapananlar</h2><div id="son"></div></div>
+</div><script>
+const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
+const ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json();
+ $('alt').textContent=`kağıt · ${d.v} · BTC ${f(d.c,1)}${d.t0?' · '+ts(d.t0)+"'den beri":''}`;
+ $('filtre').innerHTML=d.sapma==null?'⏳ 12 saatlik ortalama hesaplanıyor…':(d.izin?`✅ Yatay piyasa — grid işlem açıyor <span class="alt">(ortalamadan %${sg(d.sapma,2)}, sınır ±%${f(d.esik,1)})</span>`:`⏸ Trend var — yeni işlem açılmıyor <span class="alt">(ortalamadan %${sg(d.sapma,2)}, sınır ±%${f(d.esik,1)})</span>`);
+ $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d ${rk(d.oz-d.mj)}">${f(d.oz)} $</div><div class="alt">marj ${f(d.mj,0)} $ × ${d.lev}x</div></div>
+ <div class="k"><div class="e">Gerçekleşen</div><div class="d ${rk(d.r)}">${sg(d.r,3)} $</div><div class="alt">🎯 hedef ${d.n} · ⛔ stop ${d.ns}</div></div>
+ <div class="k"><div class="e">Açık işlemler</div><div class="d ${rk(d.acik)}">${sg(d.acik,3)} $</div><div class="alt">${d.P.length} açık · merkez ${d.cen?f(d.cen,0):'–'}</div></div>
+ <div class="k"><div class="e">Ayar</div><div class="d" style="font-size:16px">adım %${f(d.s,1)} · stop ${d.k} adım</div><div class="alt">kayma %3 · trend filtresi</div></div>`;
+ $('acik').innerHTML=d.P.map(p=>{const k=Math.max(0,Math.min(100,(d.c-p.stop)/(p.hedef-p.stop)*100));
+  return `<div class="pz"><div class="ust"><div><b>BTC</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} ${d.lev}x</span><div class="alt">${ts(p.t)} · giriş ${f(p.giris,1)} → şimdi ${f(d.c,1)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
+  <div class="yol"><i style="left:calc(${k}% - 2px)"></i></div><div class="ucl"><span class="eks">⛔ stop ${f(p.stop,1)}</span><span>giriş ${f(p.giris,1)}</span><span class="art">🎯 hedef ${f(p.hedef,1)}</span></div>
+  <div class="alt" style="text-align:center;margin-top:6px">🎯 Hedef <b class="art">${f(p.hedef,1)}</b> · <b>%${f(Math.abs(p.hedef/d.c-1)*100,2)}</b> kaldı</div></div>`}).join('')||'<div class="alt">Açık işlem yok.</div>';
+ $('son').innerHTML=d.son.length?'<table><tr><th>Zaman</th><th>İşlem</th><th>Sonuç</th></tr>'+d.son.slice(0,20).map(x=>`<tr><td>${ts(x[0])}</td><td><span class="chip ${x[1]=='long'?'c-l':'c-s'}">${x[1].toUpperCase()}</span> ${f(x[2],1)} → ${f(x[3],1)}<div class="alt">${x[5]=='hedef'?'🎯 hedef':'⛔ '+x[5]}</div></td><td class="${rk(x[4])}"><b>${sg(x[4],3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanış yok.</div>';
+}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
+yenile();setInterval(yenile,6000);
+</script></body></html>"""
+
 def kayit_dongu():
     while True:
         time.sleep(60); kaydet()
@@ -636,4 +745,5 @@ if __name__ == "__main__":
     threading.Thread(target=kayit_dongu, daemon=True).start()
     threading.Thread(target=lider_dongu, daemon=True).start()
     threading.Thread(target=grid_dongu, daemon=True).start()                      # v1.14: 🔲 Grid
+    threading.Thread(target=akilli_dongu, daemon=True).start()                    # v1.16: 🧠 Akıllı grid
     ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), H).serve_forever()
