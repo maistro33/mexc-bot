@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.17 (10.11 15:55)"
+VERSIYON = "v1.18 (10.11 18:45)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -444,6 +444,16 @@ def lider_liste():
         sec.append({"borsa": "Binance", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0), "mdd": round(float(x["mdd"]), 1),
                     "kaz": round(float(x["winRate"]), 0)}); n += 1
         if n >= 15: break
+    # v1.18 (Sadık): takipçilerine en çok kazandıran + işlemleri görünen liderler — her zaman listede
+    for pid, ad_ in (("5080774020661703169", "TrendPyramid"), ("5076854789130646529", "Leo-Hamsters")):
+        if any(x["id"] == pid for x in sec): continue
+        try:
+            d_ = requests.get(BN + "lead-data/positions", params={"portfolioId": pid}, timeout=15).json(); time.sleep(0.4)
+            if d_.get("data") is None: continue
+            y = next((x for x in aday if x["leadPortfolioId"] == pid), {})
+            sec.append({"borsa": "Binance", "id": pid, "ad": ad_, "roi": round(float(y.get("roi") or 0), 0), "mdd": round(float(y.get("mdd") or 0), 1),
+                        "kaz": round(float(y.get("winRate") or 0), 0), "sabit": True})
+        except Exception: pass
     # v1.13 (Sadık): 🚀 Yüksek ROI grubu — filtresiz en yüksek ROI'li 10 lider (pozisyonları görünen); bizim stop/iz korur
     secili = {x["id"] for x in sec}; n = 0
     for x in sorted(aday, key=lambda x: -float(x.get("roi") or 0)):
