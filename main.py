@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.22 (10.11 22:15)"
+VERSIYON = "v1.23 (10.11 22:25)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -339,12 +339,12 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
 <div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a><a href="akilli/">🧠 Akıllı grid</a></div>
-<div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
-<div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55) + <b>OKX</b> lider trader'ları (resmi açık API; en az 30 gün liderlik, kazanma ≥%55, kârda). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
-<div class="pan"><h2>🏆 Lider bazında sonuç</h2><div id="lsn"></div></div>
+<div class="pan"><h2>🏆 Gruplara göre sıralama</h2><style>.gs{table-layout:fixed;width:100%}.gs th,.gs td{white-space:nowrap}.gs td:nth-child(2),.gs th:nth-child(2){text-align:left;white-space:normal;word-break:break-word}.gs th:nth-child(1){width:22px}.gs th:nth-child(3){width:44px}.gs th:nth-child(4){width:46px}.gs th:nth-child(5){width:78px}</style><div id="lsn"></div></div>
+<div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
+<div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55) + <b>OKX</b> lider trader'ları (resmi açık API; en az 30 gün liderlik, kazanma ≥%55, kârda). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="pan"><h2>🏁 Çıkış yarışı</h2><div id="yr"></div></div>
 <div class="pan"><h2>💬 Son sinyaller (lider + kanal)</h2><div id="msg"></div></div>
 </div><script>
@@ -365,7 +365,15 @@ function gecCiz(){const t=Math.max(1,Math.ceil(GEC.length/SB));if(SAY>=t)SAY=t-1
  $('gec').innerHTML=GEC.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+L.map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()}</span><div class="alt">${ts(g.t)}${g.kaynak?' · '+es(g.kaynak):''}</div></td><td>${g.neden}<div class="alt">fiyat %${sg(g.yuzde||0)}${g.ayar?' · ayar %'+g.ayar.join('/%'):''}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>'+`<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><button style="width:auto;padding:6px 14px" onclick="gecSayfa(SAY-1)" ${SAY==0?'disabled':''}>◀</button><span class="alt">sayfa ${SAY+1} / ${t} · ${GEC.length} işlem</span><button style="width:auto;padding:6px 14px" onclick="gecSayfa(SAY+1)" ${SAY>=t-1?'disabled':''}>▶</button></div>`:'<div class="alt">Henüz yok.</div>'}
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json(),o=d.ozet;
  $('alt').textContent=`kağıt · ${d.v} · ${ts(d.kur)}'den beri · kayıt: ${d.klasor}`;$('tg').textContent='Telegram: '+d.tg;$('ld').textContent=d.lider+(d.lider_tarama>=0?` · son tarama ${d.lider_tarama} sn önce`:'');$('ldx').innerHTML=(d.liderler||[]).map(x=>`${x.grup||''}<b>${x.borsa}</b> ${es(x.ad)} <span class="art">%${f(x.roi,0)}</span> <span class="alt">(${x.mdd!=null?'düşüş %'+f(x.mdd,0)+', ':''}kaz %${f(x.kaz,0)})</span>`).join(' · ');
- const ls=d.lider_sonuc||[];$('lsn').innerHTML=ls.length?'<table><tr><th>Kaynak</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>'+ls.map(t=>`<tr><td>${es(t.kaynak)}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top,2)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan işlem yok.</div>';$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
+ window.AG=window.AG||{};const ls=d.lider_sonuc||[],SN={};ls.forEach(t=>SN[t.kaynak]=t);
+ const GR=[['👥','👥 Normal liderler'],['💰','💰 Takipçisine kazandıranlar'],['🚀','🚀 Yüksek ROI']];
+ $('lsn').innerHTML=GR.map(([g,bas])=>{const ks=new Set();(d.liderler||[]).filter(x=>(x.grup||'👥')==g).forEach(x=>ks.add(`${g} ${x.borsa} · ${x.ad}`));ls.filter(t=>t.kaynak.startsWith(g)).forEach(t=>ks.add(t.kaynak));
+  const R=[...ks].map(k=>SN[k]||{kaynak:k,n:0,kaz:0,top:0}).sort((a,b)=>(b.n>0)-(a.n>0)||b.top-a.top);const T=R.reduce((s,t)=>s+t.top,0),N=R.reduce((s,t)=>s+t.n,0),K=R.reduce((s,t)=>s+t.kaz,0);
+  const RI=R.filter(t=>t.n),bek=R.length-RI.length,ac=AG[g]?' open':'';
+  return `<details data-g="${g}"${ac} style="border-top:1px solid #ffffff14;padding:10px 0"><summary style="display:flex;justify-content:space-between;align-items:baseline;cursor:pointer;list-style:none"><b>${bas}</b><span><span class="alt">${N} işlem · </span><b class="${rk(T)}">${sg(T,2)} $</b> ▾</span></summary>`+
+  (RI.length?'<table class="gs" style="margin-top:6px"><tr><th>#</th><th>Lider</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>'+RI.map((t,i)=>`<tr><td>${i+1}</td><td>${es(t.kaynak.slice(g.length+1))}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top,2)} $</b></td></tr>`).join('')+'</table>':'')+
+  (bek?`<div class="alt" style="margin-top:6px">⏳ ${bek} lider henüz işlem açmadı</div>`:'')+'</details>'}).join('');
+ document.querySelectorAll('#lsn details').forEach(e=>e.addEventListener('toggle',()=>{AG[e.dataset.g]=e.open}));$('hata').textContent=d.hata||'';girisCiz(d.adim||'');
  $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d">${f(d.oz)} $</div><div class="alt">başlangıç ${f(d.baslangic,0)} $ · boşta ${f(d.nakit)} $</div></div>
  <div class="k"><div class="e">Kâr / zarar</div><div class="d ${rk(d.oz-d.baslangic)}">${sg(d.oz-d.baslangic)} $</div><div class="alt">kapanan ${sg(o.toplam)} $</div></div>
  <div class="k"><div class="e">İşlem</div><div class="d">${o.n}</div><div class="alt">kârlı ${o.n?'%'+f(o.kaz/o.n*100,0):'–'} · açık ${d.acik.length}</div></div>
