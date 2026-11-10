@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.19 (10.11 19:10)"
+VERSIYON = "v1.20 (10.11 20:35)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -494,6 +494,8 @@ def lider_liste():
             sec.append({"borsa": "OKX", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
                         "kaz": round(float(x["winRatio"]) * 100, 0)}); n += 1
             if n >= 10: break
+        for uid, ad_ in (("b0b246728fb43a53a396", "Armandino"), ("bcbd487f89b53b55ad93", "Hedge-Trader"), ("b1b648748fb23d57a292", "woshiguaizi")):   # v1.20 💰 Bitget
+            if not any(x["id"] == uid for x in sec): sec.append({"borsa": "Bitget", "grup": "💰", "id": uid, "ad": ad_, "roi": 0, "mdd": None, "kaz": None})
         for uc, ad_ in (("F2BCA22ABBB69F57", "Mine13"), ("35F888C7BB441B2B", "Shallow-Pair-Frog"), ("94FC2CF4A047C10E", "Xiaoyao Lee")):   # v1.19 💰 OKX
             if not any(x["id"] == uc for x in sec):
                 y = next((x for x in aday if x["uniqueCode"] == uc), {})
@@ -513,6 +515,15 @@ def lider_liste():
 def lider_pozlar(x):
     """Döner: {(BTCUSDT, long/short): giriş} ya da None (hata)."""
     simdi = {}
+    if x.get("borsa") == "Bitget":                                                          # v1.20: Bitget lider (herkese açık pozisyonlar)
+        r = requests.post("https://www.bitget.com/v1/trigger/trace/public/currentPositionList", json={"traderId": x["id"], "pageNo": 1, "pageSize": 50},
+                          headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://www.bitget.com", "Referer": "https://www.bitget.com/",
+                                   "language": "en_US", "locale": "en_US"}, timeout=15).json()
+        if r.get("code") != "00000": return None
+        for p in r.get("data") or []:
+            sid = p.get("symbolId", "")
+            if sid.endswith("USDT_UMCBL") and p.get("holdSide") in (1, 2): simdi[(sid.replace("_UMCBL", ""), "long" if p["holdSide"] == 1 else "short")] = float(p.get("averageOpenPrice") or 0)
+        return simdi
     if x.get("borsa", "Binance") == "Binance":
         r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["id"]}, timeout=15).json()
         if r.get("code") != "000000": return None
@@ -557,7 +568,7 @@ def lider_dongu():
                 L["onceki"][x["id"]] = simdi
             L["tarama_t"] = time.time()
             nr = sum(1 for x in L["liste"] if x.get("grup") == "🚀"); nm = sum(1 for x in L["liste"] if x.get("grup") == "💰")
-            nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance" and not x.get("grup"))
+            nb = sum(1 for x in L["liste"] if x["borsa"] == "Binance" and not x.get("grup")) + sum(1 for x in L["liste"] if x["borsa"] == "Bitget" and not x.get("grup"))
             L["durum"] = f"✅ Lider takibi · 👥 Binance {nb} + OKX {len(L['liste']) - nb - nr - nm} · 💰 takipçisine kazandıran {nm} · 🚀 yüksek ROI {nr} lider izleniyor"
         except Exception as e: L["durum"] = "⚠️ Lider takibi hatası (tekrar denenecek): " + str(e)[:120]
         time.sleep(10)
