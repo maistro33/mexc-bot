@@ -2,11 +2,11 @@
 # Sadık: Telegram sinyal kanalını kağıtta test et. GERÇEK EMİR YOK: Bitget anahtarları hiç okunmaz, sadece herkese açık fiyat kullanılır.
 # Kanal mesajı gelir gelmez o anki gerçek fiyattan (alış/satış fiyatı) sanal işlem açar; sonradan düzenlenen/silinen mesajlar sonucu değiştirmez.
 # Kural (v1.3): 100 $ kasa · işlem başı 10 $ marj × 10x · kanaldan SADECE coin + yön · stop / iz süren stopu bot seçer (çıkış yarışı) · 24 sa en uzun.
-import os, json, time, re, threading, asyncio, html, math
+import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.16 (10.11 13:50)"
+VERSIYON = "v1.17 (10.11 15:55)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -746,4 +746,9 @@ if __name__ == "__main__":
     threading.Thread(target=lider_dongu, daemon=True).start()
     threading.Thread(target=grid_dongu, daemon=True).start()                      # v1.14: 🔲 Grid
     threading.Thread(target=akilli_dongu, daemon=True).start()                    # v1.16: 🧠 Akıllı grid
-    ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), H).serve_forever()
+    class S6(ThreadingHTTPServer):                                               # v1.17: IPv4+IPv6 (Railway özel ağı için; Canlı 429 almasın)
+        address_family = socket.AF_INET6
+        def server_bind(self):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0); super().server_bind()
+    try: S6(("::", int(os.getenv("PORT", "8080"))), H).serve_forever()
+    except OSError: ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), H).serve_forever()
