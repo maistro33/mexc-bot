@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.21 (10.11 20:50)"
+VERSIYON = "v1.22 (10.11 22:15)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -466,10 +466,10 @@ def lider_liste():
             if n >= 8: break
             if x["leadPortfolioId"] in secili: continue
             r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["leadPortfolioId"]}, timeout=15).json(); time.sleep(0.4)
-            if r.get("code") != "000000": continue
+            if r.get("code") != "000000" or not r.get("data"): continue              # v1.22: gizli lider atlanır (geçmişte açık işlem ancak kapanınca görünüyor → takip edilemez)
             sec.append({"borsa": "Binance", "grup": "💰", "id": x["leadPortfolioId"], "ad": x["nickname"], "roi": round(float(x["roi"]), 0),
                         "mdd": round(float(x.get("mdd") or 0), 1), "kaz": round(float(x.get("winRate") or 0), 0), "takipci": round(oran * 100, 0),
-                        "gizli": not any(float(p.get("positionAmount") or 0) for p in r.get("data") or [])}); n += 1
+                        "gizli": False}); n += 1
     except Exception as e: L["durum"] = "⚠️ 💰 listesi alınamadı: " + str(e)[:80]
     # v1.13 (Sadık): 🚀 Yüksek ROI grubu — filtresiz en yüksek ROI'li 10 lider (pozisyonları görünen); bizim stop/iz korur
     secili = {x["id"] for x in sec}; n = 0
