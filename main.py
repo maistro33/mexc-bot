@@ -2,11 +2,11 @@
 # Sadık: Telegram sinyal kanalını kağıtta test et. GERÇEK EMİR YOK: Bitget anahtarları hiç okunmaz, sadece herkese açık fiyat kullanılır.
 # Kanal mesajı gelir gelmez o anki gerçek fiyattan (alış/satış fiyatı) sanal işlem açar; sonradan düzenlenen/silinen mesajlar sonucu değiştirmez.
 # Kural (v1.3): 100 $ kasa · işlem başı 10 $ marj × 10x · kanaldan SADECE coin + yön · stop / iz süren stopu bot seçer (çıkış yarışı) · 24 sa en uzun.
-import os, json, time, re, threading, asyncio, html
+import os, json, time, re, threading, asyncio, html, math
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.13 (09.11 19:15)"
+VERSIYON = "v1.14 (10.11 10:15)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi (kağıt)</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a></div>
 <div class="pan"><b id="ld">…</b><div class="alt" id="ldx"></div><div style="margin-top:8px"><span class="alt" id="tg">…</span></div><div class="alt" id="hata"></div><div id="giris"></div></div>
 <div class="pan"><div class="alt"><b>Kaynak:</b> Binance Copy Trading lider trader'ları (son 30 gün ROI sırası, ama <b>takipçileri de kâr etmiş</b>, en büyük düşüş &lt;%40, kazanma ≥%55) + <b>OKX</b> lider trader'ları (resmi açık API; en az 30 gün liderlik, kazanma ≥%55, kârda). Bir lider <b>yeni pozisyon açtığı an</b> aynı coin + yönde açılır (liderin kapanışı izlenmez). Telegram kanalı da bağlanırsa aynı kurallar. Kanal mesajı gelir gelmez <b>o anki gerçek fiyattan</b> sanal işlem açar (sonradan düzenlenen/silinen mesajlar sonucu değiştirmez). 100 $ kasa · işlem başı <b>10 $ × 10x</b> · kanaldan <b>sadece coin + yön</b> alınır; kanalın TP/stop/DCA'sı kullanılmaz · <b>stop ve iz süren stopu bot kendisi seçer</b> (çıkış yarışı: her sinyal 27 ayarla gölgede takip edilir, 10 sinyalden sonra en iyisi kullanılır) · stop borsa stopu gibi (+%0,05 kayma) · ücret %0,06 · en çok 24 saat. <b>Gerçek emir yok.</b></div></div>
 <div class="kartlar" id="kart"></div>
@@ -390,6 +390,10 @@ class H(BaseHTTPRequestHandler):
         yol = self.path.split("?")[0].rstrip("/")
         if yol in ("", "/"): return self._yaz(200, SAYFA, "text/html; charset=utf-8")
         if yol == "/api": return self._yaz(200, json.dumps(veri(), ensure_ascii=False))
+        if yol == "/grid" and not self.path.split("?")[0].endswith("/"):
+            self.send_response(301); self.send_header("Location", "/grid/"); self.end_headers(); return
+        if yol == "/grid": return self._yaz(200, GRID_SAYFA, "text/html; charset=utf-8")         # v1.14
+        if yol == "/grid/api": return self._yaz(200, json.dumps(grid_veri(), ensure_ascii=False))
         if yol == "/deneme_bybit":                                                         # v1.6.3: Bybit kopya trading erişim testi (salt okunur)
             q = "pageNo=1&pageSize=5&dataDuration=DATA_DURATION_THIRTY_DAY&sortField=LEADER_SORT_FIELD_SORT_ROI"; out = {}
             ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "Accept": "application/json"}
@@ -521,6 +525,98 @@ def lider_sonuc():
         t["n"] += 1; t["kaz"] += 1 if g["pnl"] > 0 else 0; t["top"] = round(t["top"] + g["pnl"], 3)
     return sorted(T.values(), key=lambda t: -t["top"])
 
+# ───────────── 🔲 GRID (v1.14, kağıt) — Elirox demo'daki gibi BTC nötr grid, Bitget fiyatları ─────────────
+# Sadık: "10 USDT marj, kaldıraç en yüksek, aynı Elirox gibi". Aralık: fiyatın %2,99 üstü / %2,47 altı, 40 seviye, nötr (ters çevirme):
+# fiyatın altındaki her aralık LONG modda (Li'de al → Li+1'de sat), üstündekiler SHORT modda (Li+1'de sat → Li'de al). Limit emir = maker %0,02.
+# Koruma: fiyat aralık dışına çıkarsa ya da tur zararı %30'a ulaşırsa her şey market (%0,06) kapanır, yeni fiyatla yeni tur başlar.
+GR_SYM, GR_MJ, GR_LEV, GR_SEV, GR_UST, GR_ALT, GR_MAKER, GR_TAKER, GR_STOP = "BTCUSDT", 10.0, 125, 40, 0.0299, 0.0247, 0.0002, 0.0006, 0.30
+
+def gr_kur(p0):
+    hi, lo = p0 * (1 + GR_UST), p0 * (1 - GR_ALT); L = [lo + (hi - lo) * i / GR_SEV for i in range(GR_SEV + 1)]
+    q = max(0.0001, math.floor(GR_MJ * GR_LEV / (GR_SEV / 2) / p0 / 0.0001) * 0.0001)
+    return {"t0": int(time.time()), "p0": p0, "L": L, "q": round(q, 4), "gerc": 0.0, "n": 0, "ucret": 0.0,
+            "g": [{"mod": "long" if L[i + 1] <= p0 else "short", "tut": False} for i in range(GR_SEV)], "son": []}
+
+def gr_acik_kz(T, c):
+    t = 0.0
+    for i, g in enumerate(T["g"]):
+        if g["tut"]: t += ((c - T["L"][i]) if g["mod"] == "long" else (T["L"][i + 1] - c)) * T["q"]
+    return t
+
+def gr_bitir(G, T, c, neden):
+    kz = gr_acik_kz(T, c); acik_q = sum(1 for g in T["g"] if g["tut"]) * T["q"]; uc = acik_q * c * GR_TAKER
+    sonuc = T["gerc"] + kz - uc
+    G["turlar"].append({"t0": T["t0"], "t": int(time.time()), "p0": T["p0"], "cikis": c, "n": T["n"], "sonuc": round(sonuc, 3), "neden": neden}); del G["turlar"][:-100]
+    G["toplam"] = round(G.get("toplam", 0) + sonuc, 3)
+
+def gr_adim(c):
+    G = S.setdefault("grid", {"turlar": [], "toplam": 0.0, "tur": None})
+    if not G.get("tur"): G["tur"] = gr_kur(c); return
+    T = G["tur"]; L = T["L"]; q = T["q"]
+    for i, g in enumerate(T["g"]):
+        a, b = L[i], L[i + 1]
+        if g["mod"] == "long":
+            if not g["tut"] and c <= a: g["tut"] = True; T["ucret"] += q * a * GR_MAKER; T["gerc"] -= q * a * GR_MAKER
+            elif g["tut"] and c >= b:
+                g["tut"] = False; kz = (b - a) * q - q * b * GR_MAKER; T["gerc"] += kz; T["ucret"] += q * b * GR_MAKER; T["n"] += 1
+                T["son"].append([int(time.time()), "long", round(a, 1), round(b, 1), round(kz + q * a * GR_MAKER, 4)]); del T["son"][:-30]
+        else:
+            if not g["tut"] and c >= b: g["tut"] = True; T["ucret"] += q * b * GR_MAKER; T["gerc"] -= q * b * GR_MAKER
+            elif g["tut"] and c <= a:
+                g["tut"] = False; kz = (b - a) * q - q * a * GR_MAKER; T["gerc"] += kz; T["ucret"] += q * a * GR_MAKER; T["n"] += 1
+                T["son"].append([int(time.time()), "short", round(b, 1), round(a, 1), round(kz + q * b * GR_MAKER, 4)]); del T["son"][:-30]
+    oz = GR_MJ + T["gerc"] + gr_acik_kz(T, c)
+    neden = "fiyat aralığın üstüne çıktı" if c > L[-1] else "fiyat aralığın altına indi" if c < L[0] else "zarar %30 (koruma)" if oz <= GR_MJ * (1 - GR_STOP) else None
+    if neden: gr_bitir(G, T, c, neden); G["tur"] = gr_kur(c)
+
+def grid_dongu():
+    time.sleep(15); son = 0
+    while True:
+        try:
+            c = D["fiyat"].get(GR_SYM)
+            if c:
+                with KIL: gr_adim(c)
+            if time.time() - son > 120: son = time.time(); kaydet()
+        except Exception as e: D["hata"] = "grid: " + str(e)[:120]
+        time.sleep(2)
+
+def grid_veri():
+    with KIL:
+        G = S.get("grid") or {"turlar": [], "toplam": 0}; T = G.get("tur"); c = D["fiyat"].get(GR_SYM) or (T or {}).get("p0", 0)
+        out = {"v": VERSIYON, "c": c, "toplam": G.get("toplam", 0), "turlar": G["turlar"][::-1], "mj": GR_MJ, "lev": GR_LEV}
+        if T:
+            ak = gr_acik_kz(T, c); tut = [i for i, g in enumerate(T["g"]) if g["tut"]]
+            out["tur"] = {"t0": T["t0"], "p0": T["p0"], "hi": T["L"][-1], "lo": T["L"][0], "adim": T["L"][1] - T["L"][0], "q": T["q"], "n": T["n"], "gerc": round(T["gerc"], 3),
+                          "acik": round(ak, 3), "oz": round(GR_MJ + T["gerc"] + ak, 3), "ucret": round(T["ucret"], 3), "tut": len(tut),
+                          "net_poz": round(sum(T["q"] * (1 if T["g"][i]["mod"] == "long" else -1) for i in tut), 4), "son": T["son"][::-1],
+                          "adim_kar": round((T["L"][1] - T["L"][0]) * T["q"] - 2 * T["q"] * T["p0"] * GR_MAKER, 4), "konum": max(0, min(100, (c - T["L"][0]) / (T["L"][-1] - T["L"][0]) * 100))}
+        return out
+
+GRID_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Grid</title>") + r"""<body><div class="sar">
+<div class="logo">🔲 GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🔲 Grid</a></div>
+<div class="pan"><div class="alt">Elirox demo'daki gibi <b>BTC nötr grid</b>, Bitget fiyatlarıyla: aralık fiyatın <b>%3,0 üstü – %2,5 altı</b>, <b>40 seviye</b>; fiyat düşerken alır (bir üst seviyede satar), yükselirken satar (bir alt seviyede geri alır). Marj <b>10 $ × 125x</b> (Bitget BTC en yüksek), limit emir ücreti %0,02. <b>Koruma:</b> fiyat aralık dışına çıkarsa ya da tur zararı %30'a ulaşırsa hepsi market kapanır ve yeni fiyatla yeni tur başlar. Gerçek emir yok.</div></div>
+<div class="kartlar" id="kart"></div>
+<div class="pan"><h2>📍 Fiyat aralıkta nerede</h2><div id="yer"></div></div>
+<div class="pan"><h2>📒 Son kapanan grid işlemleri</h2><div id="son"></div></div>
+<div class="pan"><h2>🔁 Biten turlar</h2><div id="tur"></div></div>
+</div><script>
+const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
+const ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json(),T=d.tur;
+ $('alt').textContent=`kağıt · ${d.v} · BTC ${f(d.c,1)}`;
+ if(!T){$('kart').innerHTML='<div class="alt">Grid kuruluyor…</div>';return}
+ $('kart').innerHTML=`<div class="k"><div class="e">Bu tur bakiye</div><div class="d ${rk(T.oz-d.mj)}">${f(T.oz)} $</div><div class="alt">marj ${f(d.mj,0)} $ × ${d.lev}x · ${ts(T.t0)}'den beri</div></div>
+ <div class="k"><div class="e">Gerçekleşen kâr</div><div class="d ${rk(T.gerc)}">${sg(T.gerc,3)} $</div><div class="alt">${T.n} kapanış · adım başı ~${f(T.adim_kar,3)} $ · ücret ${f(T.ucret,3)} $</div></div>
+ <div class="k"><div class="e">Açık pozisyon</div><div class="d ${rk(T.acik)}">${sg(T.acik,3)} $</div><div class="alt">${T.tut} seviye dolu · net ${sg(T.net_poz,4)} BTC</div></div>
+ <div class="k"><div class="e">Tüm turlar toplam</div><div class="d ${rk(d.toplam)}">${sg(d.toplam,3)} $</div><div class="alt">${d.turlar.length} tur bitti</div></div>`;
+ $('yer').innerHTML=`<div class="yol"><i style="left:calc(${T.konum}% - 2px)"></i></div><div class="ucl"><span class="eks">⬇ ${f(T.lo,0)}</span><span>başlangıç ${f(T.p0,0)} · şimdi ${f(d.c,0)}</span><span class="eks">⬆ ${f(T.hi,0)}</span></div><div class="alt" style="margin-top:6px;text-align:center">40 seviye · adım ${f(T.adim,1)} $ · seviye başı ${T.q} BTC · aralık dışına çıkarsa tur kapanır</div>`;
+ $('son').innerHTML=T.son.length?'<table><tr><th>Zaman</th><th>İşlem</th><th>Kâr (ücret öncesi)</th></tr>'+T.son.slice(0,15).map(x=>`<tr><td>${ts(x[0])}</td><td><span class="chip ${x[1]=='long'?'c-l':'c-s'}">${x[1].toUpperCase()}</span> ${f(x[2],1)} → ${f(x[3],1)}</td><td class="art"><b>${sg(x[4],3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanış yok; fiyat bir seviye gidip dönünce ilk kâr gelir.</div>';
+ $('tur').innerHTML=d.turlar.length?'<table><tr><th>Tur</th><th>Neden</th><th>Sonuç</th></tr>'+d.turlar.map(x=>`<tr><td>${ts(x.t0)} → ${ts(x.t)}<div class="alt">${x.n} kapanış</div></td><td>${x.neden}</td><td class="${rk(x.sonuc)}"><b>${sg(x.sonuc,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz biten tur yok.</div>';
+}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
+yenile();setInterval(yenile,6000);
+</script></body></html>"""
+
 def kayit_dongu():
     while True:
         time.sleep(60); kaydet()
@@ -531,4 +627,5 @@ if __name__ == "__main__":
     threading.Thread(target=tg_dongu, daemon=True).start()
     threading.Thread(target=kayit_dongu, daemon=True).start()
     threading.Thread(target=lider_dongu, daemon=True).start()
+    threading.Thread(target=grid_dongu, daemon=True).start()                      # v1.14: 🔲 Grid
     ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), H).serve_forever()
