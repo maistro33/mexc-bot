@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.23 (10.11 22:25)"
+VERSIYON = "v1.24 (11.11 00:45)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -348,6 +348,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 <div class="pan"><h2>🏁 Çıkış yarışı</h2><div id="yr"></div></div>
 <div class="pan"><h2>💬 Son sinyaller (lider + kanal)</h2><div id="msg"></div></div>
 </div><script>
+const CNU='https://worker-production-a529.up.railway.app/canli/';window.CA=new Set();
+async function cac(c){if(!confirm(c+' Canlı\'da GERÇEK parayla şimdiki fiyattan açılsın mı? (stop: bu işlemin kağıttaki stopu)'))return;try{await fetch(CNU+'ac?s='+encodeURIComponent(c),{method:'POST'});alert('Gönderildi — birkaç saniye içinde Canlı\'da açılır (stopa çok yakınsa açılmaz).')}catch(e){alert('Gönderilemedi')}}
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
 const fy=x=>x>=100?f(x,2):x>=1?f(x,4):Number(x).toLocaleString('tr-TR',{maximumSignificantDigits:4});
 const ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
@@ -379,8 +381,9 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  <div class="k"><div class="e">İşlem</div><div class="d">${o.n}</div><div class="alt">kârlı ${o.n?'%'+f(o.kaz/o.n*100,0):'–'} · açık ${d.acik.length}</div></div>
  <div class="k"><div class="e">Bizim ayar</div><div class="d" style="font-size:16px">stop %${f(d.yaris.secili[0],0)} · iz %${f(d.yaris.secili[1],0)}/%${f(d.yaris.secili[2],1)}</div><div class="alt">${d.yaris.n<d.yaris.min?`yarış öğreniyor ${d.yaris.n}/${d.yaris.min}`:'yarışın seçtiği'} · stop ${o.stop} · iz ${o.iz}</div></div>`;
  const y=d.yaris;$('yr').innerHTML=`<div class="alt" style="margin-bottom:6px">${y.n} biten sinyal · ${y.takipte} takipte · birim: fiyat % (ücret dahil)</div><table><tr><th>Stop / iz başlar / geriden</th><th>Kârlı</th><th>Toplam</th></tr>`+y.liste.map(x=>`<tr><td>${x.secili?'👉 ':''}%${x.k[0]} / %${x.k[1]} / %${x.k[2]}</td><td>${x.kaz}/${y.n}</td><td class="${rk(x.top)}"><b>${sg(x.top)}%</b></td></tr>`).join('')+'</table>';
+ try{const cj=await (await fetch(CNU+'api',{cache:'no-store'})).json();window.CA=new Set(((cj.botlar||[])[0]||{acik:[]}).acik.map(x=>x.s))}catch(e){window.CA=window.CA||new Set()}
  $('acik').innerHTML=d.acik.map(p=>{const tm=p.adim_t?new Date(p.adim_t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'}):'';
-  return `<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span>${p.kaynak?` <span class="alt">${es(p.kaynak)}</span>`:''}<div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">ayar: stop %${p.ayar[0]} · %${p.ayar[1]} kârda iz · %${p.ayar[2]} geriden</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
+  return `<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} 10x</span>${p.kaynak?` <span class="alt">${es(p.kaynak)}</span>`:''}<div class="alt">${ts(p.t)} · giriş ${fy(p.giris)} (sinyal ${fy(p.sinyal_giris)}) → şimdi ${fy(p.c)}</div><div class="alt">ayar: stop %${p.ayar[0]} · %${p.ayar[1]} kârda iz · %${p.ayar[2]} geriden</div></div><div style="text-align:right"><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b>${CA.has(p.coin)?'<div class="alt" style="margin-top:6px">🟢 Canlı\'da</div>':`<div><button onclick="cac('${p.coin}')" style="margin-top:6px;border:0;border-radius:8px;padding:5px 9px;font-weight:800;font-size:12px;white-space:nowrap;color:#fff;background:#14a57a">🟢 Canlı'da aç</button></div>`}</div></div>
   ${p.aktif?`<div class="iz"><span>🔒</span><span class="tik">${'▲'.repeat(Math.max(0,Math.min(p.adim,12)-1))}${p.adim?'<b>▲</b>':''}${p.adim>12?'…':''}</span><span class="alt">${p.adim?`kilit <b class="art">${p.adim}×</b> ilerledi · son ${tm} → stop <span class="art">${fy(p.stop)}</span>`:'iz başladı'}</span></div><div class="ucl" style="margin-top:4px"><span>giriş ${fy(p.giris)} → ${fy(p.c)}</span><span class="${rk(p.kilit)}">kilitli kâr ${sg(p.kilit,3)} $</span></div>`
   :`<div class="yol"><i style="left:calc(${p.konum}% - 2px)"></i></div><div class="ucl"><span class="eks">⛔ stop ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span class="art">🔓 iz başlar ${fy(p.izb)}</span></div><div class="alt" style="text-align:center;margin-top:6px">🔓 İz <b class="art">${fy(p.izb)}</b> fiyatında başlayacak · <b>%${f(Math.abs(p.izb/p.c-1)*100,2)}</b> kaldı</div>`}</div>`}).join('')||'<div class="alt">Açık işlem yok. Kanalda yeni sinyal bekleniyor.</div>';
  GEC=d.gecmis;gecCiz();
