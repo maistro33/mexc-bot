@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.24 (11.11 00:45)"
+VERSIYON = "v1.25 (11.11 17:40)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a><a href="akilli/">🧠 Akıllı grid</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a><a href="akilli/">🧠 Akıllı grid</a><a href="ayna/" style="grid-column:1/3">🪞 Ayna</a></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
@@ -409,6 +409,10 @@ class H(BaseHTTPRequestHandler):
             self.send_response(301); self.send_header("Location", "/akilli/"); self.end_headers(); return
         if yol == "/akilli": return self._yaz(200, AKILLI_SAYFA, "text/html; charset=utf-8")    # v1.16
         if yol == "/akilli/api": return self._yaz(200, json.dumps(akilli_veri(), ensure_ascii=False))
+        if yol == "/ayna" and not self.path.split("?")[0].endswith("/"):
+            self.send_response(301); self.send_header("Location", "/ayna/"); self.end_headers(); return
+        if yol == "/ayna": return self._yaz(200, AYNA_SAYFA, "text/html; charset=utf-8")          # v1.25
+        if yol == "/ayna/api": return self._yaz(200, json.dumps(ayna_veri(), ensure_ascii=False))
         if yol == "/deneme_bybit":                                                         # v1.6.3: Bybit kopya trading erişim testi (salt okunur)
             q = "pageNo=1&pageSize=5&dataDuration=DATA_DURATION_THIRTY_DAY&sortField=LEADER_SORT_FIELD_SORT_ROI"; out = {}
             ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "Accept": "application/json"}
@@ -534,14 +538,18 @@ def lider_pozlar(x):
         if r.get("code") != "00000": return None
         for p in r.get("data") or []:
             sid = p.get("symbolId", "")
-            if sid.endswith("USDT_UMCBL") and p.get("holdSide") in (1, 2): simdi[(sid.replace("_UMCBL", ""), "long" if p["holdSide"] == 1 else "short")] = float(p.get("averageOpenPrice") or 0)
+            if sid.endswith("USDT_UMCBL") and p.get("holdSide") in (1, 2):
+                ky = (sid.replace("_UMCBL", ""), "long" if p["holdSide"] == 1 else "short"); simdi[ky] = float(p.get("averageOpenPrice") or 0)
+                LDET[(x["id"],) + ky] = (int(p.get("leverage") or 0), float(p.get("margin") or 0), float(p.get("positionSize") or 0) * simdi[ky])
         return simdi
     if x.get("borsa", "Binance") == "Binance":
         r = requests.get(BN + "lead-data/positions", params={"portfolioId": x["id"]}, timeout=15).json()
         if r.get("code") != "000000": return None
         for p in r.get("data") or []:
             a = float(p.get("positionAmount") or 0)
-            if a: simdi[(p["symbol"], "long" if a > 0 else "short")] = float(p.get("entryPrice") or 0)
+            if a:
+                ky = (p["symbol"], "long" if a > 0 else "short"); simdi[ky] = float(p.get("entryPrice") or 0); lv = int(p.get("leverage") or 0)
+                nv = abs(float(p.get("notionalValue") or 0)) or abs(a) * simdi[ky]; LDET[(x["id"],) + ky] = (lv, nv / lv if lv else 0, nv)
         if x.get("gizli") and not simdi:                                                    # v1.19: gizli lider → geçmişte kapanmamış pozisyonlar
             h = requests.post(BN + "lead-portfolio/position-history", json={"pageNumber": 1, "pageSize": 30, "portfolioId": x["id"]}, timeout=15).json()
             if h.get("code") != "000000": return None
@@ -556,7 +564,8 @@ def lider_pozlar(x):
             if not p.get("instId", "").endswith("-USDT-SWAP"): continue
             ps = p.get("posSide"); a = float(p.get("subPos") or 0)
             yon = ps if ps in ("long", "short") else ("long" if a > 0 else "short")
-            simdi[(p["instId"].replace("-USDT-SWAP", "") + "USDT", yon)] = float(p.get("openAvgPx") or 0)
+            ky = (p["instId"].replace("-USDT-SWAP", "") + "USDT", yon); simdi[ky] = float(p.get("openAvgPx") or 0)
+            lv = int(float(p.get("lever") or 0)); mg = float(p.get("margin") or 0); LDET[(x["id"],) + ky] = (lv, mg, mg * lv)
     return simdi
 
 def lider_dongu():
@@ -569,6 +578,7 @@ def lider_dongu():
             for x in L["liste"]:
                 simdi = lider_pozlar(x); time.sleep(0.8)
                 if simdi is None: continue
+                with KIL: ay_lider(x, simdi, x["id"] not in L["onceki"])                      # v1.25: 🪞 Ayna
                 if x["id"] not in L["onceki"]: L["onceki"][x["id"]] = simdi; continue          # ilk görüş: eski pozisyonlara girilmez
                 for (sym, yon), gir in simdi.items():
                     if (sym, yon) in L["onceki"][x["id"]] or not sym.endswith("USDT"): continue
@@ -584,6 +594,88 @@ def lider_dongu():
             L["durum"] = f"✅ Lider takibi · 👥 Binance {nb} + OKX {len(L['liste']) - nb - nr - nm} · 💰 takipçisine kazandıran {nm} · 🚀 yüksek ROI {nr} lider izleniyor"
         except Exception as e: L["durum"] = "⚠️ Lider takibi hatası (tekrar denenecek): " + str(e)[:120]
         time.sleep(10)
+
+# ───────────── 🪞 AYNA (v1.25, kağıt) — liderlerin işlemlerinin BİREBİR aynısı ─────────────
+# Sadık: "onların kaldıracıyla, marjıyla, tamamen aynısı; açtı mı açar, kapattı mı kapatır". Bizim stop / iz / filtre YOK.
+# Giriş = liderin giriş fiyatı, marj ve kaldıraç = liderinki (açıldığı andaki). Lider pozisyonu listeden kalkınca o anki fiyattan kapanır.
+# Ücret: giriş + çıkış %0,05 (taker). Sonradan ekleme / kısmi kapatma izlenmez (ilk boyut kalır).
+LDET = {}
+AY_UCRET = 0.0005
+
+def ay_pnl(q, c): return ((c / q["giris"] - 1) if q["yon"] == "long" else (1 - c / q["giris"])) * q["not"]
+
+def ay_ac(x, sym, yon, gir):
+    A = S.setdefault("ayna", {"acik": {}, "gecmis": [], "t0": int(time.time())}); k = f"{x['id']}|{sym}|{yon}"
+    if k in A["acik"] or not gir or sym not in D["semboller"]: return                    # fiyatını bilmediğimiz coin (Bitget'te yok) alınmaz
+    lev, marj, not_ = LDET.get((x["id"], sym, yon), (None, None, None))
+    if not lev or not marj: return
+    A["acik"][k] = {"lider": x["ad"], "borsa": x["borsa"], "grup": x.get("grup", "👥"), "sym": sym, "coin": sym[:-4], "yon": yon, "giris": gir, "lev": lev,
+                    "marj": round(marj, 2), "not": round(not_ or marj * lev, 2), "t": int(time.time()), "fiyatli": sym in D["fiyat"]}
+
+def ay_kapat(k, neden="lider kapattı"):
+    A = S["ayna"]; q = A["acik"].pop(k, None)
+    if not q: return
+    c = D["fiyat"].get(q["sym"]) or q.get("son_c") or q["giris"]
+    kz = ay_pnl(q, c) - q["not"] * AY_UCRET * 2
+    A["gecmis"].append({**{a: q[a] for a in ("lider", "borsa", "grup", "coin", "yon", "giris", "lev", "marj", "t")}, "cikis": c, "tk": int(time.time()),
+                        "pnl": round(kz, 2), "roi": round(kz / q["marj"] * 100, 1) if q["marj"] else 0, "neden": neden})
+    del A["gecmis"][:-600]
+
+def ay_lider(x, simdi, ilk):
+    """lider_dongu'dan her taramada çağrılır."""
+    A = S.setdefault("ayna", {"acik": {}, "gecmis": [], "t0": int(time.time())})
+    for k in [k for k, q in A["acik"].items() if k.split("|")[0] == x["id"]]:
+        _, sym, yon = k.split("|")
+        if (sym, yon) not in simdi: ay_kapat(k)
+    if not ilk:
+        for (sym, yon), gir in simdi.items():
+            if sym.endswith("USDT") and f"{x['id']}|{sym}|{yon}" not in A["acik"] and (sym, yon) not in L["onceki"].get(x["id"], {}): ay_ac(x, sym, yon, gir)
+
+def ayna_veri():
+    with KIL:
+        A = S.get("ayna") or {"acik": {}, "gecmis": [], "t0": None}
+        P = []
+        for q in A["acik"].values():
+            c = D["fiyat"].get(q["sym"])
+            if c: q["son_c"] = c
+            c = c or q.get("son_c") or q["giris"]; kz = ay_pnl(q, c) - q["not"] * AY_UCRET
+            P.append({**{a: q[a] for a in ("lider", "borsa", "grup", "coin", "yon", "giris", "lev", "marj", "t")}, "c": c, "pnl": round(kz, 2),
+                      "roi": round(kz / q["marj"] * 100, 1) if q["marj"] else 0, "fiyat_yok": q["sym"] not in D["fiyat"]})
+        G = A["gecmis"]; T = {}
+        for g in G:
+            t = T.setdefault(g["grup"] + " " + g["borsa"] + " · " + g["lider"], {"k": g["grup"] + " " + g["borsa"] + " · " + g["lider"], "g": g["grup"], "n": 0, "kaz": 0, "top": 0.0, "marj": 0.0})
+            t["n"] += 1; t["kaz"] += g["pnl"] > 0; t["top"] = round(t["top"] + g["pnl"], 2); t["marj"] += g["marj"]
+        return {"v": VERSIYON, "t0": A.get("t0"), "P": sorted(P, key=lambda p: -p["t"]), "son": G[::-1][:60], "lid": sorted(T.values(), key=lambda t: -t["top"]),
+                "r": round(sum(g["pnl"] for g in G), 2), "acik": round(sum(p["pnl"] for p in P), 2), "n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0),
+                "marj_acik": round(sum(p["marj"] for p in P), 0)}
+
+AYNA_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Ayna</title>") + r"""<body><div class="sar">
+<div class="logo">🪞 AYNA · liderlerin birebir aynısı (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../grid/">🔲 Grid</a><a href="../akilli/">🧠 Akıllı grid</a><a class="on" href="./" style="grid-column:1/3">🪞 Ayna</a></div>
+<div class="pan"><div class="alt">Takip edilen <b>tüm liderlerin</b> (👥 · 💰 · 🚀) işlemleri <b>birebir</b>: onların <b>marjı ve kaldıracıyla</b>, onların giriş fiyatından açılır; <b>lider kapatınca kapanır</b>. Bizim stop / iz süren / filtre yok. Ücret giriş+çıkış %0,05. Sonradan ekleme/kısmi kapatma izlenmez. Gerçek emir yok.</div></div>
+<div class="kartlar" id="kart"></div>
+<div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
+<div class="pan"><h2>📒 Kapanan işlemler</h2><div id="son"></div></div>
+<div class="pan"><h2>🏆 Liderler (birebir sonuç)</h2><div id="lid"></div></div>
+</div><script>
+const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
+const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?3:6)},es=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+const sure=s=>{s=Math.max(0,s);const g=Math.floor(s/86400),sa=Math.floor(s%86400/3600),d=Math.floor(s%3600/60);return g?`${g}g ${sa}sa`:sa?`${sa}sa ${d}dk`:`${d}dk`};
+const GR=[['👥','👥 Normal'],['💰','💰 Takipçisine kazandıran'],['🚀','🚀 Yüksek ROI']];
+async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json();const now=Date.now()/1000;
+ $('alt').textContent=`kağıt · ${d.v}${d.t0?' · '+ts(d.t0)+"'den beri":''}`;
+ $('kart').innerHTML=`<div class="k"><div class="e">Gerçekleşen</div><div class="d ${rk(d.r)}">${sg(d.r)} $</div><div class="alt">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
+ <div class="k"><div class="e">Açık işlemler</div><div class="d ${rk(d.acik)}">${sg(d.acik)} $</div><div class="alt">${d.P.length} açık · marj ${f(d.marj_acik,0)} $</div></div>`;
+ $('acik').innerHTML=d.P.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} ${p.lev}x</span> <span class="alt">${p.grup} ${p.borsa} · ${es(p.lider)}</span>
+  <div class="alt">${ts(p.t)} · ${sure(now-p.t)} · marj <b>${f(p.marj,0)} $</b> · giriş ${fy(p.giris)} → şimdi ${p.fiyat_yok?'<i>fiyat yok</i>':fy(p.c)}</div></div>
+  <div style="text-align:right"><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b><div class="alt ${rk(p.roi)}">marja %${sg(p.roi,1)}</div></div></div></div>`).join('')||'<div class="alt">Açık işlem yok — liderler yeni işlem açınca burada görünür.</div>';
+ $('son').innerHTML=d.son.length?'<table><tr><th>İşlem</th><th>Süre</th><th>Sonuç</th></tr>'+d.son.slice(0,30).map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()} ${g.lev}x</span><div class="alt">${g.grup} ${es(g.lider)} · marj ${f(g.marj,0)} $</div><div class="alt">${fy(g.giris)} → ${fy(g.cikis)} · ${ts(g.tk)}</div></td><td>${sure(g.tk-g.t)}</td><td class="${rk(g.pnl)}"><b>${sg(g.pnl)} $</b><div class="alt">%${sg(g.roi,1)}</div></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan yok.</div>';
+ $('lid').innerHTML=GR.map(([g,b])=>{const R=d.lid.filter(t=>t.g==g);if(!R.length)return '';const T=R.reduce((s,t)=>s+t.top,0);
+  return `<div style="margin:10px 0 4px;display:flex;justify-content:space-between"><b>${b}</b><b class="${rk(T)}">${sg(T)} $</b></div><table><tr><th>Lider</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>`+R.map(t=>`<tr><td>${es(t.k.slice(g.length+1))}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top)} $</b></td></tr>`).join('')+'</table>'}).join('')||'<div class="alt">Henüz kapanan yok.</div>';
+}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
+yenile();setInterval(yenile,8000);
+</script></body></html>"""
 
 def lider_sonuc():
     T = {}
@@ -664,7 +756,7 @@ def grid_veri():
 
 GRID_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Grid</title>") + r"""<body><div class="sar">
 <div class="logo">🔲 GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🔲 Grid</a><a href="../akilli/">🧠 Akıllı grid</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🔲 Grid</a><a href="../akilli/">🧠 Akıllı grid</a><a href="../ayna/" style="grid-column:1/3">🪞 Ayna</a></div>
 <div class="pan"><div class="alt">Elirox demo'daki gibi <b>BTC nötr grid</b>, Bitget fiyatlarıyla: aralık fiyatın <b>%3,0 üstü – %2,5 altı</b>, <b>40 seviye</b>; fiyat düşerken alır (bir üst seviyede satar), yükselirken satar (bir alt seviyede geri alır). Marj <b>10 $ × 125x</b> (Bitget BTC en yüksek), limit emir ücreti %0,02. <b>Koruma:</b> fiyat aralık dışına çıkarsa ya da tur zararı %30'a ulaşırsa hepsi market kapanır ve yeni fiyatla yeni tur başlar. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>📍 Fiyat aralıkta nerede</h2><div id="yer"></div></div>
@@ -772,7 +864,7 @@ def akilli_veri():
 
 AKILLI_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Akıllı Grid</title>") + r"""<body><div class="sar">
 <div class="logo">🧠 AKILLI GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../grid/">🔲 Grid</a><a class="on" href="./">🧠 Akıllı grid</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../grid/">🔲 Grid</a><a class="on" href="./">🧠 Akıllı grid</a><a href="../ayna/" style="grid-column:1/3">🪞 Ayna</a></div>
 <div class="pan"><div class="alt"><b>Kendini ayarlayan grid:</b> her <b>%0,3</b>'te bir seviye; merkezin altında LONG, üstünde SHORT açar, hedef <b>1 adım</b> (limit). Her işlemin kendi <b>stopu 5 adım</b>. Fiyat merkezden %3 uzaklaşınca <b>grid fiyatın peşinden kayar</b>. <b>Trend filtresi:</b> fiyat 12 saatlik ortalamadan %0,3'ten fazla uzaksa (trend var) yeni işlem açmaz, sadece açıkları yönetir. 20 $ × 50x, en çok 20 açık, bakiye %30 düşerse hepsi kapanır. Gerçek emir yok.</div></div>
 <div class="pan"><b id="filtre">…</b></div>
 <div class="kartlar" id="kart"></div>
