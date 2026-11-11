@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.26 (11.11 19:00)"
+VERSIYON = "v1.27 (11.11 19:05)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="grid/">🔲 Grid</a><a href="akilli/">🧠 Akıllı grid</a><a href="ayna/" style="grid-column:1/3">🪞 Ayna</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="ayna/">🪞 Ayna</a></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
@@ -651,7 +651,7 @@ def ayna_veri():
 
 AYNA_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Ayna</title>") + r"""<body><div class="sar">
 <div class="logo">🪞 AYNA · liderlerin birebir aynısı (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../grid/">🔲 Grid</a><a href="../akilli/">🧠 Akıllı grid</a><a class="on" href="./" style="grid-column:1/3">🪞 Ayna</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🪞 Ayna</a></div>
 <div class="pan"><div class="alt">Takip edilen <b>tüm liderlerin</b> (👥 · 💰 · 🚀) işlemleri <b>birebir</b>: onların <b>marjı ve kaldıracıyla</b>, onların giriş fiyatından açılır; <b>lider kapatınca kapanır</b>. Bizim stop / iz süren / filtre yok. Ücret giriş+çıkış %0,05. Sonradan ekleme/kısmi kapatma izlenmez. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
@@ -759,7 +759,7 @@ def grid_veri():
 
 GRID_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Grid</title>") + r"""<body><div class="sar">
 <div class="logo">🔲 GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🔲 Grid</a><a href="../akilli/">🧠 Akıllı grid</a><a href="../ayna/" style="grid-column:1/3">🪞 Ayna</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a></div>
 <div class="pan"><div class="alt">Elirox demo'daki gibi <b>BTC nötr grid</b>, Bitget fiyatlarıyla: aralık fiyatın <b>%3,0 üstü – %2,5 altı</b>, <b>40 seviye</b>; fiyat düşerken alır (bir üst seviyede satar), yükselirken satar (bir alt seviyede geri alır). Marj <b>10 $ × 125x</b> (Bitget BTC en yüksek), limit emir ücreti %0,02. <b>Koruma:</b> fiyat aralık dışına çıkarsa ya da tur zararı %30'a ulaşırsa hepsi market kapanır ve yeni fiyatla yeni tur başlar. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>📍 Fiyat aralıkta nerede</h2><div id="yer"></div></div>
@@ -870,7 +870,7 @@ def akilli_veri():
 
 AKILLI_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Akıllı Grid</title>") + r"""<body><div class="sar">
 <div class="logo">🧠 AKILLI GRID · BTC (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../grid/">🔲 Grid</a><a class="on" href="./">🧠 Akıllı grid</a><a href="../ayna/" style="grid-column:1/3">🪞 Ayna</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a></div>
 <div class="pan"><div class="alt"><b>Kendini ayarlayan grid:</b> her <b>%0,3</b>'te bir seviye; merkezin altında LONG, üstünde SHORT açar, hedef <b>1 adım</b> (limit). Her işlemin kendi <b>stopu 5 adım</b>. Fiyat merkezden %3 uzaklaşınca <b>grid fiyatın peşinden kayar</b>. <b>Trend filtresi:</b> fiyat 12 saatlik ortalamadan %0,3'ten fazla uzaksa (trend var) yeni işlem açmaz, sadece açıkları yönetir. 20 $ × 50x, en çok 20 açık, bakiye %30 düşerse hepsi kapanır. Gerçek emir yok.</div></div>
 <div class="pan"><b id="filtre">…</b></div>
 <div class="kartlar" id="kart"></div>
