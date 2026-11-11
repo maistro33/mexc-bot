@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.25 (11.11 17:40)"
+VERSIYON = "v1.26 (11.11 19:00)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -734,7 +734,10 @@ def grid_dongu():
         try:
             c = D["fiyat"].get(GR_SYM)
             if c:
-                with KIL: gr_adim(c)
+                with KIL:
+                    G = S.get("grid") or {}
+                    if G.get("tur"): gr_bitir(G, G["tur"], c, "Sadık kapattı"); G["tur"] = None     # v1.26: grid kapatıldı (veriler duruyor)
+                    G["kapali"] = True
             if time.time() - son > 120: son = time.time(); kaydet()
         except Exception as e: D["hata"] = "grid: " + str(e)[:120]
         time.sleep(2)
@@ -742,7 +745,7 @@ def grid_dongu():
 def grid_veri():
     with KIL:
         G = S.get("grid") or {"turlar": [], "toplam": 0}; T = G.get("tur"); c = D["fiyat"].get(GR_SYM) or (T or {}).get("p0", 0)
-        out = {"v": VERSIYON, "c": c, "toplam": G.get("toplam", 0), "turlar": G["turlar"][::-1], "mj": GR_MJ, "lev": GR_LEV}
+        out = {"v": VERSIYON + " · ⏹ KAPATILDI", "c": c, "toplam": G.get("toplam", 0), "turlar": G["turlar"][::-1], "mj": GR_MJ, "lev": GR_LEV}
         if T:
             ak = gr_acik_kz(T, c); tut = [i for i, g in enumerate(T["g"]) if g["tut"]]
             out["tur"] = {"t0": T["t0"], "p0": T["p0"], "hi": T["L"][-1], "lo": T["L"][0], "adim": T["L"][1] - T["L"][0], "q": T["q"], "n": T["n"], "gerc": round(T["gerc"], 3),
@@ -849,7 +852,10 @@ def akilli_dongu():
             if c:
                 dk = int(time.time() // 60)
                 if dk > AGD["ema_dk"]: AGD["ema"] += (2 / (AG_EMA + 1)) * (c - AGD["ema"]); AGD["ema_dk"] = dk
-                with KIL: ag_adim(c)
+                with KIL:                                                                      # v1.26: akıllı grid kapatıldı
+                    A = S.get("akilli") or {}
+                    for q in list(A.get("P", [])): ag_kapat(A, q, c, "Sadık kapattı", AG_TAK)
+                    A["kapali"] = True
         except Exception as e: AGD["hata"] = "akıllı grid: " + str(e)[:120]
         time.sleep(2)
 
@@ -858,7 +864,7 @@ def akilli_veri():
         A = S.get("akilli") or {}; c = D["fiyat"].get("BTCUSDT") or 0; e = AGD["ema"]
         P = [{"yon": "long" if q["y"] == 1 else "short", "giris": q["g"], "hedef": q["h"], "stop": q["st"], "pnl": round(ag_kz(q, c), 4), "t": q.get("t", 0)} for q in A.get("P", [])]
         acik = sum(x["pnl"] for x in P); sap = (c / e - 1) * 100 if e and c else None
-        return {"v": VERSIYON, "c": c, "ema": e, "sapma": sap, "izin": sap is not None and abs(sap) < AG_ESIK * 100, "esik": AG_ESIK * 100, "cen": A.get("cen"),
+        return {"v": VERSIYON + " · ⏹ KAPATILDI", "c": c, "ema": e, "sapma": sap, "izin": sap is not None and abs(sap) < AG_ESIK * 100, "esik": AG_ESIK * 100, "cen": A.get("cen"),
                 "r": round(A.get("r", 0), 3), "acik": round(acik, 3), "oz": round(AG_MJ + A.get("r", 0) + acik, 3), "n": A.get("n", 0), "ns": A.get("ns", 0), "t0": A.get("t0"),
                 "P": P, "son": (A.get("son") or [])[::-1], "turlar": (A.get("turlar") or [])[::-1], "mj": AG_MJ, "lev": AG_LEV, "s": AG_S * 100, "k": AG_K, "hata": AGD["hata"]}
 
