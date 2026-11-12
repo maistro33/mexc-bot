@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.27 (11.11 19:05)"
+VERSIYON = "v1.28 (13.11 00:20)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -526,6 +526,14 @@ def lider_liste():
                         "kaz": round(float(x.get("winRatio") or 0) * 100, 0)}); n += 1
             if n >= 5: break
     except Exception as e: L["durum"] = "⚠️ OKX listesi alınamadı: " + str(e)[:80]
+    # v1.28: kağıtta kendini kanıtlamış lider (≥10 işlem, toplam artı) ROI listesinden düşse de takipte kalır (Canlı onları kopyalıyor)
+    with KIL:
+        K = S.setdefault("lider_kayit", {})
+        K.setdefault("👥 Binance · 天辰资本", {"borsa": "Binance", "id": "5263968339740503553", "ad": "天辰资本", "roi": 176, "mdd": 9.6, "kaz": 93})   # listeden düşmüştü
+        for x in sec: K[f"{x.get('grup', '👥')} {x['borsa']} · {x['ad']}"] = x
+        for t in lider_sonuc():
+            x = K.get(t["kaynak"])
+            if x and t["n"] >= 10 and t["top"] > 0 and not any(y["id"] == x["id"] for y in sec): sec.append(dict(x, kanit=True))
     return sec
 
 def lider_pozlar(x):
