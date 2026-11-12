@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.28 (13.11 00:20)"
+VERSIYON = "v1.29 (13.11 01:00)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -531,6 +531,10 @@ def lider_liste():
         K = S.setdefault("lider_kayit", {})
         K.setdefault("👥 Binance · 天辰资本", {"borsa": "Binance", "id": "5263968339740503553", "ad": "天辰资本", "roi": 176, "mdd": 9.6, "kaz": 93})   # listeden düşmüştü
         for x in sec: K[f"{x.get('grup', '👥')} {x['borsa']} · {x['ad']}"] = x
+        for x in ({"borsa": "Binance", "id": "5263968339740503553", "ad": "天辰资本"}, {"borsa": "Binance", "id": "4882735096799123968", "ad": "京吉"},   # v1.29 ⭐ seçkin (Canlı bunları kopyalar)
+                  {"borsa": "Binance", "id": "4751341070898456065", "ad": "SatoshiW"}, {"borsa": "Binance", "grup": "💰", "id": "5076854789130646529", "ad": "Leo-Hamsters"},
+                  {"borsa": "OKX", "id": "460047947CE774E1", "ad": "leaf-ye"}):
+            if not any(y["id"] == x["id"] for y in sec): sec.append(dict(x, roi=0, mdd=None, kaz=None, seckin=True))
         for t in lider_sonuc():
             x = K.get(t["kaynak"])
             if x and t["n"] >= 10 and t["top"] > 0 and not any(y["id"] == x["id"] for y in sec): sec.append(dict(x, kanit=True))
