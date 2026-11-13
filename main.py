@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.31 (13.11 20:40)"
+VERSIYON = "v1.32 (13.11 20:50)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -652,7 +652,7 @@ def ay_kapat(k, neden="lider kapattı"):
     c = D["fiyat"].get(q["sym"]) or q.get("son_c") or q["giris"]
     kz = ay_pnl(q, c) - q["not"] * AY_UCRET * 2; iz, lk = iz_sonuc(q, c)
     A["gecmis"].append({**{a: q[a] for a in ("lider", "borsa", "grup", "coin", "yon", "giris", "lev", "marj", "t")}, "cikis": c, "tk": int(time.time()),
-                        "iz": round(iz, 3), "iz_lev": iz_lev(q), "iz_lik": lk,
+                        **({"iz": round(iz, 3), "iz_lev": iz_lev(q), "iz_lik": lk} if q["t"] >= IZ_T0 else {}),
                         "pnl": round(kz, 2), "roi": round(kz / q["marj"] * 100, 1) if q["marj"] else 0, "neden": neden})
     del A["gecmis"][:-600]
 
@@ -673,9 +673,9 @@ def ayna_veri():
         for q in A["acik"].values():
             c = D["fiyat"].get(q["sym"])
             if c: q["son_c"] = c
-            c = c or q.get("son_c") or q["giris"]; kz = ay_pnl(q, c) - q["not"] * AY_UCRET; iz, lk = iz_sonuc(q, c)
+            c = c or q.get("son_c") or q["giris"]; kz = ay_pnl(q, c) - q["not"] * AY_UCRET; iz, lk = iz_sonuc(q, c) if q["t"] >= IZ_T0 else (None, False)
             P.append({**{a: q[a] for a in ("lider", "borsa", "grup", "coin", "yon", "giris", "lev", "marj", "t")}, "c": c, "pnl": round(kz, 2),
-                      "iz": round(iz, 3), "iz_lev": iz_lev(q), "iz_lik": lk, "kotu": q.get("kotu", 0),
+                      "iz": None if iz is None else round(iz, 3), "iz_lev": iz_lev(q), "iz_lik": lk, "kotu": q.get("kotu", 0),
                       "roi": round(kz / q["marj"] * 100, 1) if q["marj"] else 0, "fiyat_yok": q["sym"] not in D["fiyat"]})
         G = A["gecmis"]; T = {}
         for g in G:
@@ -686,7 +686,7 @@ def ayna_veri():
                 "marj_acik": round(sum(p["marj"] for p in P), 0),
                 "iz_t0": IZ_T0, "iz_r": round(sum(g["iz"] for g in G if "iz" in g), 2), "iz_n": sum(1 for g in G if "iz" in g),
                 "iz_kaz": sum(1 for g in G if g.get("iz", 0) > 0), "iz_lik": sum(1 for g in G if g.get("iz_lik")),
-                "iz_acik": round(sum(p["iz"] for p in P), 2), "iz_acik_lik": sum(1 for p in P if p["iz_lik"])}
+                "iz_acik": round(sum(p["iz"] for p in P if p["iz"] is not None), 2), "iz_acik_lik": sum(1 for p in P if p["iz_lik"])}
 
 AYNA_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Ayna</title>") + r"""<body><div class="sar">
 <div class="logo">🪞 AYNA · liderlerin birebir aynısı (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
@@ -709,7 +709,7 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
  <div class="k" style="grid-column:1/-1;border:1px solid #7c5cff66"><div class="e">🧪 Test: 3 $ izole · 10–15x · stopsuz · lider kapatınca kapat</div><div class="d ${rk(d.iz_r+d.iz_acik)}">${sg(d.iz_r+d.iz_acik)} $</div><div class="alt">kapanan ${d.iz_n} işlem: <b class="${rk(d.iz_r)}">${sg(d.iz_r)} $</b> · ${d.iz_n?'%'+f(d.iz_kaz/d.iz_n*100,0)+' kârlı':'–'} · 💥 ${d.iz_lik} likide · açık: <b class="${rk(d.iz_acik)}">${sg(d.iz_acik)} $</b> (💥 ${d.iz_acik_lik})${d.iz_t0?' · '+ts(d.iz_t0)+"'den beri":''}</div></div>`;
  $('acik').innerHTML=d.P.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} ${p.lev}x</span> <span class="alt">${p.grup} ${p.borsa} · ${es(p.lider)}</span>
   <div class="alt">${ts(p.t)} · ${sure(now-p.t)} · marj <b>${f(p.marj,0)} $</b> · giriş ${fy(p.giris)} → şimdi ${p.fiyat_yok?'<i>fiyat yok</i>':fy(p.c)}</div></div>
-  <div style="text-align:right"><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b><div class="alt ${rk(p.roi)}">marja %${sg(p.roi,1)}</div><div class="alt">🧪 ${p.iz_lik?'💥 likide −3 $':`<span class="${rk(p.iz)}">${sg(p.iz)} $</span>`} · ${p.iz_lev}x</div></div></div></div>`).join('')||'<div class="alt">Açık işlem yok — liderler yeni işlem açınca burada görünür.</div>';
+  <div style="text-align:right"><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b><div class="alt ${rk(p.roi)}">marja %${sg(p.roi,1)}</div>${p.iz==null?'':`<div class="alt">🧪 ${p.iz_lik?'💥 likide −3 $':`<span class="${rk(p.iz)}">${sg(p.iz)} $</span>`} · ${p.iz_lev}x</div>`}</div></div></div>`).join('')||'<div class="alt">Açık işlem yok — liderler yeni işlem açınca burada görünür.</div>';
  $('son').innerHTML=d.son.length?'<table><tr><th>İşlem</th><th>Süre</th><th>Sonuç</th></tr>'+d.son.slice(0,30).map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()} ${g.lev}x</span><div class="alt">${g.grup} ${es(g.lider)} · marj ${f(g.marj,0)} $</div><div class="alt">${fy(g.giris)} → ${fy(g.cikis)} · ${ts(g.tk)}</div></td><td>${sure(g.tk-g.t)}</td><td class="${rk(g.pnl)}"><b>${sg(g.pnl)} $</b><div class="alt">%${sg(g.roi,1)}</div>${g.iz!=null?`<div class="alt">🧪 ${g.iz_lik?'💥 −3 $':`<span class="${rk(g.iz)}">${sg(g.iz)} $</span>`}</div>`:''}</td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan yok.</div>';
  $('lid').innerHTML=GR.map(([g,b])=>{const R=d.lid.filter(t=>t.g==g);if(!R.length)return '';const T=R.reduce((s,t)=>s+t.top,0);
   return `<div style="margin:10px 0 4px;display:flex;justify-content:space-between"><b>${b}</b><b class="${rk(T)}">${sg(T)} $</b></div><table><tr><th>Lider</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>`+R.map(t=>`<tr><td>${es(t.k.slice(g.length+1))}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top)} $</b></td></tr>`).join('')+'</table>'}).join('')||'<div class="alt">Henüz kapanan yok.</div>';
