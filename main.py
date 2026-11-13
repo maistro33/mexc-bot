@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.29 (13.11 01:00)"
+VERSIYON = "v1.30 (13.11 08:50)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -142,7 +142,7 @@ def poz_ac(sg, metin, c, t):
     ayar = secili_ayar()
     S.setdefault("golge", []).append({"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "t": int(t), "g": [iz_baslat(yon, c, a) for a in AYARLAR]})
     if len(S["acik"]) >= MAXA: return None, f"en çok {MAXA} açık (yarışa yine de eklendi)"
-    if S["nakit"] < MJ: return None, "nakit yetmiyor (yarışa yine de eklendi)"
+    # v1.30: kağıtta nakit sınırı kaldırıldı — nakit bitince liderin işlemleri kaçıyordu, Canlı da göremiyordu (nakit eksiye inebilir, sonuç yine doğru ölçülür)
     S["nakit"] -= MJ
     p = {"sym": sym, "coin": sg["coin"], "yon": yon, "giris": c, "sinyal_giris": sg.get("giris", c), "t": int(t), "ayar": list(ayar), "iz": iz_baslat(yon, c, ayar), "metin": metin[:200], "kaynak": sg.get("kaynak", "Telegram")}
     S["acik"].append(p)
