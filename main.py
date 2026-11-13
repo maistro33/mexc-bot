@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.30 (13.11 08:50)"
+VERSIYON = "v1.31 (13.11 20:40)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -613,6 +613,28 @@ def lider_dongu():
 # Ücret: giriş + çıkış %0,05 (taker). Sonradan ekleme / kısmi kapatma izlenmez (ilk boyut kalır).
 LDET = {}
 AY_UCRET = 0.0005
+IZ_MJ, IZ_ALT, IZ_UST, IZ_UCRET, IZ_T0 = 3.0, 10, 15, 0.0006, 1794598300       # v1.31 🧪 Sadık: 3 $ izole, kaldıraç en az 10x en çok 15x, stopsuz, lider kapatınca kapat
+
+def iz_lev(q): return min(max(int(q["lev"] or 10), IZ_ALT), IZ_UST)
+def iz_sonuc(q, c):
+    """🧪 izole sonucu: (kâr $, likide mi)."""
+    lv = iz_lev(q)
+    if q.get("kotu", 0) >= 90 / lv: return -IZ_MJ, True
+    u = 1 if q["yon"] == "long" else -1
+    return u * (c / q["giris"] - 1) * lv * IZ_MJ - IZ_MJ * lv * IZ_UCRET * 2, False
+
+def iz_takip():
+    """Açık Ayna işlemlerinde en kötü fiyatı izler (likidasyon için)."""
+    while True:
+        try:
+            with KIL:
+                for q in (S.get("ayna") or {}).get("acik", {}).values():
+                    c = D["fiyat"].get(q["sym"])
+                    if not c: continue
+                    u = 1 if q["yon"] == "long" else -1; ters = max(0.0, -u * (c / q["giris"] - 1) * 100)
+                    if ters > q.get("kotu", 0): q["kotu"] = round(ters, 3)
+        except Exception: pass
+        time.sleep(3)
 
 def ay_pnl(q, c): return ((c / q["giris"] - 1) if q["yon"] == "long" else (1 - c / q["giris"])) * q["not"]
 
@@ -628,8 +650,9 @@ def ay_kapat(k, neden="lider kapattı"):
     A = S["ayna"]; q = A["acik"].pop(k, None)
     if not q: return
     c = D["fiyat"].get(q["sym"]) or q.get("son_c") or q["giris"]
-    kz = ay_pnl(q, c) - q["not"] * AY_UCRET * 2
+    kz = ay_pnl(q, c) - q["not"] * AY_UCRET * 2; iz, lk = iz_sonuc(q, c)
     A["gecmis"].append({**{a: q[a] for a in ("lider", "borsa", "grup", "coin", "yon", "giris", "lev", "marj", "t")}, "cikis": c, "tk": int(time.time()),
+                        "iz": round(iz, 3), "iz_lev": iz_lev(q), "iz_lik": lk,
                         "pnl": round(kz, 2), "roi": round(kz / q["marj"] * 100, 1) if q["marj"] else 0, "neden": neden})
     del A["gecmis"][:-600]
 
@@ -650,8 +673,9 @@ def ayna_veri():
         for q in A["acik"].values():
             c = D["fiyat"].get(q["sym"])
             if c: q["son_c"] = c
-            c = c or q.get("son_c") or q["giris"]; kz = ay_pnl(q, c) - q["not"] * AY_UCRET
+            c = c or q.get("son_c") or q["giris"]; kz = ay_pnl(q, c) - q["not"] * AY_UCRET; iz, lk = iz_sonuc(q, c)
             P.append({**{a: q[a] for a in ("lider", "borsa", "grup", "coin", "yon", "giris", "lev", "marj", "t")}, "c": c, "pnl": round(kz, 2),
+                      "iz": round(iz, 3), "iz_lev": iz_lev(q), "iz_lik": lk, "kotu": q.get("kotu", 0),
                       "roi": round(kz / q["marj"] * 100, 1) if q["marj"] else 0, "fiyat_yok": q["sym"] not in D["fiyat"]})
         G = A["gecmis"]; T = {}
         for g in G:
@@ -659,7 +683,10 @@ def ayna_veri():
             t["n"] += 1; t["kaz"] += g["pnl"] > 0; t["top"] = round(t["top"] + g["pnl"], 2); t["marj"] += g["marj"]
         return {"v": VERSIYON, "t0": A.get("t0"), "P": sorted(P, key=lambda p: -p["t"]), "son": G[::-1][:60], "lid": sorted(T.values(), key=lambda t: -t["top"]),
                 "r": round(sum(g["pnl"] for g in G), 2), "acik": round(sum(p["pnl"] for p in P), 2), "n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0),
-                "marj_acik": round(sum(p["marj"] for p in P), 0)}
+                "marj_acik": round(sum(p["marj"] for p in P), 0),
+                "iz_t0": IZ_T0, "iz_r": round(sum(g["iz"] for g in G if "iz" in g), 2), "iz_n": sum(1 for g in G if "iz" in g),
+                "iz_kaz": sum(1 for g in G if g.get("iz", 0) > 0), "iz_lik": sum(1 for g in G if g.get("iz_lik")),
+                "iz_acik": round(sum(p["iz"] for p in P), 2), "iz_acik_lik": sum(1 for p in P if p["iz_lik"])}
 
 AYNA_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Ayna</title>") + r"""<body><div class="sar">
 <div class="logo">🪞 AYNA · liderlerin birebir aynısı (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
@@ -678,11 +705,12 @@ const GR=[['👥','👥 Normal'],['💰','💰 Takipçisine kazandıran'],['🚀
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json();const now=Date.now()/1000;
  $('alt').textContent=`kağıt · ${d.v}${d.t0?' · '+ts(d.t0)+"'den beri":''}`;
  $('kart').innerHTML=`<div class="k"><div class="e">Gerçekleşen</div><div class="d ${rk(d.r)}">${sg(d.r)} $</div><div class="alt">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
- <div class="k"><div class="e">Açık işlemler</div><div class="d ${rk(d.acik)}">${sg(d.acik)} $</div><div class="alt">${d.P.length} açık · marj ${f(d.marj_acik,0)} $</div></div>`;
+ <div class="k"><div class="e">Açık işlemler</div><div class="d ${rk(d.acik)}">${sg(d.acik)} $</div><div class="alt">${d.P.length} açık · marj ${f(d.marj_acik,0)} $</div></div>
+ <div class="k" style="grid-column:1/-1;border:1px solid #7c5cff66"><div class="e">🧪 Test: 3 $ izole · 10–15x · stopsuz · lider kapatınca kapat</div><div class="d ${rk(d.iz_r+d.iz_acik)}">${sg(d.iz_r+d.iz_acik)} $</div><div class="alt">kapanan ${d.iz_n} işlem: <b class="${rk(d.iz_r)}">${sg(d.iz_r)} $</b> · ${d.iz_n?'%'+f(d.iz_kaz/d.iz_n*100,0)+' kârlı':'–'} · 💥 ${d.iz_lik} likide · açık: <b class="${rk(d.iz_acik)}">${sg(d.iz_acik)} $</b> (💥 ${d.iz_acik_lik})${d.iz_t0?' · '+ts(d.iz_t0)+"'den beri":''}</div></div>`;
  $('acik').innerHTML=d.P.map(p=>`<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip ${p.yon=='long'?'c-l':'c-s'}">${p.yon.toUpperCase()} ${p.lev}x</span> <span class="alt">${p.grup} ${p.borsa} · ${es(p.lider)}</span>
   <div class="alt">${ts(p.t)} · ${sure(now-p.t)} · marj <b>${f(p.marj,0)} $</b> · giriş ${fy(p.giris)} → şimdi ${p.fiyat_yok?'<i>fiyat yok</i>':fy(p.c)}</div></div>
-  <div style="text-align:right"><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b><div class="alt ${rk(p.roi)}">marja %${sg(p.roi,1)}</div></div></div></div>`).join('')||'<div class="alt">Açık işlem yok — liderler yeni işlem açınca burada görünür.</div>';
- $('son').innerHTML=d.son.length?'<table><tr><th>İşlem</th><th>Süre</th><th>Sonuç</th></tr>'+d.son.slice(0,30).map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()} ${g.lev}x</span><div class="alt">${g.grup} ${es(g.lider)} · marj ${f(g.marj,0)} $</div><div class="alt">${fy(g.giris)} → ${fy(g.cikis)} · ${ts(g.tk)}</div></td><td>${sure(g.tk-g.t)}</td><td class="${rk(g.pnl)}"><b>${sg(g.pnl)} $</b><div class="alt">%${sg(g.roi,1)}</div></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan yok.</div>';
+  <div style="text-align:right"><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b><div class="alt ${rk(p.roi)}">marja %${sg(p.roi,1)}</div><div class="alt">🧪 ${p.iz_lik?'💥 likide −3 $':`<span class="${rk(p.iz)}">${sg(p.iz)} $</span>`} · ${p.iz_lev}x</div></div></div></div>`).join('')||'<div class="alt">Açık işlem yok — liderler yeni işlem açınca burada görünür.</div>';
+ $('son').innerHTML=d.son.length?'<table><tr><th>İşlem</th><th>Süre</th><th>Sonuç</th></tr>'+d.son.slice(0,30).map(g=>`<tr><td><b>${g.coin}</b> <span class="chip ${g.yon=='long'?'c-l':'c-s'}">${g.yon.toUpperCase()} ${g.lev}x</span><div class="alt">${g.grup} ${es(g.lider)} · marj ${f(g.marj,0)} $</div><div class="alt">${fy(g.giris)} → ${fy(g.cikis)} · ${ts(g.tk)}</div></td><td>${sure(g.tk-g.t)}</td><td class="${rk(g.pnl)}"><b>${sg(g.pnl)} $</b><div class="alt">%${sg(g.roi,1)}</div>${g.iz!=null?`<div class="alt">🧪 ${g.iz_lik?'💥 −3 $':`<span class="${rk(g.iz)}">${sg(g.iz)} $</span>`}</div>`:''}</td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan yok.</div>';
  $('lid').innerHTML=GR.map(([g,b])=>{const R=d.lid.filter(t=>t.g==g);if(!R.length)return '';const T=R.reduce((s,t)=>s+t.top,0);
   return `<div style="margin:10px 0 4px;display:flex;justify-content:space-between"><b>${b}</b><b class="${rk(T)}">${sg(T)} $</b></div><table><tr><th>Lider</th><th>İşlem</th><th>Kârlı</th><th>Toplam</th></tr>`+R.map(t=>`<tr><td>${es(t.k.slice(g.length+1))}</td><td>${t.n}</td><td>%${f(t.kaz/t.n*100,0)}</td><td class="${rk(t.top)}"><b>${sg(t.top)} $</b></td></tr>`).join('')+'</table>'}).join('')||'<div class="alt">Henüz kapanan yok.</div>';
 }catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
@@ -918,7 +946,8 @@ if __name__ == "__main__":
     threading.Thread(target=kayit_dongu, daemon=True).start()
     threading.Thread(target=lider_dongu, daemon=True).start()
     threading.Thread(target=grid_dongu, daemon=True).start()                      # v1.14: 🔲 Grid
-    threading.Thread(target=akilli_dongu, daemon=True).start()                    # v1.16: 🧠 Akıllı grid
+    threading.Thread(target=akilli_dongu, daemon=True).start()
+    threading.Thread(target=iz_takip, daemon=True).start()                        # v1.31: 🧪 izole test (likidasyon izleme)                    # v1.16: 🧠 Akıllı grid
     class S6(ThreadingHTTPServer):                                               # v1.17: IPv4+IPv6 (Railway özel ağı için; Canlı 429 almasın)
         address_family = socket.AF_INET6
         def server_bind(self):
