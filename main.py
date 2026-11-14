@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.38 (14.11 23:30)"
+VERSIYON = "v1.39 (14.11 23:35)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -732,7 +732,7 @@ yenile();setInterval(yenile,8000);
 # 100 $ kasa, işlem başı 10 $ × 10x, en çok 5 açık, aynı coine 30 dk bekleme. Ücret her yön %0,06 + kayma %0,03.
 from collections import deque
 SC_MJ, SC_LEV, SC_MAX, SC_KASA = 10.0, 10, 5, 100.0
-SC_YUK, SC_DK, SC_TEPE, SC_TP, SC_SL, SC_AKT, SC_IZ, SC_SURE, SC_BEK = 2.0, 300, 5.0, 3.0, 2.0, 0.6, 0.4, 7200, 1800   # v1.35: test edilen en iyi ayar (24 coin × 4 gün, iki yarıda da artı)
+SC_YUK, SC_DK, SC_TEPE, SC_TP, SC_SL, SC_AKT, SC_IZ, SC_SURE, SC_BEK = 2.0, 300, 5.0, 5.0, 3.0, 4.0, 1.5, 7200, 1800   # v1.39 (Sadık): long = short, hedef %5 · stop %3 · %4 kârda kilit   # v1.35: test edilen en iyi ayar (24 coin × 4 gün, iki yarıda da artı)
 SC_UCRET, SC_KAY, SC_HACIM = 0.0006, 0.0003, 5e6
 SCH = {}                                                   # sembol → deque[(t, fiyat)] son ~11 dk
 SC_YENI = {"set": set(), "t": 0, "gun": 180}                # v1.34 (Sadık): sadece son 6 ayda listelenen kripto coinler (hisseler hariç), hacim şartı yok
@@ -781,7 +781,7 @@ def sc_adim():
         q["en"] = max(q["en"], c)
         if not q["aktif"] and c >= q["giris"] * (1 + SC_AKT / 100): q["aktif"] = True
         if q["aktif"]:
-            yeni = max(q["stop"], q["giris"] * 1.001, q["en"] * (1 - SC_IZ / 100))
+            yeni = max(q["stop"], q["giris"] * (1 + SC_KILIT / 100), q["en"] * (1 - SC_IZ / 100))
             if yeni > q["stop"] * 1.0000001: q["tik"] = q.get("tik", 0) + 1; q["tik_t"] = int(now)       # v1.38: ▲ stop yukarı taşındı
             q["stop"] = yeni
         if c <= q["stop"]: sc_kapat(A, s, q["stop"], "iz süren stop" if q["aktif"] else "stop")
@@ -809,6 +809,7 @@ def sc_adim():
 # 1 dk mumlu test (146 coin, 2,5 gün): hedef −%5 / stop +%3 / iz yok → 253 işlem, %42 kârlı, iki yarıda da artı (+7,3 / +14,4).
 # İz süren stop dakikalık testte gerçeği yansıtmadığı için kullanılmadı. 100 $, 10 $ × 10x, en çok 5 açık, 30 dk bekleme, en çok 2 sa.
 SS_TP, SS_SL = 5.0, 3.0
+SC_KILIT = 2.0                                                       # v1.39: kilit devreye girince en az %2 kâr korunur (iki botta da)
 
 def ss_kz(q, c): return (1 - c / q["giris"]) * SC_MJ * SC_LEV
 
@@ -816,7 +817,7 @@ def ss_kapat(A, s, c, neden):
     q = A["acik"].pop(s); f = c * (1 + SC_KAY)
     kz = ss_kz(q, f) - SC_MJ * SC_LEV * SC_UCRET * 2
     A["nakit"] += SC_MJ + kz
-    A["gecmis"].append({"coin": s[:-4], "giris": q["giris"], "cikis": round(f, 8), "t0": q["t"], "t": int(time.time()), "pnl": round(kz, 3),
+    A["gecmis"].append({"coin": s[:-4], "giris": q["giris"], "cikis": round(f, 8), "t0": q["t"], "t": int(time.time()), "pnl": round(kz, 3), "tik": q.get("tik", 0),
                         "yuzde": round((1 - f / q["giris"]) * 100, 2), "neden": neden, "tetik": q.get("tetik")}); del A["gecmis"][:-400]
 
 def ss_adim():
@@ -825,7 +826,13 @@ def ss_adim():
     for s in list(A["acik"]):
         q = A["acik"][s]; c = D["fiyat"].get(s)
         if not c: continue
-        if c >= q["stop"]: ss_kapat(A, s, q["stop"], "stop")
+        q["en"] = min(q.get("en", q["giris"]), c)                                       # v1.39: short'a da kâr kilidi + iz
+        if not q.get("aktif") and c <= q["giris"] * (1 - SC_AKT / 100): q["aktif"] = True
+        if q.get("aktif"):
+            yeni = min(q["stop"], q["giris"] * (1 - SC_KILIT / 100), q["en"] * (1 + SC_IZ / 100))
+            if yeni < q["stop"] * 0.9999999: q["tik"] = q.get("tik", 0) + 1; q["tik_t"] = int(now)
+            q["stop"] = yeni
+        if c >= q["stop"]: ss_kapat(A, s, q["stop"], "iz süren stop" if q.get("aktif") else "stop")
         elif c <= q["hedef"]: ss_kapat(A, s, q["hedef"] / (1 + SC_KAY), "hedef")
         elif now - q["t"] > SC_SURE: ss_kapat(A, s, c, "süre doldu (2 sa)")
     if len(A["acik"]) >= SC_MAX: return
@@ -848,8 +855,9 @@ def scalp_s_veri():
         P = []
         for s, q in A["acik"].items():
             c = D["fiyat"].get(s) or q["giris"]
-            P.append({"coin": s[:-4], "giris": q["giris"], "c": c, "stop": q["stop"], "hedef": q["hedef"], "aktif": False, "akt": None, "t": q["t"], "tetik": q.get("tetik"),
-                      "pnl": round(ss_kz(q, c) - SC_MJ * SC_LEV * SC_UCRET, 3)})
+            P.append({"coin": s[:-4], "giris": q["giris"], "c": c, "stop": q["stop"], "hedef": q["hedef"], "aktif": q.get("aktif", False), "akt": q["giris"] * (1 - SC_AKT / 100),
+                      "t": q["t"], "tetik": q.get("tetik"), "pnl": round(ss_kz(q, c) - SC_MJ * SC_LEV * SC_UCRET, 3),
+                      "tik": q.get("tik", 0), "tik_t": q.get("tik_t"), "kilit": round(ss_kz(q, q["stop"] * (1 + SC_KAY)) - SC_MJ * SC_LEV * SC_UCRET * 2, 3)})
         G = A["gecmis"]; acik = sum(p["pnl"] for p in P); ev = (S.get("scalp") or {}).get("evren") or []
         return {"v": VERSIYON, "t0": A.get("t0"), "P": P, "son": G[::-1][:60], "n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0),
                 "r": round(sum(g["pnl"] for g in G), 2), "acik": round(acik, 2), "oz": round(A["nakit"] + SC_MJ * len(P) + acik, 2), "kasa": SC_KASA,
@@ -910,7 +918,7 @@ SCALPC_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "
 .bas{font-weight:900;text-align:center;padding:8px;border-radius:12px;margin-bottom:8px}.bl{background:#22d39b22;color:#22d39b}.bs{background:#ff5c7a22;color:#ff5c7a}.tk{color:#22d39b;font-size:11px;margin-top:4px}</style>
 <div class="logo">⚡ SCALP · long ↔ short (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
 <div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a><a class="on" href="./">⚡ Scalp</a></div>
-<div class="pan"><div class="alt">24 saatte <b>en çok yükselen 20 kripto</b> izlenir. Biri <b>5 dk'da +%2</b> fırlayıp hâlâ çıkıyorsa <b>iki bot aynı anda</b> girer: <b class="art">⚡ LONG</b> (hedef +%3 · stop −%2 · +%0,6'da iz, %0,4 geriden) ve <b class="eks">🔻 SHORT</b> (hedef −%5 · stop +%3 · iz yok). Aynı coine 30 dk'da bir (girişten sayılır). Her biri 100 $, 10 $ × 10x, en çok 5 açık, en çok 2 sa. Gerçek emir yok.</div></div>
+<div class="pan"><div class="alt">24 saatte <b>en çok yükselen 20 kripto</b> izlenir. Biri <b>5 dk'da +%2</b> fırlayıp hâlâ çıkıyorsa <b>iki bot aynı anda</b> girer: <b class="art">⚡ LONG</b> ve <b class="eks">🔻 SHORT</b>, <b>aynı kurallarla</b>: hedef %5 · stop %3 · kâr <b>%4'e</b> ulaşınca <b>kilit</b> (en az %2 kâr korunur, %1,5 geriden takip). Aynı coine 30 dk'da bir (girişten sayılır). Her biri 100 $, 10 $ × 10x, en çok 5 açık, en çok 2 sa. Gerçek emir yok.</div></div>
 <div class="pan"><div class="alt" id="evr"></div></div>
 <div class="ik"><div><div class="bas bl">⚡ LONG</div><div id="kL"></div><div class="pan" style="padding:8px"><h2>💼 Açık</h2><div id="aL"></div></div><div class="pan" style="padding:8px"><h2>📒 Kapanan</h2><div id="sL"></div></div></div>
 <div><div class="bas bs">🔻 SHORT</div><div id="kS"></div><div class="pan" style="padding:8px"><h2>💼 Açık</h2><div id="aS"></div></div><div class="pan" style="padding:8px"><h2>📒 Kapanan</h2><div id="sS"></div></div></div></div>
@@ -924,7 +932,7 @@ function kol(d,y,kk,aa,ss){const now=Date.now()/1000,L=y=='L';
  $(aa).innerHTML=d.P.map(p=>{const lo=p.stop,hi=p.hedef,k=Math.max(0,Math.min(100,(p.c-lo)/(hi-lo)*100));
   return `<div class="pz"><div class="ust"><div><b>${p.coin}</b><div class="alt">${ts(p.t)} · ${sure(now-p.t)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,2)} $</b></div>
   <div class="yol" style="margin:10px 0 4px"><i style="left:calc(${k}% - 2px)"></i></div><div class="ucl"><span class="eks">${p.aktif?'🔒':'⛔'} ${fy(p.stop)}</span><span class="art">🎯 ${fy(p.hedef)}</span></div>
-  ${L?(p.tik?`<div class="tk">▲ kilit ${p.tik}× · son ${ts(p.tik_t)}<br>kilitli kâr <b>${sg(p.kilit,2)} $</b></div>`:`<div class="alt" style="margin-top:4px">🔓 iz ${fy(p.akt)}'de başlar</div>`):''}</div>`}).join('')||'<div class="alt">Açık işlem yok.</div>';
+  ${p.tik?`<div class="tk">${L?'▲':'▼'} kilit ${p.tik}× · son ${ts(p.tik_t)}<br>kilitli kâr <b>${sg(p.kilit,2)} $</b></div>`:`<div class="alt" style="margin-top:4px">🔓 kilit ${fy(p.akt)}'de başlar</div>`}</div>`}).join('')||'<div class="alt">Açık işlem yok.</div>';
  $(ss).innerHTML=d.son.length?'<table>'+d.son.slice(0,25).map(g=>`<tr><td><b>${g.coin}</b><div class="alt">${ts(g.t)} · ${g.neden=='hedef'?'🎯':g.neden=='stop'?'⛔':g.neden.startsWith('iz')?'🔒 iz':'⏱'}</div></td><td class="${rk(g.pnl)}" style="text-align:right"><b>${sg(g.pnl,2)}</b><div class="alt">%${sg(g.yuzde)}</div></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';}
 async function yenile(){try{const [a,b]=await Promise.all([fetch('api',{cache:'no-store'}).then(r=>r.json()),fetch('../scalp-short/api',{cache:'no-store'}).then(r=>r.json())]);
  $('alt').textContent=`kağıt · ${a.v} · ${a.izlenen} coin izleniyor`;
