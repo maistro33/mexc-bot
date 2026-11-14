@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.35 (14.11 20:10)"
+VERSIYON = "v1.36 (14.11 21:10)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -46,7 +46,7 @@ def fiyat_dongu():
             d = requests.get(API + "tickers", params={"productType": "USDT-FUTURES"}, timeout=10).json()["data"]
             with KIL:
                 for x in d:
-                    s = x["symbol"]; D.setdefault("hacim", {})[s] = float(x.get("usdtVolume") or x.get("quoteVolume") or 0); D["fiyat"][s] = float(x["lastPr"]); D["bid"][s] = float(x.get("bidPr") or x["lastPr"]); D["ask"][s] = float(x.get("askPr") or x["lastPr"])
+                    s = x["symbol"]; D.setdefault("hacim", {})[s] = float(x.get("usdtVolume") or x.get("quoteVolume") or 0); D.setdefault("deg24", {})[s] = float(x.get("change24h") or 0); D["fiyat"][s] = float(x["lastPr"]); D["bid"][s] = float(x.get("bidPr") or x["lastPr"]); D["ask"][s] = float(x.get("askPr") or x["lastPr"])
                 D["semboller"] = set(D["fiyat"])
             yonet()
         except Exception as e: D["hata"] = "fiyat: " + str(e)[:120]
@@ -739,6 +739,7 @@ def sc_yeni_guncelle():
         d = requests.get(API + "contracts", params={"productType": "USDT-FUTURES"}, timeout=15).json()["data"]
         sinir = (time.time() - SC_YENI["gun"] * 86400) * 1000
         SC_YENI["set"] = {c["symbol"] for c in d if c.get("openTime") and float(c["openTime"]) > sinir and c.get("isRwa") != "YES" and c.get("symbolStatus") == "normal"}
+        SC_YENI["kripto"] = {c["symbol"] for c in d if c.get("isRwa") != "YES" and c.get("symbolStatus") == "normal"}
         SC_YENI["t"] = time.time()
     except Exception as e: D["hata"] = "scalp yeni coin: " + str(e)[:100]
 
@@ -761,7 +762,10 @@ def sc_kapat(A, s, c, neden):
                         "yuzde": round((f / q["giris"] - 1) * 100, 2), "neden": neden, "tetik": q.get("tetik")}); del A["gecmis"][:-400]
 
 def sc_adim():
-    A = S.setdefault("scalp", {"nakit": SC_KASA, "acik": {}, "gecmis": [], "bek": {}, "t0": int(time.time())})
+    if (S.get("scalp") or {}).get("surum") != 36 and not (S.get("scalp") or {}).get("acik"):   # v1.36: yeni strateji sıfırdan (eskisi arşivde)
+        if S.get("scalp"): S.setdefault("scalp_arsiv", []).append(S["scalp"])
+        S["scalp"] = {"nakit": SC_KASA, "acik": {}, "gecmis": [], "bek": {}, "t0": int(time.time()), "surum": 36}
+    A = S.setdefault("scalp", {"nakit": SC_KASA, "acik": {}, "gecmis": [], "bek": {}, "t0": int(time.time()), "surum": 36})
     now = time.time()
     for s, c in list(D["fiyat"].items()):
         if not s.endswith("USDT"): continue
@@ -778,8 +782,11 @@ def sc_adim():
         elif now - q["t"] > SC_SURE: sc_kapat(A, s, c, "süre doldu (2 sa)")
     if len(A["acik"]) >= SC_MAX: return
     adaylar = []
+    kr = SC_YENI.get("kripto") or set()                                               # v1.36: evren = o an 24 saatte en çok yükselen 20 kripto coin
+    ust = {s for _, s in sorted(((D.get("deg24", {}).get(s, 0), s) for s in kr if s in D["fiyat"]), reverse=True)[:20]}
+    A["evren"] = sorted(ust, key=lambda s: -D.get("deg24", {}).get(s, 0))
     for s, c in D["fiyat"].items():                                                   # girişler
-        if s in A["acik"] or s not in SC_YENI["set"] or now - A["bek"].get(s, 0) < SC_BEK: continue
+        if s in A["acik"] or s not in ust or now - A["bek"].get(s, 0) < SC_BEK: continue
         p3, p30, p10 = sc_once(s, SC_DK), sc_once(s, 60), sc_once(s, 600)
         if not p3 or not p30 or not p10: continue
         y3 = (c / p3 - 1) * 100
@@ -809,12 +816,13 @@ def scalp_veri():
         G = A["gecmis"]; acik = sum(p["pnl"] for p in P)
         return {"v": VERSIYON, "t0": A.get("t0"), "P": P, "son": G[::-1][:60], "n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0),
                 "r": round(sum(g["pnl"] for g in G), 2), "acik": round(acik, 2), "oz": round(A["nakit"] + SC_MJ * len(P) + acik, 2), "kasa": SC_KASA,
-                "izlenen": len(SC_YENI["set"])}
+                "izlenen": len(A.get("evren") or []), "evren": [[s[:-4], round(D.get("deg24", {}).get(s, 0) * 100, 1)] for s in (A.get("evren") or [])[:20]]}
 
 SCALP_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Scalp</title>") + r"""<body><div class="sar">
-<div class="logo">⚡ SCALP · yükselişe giren coin (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="logo">⚡ SCALP · en çok yükselenler (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
 <div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a><a class="on" href="./">⚡ Scalp</a></div>
-<div class="pan"><div class="alt">Sadece <b>son 6 ayda listelenen yeni kripto coinler</b> izlenir (hisseler hariç, hacim şartı yok). Bir coin <b>son 5 dakikada +%2</b> yükselip <b>hâlâ çıkıyorsa</b> (ama son 10 dk'da zaten +%5'ten fazla fırlamadıysa) <b>LONG</b> girer. Hedef <b>+%3</b> · stop <b>−%2</b> · +%0,6 kârda iz süren stop (%0,4 geriden) · en çok 2 saat. 100 $ kasa, 10 $ × 10x, en çok 5 açık. <b>v1.35:</b> 24 coin × 4 günlük dakika verisinde ~500 ayar arasından seçildi (196 işlem, %74 kârlı, iki yarıda da artı). Gerçek emir yok.</div></div>
+<div class="pan"><div class="alt"><b>v1.36:</b> O an <b>24 saatte en çok yükselen 20 kripto coin</b> izlenir (hisseler hariç; liste sürekli güncellenir). Bir coin <b>son 5 dakikada +%2</b> yükselip <b>hâlâ çıkıyorsa</b> (ama son 10 dk'da zaten +%5'ten fazla fırlamadıysa) <b>LONG</b> girer. Hedef <b>+%3</b> · stop <b>−%2</b> · +%0,6 kârda iz süren stop (%0,4 geriden) · en çok 2 saat. 100 $ kasa, 10 $ × 10x, en çok 5 açık. Test (227 coin × 2,5 gün, 5 dk mum): en çok yükselen 20 → 200 işlem, iki yarıda da artı; yeni coinler ≈ 0. Gerçek emir yok.</div></div>
+<div class="pan"><div class="alt" id="evr"></div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan işlemler</h2><div id="son"></div></div>
@@ -824,7 +832,8 @@ const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:7)};
 const ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 const sure=s=>{s=Math.max(0,s);const sa=Math.floor(s/3600),d=Math.floor(s%3600/60);return sa?`${sa}sa ${d}dk`:`${d}dk ${Math.floor(s%60)}sn`};
 async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})).json();const now=Date.now()/1000;
- $('alt').textContent=`kağıt · ${d.v} · ${d.izlenen} yeni coin izleniyor${d.t0?' · '+ts(d.t0)+"'den beri":''}`;
+ $('evr').innerHTML='🔥 İzlenen (24 sa en çok yükselen): '+(d.evren||[]).map(x=>`<b>${x[0]}</b> <span class="art">+%${f(x[1],1)}</span>`).join(' · ');
+ $('alt').textContent=`kağıt · ${d.v} · ${d.izlenen} coin izleniyor${d.t0?' · '+ts(d.t0)+"'den beri":''}`;
  $('kart').innerHTML=`<div class="k"><div class="e">Bakiye</div><div class="d ${rk(d.oz-d.kasa)}">${f(d.oz)} $</div><div class="alt">başlangıç ${f(d.kasa,0)} $</div></div>
  <div class="k"><div class="e">Kapanan</div><div class="d ${rk(d.r)}">${sg(d.r)} $</div><div class="alt">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>`;
  $('acik').innerHTML=d.P.map(p=>{const lo=p.stop,hi=p.hedef,k=Math.max(0,Math.min(100,(p.c-lo)/(hi-lo)*100)),gk=(p.giris-lo)/(hi-lo)*100;
