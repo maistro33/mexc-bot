@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.36 (14.11 21:10)"
+VERSIYON = "v1.37 (14.11 22:40)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="ayna/">🪞 Ayna</a><a href="scalp/">⚡ Scalp</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="ayna/">🪞 Ayna</a><a href="scalp/">⚡ Scalp</a><a href="scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
@@ -417,6 +417,10 @@ class H(BaseHTTPRequestHandler):
             self.send_response(301); self.send_header("Location", "/scalp/"); self.end_headers(); return
         if yol == "/scalp": return self._yaz(200, SCALP_SAYFA, "text/html; charset=utf-8")          # v1.33
         if yol == "/scalp/api": return self._yaz(200, json.dumps(scalp_veri(), ensure_ascii=False))
+        if yol == "/scalp-short" and not self.path.split("?")[0].endswith("/"):
+            self.send_response(301); self.send_header("Location", "/scalp-short/"); self.end_headers(); return
+        if yol == "/scalp-short": return self._yaz(200, SCALPS_SAYFA, "text/html; charset=utf-8")    # v1.37
+        if yol == "/scalp-short/api": return self._yaz(200, json.dumps(scalp_s_veri(), ensure_ascii=False))
         if yol == "/deneme_bybit":                                                         # v1.6.3: Bybit kopya trading erişim testi (salt okunur)
             q = "pageNo=1&pageSize=5&dataDuration=DATA_DURATION_THIRTY_DAY&sortField=LEADER_SORT_FIELD_SORT_ROI"; out = {}
             ua = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "Accept": "application/json"}
@@ -694,7 +698,7 @@ def ayna_veri():
 
 AYNA_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Ayna</title>") + r"""<body><div class="sar">
 <div class="logo">🪞 AYNA · liderlerin birebir aynısı (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🪞 Ayna</a><a href="../scalp/">⚡ Scalp</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🪞 Ayna</a><a href="../scalp/">⚡ Scalp</a><a href="../scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a></div>
 <div class="pan"><div class="alt">Takip edilen <b>tüm liderlerin</b> (👥 · 💰 · 🚀) işlemleri <b>birebir</b>: onların <b>marjı ve kaldıracıyla</b>, onların giriş fiyatından açılır; <b>lider kapatınca kapanır</b>. Bizim stop / iz süren / filtre yok. Ücret giriş+çıkış %0,05. Sonradan ekleme/kısmi kapatma izlenmez. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
@@ -796,12 +800,64 @@ def sc_adim():
         A["acik"][s] = {"giris": g, "t": int(now), "en": g, "aktif": False, "stop": g * (1 - SC_SL / 100), "hedef": g * (1 + SC_TP / 100),
                         "tetik": f"5 dk +%{y3:.1f} · 10 dk +%{y10:.1f}"}
 
+
+# ───────────── ⚡ SCALP SHORT (v1.37, kağıt) ─────────────
+# Sadık: "aynı kodun short botu". Aynı tetik (en çok yükselen 20 coinden biri 5 dk'da +%2 ve hâlâ çıkıyor) → SHORT (pompayı sat).
+# 1 dk mumlu test (146 coin, 2,5 gün): hedef −%5 / stop +%3 / iz yok → 253 işlem, %42 kârlı, iki yarıda da artı (+7,3 / +14,4).
+# İz süren stop dakikalık testte gerçeği yansıtmadığı için kullanılmadı. 100 $, 10 $ × 10x, en çok 5 açık, 30 dk bekleme, en çok 2 sa.
+SS_TP, SS_SL = 5.0, 3.0
+
+def ss_kz(q, c): return (1 - c / q["giris"]) * SC_MJ * SC_LEV
+
+def ss_kapat(A, s, c, neden):
+    q = A["acik"].pop(s); f = c * (1 + SC_KAY)
+    kz = ss_kz(q, f) - SC_MJ * SC_LEV * SC_UCRET * 2
+    A["nakit"] += SC_MJ + kz; A["bek"][s] = time.time()
+    A["gecmis"].append({"coin": s[:-4], "giris": q["giris"], "cikis": round(f, 8), "t0": q["t"], "t": int(time.time()), "pnl": round(kz, 3),
+                        "yuzde": round((1 - f / q["giris"]) * 100, 2), "neden": neden, "tetik": q.get("tetik")}); del A["gecmis"][:-400]
+
+def ss_adim():
+    A = S.setdefault("scalp_s", {"nakit": SC_KASA, "acik": {}, "gecmis": [], "bek": {}, "t0": int(time.time())})
+    now = time.time()
+    for s in list(A["acik"]):
+        q = A["acik"][s]; c = D["fiyat"].get(s)
+        if not c: continue
+        if c >= q["stop"]: ss_kapat(A, s, q["stop"], "stop")
+        elif c <= q["hedef"]: ss_kapat(A, s, q["hedef"] / (1 + SC_KAY), "hedef")
+        elif now - q["t"] > SC_SURE: ss_kapat(A, s, c, "süre doldu (2 sa)")
+    if len(A["acik"]) >= SC_MAX: return
+    ust = set((S.get("scalp") or {}).get("evren") or [])
+    adaylar = []
+    for s in ust:
+        c = D["fiyat"].get(s)
+        if not c or s in A["acik"] or now - A["bek"].get(s, 0) < SC_BEK: continue
+        p5, p1, p10 = sc_once(s, SC_DK), sc_once(s, 60), sc_once(s, 600)
+        if not p5 or not p1 or not p10: continue
+        y5 = (c / p5 - 1) * 100
+        if y5 >= SC_YUK and c > p1 and (c / p10 - 1) * 100 < SC_TEPE: adaylar.append((y5, s, c, (c / p10 - 1) * 100))
+    for y5, s, c, y10 in sorted(adaylar, reverse=True)[:SC_MAX - len(A["acik"])]:
+        g = (D["bid"].get(s) or c) * (1 - SC_KAY); A["nakit"] -= SC_MJ
+        A["acik"][s] = {"giris": g, "t": int(now), "stop": g * (1 + SS_SL / 100), "hedef": g * (1 - SS_TP / 100), "tetik": f"5 dk +%{y5:.1f} · 10 dk +%{y10:.1f}"}
+
+def scalp_s_veri():
+    with KIL:
+        A = S.get("scalp_s") or {"nakit": SC_KASA, "acik": {}, "gecmis": [], "t0": None}
+        P = []
+        for s, q in A["acik"].items():
+            c = D["fiyat"].get(s) or q["giris"]
+            P.append({"coin": s[:-4], "giris": q["giris"], "c": c, "stop": q["stop"], "hedef": q["hedef"], "aktif": False, "akt": None, "t": q["t"], "tetik": q.get("tetik"),
+                      "pnl": round(ss_kz(q, c) - SC_MJ * SC_LEV * SC_UCRET, 3)})
+        G = A["gecmis"]; acik = sum(p["pnl"] for p in P); ev = (S.get("scalp") or {}).get("evren") or []
+        return {"v": VERSIYON, "t0": A.get("t0"), "P": P, "son": G[::-1][:60], "n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0),
+                "r": round(sum(g["pnl"] for g in G), 2), "acik": round(acik, 2), "oz": round(A["nakit"] + SC_MJ * len(P) + acik, 2), "kasa": SC_KASA,
+                "izlenen": len(ev), "evren": [[s[:-4], round(D.get("deg24", {}).get(s, 0) * 100, 1)] for s in ev[:20]]}
+
 def scalp_dongu():
     time.sleep(25)
     while True:
         try:
             sc_yeni_guncelle()
-            with KIL: sc_adim()
+            with KIL: sc_adim(); ss_adim()                                            # v1.37: + ⚡ Scalp Short
         except Exception as e: D["hata"] = "scalp: " + str(e)[:120]
         time.sleep(4)
 
@@ -820,7 +876,7 @@ def scalp_veri():
 
 SCALP_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Scalp</title>") + r"""<body><div class="sar">
 <div class="logo">⚡ SCALP · en çok yükselenler (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a><a class="on" href="./">⚡ Scalp</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a><a class="on" href="./">⚡ Scalp</a><a href="../scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a></div>
 <div class="pan"><div class="alt"><b>v1.36:</b> O an <b>24 saatte en çok yükselen 20 kripto coin</b> izlenir (hisseler hariç; liste sürekli güncellenir). Bir coin <b>son 5 dakikada +%2</b> yükselip <b>hâlâ çıkıyorsa</b> (ama son 10 dk'da zaten +%5'ten fazla fırlamadıysa) <b>LONG</b> girer. Hedef <b>+%3</b> · stop <b>−%2</b> · +%0,6 kârda iz süren stop (%0,4 geriden) · en çok 2 saat. 100 $ kasa, 10 $ × 10x, en çok 5 açık. Test (227 coin × 2,5 gün, 5 dk mum): en çok yükselen 20 → 200 işlem, iki yarıda da artı; yeni coinler ≈ 0. Gerçek emir yok.</div></div>
 <div class="pan"><div class="alt" id="evr"></div></div>
 <div class="kartlar" id="kart"></div>
@@ -840,11 +896,18 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
   return `<div class="pz"><div class="ust"><div><b>${p.coin}</b> <span class="chip c-l">LONG 10x</span><div class="alt">${ts(p.t)} · ${sure(now-p.t)} · ${p.tetik||''}</div><div class="alt">giriş ${fy(p.giris)} → şimdi ${fy(p.c)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
   <div class="yol"><i style="left:calc(${k}% - 2px)"></i><b style="position:absolute;left:${gk}%;top:-3px;bottom:-3px;width:2px;background:#fff8"></b></div>
   <div class="ucl"><span class="eks">⛔ ${p.aktif?'iz':'stop'} ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span class="art">🎯 ${fy(p.hedef)}</span></div>
-  <div class="alt" style="text-align:center;margin-top:6px">${p.aktif?'🔒 İz süren stop devrede':`🔓 İz ${fy(p.akt)} fiyatında başlar`}</div></div>`}).join('')||'<div class="alt">Açık işlem yok — yükselişe başlayan coin bekleniyor.</div>';
+  ${p.akt==null?'':`<div class="alt" style="text-align:center;margin-top:6px">${p.aktif?'🔒 İz süren stop devrede':`🔓 İz ${fy(p.akt)} fiyatında başlar`}</div>`}</div>`}).join('')||'<div class="alt">Açık işlem yok — yükselişe başlayan coin bekleniyor.</div>';
  $('son').innerHTML=d.son.length?'<table><tr><th>Coin</th><th>Sonuç</th><th>Kâr</th></tr>'+d.son.slice(0,40).map(g=>`<tr><td><b>${g.coin}</b><div class="alt">${ts(g.t)} · ${sure(g.t-g.t0)}</div><div class="alt">${fy(g.giris)} → ${fy(g.cikis)}</div></td><td>${g.neden=='hedef'?'🎯 hedef':g.neden}<div class="alt">%${sg(g.yuzde)}</div></td><td class="${rk(g.pnl)}"><b>${sg(g.pnl,3)} $</b></td></tr>`).join('')+'</table>':'<div class="alt">Henüz kapanan yok.</div>';
 }catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
 yenile();setInterval(yenile,5000);
 </script></body></html>"""
+SCALPS_SAYFA = (SCALP_SAYFA.replace("<title>Scalp</title>", "<title>Scalp Short</title>").replace("⚡ SCALP · en çok yükselenler (kağıt)", "🔻 SCALP SHORT · pompayı sat (kağıt)")
+    .replace('<a class="on" href="./">⚡ Scalp</a><a href="../scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a>', '<a href="../scalp/">⚡ Scalp</a><a class="on" href="./" style="grid-column:1/3">🔻 Scalp Short</a>')
+    .replace('<span class="chip c-l">LONG 10x</span>', '<span class="chip c-s">SHORT 10x</span>')
+    .replace("yükselişe başlayan coin bekleniyor", "pompalanan coin bekleniyor"))
+import re as _re5
+SCALPS_SAYFA = _re5.sub(r'<div class="pan"><div class="alt"><b>v1\.36:</b>.*?</div></div>', lambda _m: '<div class="pan"><div class="alt"><b>⚡ Scalp ile aynı tetik, ters yön:</b> 24 saatte en çok yükselen 20 coinden biri <b>son 5 dakikada +%2</b> fırlayıp hâlâ çıkıyorsa <b>SHORT</b> girer (pompanın geri düşmesine oynar). Hedef <b>−%5</b> · stop <b>+%3</b> · iz yok · en çok 2 saat. 100 $ kasa, 10 $ × 10x, en çok 5 açık. Test (146 coin, 1 dk mum, 2,5 gün): 253 işlem, %42 kârlı ama kazançlar büyük, iki yarıda da artı. Gerçek emir yok.</div></div>', SCALP_SAYFA if False else SCALPS_SAYFA, count=1, flags=_re5.S)
+
 
 def lider_sonuc():
     T = {}
