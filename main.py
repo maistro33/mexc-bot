@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.34 (14.11 19:25)"
+VERSIYON = "v1.35 (14.11 20:10)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -728,7 +728,7 @@ yenile();setInterval(yenile,8000);
 # 100 $ kasa, işlem başı 10 $ × 10x, en çok 5 açık, aynı coine 30 dk bekleme. Ücret her yön %0,06 + kayma %0,03.
 from collections import deque
 SC_MJ, SC_LEV, SC_MAX, SC_KASA = 10.0, 10, 5, 100.0
-SC_YUK, SC_DK, SC_TEPE, SC_TP, SC_SL, SC_AKT, SC_IZ, SC_SURE, SC_BEK = 0.8, 180, 5.0, 1.2, 0.8, 0.6, 0.4, 1800, 1800
+SC_YUK, SC_DK, SC_TEPE, SC_TP, SC_SL, SC_AKT, SC_IZ, SC_SURE, SC_BEK = 2.0, 300, 5.0, 3.0, 2.0, 0.6, 0.4, 7200, 1800   # v1.35: test edilen en iyi ayar (24 coin × 4 gün, iki yarıda da artı)
 SC_UCRET, SC_KAY, SC_HACIM = 0.0006, 0.0003, 5e6
 SCH = {}                                                   # sembol → deque[(t, fiyat)] son ~11 dk
 SC_YENI = {"set": set(), "t": 0, "gun": 180}                # v1.34 (Sadık): sadece son 6 ayda listelenen kripto coinler (hisseler hariç), hacim şartı yok
@@ -775,19 +775,19 @@ def sc_adim():
         if q["aktif"]: q["stop"] = max(q["stop"], q["giris"] * 1.001, q["en"] * (1 - SC_IZ / 100))
         if c <= q["stop"]: sc_kapat(A, s, q["stop"], "iz süren stop" if q["aktif"] else "stop")
         elif c >= q["hedef"]: sc_kapat(A, s, q["hedef"] / (1 - SC_KAY), "hedef")
-        elif now - q["t"] > SC_SURE: sc_kapat(A, s, c, "süre doldu (30 dk)")
+        elif now - q["t"] > SC_SURE: sc_kapat(A, s, c, "süre doldu (2 sa)")
     if len(A["acik"]) >= SC_MAX: return
     adaylar = []
     for s, c in D["fiyat"].items():                                                   # girişler
         if s in A["acik"] or s not in SC_YENI["set"] or now - A["bek"].get(s, 0) < SC_BEK: continue
-        p3, p30, p10 = sc_once(s, SC_DK), sc_once(s, 30), sc_once(s, 600)
+        p3, p30, p10 = sc_once(s, SC_DK), sc_once(s, 60), sc_once(s, 600)
         if not p3 or not p30 or not p10: continue
         y3 = (c / p3 - 1) * 100
         if y3 >= SC_YUK and c > p30 and (c / p10 - 1) * 100 < SC_TEPE: adaylar.append((y3, s, c, (c / p10 - 1) * 100))
     for y3, s, c, y10 in sorted(adaylar, reverse=True)[:SC_MAX - len(A["acik"])]:
         g = (D["ask"].get(s) or c) * (1 + SC_KAY); A["nakit"] -= SC_MJ
         A["acik"][s] = {"giris": g, "t": int(now), "en": g, "aktif": False, "stop": g * (1 - SC_SL / 100), "hedef": g * (1 + SC_TP / 100),
-                        "tetik": f"3 dk +%{y3:.1f} · 10 dk +%{y10:.1f}"}
+                        "tetik": f"5 dk +%{y3:.1f} · 10 dk +%{y10:.1f}"}
 
 def scalp_dongu():
     time.sleep(25)
@@ -814,7 +814,7 @@ def scalp_veri():
 SCALP_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Scalp</title>") + r"""<body><div class="sar">
 <div class="logo">⚡ SCALP · yükselişe giren coin (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
 <div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a><a class="on" href="./">⚡ Scalp</a></div>
-<div class="pan"><div class="alt">Sadece <b>son 6 ayda listelenen yeni kripto coinler</b> izlenir (hisseler hariç, hacim şartı yok). Bir coin <b>son 3 dakikada +%0,8</b> yükselip <b>hâlâ çıkıyorsa</b> (ama son 10 dk'da zaten +%5'ten fazla fırlamadıysa) <b>LONG</b> girer. Hedef <b>+%1,2</b> · stop <b>−%0,8</b> · +%0,6 kârda iz süren stop (%0,4 geriden) · en çok 30 dk. 100 $ kasa, 10 $ × 10x, en çok 5 açık. Backtest yapılmadı. Gerçek emir yok.</div></div>
+<div class="pan"><div class="alt">Sadece <b>son 6 ayda listelenen yeni kripto coinler</b> izlenir (hisseler hariç, hacim şartı yok). Bir coin <b>son 5 dakikada +%2</b> yükselip <b>hâlâ çıkıyorsa</b> (ama son 10 dk'da zaten +%5'ten fazla fırlamadıysa) <b>LONG</b> girer. Hedef <b>+%3</b> · stop <b>−%2</b> · +%0,6 kârda iz süren stop (%0,4 geriden) · en çok 2 saat. 100 $ kasa, 10 $ × 10x, en çok 5 açık. <b>v1.35:</b> 24 coin × 4 günlük dakika verisinde ~500 ayar arasından seçildi (196 işlem, %74 kârlı, iki yarıda da artı). Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan işlemler</h2><div id="son"></div></div>
