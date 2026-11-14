@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.37 (14.11 22:40)"
+VERSIYON = "v1.38 (14.11 23:30)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="ayna/">🪞 Ayna</a><a href="scalp/">⚡ Scalp</a><a href="scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="ayna/">🪞 Ayna</a><a href="scalp/">⚡ Scalp</a></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
@@ -415,11 +415,11 @@ class H(BaseHTTPRequestHandler):
         if yol == "/ayna/api": return self._yaz(200, json.dumps(ayna_veri(), ensure_ascii=False))
         if yol == "/scalp" and not self.path.split("?")[0].endswith("/"):
             self.send_response(301); self.send_header("Location", "/scalp/"); self.end_headers(); return
-        if yol == "/scalp": return self._yaz(200, SCALP_SAYFA, "text/html; charset=utf-8")          # v1.33
+        if yol == "/scalp": return self._yaz(200, SCALPC_SAYFA, "text/html; charset=utf-8")         # v1.38: long ↔ short yan yana
         if yol == "/scalp/api": return self._yaz(200, json.dumps(scalp_veri(), ensure_ascii=False))
         if yol == "/scalp-short" and not self.path.split("?")[0].endswith("/"):
             self.send_response(301); self.send_header("Location", "/scalp-short/"); self.end_headers(); return
-        if yol == "/scalp-short": return self._yaz(200, SCALPS_SAYFA, "text/html; charset=utf-8")    # v1.37
+        if yol == "/scalp-short": self.send_response(302); self.send_header("Location", "/scalp/"); self.end_headers(); return
         if yol == "/scalp-short/api": return self._yaz(200, json.dumps(scalp_s_veri(), ensure_ascii=False))
         if yol == "/deneme_bybit":                                                         # v1.6.3: Bybit kopya trading erişim testi (salt okunur)
             q = "pageNo=1&pageSize=5&dataDuration=DATA_DURATION_THIRTY_DAY&sortField=LEADER_SORT_FIELD_SORT_ROI"; out = {}
@@ -698,7 +698,7 @@ def ayna_veri():
 
 AYNA_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Ayna</title>") + r"""<body><div class="sar">
 <div class="logo">🪞 AYNA · liderlerin birebir aynısı (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🪞 Ayna</a><a href="../scalp/">⚡ Scalp</a><a href="../scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a class="on" href="./">🪞 Ayna</a><a href="../scalp/">⚡ Scalp</a></div>
 <div class="pan"><div class="alt">Takip edilen <b>tüm liderlerin</b> (👥 · 💰 · 🚀) işlemleri <b>birebir</b>: onların <b>marjı ve kaldıracıyla</b>, onların giriş fiyatından açılır; <b>lider kapatınca kapanır</b>. Bizim stop / iz süren / filtre yok. Ücret giriş+çıkış %0,05. Sonradan ekleme/kısmi kapatma izlenmez. Gerçek emir yok.</div></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
@@ -761,8 +761,8 @@ def sc_kz(q, c): return (c / q["giris"] - 1) * SC_MJ * SC_LEV
 def sc_kapat(A, s, c, neden):
     q = A["acik"].pop(s); f = c * (1 - SC_KAY)
     kz = sc_kz(q, f) - SC_MJ * SC_LEV * SC_UCRET * 2
-    A["nakit"] += SC_MJ + kz; A["bek"][s] = time.time()
-    A["gecmis"].append({"coin": s[:-4], "giris": q["giris"], "cikis": round(f, 8), "t0": q["t"], "t": int(time.time()), "pnl": round(kz, 3),
+    A["nakit"] += SC_MJ + kz                                                        # v1.38: bekleme girişten sayılır (iki bot aynı anda girsin)
+    A["gecmis"].append({"coin": s[:-4], "giris": q["giris"], "cikis": round(f, 8), "t0": q["t"], "t": int(time.time()), "pnl": round(kz, 3), "tik": q.get("tik", 0),
                         "yuzde": round((f / q["giris"] - 1) * 100, 2), "neden": neden, "tetik": q.get("tetik")}); del A["gecmis"][:-400]
 
 def sc_adim():
@@ -780,7 +780,10 @@ def sc_adim():
         if not c: continue
         q["en"] = max(q["en"], c)
         if not q["aktif"] and c >= q["giris"] * (1 + SC_AKT / 100): q["aktif"] = True
-        if q["aktif"]: q["stop"] = max(q["stop"], q["giris"] * 1.001, q["en"] * (1 - SC_IZ / 100))
+        if q["aktif"]:
+            yeni = max(q["stop"], q["giris"] * 1.001, q["en"] * (1 - SC_IZ / 100))
+            if yeni > q["stop"] * 1.0000001: q["tik"] = q.get("tik", 0) + 1; q["tik_t"] = int(now)       # v1.38: ▲ stop yukarı taşındı
+            q["stop"] = yeni
         if c <= q["stop"]: sc_kapat(A, s, q["stop"], "iz süren stop" if q["aktif"] else "stop")
         elif c >= q["hedef"]: sc_kapat(A, s, q["hedef"] / (1 - SC_KAY), "hedef")
         elif now - q["t"] > SC_SURE: sc_kapat(A, s, c, "süre doldu (2 sa)")
@@ -796,7 +799,7 @@ def sc_adim():
         y3 = (c / p3 - 1) * 100
         if y3 >= SC_YUK and c > p30 and (c / p10 - 1) * 100 < SC_TEPE: adaylar.append((y3, s, c, (c / p10 - 1) * 100))
     for y3, s, c, y10 in sorted(adaylar, reverse=True)[:SC_MAX - len(A["acik"])]:
-        g = (D["ask"].get(s) or c) * (1 + SC_KAY); A["nakit"] -= SC_MJ
+        g = (D["ask"].get(s) or c) * (1 + SC_KAY); A["nakit"] -= SC_MJ; A["bek"][s] = now
         A["acik"][s] = {"giris": g, "t": int(now), "en": g, "aktif": False, "stop": g * (1 - SC_SL / 100), "hedef": g * (1 + SC_TP / 100),
                         "tetik": f"5 dk +%{y3:.1f} · 10 dk +%{y10:.1f}"}
 
@@ -812,7 +815,7 @@ def ss_kz(q, c): return (1 - c / q["giris"]) * SC_MJ * SC_LEV
 def ss_kapat(A, s, c, neden):
     q = A["acik"].pop(s); f = c * (1 + SC_KAY)
     kz = ss_kz(q, f) - SC_MJ * SC_LEV * SC_UCRET * 2
-    A["nakit"] += SC_MJ + kz; A["bek"][s] = time.time()
+    A["nakit"] += SC_MJ + kz
     A["gecmis"].append({"coin": s[:-4], "giris": q["giris"], "cikis": round(f, 8), "t0": q["t"], "t": int(time.time()), "pnl": round(kz, 3),
                         "yuzde": round((1 - f / q["giris"]) * 100, 2), "neden": neden, "tetik": q.get("tetik")}); del A["gecmis"][:-400]
 
@@ -836,7 +839,7 @@ def ss_adim():
         y5 = (c / p5 - 1) * 100
         if y5 >= SC_YUK and c > p1 and (c / p10 - 1) * 100 < SC_TEPE: adaylar.append((y5, s, c, (c / p10 - 1) * 100))
     for y5, s, c, y10 in sorted(adaylar, reverse=True)[:SC_MAX - len(A["acik"])]:
-        g = (D["bid"].get(s) or c) * (1 - SC_KAY); A["nakit"] -= SC_MJ
+        g = (D["bid"].get(s) or c) * (1 - SC_KAY); A["nakit"] -= SC_MJ; A["bek"][s] = now
         A["acik"][s] = {"giris": g, "t": int(now), "stop": g * (1 + SS_SL / 100), "hedef": g * (1 - SS_TP / 100), "tetik": f"5 dk +%{y5:.1f} · 10 dk +%{y10:.1f}"}
 
 def scalp_s_veri():
@@ -868,7 +871,8 @@ def scalp_veri():
         for s, q in A["acik"].items():
             c = D["fiyat"].get(s) or q["giris"]
             P.append({"coin": s[:-4], "giris": q["giris"], "c": c, "stop": q["stop"], "hedef": q["hedef"], "aktif": q["aktif"], "t": q["t"], "tetik": q.get("tetik"),
-                      "pnl": round(sc_kz(q, c) - SC_MJ * SC_LEV * SC_UCRET, 3), "akt": q["giris"] * (1 + SC_AKT / 100)})
+                      "pnl": round(sc_kz(q, c) - SC_MJ * SC_LEV * SC_UCRET, 3), "akt": q["giris"] * (1 + SC_AKT / 100),
+                      "tik": q.get("tik", 0), "tik_t": q.get("tik_t"), "kilit": round(sc_kz(q, q["stop"] * (1 - SC_KAY)) - SC_MJ * SC_LEV * SC_UCRET * 2, 3)})
         G = A["gecmis"]; acik = sum(p["pnl"] for p in P)
         return {"v": VERSIYON, "t0": A.get("t0"), "P": P, "son": G[::-1][:60], "n": len(G), "kaz": sum(1 for g in G if g["pnl"] > 0),
                 "r": round(sum(g["pnl"] for g in G), 2), "acik": round(acik, 2), "oz": round(A["nakit"] + SC_MJ * len(P) + acik, 2), "kasa": SC_KASA,
@@ -901,6 +905,35 @@ async function yenile(){try{const d=await (await fetch('api',{cache:'no-store'})
 }catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
 yenile();setInterval(yenile,5000);
 </script></body></html>"""
+SCALPC_SAYFA = SAYFA.split("<body>")[0].replace("<title>Sinyal Testi</title>", "<title>Scalp</title>") + r"""<body><div class="sar">
+<style>.ik{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:start}.ik .pz{padding:8px}.ik .k{padding:9px}.ik .d{font-size:19px}.ik table td,.ik table th{padding:5px 3px;font-size:11.5px}
+.bas{font-weight:900;text-align:center;padding:8px;border-radius:12px;margin-bottom:8px}.bl{background:#22d39b22;color:#22d39b}.bs{background:#ff5c7a22;color:#ff5c7a}.tk{color:#22d39b;font-size:11px;margin-top:4px}</style>
+<div class="logo">⚡ SCALP · long ↔ short (kağıt)</div><div class="alt" id="alt">yükleniyor…</div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a href="../">👥 Lider takibi</a><a href="../ayna/">🪞 Ayna</a><a class="on" href="./">⚡ Scalp</a></div>
+<div class="pan"><div class="alt">24 saatte <b>en çok yükselen 20 kripto</b> izlenir. Biri <b>5 dk'da +%2</b> fırlayıp hâlâ çıkıyorsa <b>iki bot aynı anda</b> girer: <b class="art">⚡ LONG</b> (hedef +%3 · stop −%2 · +%0,6'da iz, %0,4 geriden) ve <b class="eks">🔻 SHORT</b> (hedef −%5 · stop +%3 · iz yok). Aynı coine 30 dk'da bir (girişten sayılır). Her biri 100 $, 10 $ × 10x, en çok 5 açık, en çok 2 sa. Gerçek emir yok.</div></div>
+<div class="pan"><div class="alt" id="evr"></div></div>
+<div class="ik"><div><div class="bas bl">⚡ LONG</div><div id="kL"></div><div class="pan" style="padding:8px"><h2>💼 Açık</h2><div id="aL"></div></div><div class="pan" style="padding:8px"><h2>📒 Kapanan</h2><div id="sL"></div></div></div>
+<div><div class="bas bs">🔻 SHORT</div><div id="kS"></div><div class="pan" style="padding:8px"><h2>💼 Açık</h2><div id="aS"></div></div><div class="pan" style="padding:8px"><h2>📒 Kapanan</h2><div id="sS"></div></div></div></div>
+</div><script>
+const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
+const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:7)};
+const ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'});
+const sure=s=>{s=Math.max(0,s);const sa=Math.floor(s/3600),d=Math.floor(s%3600/60);return sa?`${sa}sa ${d}dk`:`${d}dk`};
+function kol(d,y,kk,aa,ss){const now=Date.now()/1000,L=y=='L';
+ $(kk).innerHTML=`<div class="k" style="margin-bottom:8px"><div class="e">Bakiye</div><div class="d ${rk(d.oz-d.kasa)}">${f(d.oz)} $</div><div class="alt">kapanan <b class="${rk(d.r)}">${sg(d.r)} $</b><br>${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>`;
+ $(aa).innerHTML=d.P.map(p=>{const lo=p.stop,hi=p.hedef,k=Math.max(0,Math.min(100,(p.c-lo)/(hi-lo)*100));
+  return `<div class="pz"><div class="ust"><div><b>${p.coin}</b><div class="alt">${ts(p.t)} · ${sure(now-p.t)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,2)} $</b></div>
+  <div class="yol" style="margin:10px 0 4px"><i style="left:calc(${k}% - 2px)"></i></div><div class="ucl"><span class="eks">${p.aktif?'🔒':'⛔'} ${fy(p.stop)}</span><span class="art">🎯 ${fy(p.hedef)}</span></div>
+  ${L?(p.tik?`<div class="tk">▲ kilit ${p.tik}× · son ${ts(p.tik_t)}<br>kilitli kâr <b>${sg(p.kilit,2)} $</b></div>`:`<div class="alt" style="margin-top:4px">🔓 iz ${fy(p.akt)}'de başlar</div>`):''}</div>`}).join('')||'<div class="alt">Açık işlem yok.</div>';
+ $(ss).innerHTML=d.son.length?'<table>'+d.son.slice(0,25).map(g=>`<tr><td><b>${g.coin}</b><div class="alt">${ts(g.t)} · ${g.neden=='hedef'?'🎯':g.neden=='stop'?'⛔':g.neden.startsWith('iz')?'🔒 iz':'⏱'}</div></td><td class="${rk(g.pnl)}" style="text-align:right"><b>${sg(g.pnl,2)}</b><div class="alt">%${sg(g.yuzde)}</div></td></tr>`).join('')+'</table>':'<div class="alt">Henüz yok.</div>';}
+async function yenile(){try{const [a,b]=await Promise.all([fetch('api',{cache:'no-store'}).then(r=>r.json()),fetch('../scalp-short/api',{cache:'no-store'}).then(r=>r.json())]);
+ $('alt').textContent=`kağıt · ${a.v} · ${a.izlenen} coin izleniyor`;
+ $('evr').innerHTML='🔥 '+(a.evren||[]).map(x=>`<b>${x[0]}</b> <span class="art">+%${f(x[1],1)}</span>`).join(' · ');
+ kol(a,'L','kL','aL','sL');kol(b,'S','kS','aS','sS');
+}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
+yenile();setInterval(yenile,5000);
+</script></body></html>"""
+
 SCALPS_SAYFA = (SCALP_SAYFA.replace("<title>Scalp</title>", "<title>Scalp Short</title>").replace("⚡ SCALP · en çok yükselenler (kağıt)", "🔻 SCALP SHORT · pompayı sat (kağıt)")
     .replace('<a class="on" href="./">⚡ Scalp</a><a href="../scalp-short/" style="grid-column:1/3">🔻 Scalp Short</a>', '<a href="../scalp/">⚡ Scalp</a><a class="on" href="./" style="grid-column:1/3">🔻 Scalp Short</a>')
     .replace('<span class="chip c-l">LONG 10x</span>', '<span class="chip c-s">SHORT 10x</span>')
