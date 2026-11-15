@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.41 (15.11 16:30)"
+VERSIYON = "v1.42 (16.11 01:00)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -517,6 +517,22 @@ def lider_liste():
             sec.append({"borsa": "OKX", "id": x["uniqueCode"], "ad": x["nickName"], "roi": round(float(x["pnlRatio"]) * 100, 0), "mdd": None,
                         "kaz": round(float(x["winRatio"]) * 100, 0)}); n += 1
             if n >= 10: break
+        # v1.42 (Sadık): Bitget'in kendi en iyi listeleri (Yüksek ROI · Yüksek kâr · Takipçilerine en çok kazandıran · En çok kopyalanan) — her taramada güncel
+        try:
+            bh = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Origin": "https://www.bitget.com", "Referer": "https://www.bitget.com/copy-trading/futures", "language": "en_US", "locale": "en_US"}
+            tt = requests.post("https://www.bitget.com/v1/trigger/trace/public/topTraders", json={"pageNo": 1, "pageSize": 20, "languageType": 0, "sort": 0, "model": 1, "businessLine": 10},
+                               headers=bh, timeout=15).json()["data"]["rows"]
+            grp = {"total_follow_profit": "💰", "profit_rate": "🚀", "total_income": "👥"}
+            bn = 0
+            for r in sorted(tt, key=lambda r: 0 if r.get("rankingCode") == "total_follow_profit" else 1 if r.get("rankingCode") in (None, "total_income") else 2):
+                for x in r.get("showColumnValue") or []:
+                    it = {i["showColumnCode"]: float(i.get("comparedValue") or 0) for i in x.get("itemVoList") or []}
+                    uid = x.get("traderUid")
+                    if not uid or any(y["id"] == uid for y in sec) or bn >= 15: continue
+                    if it.get("total_income", 0) <= 0 or it.get("max_retracement", 100) >= 60 or it.get("total_winning_rate", 0) < 55: continue
+                    sec.append({"borsa": "Bitget", "grup": grp.get(r.get("rankingCode"), "💰"), "id": uid, "ad": x.get("displayName") or x.get("traderNickName") or uid,
+                                "roi": round(it.get("profit_rate", 0), 0), "mdd": round(it.get("max_retracement", 0), 1), "kaz": round(it.get("total_winning_rate", 0), 0)}); bn += 1
+        except Exception as e: L["durum"] = "⚠️ Bitget listesi alınamadı: " + str(e)[:80]
         for uid, ad_ in (("b0b246728fb43a53a396", "Armandino"), ("bcbd487f89b53b55ad93", "Hedge-Trader"), ("b1b648748fb23d57a292", "woshiguaizi"),
                          ("bfb44a7788b73d57a793", "盗野"), ("bbb34f7f89b73d50ac91", "狙盘手安迪"), ("b0bd497f8eb3395ead90", "小z必定暴富")):   # v1.20 💰 Bitget
             if not any(x["id"] == uid for x in sec): sec.append({"borsa": "Bitget", "grup": "💰", "id": uid, "ad": ad_, "roi": 0, "mdd": None, "kaz": None})
