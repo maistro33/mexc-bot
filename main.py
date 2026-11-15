@@ -6,7 +6,7 @@ import os, json, time, re, threading, asyncio, html, math, socket
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import requests
 
-VERSIYON = "v1.39 (14.11 23:35)"
+VERSIYON = "v1.40 (15.11 11:15)"
 KLASOR = (os.getenv("DATA_DIR") or ".").rstrip("/") + "/"
 DOSYA = KLASOR + "sinyal.json"; OTURUM = KLASOR + "tg_oturum.txt"
 API = "https://api.bitget.com/api/v2/mix/market/"
@@ -338,7 +338,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:7px 4px;b
 .ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.iz{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;flex-wrap:wrap}.tik{color:var(--yesil);letter-spacing:1px;font-size:12px}
 .uy{background:rgba(255,200,87,.1);border:1px solid rgba(255,200,87,.4);border-radius:12px;padding:10px;font-size:13px;word-break:break-all}</style></head><body><div class="sar">
 <div class="logo">📡 SİNYAL TESTİ · 👥 LİDER TAKİBİ</div><div class="alt" id="alt">yükleniyor…</div>
-<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">🟢 Canlı</a><a class="on" href="./">👥 Lider takibi</a><a href="ayna/">🪞 Ayna</a><a href="scalp/">⚡ Scalp</a></div>
+<div class="sek" style="grid-template-columns:1fr 1fr"><a href="https://worker-production-a529.up.railway.app/canli/">📡 Sinyal · Canlı</a><a class="on" href="./">👥 Lider takibi</a></div>
 <div class="kartlar" id="kart"></div>
 <div class="pan"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="pan"><h2>📒 Kapanan</h2><div id="gec"></div></div>
@@ -598,7 +598,7 @@ def lider_dongu():
             for x in L["liste"]:
                 simdi = lider_pozlar(x); time.sleep(0.8)
                 if simdi is None: continue
-                with KIL: ay_lider(x, simdi, x["id"] not in L["onceki"])                      # v1.25: 🪞 Ayna
+                pass                                                                          # v1.40: 🪞 Ayna kapatıldı
                 if x["id"] not in L["onceki"]: L["onceki"][x["id"]] = simdi; continue          # ilk görüş: eski pozisyonlara girilmez
                 for (sym, yon), gir in simdi.items():
                     if (sym, yon) in L["onceki"][x["id"]] or not sym.endswith("USDT"): continue
@@ -1180,8 +1180,8 @@ if __name__ == "__main__":
     threading.Thread(target=lider_dongu, daemon=True).start()
     threading.Thread(target=grid_dongu, daemon=True).start()                      # v1.14: 🔲 Grid
     threading.Thread(target=akilli_dongu, daemon=True).start()
-    threading.Thread(target=scalp_dongu, daemon=True).start()                     # v1.33: ⚡ Scalp
-    threading.Thread(target=iz_takip, daemon=True).start()                        # v1.31: 🧪 izole test (likidasyon izleme)                    # v1.16: 🧠 Akıllı grid
+    # v1.40 (Sadık 15.11): ⚡ Scalp ve 🪞 Ayna kapatıldı (veriler duruyor)
+    pass                        # v1.31: 🧪 izole test (likidasyon izleme)                    # v1.16: 🧠 Akıllı grid
     class S6(ThreadingHTTPServer):                                               # v1.17: IPv4+IPv6 (Railway özel ağı için; Canlı 429 almasın)
         address_family = socket.AF_INET6
         def server_bind(self):
