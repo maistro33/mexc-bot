@@ -1,6 +1,6 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  📈 TREND KAĞIT BOTU — sadece KAĞIT (sanal para). Borsaya EMİR KODU YOK, API anahtarı GEREKMEZ.
-#  Sürüm: K1.0 (19.11.2026)
+#  Sürüm: K1.1 (21.11.2026) — eski/yavaş coinler (BTC, ETH, XRP, DOGE…) taranmaz
 #
 #  Neden bu tasarım (kod denetimi raporundaki dersler):
 #   • Gerçek emir yolu yok → "stopsuz pozisyon", "şifresiz emir", "çift pozisyon" hataları imkânsız.
@@ -23,7 +23,7 @@ import base64, json, os, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "K1.0 (19.11 23:55)"
+V = "K1.1 (21.11 01:20)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -36,6 +36,7 @@ TOPLAM_RISK = 0.03         # açık işlemlerin toplam riski en çok %3
 MAX_LEV = 5                # kaldıraç tavanı
 N_GIRIS, N_IZ, K_ATR, MUM_MAX, STOP_MAX = 55, 20, 2.0, 1.5, 0.15
 EVREN = 40                 # en hacimli 40 kripto (hisse/emtia hariç)
+ESKI = {"BTC", "ETH", "XRP", "ADA", "DOGE", "TRX", "LTC", "BCH", "BNB", "XLM", "ETC", "DOT", "LINK", "SHIB", "AVAX", "XMR", "UNI", "ATOM", "FIL", "NEAR"}   # K1.1 (Sadık): eski/yavaş coinler taranmaz
 TAKER, KAYMA = 0.0006, 0.0005
 GUN_ZARAR = 0.03           # gün içinde kasanın %3'ü kaybedilirse o gün yeni işlem yok
 
@@ -98,7 +99,7 @@ def evren():
         D["kripto"] = {x["symbol"] for x in c if x.get("isRwa") != "YES" and x.get("symbolStatus") == "normal"}
     tk = get("tickers") or []
     return [x["symbol"] for x in sorted(tk, key=lambda x: -float(x.get("usdtVolume") or 0))
-            if x["symbol"] in D["kripto"] and x["symbol"] != "USDCUSDT"][:EVREN]
+            if x["symbol"] in D["kripto"] and x["symbol"] != "USDCUSDT" and x["symbol"][:-4] not in ESKI][:EVREN]
 
 def ozkaynak():
     a = 0.0
@@ -115,7 +116,7 @@ def bugun_zarar():
 
 # ── strateji ──
 def tara():
-    ev = evren(); yakin = []; aday = []
+    ev = list(dict.fromkeys(list(S["acik"]) + evren())); yakin = []; aday = []   # açık işlemler (eski coin olsa da) izlenmeye devam eder
     for s in ev:
         m = mumlar(s); time.sleep(0.05)
         if not m or len(m) < 260: continue
