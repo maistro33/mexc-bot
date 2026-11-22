@@ -22,8 +22,9 @@
 import base64, json, os, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
+import scalp                                     # K1.4: ⚡ 5 dk Trend Scalp (ayrı kağıt, /scalp/)
 
-V = "K1.3 (22.11 20:10)"
+V = "K1.4 (22.11 22:25)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -281,7 +282,7 @@ SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta nam
 .w{max-width:640px;margin:auto;padding:16px}h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--s);font-size:13px}.p{background:var(--k);border:1px solid var(--c);border-radius:14px;padding:14px;margin:12px 0}
 .g{display:grid;grid-template-columns:1fr 1fr;gap:10px}.n{font-size:22px;font-weight:800}.art{color:var(--g)}.eks{color:var(--r)}.r{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #ffffff10}
 .ch{font-size:11px;font-weight:800;padding:2px 7px;border-radius:7px;background:#ffffff12}.u{background:#ff5c7a22;color:var(--r);padding:8px;border-radius:10px;display:none}</style></head><body><div class="w">
-<h1>📈 Trend · KAĞIT</h1><div class="s" id="alt"></div><div class="u" id="u"></div>
+<h1>📈 Trend · KAĞIT</h1><div class="s" id="alt"></div><div class="s"><a href="scalp/" style="color:#7aa7ff">⚡ 5 dk Scalp sayfası →</a></div><div class="u" id="u"></div>
 <div class="p g" id="kart"></div>
 <div class="p"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
 <div class="p"><h2>🔻→🔺 Dip Alım <span class="s">(3 $ × 5x · ayrı kasa)</span></h2><div class="g" id="dkart"></div><div id="dacik"></div><div id="dbek"></div><div class="s" style="margin-top:8px">2 günde en çok düşenler (≥%20 düşüş + dipte olunca limit alış):</div><div id="dyak"></div><div id="dson"></div>
@@ -326,9 +327,12 @@ class Panel(BaseHTTPRequestHandler):
         yol = self.path.split("?")[0].rstrip("/")
         if yol in ("", "/"): b, t = SAYFA.encode(), "text/html; charset=utf-8"
         elif yol == "/api": b, t = json.dumps(veri(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
+        elif yol == "/scalp" and not self.path.split("?")[0].endswith("/"): self.send_response(301); self.send_header("Location", "/scalp/"); self.end_headers(); return
+        elif yol == "/scalp": b, t = scalp.SAYFA.encode(), "text/html; charset=utf-8"
+        elif yol == "/scalp/api": b, t = json.dumps(scalp.veri(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
         else: self.send_response(404); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Type", t); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(b)
 
 if __name__ == "__main__":
-    threading.Thread(target=dongu, daemon=True).start()
+    threading.Thread(target=dongu, daemon=True).start(); scalp.basla()
     ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), Panel).serve_forever()
