@@ -23,7 +23,7 @@ import base64, json, os, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "K1.2 (22.11 18:05)"
+V = "K1.3 (22.11 20:10)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -121,6 +121,8 @@ def tara():
         m = mumlar(s); time.sleep(0.05)
         if not m or len(m) < 260: continue
         c = [x[3] for x in m]; A = atr(m); e = ema(c, 200); son = c[-1]
+        try: dip_bak(s, m)
+        except Exception as ex: D["hata"] = "dip: " + str(ex)[:80]
         ust = max(x[1] for x in m[-N_GIRIS - 1:-1]); alt = min(x[2] for x in m[-N_GIRIS - 1:-1])
         if s in S["acik"]:                                      # iz: son 20 mumun dibi/tepesi, sadece lehe
             q = S["acik"][s]
@@ -187,6 +189,48 @@ def fonlama():   # her coinin ödeme saatinde gerçek oranla funding uygula
                 c = D["fiyat"].get(s) or q["giris"]; f = -q["u"] * r * q["adet"] * c   # long + oranda öder
                 q["fon"] += f; S["kasa"] += f; S["fon_t"][s] = nt
 
+# ── K1.3 🔻→🔺 DİP ALIM (Sadık'ın fikri) ──────────────────────────────────────────────
+# Son 2 günde (12 × 4H) tepeden ≥%20 düşmüş ve hâlâ dipte (2 günlük dibin en çok %2 üstünde) coin →
+# %3 aşağıya LİMİT alış emri (2 gün geçerli). Dolarsa: stop %15, hedef %15, en çok 7 gün. İşlem başı 3 $ marj × 5x = 15 $.
+# 15 ay / 21 coin testi: 90 işlem, %63 kazanan, +55 $, iki yarı da artı, en büyük düşüş 11 $ (uyarı: borsadan silinen coinler testte yok → biraz iyimser).
+DP_DUS, DP_YAK, DP_LIM, DP_SL, DP_TP, DP_GUN, DP_MJ, DP_LEV, DP_MAX = 0.20, 0.02, 0.03, 0.15, 0.15, 7, 3.0, 5, 3
+MAKER = 0.0002
+for _k, _v in (("dp_bekleyen", {}), ("dp_acik", {}), ("dp_gecmis", []), ("dp_kasa", 100.0)): S.setdefault(_k, _v)
+
+def dip_bak(s, m):
+    if s[:-4] in ESKI or s in S["dp_acik"] or s in S["dp_bekleyen"]: return
+    h = max(x[1] for x in m[-13:]); l = min(x[2] for x in m[-13:]); c = m[-1][3]; dus = c / h - 1
+    D.setdefault("dp_yakin", {})[s] = round(dus * 100, 1)
+    if dus > -DP_DUS or c > l * (1 + DP_YAK): return
+    with KIL:
+        if len(S["dp_acik"]) + len(S["dp_bekleyen"]) >= DP_MAX: log(f"⏸ 🔻 {ad(s)} dip sinyali ama 3 dip işlemi dolu"); return
+        lim = c * (1 - DP_LIM); S["dp_bekleyen"][s] = {"lim": lim, "t": int(time.time()), "son": int(time.time()) + 2 * 86400, "dus": round(dus * 100, 1)}
+    log(f"🔻→🔺 {ad(s)} 2 günde %{dus * 100:.1f} düştü, dipte · LİMİT ALIŞ {lim:g} (−%3) · 2 gün geçerli")
+
+def dip_kontrol():
+    now = time.time()
+    with KIL:
+        for s in list(S["dp_bekleyen"]):
+            b = S["dp_bekleyen"][s]; c = D["fiyat"].get(s)
+            if now > b["son"]: S["dp_bekleyen"].pop(s); log(f"⌛ {ad(s)} dip limit emri dolmadı, iptal"); continue
+            if c and c < b["lim"]:
+                S["dp_bekleyen"].pop(s); g = b["lim"]; adet = DP_MJ * DP_LEV / g
+                S["dp_acik"][s] = {"giris": g, "adet": adet, "stop": g * (1 - DP_SL), "hedef": g * (1 + DP_TP), "t": int(now), "dus": b["dus"]}
+                log(f"🔺 DİP LONG {ad(s)} @ {g:g} (limit doldu) · stop {g * (1 - DP_SL):g} · hedef {g * (1 + DP_TP):g} · 3 $ × 5x")
+        for s in list(S["dp_acik"]):
+            q = S["dp_acik"][s]; c = D["fiyat"].get(s)
+            if not c: continue
+            if c <= q["stop"]: dip_kapat(s, min(c, q["stop"]) * (1 - KAYMA), "stop", TAKER)
+            elif c > q["hedef"]: dip_kapat(s, q["hedef"], "🎯 hedef", MAKER)
+            elif now - q["t"] > DP_GUN * 86400: dip_kapat(s, c * (1 - KAYMA), "süre (7 gün)", TAKER)
+
+def dip_kapat(s, cik, neden, ucret):
+    q = S["dp_acik"].pop(s); n = q["adet"] * q["giris"]
+    pnl = q["adet"] * (cik - q["giris"]) - n * MAKER - q["adet"] * cik * ucret
+    S["dp_kasa"] += pnl
+    S["dp_gecmis"].append({"s": ad(s), "giris": q["giris"], "cikis": cik, "t": q["t"], "tk": int(time.time()), "pnl": round(pnl, 3), "yuzde": round((cik / q["giris"] - 1) * 100, 2), "neden": neden})
+    log(f"{'✅' if pnl > 0 else '❌'} DİP {ad(s)} kapandı · {neden} · {pnl:+.2f} $"); kaydet()
+
 def dongu():
     yukle(); log(f"🚀 Trend KAĞIT {V} başladı · kasa {S['kasa']:.2f} $ · işlem başı risk %{RISK * 100:.0f} · emir kodu yok")
     son_fon = 0
@@ -198,6 +242,7 @@ def dongu():
                 q = S["acik"][s]; c = D["fiyat"].get(s)
                 if c and q["u"] * (c - q["stop"]) <= 0:
                     kapat(s, min(c, q["stop"]) * (1 - KAYMA) if q["u"] == 1 else max(c, q["stop"]) * (1 + KAYMA), "stop" if q.get("tik") == 0 or not q.get("tik") else "🔒 iz stopu")
+            dip_kontrol()
             if time.time() - son_fon > 20: son_fon = time.time(); fonlama()
             blok = int((time.time() - 60) // 14400)              # 4H mum kapanışından 1 dk sonra
             if blok != S["blok"]: S["blok"] = blok; tara(); kaydet()
@@ -223,7 +268,13 @@ def veri():
                 "dd": round(max(S["dd"], (S["tepe"] - oz) / S["tepe"] if S["tepe"] else 0) * 100, 1),
                 "fon": round(sum(g["fon"] for g in G) + sum(q["fon"] for q in S["acik"].values()), 3), "ucret": round(sum(g["ucret"] for g in G), 3),
                 "acik_risk": round(acik_risk(), 2), "P": P, "son": G[::-1][:50], "log": S["log"][::-1][:40], "yakin": D["yakin"],
-                "tarama_t": D["tarama_t"], "hata": D["hata"]}
+                "tarama_t": D["tarama_t"], "hata": D["hata"],
+                "dip": {"kasa": round(S["dp_kasa"] + sum(q["adet"] * ((D["fiyat"].get(s) or q["giris"]) - q["giris"]) for s, q in S["dp_acik"].items()), 2),
+                        "n": len(S["dp_gecmis"]), "kaz": sum(g["pnl"] > 0 for g in S["dp_gecmis"]), "r": round(sum(g["pnl"] for g in S["dp_gecmis"]), 2),
+                        "acik": [{"s": ad(s), "giris": q["giris"], "c": D["fiyat"].get(s) or q["giris"], "stop": q["stop"], "hedef": q["hedef"], "t": q["t"], "dus": q["dus"],
+                                  "pnl": round(q["adet"] * ((D["fiyat"].get(s) or q["giris"]) - q["giris"]), 3)} for s, q in S["dp_acik"].items()],
+                        "bekleyen": [{"s": ad(s), "lim": b["lim"], "c": D["fiyat"].get(s), "son": b["son"], "dus": b["dus"]} for s, b in S["dp_bekleyen"].items()],
+                        "son": S["dp_gecmis"][::-1][:30], "yakin": sorted([{"s": ad(k), "dus": v} for k, v in (D.get("dp_yakin") or {}).items()], key=lambda x: x["dus"])[:6]}}
 
 SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trend Kağıt</title>
 <style>:root{--bg:#0d1220;--k:#161d30;--c:#26304a;--y:#e8ecf5;--s:#8b95ad;--g:#22d39b;--r:#ff5c7a}body{margin:0;background:var(--bg);color:var(--y);font:15px/1.45 -apple-system,system-ui,sans-serif}
@@ -233,6 +284,8 @@ SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta nam
 <h1>📈 Trend · KAĞIT</h1><div class="s" id="alt"></div><div class="u" id="u"></div>
 <div class="p g" id="kart"></div>
 <div class="p"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
+<div class="p"><h2>🔻→🔺 Dip Alım <span class="s">(3 $ × 5x · ayrı kasa)</span></h2><div class="g" id="dkart"></div><div id="dacik"></div><div id="dbek"></div><div class="s" style="margin-top:8px">2 günde en çok düşenler (≥%20 düşüş + dipte olunca limit alış):</div><div id="dyak"></div><div id="dson"></div>
+<div class="s" style="margin-top:8px">Son 2 günde ≥%20 düşmüş ve hâlâ dipte olan coine <b>%3 aşağıdan limit alış</b> (2 gün geçerli) · stop %15 · hedef %15 · en çok 7 gün · en çok 3 işlem.</div></div>
 <div class="p"><h2>👀 Kırılıma en yakın</h2><div class="s" id="tar"></div><div id="yak"></div></div>
 <div class="p"><h2>📒 Kapanan</h2><div id="son"></div></div>
 <div class="p s"><b>Kurallar.</b> Sadece kağıt, borsaya emir yok. 4 saatlik mum kapanışında son 55 mumun zirvesini (EMA200 üstünde) kırana LONG, dibini (EMA200 altında) kırana SHORT. Kırılım mumu ≥1,5 ATR ya da stop %15'ten uzaksa girmez. Stop 2 ATR, iz son 20 mumun dibi/tepesi, hedef yok.
@@ -250,6 +303,11 @@ $('acik').innerHTML=d.P.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="c
 $('tar').textContent=d.tarama_t?'son tarama '+ts(d.tarama_t)+' · her 4 saatte':'ilk tarama bekleniyor…';
 $('yak').innerHTML=d.yakin.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'zirveye':'dibe'} %${f(x.uz)}</span></div>`).join('');
 $('son').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="ch">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${g.neden} · funding ${sg(g.fon,3)} $</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
+const P=d.dip;$('dkart').innerHTML=`<div><div class="s">Dip kasa</div><div class="n ${rk(P.kasa-100)}">${f(P.kasa)} $</div></div><div><div class="s">Kapanan</div><div class="n ${rk(P.r)}">${sg(P.r)} $</div><div class="s">${P.n} işlem · ${P.n?'%'+f(P.kaz/P.n*100,0)+' kârlı':'–'}</div></div>`;
+$('dacik').innerHTML=P.acik.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="ch art">LONG 5x</span><div class="s">${ts(p.t)} · 2 günde %${f(p.dus,1)} düşmüştü · giriş ${fy(p.giris)} → ${fy(p.c)} · ⛔ ${fy(p.stop)} · 🎯 ${fy(p.hedef)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>`).join('');
+$('dbek').innerHTML=P.bekleyen.map(b=>`<div class="r"><div><b>${b.s}</b> <span class="ch">⏳ LİMİT ALIŞ</span><div class="s">%${f(b.dus,1)} düştü · emir ${fy(b.lim)} · şimdi ${b.c?fy(b.c):'–'} · ${ts(b.son)}'e kadar</div></div></div>`).join('')||(P.acik.length?'':'<div class="s">Açık ya da bekleyen dip işlemi yok.</div>');
+$('dyak').innerHTML=P.yakin.map(x=>`<div class="r"><b>${x.s}</b><span class="${x.dus<=-20?'eks':'s'}">2 günde %${f(x.dus,1)}</span></div>`).join('');
+$('dson').innerHTML=P.son.map(g=>`<div class="r"><div><b>${g.s}</b><div class="s">${ts(g.tk)} · ${g.neden}</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl)} $</b><div class="s">%${sg(g.yuzde)}</div></div></div>`).join('');
 $('log').innerHTML=d.log.slice(0,20).map(l=>ts(l[0])+' · '+l[1]).join('<br>');}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
 y();setInterval(y,10000);</script></body></html>"""
 
