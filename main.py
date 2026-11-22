@@ -23,7 +23,7 @@ import base64, json, os, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "K1.1 (21.11 01:20)"
+V = "K1.2 (22.11 18:05)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -127,7 +127,7 @@ def tara():
             yeni = min(x[2] for x in m[-N_IZ:]) if q["u"] == 1 else max(x[1] for x in m[-N_IZ:])
             if q["u"] * (yeni - q["stop"]) > 0:
                 q["stop"] = yeni; q["tik"] = q.get("tik", 0) + 1
-                log(f"▲ {ad(s)} iz {q['tik']}. kez ilerledi → stop {yeni:g} · kilitli {q['adet'] * q['u'] * (yeni - q['giris']):+.2f} $")
+                kk = q['adet'] * q['u'] * (yeni - q['giris']); log(f"▲ {ad(s)} iz {q['tik']}. kez ilerledi → stop {yeni:g} · " + (f"kâr kilitlendi {kk:+.2f} $" if kk > 0 else f"stop olursa {kk:+.2f} $ (henüz kâr kilitli değil)"))
             continue
         u = 1 if son > ust and son > e else -1 if son < alt and son < e else 0
         yakin.append({"s": ad(s), "yon": "long" if son > e else "short", "uz": round(((ust / son - 1) if son > e else (1 - alt / son)) * 100, 2)})
@@ -246,7 +246,7 @@ $('kart').innerHTML=`<div><div class="s">Kasa (kağıt)</div><div class="n ${rk(
 <div><div class="s">Kapanan</div><div class="n ${rk(d.r)}">${sg(d.r)} $</div><div class="s">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
 <div><div class="s">Ortalama R · Profit factor</div><div class="n">${sg(d.ortR)}R · ${d.pf==null?'–':f(d.pf)}</div></div>
 <div><div class="s">En büyük düşüş · funding · komisyon</div><div class="n eks">%${f(d.dd,1)}</div><div class="s">funding ${sg(d.fon,3)} $ · komisyon ${f(d.ucret,3)} $</div></div>`;
-$('acik').innerHTML=d.P.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="ch ${p.yon=='long'?'art':'eks'}">${p.yon.toUpperCase()} ${p.lev}x</span><div class="s">${ts(p.t)} · giriş ${fy(p.giris)} → ${fy(p.c)} · stop ${fy(p.stop)}${p.tik?' · ▲ iz '+p.tik+'× · kilitli '+sg(p.kilit)+' $':''} · funding ${sg(p.fon,3)} $</div></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>`).join('')||'<div class="s">Açık işlem yok — kırılım bekleniyor (haftada birkaç işlem).</div>';
+$('acik').innerHTML=d.P.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="ch ${p.yon=='long'?'art':'eks'}">${p.yon.toUpperCase()} ${p.lev}x</span><div class="s">${ts(p.t)} · giriş ${fy(p.giris)} → ${fy(p.c)} · stop ${fy(p.stop)}${p.tik?' · ▲ iz '+p.tik+'×':''} · ${p.kilit>0?'🔒 kâr kilitli '+sg(p.kilit)+' $':'stop olursa '+sg(p.kilit)+' $'} · funding ${sg(p.fon,3)} $</div></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>`).join('')||'<div class="s">Açık işlem yok — kırılım bekleniyor (haftada birkaç işlem).</div>';
 $('tar').textContent=d.tarama_t?'son tarama '+ts(d.tarama_t)+' · her 4 saatte':'ilk tarama bekleniyor…';
 $('yak').innerHTML=d.yakin.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'zirveye':'dibe'} %${f(x.uz)}</span></div>`).join('');
 $('son').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="ch">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${g.neden} · funding ${sg(g.fon,3)} $</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
