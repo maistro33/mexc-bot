@@ -1,23 +1,30 @@
 # ⚡ 5 DK TREND SCALP — KAĞIT (Sadık'ın isteği, 22.11.2026). Borsaya emir kodu YOK.
-# Sürüm S1.0
+# Sürüm S1.2 — 5 TP (1R·1,5R·2R·2,5R·3R): TP1 → stop girişe, TP2 → stop TP1'e … her kilit ▲ tik; TP5 = çıkış
 # Evren: Bitget'te son 24 saatte EN ÇOK YÜKSELEN ilk 30 kripto (hisse/ETF hariç, hacim ≥0,5 M$), saatte bir yenilenir.
 # Strateji (testlerde 5 dk'da en az kaybettiren): 4 saatlikte güçlü trend + 5 dk'da EMA20'ye geri çekilip dönüş
 #   LONG : 4H kapanış > EMA20 > EMA50 ve son 2 günün dibinden ≥%10 yukarıda · 5 dk: önceki mum EMA20'ye değdi, bu mum yeşil ve EMA20 üstünde kapandı
 #   SHORT: tam tersi
-#   Stop: son 4 mumun dibi/tepesi · Hedef: 1,5R · En çok 2 saat · aynı coine kapanıştan sonra 15 dk girilmez
+#   Stop: son 4 mumun dibi/tepesi · 5 TP (1R…3R), her TP stopu bir basamak çeker · En çok 2 saat · aynı coine kapanıştan sonra 15 dk girilmez
 # Para: 100 $ kağıt kasa · işlem başı 3 $ marj × 5x = 15 $ · en çok 10 açık
 # Maliyet: giriş/çıkış %0,06 taker + %0,03 kayma (hedef limit: %0,02)
 # Dürüst not: 1 aylık 5 dk testinde bu kural işlem başı ≈ −0,12…−0,19R çıktı. Burada CANLI ölçülüyor.
 import json, os, threading, time, traceback
 import requests
 
-V = "S1.1 (22.11 22:25)"
+V = "S1.2 (22.11 22:40)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "scalp5.json")
 KASA0, MJ, LEV, MAXA, EVREN = 100.0, 3.0, 5, 10, 30
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0003
 GUC, RR, MAXDK, BEKLE = 0.10, 1.5, 120, 15 * 60
+TPR = (1.0, 1.5, 2.0, 2.5, 3.0)                         # S1.2: 5 TP (R katı)
+
+def tp_kur(q):                                          # eski işlemlere de 5 TP ekle
+    if "tp" not in q:
+        d = abs(q["giris"] - q.get("stop0", q["stop"])); q.setdefault("stop0", q["stop"])
+        q["tp"] = [q["giris"] + q["u"] * k * d for k in TPR]; q["hedef"] = q["tp"][-1]; q.setdefault("tik", 0); q.setdefault("tik_t", 0)
+    return q
 
 KIL = threading.RLock()
 S = {"v": 1, "kasa": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}}
@@ -101,9 +108,9 @@ def tara():                                             # her 5 dk mum kapanış
         if not (0.004 <= risk <= 0.05) or u * (g - st) <= 0: continue
         with KIL:
             if len(S["acik"]) >= MAXA: log(f"⏸ {ad(s)} sinyal ama 10 işlem dolu"); continue
-            hd = g + u * RR * abs(g - st); adet = MJ * LEV / g
-            S["acik"][s] = {"u": u, "giris": g, "stop": st, "hedef": hd, "adet": adet, "t": int(time.time()), "risk": risk}
-        log(f"{'🔺 LONG' if u == 1 else '🔻 SHORT'} {ad(s)} @ {g:g} · stop {st:g} (%{risk * 100:.2f}) · hedef {hd:g} · 4H trend %{guc}")
+            adet = MJ * LEV / g
+            q = tp_kur({"u": u, "giris": g, "stop": st, "stop0": st, "adet": adet, "t": int(time.time()), "risk": risk}); S["acik"][s] = q
+        log(f"{'🔺 LONG' if u == 1 else '🔻 SHORT'} {ad(s)} @ {g:g} · stop {st:g} (%{risk * 100:.2f}) · TP1 {q['tp'][0]:g} … TP5 {q['tp'][4]:g} · 4H trend %{guc}")
     with KIL: D["izle"] = sorted(izle, key=lambda x: abs(x["uz"]))[:10]; D["tarama_t"] = int(time.time())
     kaydet()
 
@@ -128,8 +135,16 @@ def dongu():
             for s in list(S["acik"]):
                 q = S["acik"][s]; c = D["fiyat"].get(s); u = q["u"]
                 if not c: continue
-                if u * (c - q["stop"]) <= 0: kapat(s, c * (1 - u * KAYMA), "stop", TAKER)
-                elif u * (c - q["hedef"]) > 0: kapat(s, q["hedef"], "🎯 hedef", MAKER)
+                tp_kur(q); k = q["tik"]
+                if u * (c - q["stop"]) <= 0: kapat(s, c * (1 - u * KAYMA), ("🔒 kâr kilidi (TP%d sonrası)" % k) if k >= 2 else "giriş stopu (TP1 sonrası)" if k == 1 else "stop", TAKER)
+                elif u * (c - q["tp"][4]) >= 0: kapat(s, q["tp"][4], "🎯 TP5", MAKER)
+                elif k < 4 and u * (c - q["tp"][k]) >= 0:              # ▲ tik: TP geçildi → stop bir basamak yukarı
+                    with KIL:
+                        while k < 4 and u * (c - q["tp"][k]) >= 0: k += 1
+                        yeni = q["giris"] * (1 + u * 0.0012) if k == 1 else q["tp"][k - 2]
+                        if u * (yeni - q["stop"]) > 0: q["stop"] = yeni
+                        q["tik"] = k; q["tik_t"] = int(time.time())
+                    log(f"▲ {ad(s)} TP{k} ✓ · stop → {q['stop']:g} · kilitli {q['adet'] * u * (q['stop'] - q['giris']):+.3f} $"); kaydet()
                 elif time.time() - q["t"] > MAXDK * 60: kapat(s, c * (1 - u * KAYMA), "süre (2 sa)", TAKER)
             if time.time() - D["trend_t"] > 1800: trend_guncelle()
             b = int((time.time() - 8) // 300)
@@ -147,7 +162,9 @@ def veri():
         P = []; ac = 0
         for s, q in S["acik"].items():
             c = D["fiyat"].get(s) or q["giris"]; p = q["adet"] * q["u"] * (c - q["giris"]); ac += p
-            P.append({"s": ad(s), "yon": "long" if q["u"] == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "hedef": q["hedef"], "t": q["t"], "pnl": round(p, 3)})
+            tp_kur(q)
+            P.append({"s": ad(s), "yon": "long" if q["u"] == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "stop0": q["stop0"], "tp": q["tp"], "tik": q["tik"], "tik_t": q["tik_t"],
+                      "kilit": round(q["adet"] * q["u"] * (q["stop"] - q["giris"]), 3), "t": q["t"], "pnl": round(p, 3)})
         g0 = time.time() - time.time() % 86400; bugun = [g for g in G if g["tk"] >= g0]
         return {"v": V, "t0": S["t0"], "kasa0": KASA0, "oz": round(S["kasa"] + ac, 2), "acik": round(ac, 3), "n": n, "kaz": len(kz), "r": round(sum(g["pnl"] for g in G), 2),
                 "ortR": round(sum(g["R"] for g in G) / n, 3) if n else 0, "pf": round(bk / bz, 2) if bz else None,
@@ -155,30 +172,4 @@ def veri():
                 "P": P, "son": G[::-1][:60], "log": S["log"][::-1][:40], "trend": [{"s": ad(s), "u": u, "guc": g} for s, (u, g) in D["trend"].items()],
                 "izle": D["izle"], "tarama_t": D["tarama_t"], "hata": D["hata"], "evren": len(D["evren"])}
 
-SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>5dk Scalp</title>
-<style>:root{--bg:#0d1220;--k:#161d30;--c:#26304a;--y:#e8ecf5;--s:#8b95ad;--g:#22d39b;--r:#ff5c7a}body{margin:0;background:var(--bg);color:var(--y);font:15px/1.45 -apple-system,system-ui,sans-serif}
-.w{max-width:640px;margin:auto;padding:16px}h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--s);font-size:13px}.p{background:var(--k);border:1px solid var(--c);border-radius:14px;padding:14px;margin:12px 0}
-.g{display:grid;grid-template-columns:1fr 1fr;gap:10px}.n{font-size:22px;font-weight:800}.art{color:var(--g)}.eks{color:var(--r)}.r{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #ffffff10}
-.ch{font-size:11px;font-weight:800;padding:2px 7px;border-radius:7px;background:#ffffff12}a{color:#7aa7ff}</style></head><body><div class="w">
-<h1>⚡ 5 dk Trend Scalp · KAĞIT</h1><div class="s" id="alt"></div><div class="s"><a href="../">← 📈 Trend sayfası</a></div>
-<div class="p g" id="kart"></div>
-<div class="p"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
-<div class="p"><h2>🧭 4 saatlikte güçlü trenddeki coinler</h2><div class="s" id="tr"></div><div class="s" style="margin-top:6px" id="tar"></div><div id="izle"></div></div>
-<div class="p"><h2>📒 Kapanan</h2><div id="son"></div></div>
-<div class="p s"><b>Kural.</b> Son 24 saatte en çok yükselen 30 coin (hacim ≥0,5 M$, saatte bir yenilenir). 4 saatlikte güçlü trend (EMA20>EMA50, 2 günde ≥%10) olan coinde, 5 dk mum EMA20'ye geri çekilip trend yönünde dönünce girer. Stop son 4 mumun dibi/tepesi, hedef 1,5R, en çok 2 saat. 3 $ × 5x, en çok 10 açık, komisyon+kayma dahil. <b>Test: 5 dk'da işlem başı ≈ −0,12…−0,19R — burada canlı ölçülüyor.</b></div>
-<div class="p"><h2>🧾 Kayıt</h2><div class="s" id="log"></div></div></div><script>
-const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
-const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:6)},ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
-async function y(){try{const d=await(await fetch('api',{cache:'no-store'})).json();
-$('alt').textContent=`${d.v} · ${ts(d.t0)}'den beri · ${d.evren} coin`+(d.hata?' · ⚠️ '+d.hata:'');
-$('kart').innerHTML=`<div><div class="s">Kasa (kağıt)</div><div class="n ${rk(d.oz-d.kasa0)}">${f(d.oz)} $</div><div class="s">açık ${sg(d.acik,3)} $ · ${d.P.length} işlem</div></div>
-<div><div class="s">Kapanan</div><div class="n ${rk(d.r)}">${sg(d.r)} $</div><div class="s">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
-<div><div class="s">Ortalama R · Profit factor</div><div class="n">${sg(d.ortR,2)}R · ${d.pf==null?'–':f(d.pf)}</div></div>
-<div><div class="s">Bugün</div><div class="n ${rk(d.bugun_r)}">${sg(d.bugun_r)} $</div><div class="s">${d.bugun_n} işlem</div></div>`;
-$('acik').innerHTML=d.P.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="ch ${p.yon=='long'?'art':'eks'}">${p.yon.toUpperCase()} 5x</span><div class="s">${ts(p.t)} · ${fy(p.giris)} → ${fy(p.c)} · ⛔ ${fy(p.stop)} · 🎯 ${fy(p.hedef)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>`).join('')||'<div class="s">Açık işlem yok.</div>';
-$('tr').innerHTML=d.trend.map(t=>`${t.s} ${t.u==1?'↑':'↓'}%${t.guc}`).join(' · ')||'–';
-$('tar').textContent=d.tarama_t?'son 5 dk tarama '+ts(d.tarama_t)+' · EMA20\'ye en yakınlar:':'ilk tarama bekleniyor…';
-$('izle').innerHTML=d.izle.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'LONG arar':'SHORT arar'} · EMA20'ye %${f(x.uz)}</span></div>`).join('');
-$('son').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="ch">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${Math.round((g.tk-g.t)/60)} dk · ${g.neden}</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl,3)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
-$('log').innerHTML=d.log.slice(0,25).map(l=>ts(l[0])+' · '+l[1]).join('<br>');}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
-y();setInterval(y,8000);</script></body></html>"""
+# S1.2: panel artık ana sayfada (Trend | Scalp sekmesi) — main.py içinde

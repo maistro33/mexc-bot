@@ -22,9 +22,9 @@
 import base64, json, os, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
-import scalp                                     # K1.4: ⚡ 5 dk Trend Scalp (ayrı kağıt, /scalp/)
+import scalp                                     # K1.4: ⚡ 5 dk Trend Scalp (ayrı kağıt) · K1.5: aynı sayfada sekme
 
-V = "K1.4 (22.11 22:25)"
+V = "K1.5 (22.11 22:40)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -277,40 +277,91 @@ def veri():
                         "bekleyen": [{"s": ad(s), "lim": b["lim"], "c": D["fiyat"].get(s), "son": b["son"], "dus": b["dus"]} for s, b in S["dp_bekleyen"].items()],
                         "son": S["dp_gecmis"][::-1][:30], "yakin": sorted([{"s": ad(k), "dus": v} for k, v in (D.get("dp_yakin") or {}).items()], key=lambda x: x["dus"])[:6]}}
 
-SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trend Kağıt</title>
-<style>:root{--bg:#0d1220;--k:#161d30;--c:#26304a;--y:#e8ecf5;--s:#8b95ad;--g:#22d39b;--r:#ff5c7a}body{margin:0;background:var(--bg);color:var(--y);font:15px/1.45 -apple-system,system-ui,sans-serif}
-.w{max-width:640px;margin:auto;padding:16px}h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--s);font-size:13px}.p{background:var(--k);border:1px solid var(--c);border-radius:14px;padding:14px;margin:12px 0}
-.g{display:grid;grid-template-columns:1fr 1fr;gap:10px}.n{font-size:22px;font-weight:800}.art{color:var(--g)}.eks{color:var(--r)}.r{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #ffffff10}
-.ch{font-size:11px;font-weight:800;padding:2px 7px;border-radius:7px;background:#ffffff12}.u{background:#ff5c7a22;color:var(--r);padding:8px;border-radius:10px;display:none}</style></head><body><div class="w">
-<h1>📈 Trend · KAĞIT</h1><div class="s" id="alt"></div><div class="s"><a href="scalp/" style="color:#7aa7ff">⚡ 5 dk Scalp sayfası →</a></div><div class="u" id="u"></div>
-<div class="p g" id="kart"></div>
+SAYFA = r"""<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kağıt Botlar</title>
+<style>:root{--bg:#0b1020;--kart:#141b2e;--kart2:#1a2340;--cizgi:#26304a;--y:#e8ecf5;--soluk:#8b95ad;--g:#22d39b;--r:#ff5c7a;--sari:#ffd166}
+body{margin:0;background:var(--bg);color:var(--y);font:15px/1.45 -apple-system,system-ui,sans-serif}.w{max-width:640px;margin:auto;padding:16px}
+h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--soluk);font-size:13px}.alt2{font-size:11px;color:var(--soluk)}
+.p{background:var(--kart);border:1px solid var(--cizgi);border-radius:16px;padding:14px;margin:12px 0}
+.kartlar{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:12px 0}.k{background:linear-gradient(160deg,var(--kart2),var(--kart));border:1px solid var(--cizgi);border-radius:16px;padding:14px}
+.n{font-size:22px;font-weight:800}.art{color:var(--g)}.eks{color:var(--r)}.r{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #ffffff10}
+.sek{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.sek button{padding:11px;border-radius:12px;border:1px solid var(--cizgi);color:var(--soluk);font:700 15px system-ui;background:var(--kart)}
+.sek button.on{color:#fff;background:linear-gradient(135deg,#5b8cff,#a56bff);border-color:transparent}
+.chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#ffffff14}.chip.l{background:#22d39b22;color:var(--g)}.chip.sh{background:#ff5c7a22;color:var(--r)}
+.pz{border:1px solid var(--cizgi);border-radius:14px;padding:12px;margin-bottom:10px;background:var(--kart2)}.pz .ust{display:flex;justify-content:space-between;align-items:center}.pz b{font-size:16px}
+.tbar{position:relative;height:10px;border-radius:6px;background:linear-gradient(90deg,#ff5c7a55,#33405a 40%,#22d39b55);margin:14px 0 4px}
+.tbar b{position:absolute;top:-2px;width:2px;height:14px;background:#ffffff70}.tbar i{position:absolute;top:-4px;width:4px;height:18px;border-radius:2px;background:#fff}
+.tbar u{position:absolute;top:-3px;width:3px;height:16px;border-radius:2px;background:var(--r)}
+.ucl{display:flex;justify-content:space-between;font-size:11px;color:var(--soluk)}.tps{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}.tps span{font-size:11px;padding:2px 6px;border-radius:8px;background:#ffffff0d;color:var(--soluk)}
+.tps span.ok{background:#22d39b26;color:var(--g);font-weight:800}.tik{margin-top:6px;font-size:12px;color:var(--sari);font-weight:700}
+.u{background:#ff5c7a22;color:var(--r);padding:8px;border-radius:10px;display:none}</style></head><body><div class="w">
+<h1>🤖 Kağıt botlar</h1><div class="s">Borsaya emir yok · sadece kağıt</div>
+<div class="sek"><button id="bT" onclick="sek('T')">📈 Trend</button><button id="bS" onclick="sek('S')">⚡ 5 dk Scalp</button></div>
+
+<div id="T"><div class="s" id="alt"></div><div class="u" id="u"></div>
+<div class="kartlar" id="kart"></div>
 <div class="p"><h2>💼 Açık işlemler</h2><div id="acik"></div></div>
-<div class="p"><h2>🔻→🔺 Dip Alım <span class="s">(3 $ × 5x · ayrı kasa)</span></h2><div class="g" id="dkart"></div><div id="dacik"></div><div id="dbek"></div><div class="s" style="margin-top:8px">2 günde en çok düşenler (≥%20 düşüş + dipte olunca limit alış):</div><div id="dyak"></div><div id="dson"></div>
+<div class="p"><h2>🔻→🔺 Dip Alım <span class="s">(3 $ × 5x · ayrı kasa)</span></h2><div class="kartlar" id="dkart"></div><div id="dacik"></div><div id="dbek"></div><div class="s" style="margin-top:8px">2 günde en çok düşenler (≥%20 düşüş + dipte olunca limit alış):</div><div id="dyak"></div><div id="dson"></div>
 <div class="s" style="margin-top:8px">Son 2 günde ≥%20 düşmüş ve hâlâ dipte olan coine <b>%3 aşağıdan limit alış</b> (2 gün geçerli) · stop %15 · hedef %15 · en çok 7 gün · en çok 3 işlem.</div></div>
 <div class="p"><h2>👀 Kırılıma en yakın</h2><div class="s" id="tar"></div><div id="yak"></div></div>
 <div class="p"><h2>📒 Kapanan</h2><div id="son"></div></div>
-<div class="p s"><b>Kurallar.</b> Sadece kağıt, borsaya emir yok. 4 saatlik mum kapanışında son 55 mumun zirvesini (EMA200 üstünde) kırana LONG, dibini (EMA200 altında) kırana SHORT. Kırılım mumu ≥1,5 ATR ya da stop %15'ten uzaksa girmez. Stop 2 ATR, iz son 20 mumun dibi/tepesi, hedef yok.
-<b>Risk:</b> işlem başı kasanın %1'i, açık toplam en çok %3, kaldıraç en çok 5x ve stop likidasyondan çok önce, günde %3 zararda yeni işlem yok. <b>Maliyet:</b> komisyon %0,06+%0,06, kayma %0,05+%0,05, funding gerçek oranla.</div>
-<div class="p"><h2>🧾 Kayıt</h2><div class="s" id="log"></div></div></div><script>
+<div class="p s"><b>Kurallar.</b> 4 saatlik mum kapanışında son 55 mumun zirvesini (EMA200 üstünde) kırana LONG, dibini (EMA200 altında) kırana SHORT. Kırılım mumu ≥1,5 ATR ya da stop %15'ten uzaksa girmez. Stop 2 ATR, iz son 20 mumun dibi/tepesi, hedef yok.
+<b>Risk:</b> işlem başı kasanın %1'i, açık toplam en çok %3, kaldıraç en çok 5x, günde %3 zararda yeni işlem yok. <b>Maliyet:</b> komisyon %0,06+%0,06, kayma %0,05+%0,05, funding gerçek oranla.</div>
+<div class="p"><h2>🧾 Kayıt</h2><div class="s" id="log"></div></div></div>
+
+<div id="S" style="display:none"><div class="s" id="salt"></div>
+<div class="kartlar" id="skart"></div>
+<div class="p"><h2>💼 Açık işlemler <span class="s" id="sadet"></span></h2><div id="sacik"></div></div>
+<div class="p"><h2>🧭 4 saatlikte güçlü trenddeki coinler</h2><div class="s" id="str"></div><div class="s" style="margin-top:6px" id="star"></div><div id="sizle"></div></div>
+<div class="p"><h2>📒 Kapanan</h2><div id="sson"></div></div>
+<div class="p s"><b>Kural.</b> Bitget'te son 24 saatte en çok yükselen 30 coin (hacim ≥0,5 M$). 4 saatlikte güçlü trend (EMA20>EMA50, 2 günde ≥%10) olan coinde 5 dk mum EMA20'ye geri çekilip trend yönünde dönünce girer. Stop son 4 mumun dibi/tepesi.
+<b>5 TP:</b> 1R · 1,5R · 2R · 2,5R · 3R. TP1 geçince stop girişe, TP2 geçince TP1'e, TP3'te TP2'ye, TP4'te TP3'e çekilir (her biri ▲ tik); TP5'te kapanır. En çok 2 saat. 3 $ × 5x, en çok 10 açık, komisyon+kayma dahil.</div>
+<div class="p"><h2>🧾 Kayıt</h2><div class="s" id="slog"></div></div></div></div><script>
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
-const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:6)},ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:6)},ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}),sa=t=>new Date(t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'});
+let AK='T';function sek(x){AK=x;$('T').style.display=x=='T'?'':'none';$('S').style.display=x=='S'?'':'none';$('bT').className=x=='T'?'on':'';$('bS').className=x=='S'?'on':'';try{localStorage.setItem('sek',x)}catch(e){};history.replaceState(null,'',x=='S'?'#scalp':'#trend');x=='T'?y():z()}
+const kl=(x,a,b)=>Math.max(0,Math.min(100,x));
+function bar(sol,sag,isaret){const pos=x=>kl((x-sol)/(sag-sol)*100);return pos}
 async function y(){try{const d=await(await fetch('api',{cache:'no-store'})).json();
 $('alt').textContent=`${d.v} · ${ts(d.t0)}'den beri`;$('u').textContent=d.hata;$('u').style.display=d.hata?'block':'none';
-$('kart').innerHTML=`<div><div class="s">Kasa (kağıt)</div><div class="n ${rk(d.oz-d.kasa0)}">${f(d.oz)} $</div><div class="s">başlangıç ${f(d.kasa0,0)} $ · açık risk ${f(d.acik_risk)} $</div></div>
-<div><div class="s">Kapanan</div><div class="n ${rk(d.r)}">${sg(d.r)} $</div><div class="s">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
-<div><div class="s">Ortalama R · Profit factor</div><div class="n">${sg(d.ortR)}R · ${d.pf==null?'–':f(d.pf)}</div></div>
-<div><div class="s">En büyük düşüş · funding · komisyon</div><div class="n eks">%${f(d.dd,1)}</div><div class="s">funding ${sg(d.fon,3)} $ · komisyon ${f(d.ucret,3)} $</div></div>`;
-$('acik').innerHTML=d.P.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="ch ${p.yon=='long'?'art':'eks'}">${p.yon.toUpperCase()} ${p.lev}x</span><div class="s">${ts(p.t)} · giriş ${fy(p.giris)} → ${fy(p.c)} · stop ${fy(p.stop)}${p.tik?' · ▲ iz '+p.tik+'×':''} · ${p.kilit>0?'🔒 kâr kilitli '+sg(p.kilit)+' $':'stop olursa '+sg(p.kilit)+' $'} · funding ${sg(p.fon,3)} $</div></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>`).join('')||'<div class="s">Açık işlem yok — kırılım bekleniyor (haftada birkaç işlem).</div>';
+$('kart').innerHTML=`<div class="k"><div class="s">Kasa (kağıt)</div><div class="n ${rk(d.oz-d.kasa0)}">${f(d.oz)} $</div><div class="alt2">başlangıç ${f(d.kasa0,0)} $ · açık risk ${f(d.acik_risk)} $</div></div>
+<div class="k"><div class="s">Kapanan</div><div class="n ${rk(d.r)}">${sg(d.r)} $</div><div class="alt2">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
+<div class="k"><div class="s">Ort. R · PF</div><div class="n">${sg(d.ortR)}R · ${d.pf==null?'–':f(d.pf)}</div></div>
+<div class="k"><div class="s">En büyük düşüş</div><div class="n eks">%${f(d.dd,1)}</div><div class="alt2">funding ${sg(d.fon,3)} $ · komisyon ${f(d.ucret,3)} $</div></div>`;
+$('acik').innerHTML=d.P.map(p=>{const L=p.yon=='long',sol=p.stop0,uz=Math.abs(p.giris-p.stop0),sag=Math.max(L?p.c:0,0)||0,ust=L?Math.max(p.c,p.giris+uz*2):Math.min(p.c,p.giris-uz*2),pos=bar(sol,ust);
+return `<div class="pz"><div class="ust"><div><b>${p.s}</b> <span class="chip ${L?'l':'sh'}">${p.yon.toUpperCase()} ${p.lev}x</span></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>
+<div class="tbar"><b style="left:${pos(p.giris)}%"></b><u style="left:${pos(p.stop)}%"></u><i style="left:calc(${pos(p.c)}% - 2px)"></i></div>
+<div class="ucl"><span>⛔ ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span>şimdi ${fy(p.c)}</span></div>
+<div class="tik">${p.tik?'▲ iz '+p.tik+'× ilerledi · ':''}${p.kilit>0?'🔒 kilitli '+sg(p.kilit)+' $':'<span class="s">stop olursa '+sg(p.kilit)+' $</span>'}</div><div class="alt2">${ts(p.t)} · funding ${sg(p.fon,3)} $</div></div>`}).join('')||'<div class="s">Açık işlem yok — kırılım bekleniyor.</div>';
 $('tar').textContent=d.tarama_t?'son tarama '+ts(d.tarama_t)+' · her 4 saatte':'ilk tarama bekleniyor…';
 $('yak').innerHTML=d.yakin.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'zirveye':'dibe'} %${f(x.uz)}</span></div>`).join('');
-$('son').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="ch">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${g.neden} · funding ${sg(g.fon,3)} $</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
-const P=d.dip;$('dkart').innerHTML=`<div><div class="s">Dip kasa</div><div class="n ${rk(P.kasa-100)}">${f(P.kasa)} $</div></div><div><div class="s">Kapanan</div><div class="n ${rk(P.r)}">${sg(P.r)} $</div><div class="s">${P.n} işlem · ${P.n?'%'+f(P.kaz/P.n*100,0)+' kârlı':'–'}</div></div>`;
-$('dacik').innerHTML=P.acik.map(p=>`<div class="r"><div><b>${p.s}</b> <span class="ch art">LONG 5x</span><div class="s">${ts(p.t)} · 2 günde %${f(p.dus,1)} düşmüştü · giriş ${fy(p.giris)} → ${fy(p.c)} · ⛔ ${fy(p.stop)} · 🎯 ${fy(p.hedef)}</div></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>`).join('');
-$('dbek').innerHTML=P.bekleyen.map(b=>`<div class="r"><div><b>${b.s}</b> <span class="ch">⏳ LİMİT ALIŞ</span><div class="s">%${f(b.dus,1)} düştü · emir ${fy(b.lim)} · şimdi ${b.c?fy(b.c):'–'} · ${ts(b.son)}'e kadar</div></div></div>`).join('')||(P.acik.length?'':'<div class="s">Açık ya da bekleyen dip işlemi yok.</div>');
+$('son').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="chip">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${g.neden} · funding ${sg(g.fon,3)} $</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
+const P=d.dip;$('dkart').innerHTML=`<div class="k"><div class="s">Dip kasa</div><div class="n ${rk(P.kasa-100)}">${f(P.kasa)} $</div></div><div class="k"><div class="s">Kapanan</div><div class="n ${rk(P.r)}">${sg(P.r)} $</div><div class="alt2">${P.n} işlem · ${P.n?'%'+f(P.kaz/P.n*100,0)+' kârlı':'–'}</div></div>`;
+$('dacik').innerHTML=P.acik.map(p=>{const pos=bar(p.stop,p.hedef);return `<div class="pz"><div class="ust"><div><b>${p.s}</b> <span class="chip l">LONG 5x</span></div><b class="${rk(p.pnl)}">${sg(p.pnl)} $</b></div>
+<div class="tbar"><b style="left:${pos(p.giris)}%"></b><i style="left:calc(${pos(p.c)}% - 2px)"></i></div><div class="ucl"><span>⛔ ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span>🎯 ${fy(p.hedef)}</span></div><div class="alt2">${ts(p.t)} · 2 günde %${f(p.dus,1)} düşmüştü</div></div>`}).join('');
+$('dbek').innerHTML=P.bekleyen.map(b=>`<div class="r"><div><b>${b.s}</b> <span class="chip">⏳ LİMİT ALIŞ</span><div class="s">%${f(b.dus,1)} düştü · emir ${fy(b.lim)} · şimdi ${b.c?fy(b.c):'–'} · ${ts(b.son)}'e kadar</div></div></div>`).join('')||(P.acik.length?'':'<div class="s">Açık ya da bekleyen dip işlemi yok.</div>');
 $('dyak').innerHTML=P.yakin.map(x=>`<div class="r"><b>${x.s}</b><span class="${x.dus<=-20?'eks':'s'}">2 günde %${f(x.dus,1)}</span></div>`).join('');
 $('dson').innerHTML=P.son.map(g=>`<div class="r"><div><b>${g.s}</b><div class="s">${ts(g.tk)} · ${g.neden}</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl)} $</b><div class="s">%${sg(g.yuzde)}</div></div></div>`).join('');
 $('log').innerHTML=d.log.slice(0,20).map(l=>ts(l[0])+' · '+l[1]).join('<br>');}catch(e){$('alt').textContent='⚠️ bağlantı yok'}}
-y();setInterval(y,10000);</script></body></html>"""
+async function z(){try{const d=await(await fetch('scalp/api',{cache:'no-store'})).json();
+$('salt').textContent=`${d.v} · ${ts(d.t0)}'den beri · ${d.evren} coin`+(d.hata?' · ⚠️ '+d.hata:'');
+$('skart').innerHTML=`<div class="k"><div class="s">Kasa (kağıt)</div><div class="n ${rk(d.oz-d.kasa0)}">${f(d.oz)} $</div><div class="alt2">açık ${sg(d.acik,3)} $</div></div>
+<div class="k"><div class="s">Kapanan</div><div class="n ${rk(d.r)}">${sg(d.r)} $</div><div class="alt2">${d.n} işlem · ${d.n?'%'+f(d.kaz/d.n*100,0)+' kârlı':'–'}</div></div>
+<div class="k"><div class="s">Ort. R · PF</div><div class="n">${sg(d.ortR,2)}R · ${d.pf==null?'–':f(d.pf)}</div></div>
+<div class="k"><div class="s">Bugün</div><div class="n ${rk(d.bugun_r)}">${sg(d.bugun_r)} $</div><div class="alt2">${d.bugun_n} işlem</div></div>`;
+$('sadet').textContent=d.P.length+'/10';
+$('sacik').innerHTML=d.P.map(p=>{const L=p.yon=='long',pos=bar(p.stop0,p.tp[4]);
+return `<div class="pz"><div class="ust"><div><b>${p.s}</b> <span class="chip ${L?'l':'sh'}">${p.yon.toUpperCase()} 5x</span> <span class="alt2">${sa(p.t)}</span></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
+<div class="tbar"><b style="left:${pos(p.giris)}%"></b>${p.tp.map((t,i)=>`<b style="left:${pos(t)}%;background:${i<p.tik?'var(--g)':'#22d39b66'}"></b>`).join('')}<u style="left:${pos(p.stop)}%;background:${p.tik?'var(--sari)':'var(--r)'}"></u><i style="left:calc(${pos(p.c)}% - 2px)"></i></div>
+<div class="ucl"><span>⛔ ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span>🎯 ${fy(p.tp[4])}</span></div>
+<div class="tps">${p.tp.map((t,i)=>`<span class="${i<p.tik?'ok':''}">${i<p.tik?'✓ ':''}TP${i+1} ${fy(t)}</span>`).join('')}</div>
+<div class="tik">${p.tik?`▲ iz ${p.tik}× · son ${sa(p.tik_t)} · `:''}${p.kilit>0?'🔒 kilitli '+sg(p.kilit,3)+' $':`<span class="s">${p.tik?'stop girişte':'stop olursa '+sg(p.kilit,3)+' $'}</span>`}</div></div>`}).join('')||'<div class="s">Açık işlem yok — sinyal bekleniyor (5 dk).</div>';
+$('str').innerHTML=d.trend.map(t=>`${t.s} ${t.u==1?'↑':'↓'}%${t.guc}`).join(' · ')||'–';
+$('star').textContent=d.tarama_t?'son 5 dk tarama '+ts(d.tarama_t)+' · EMA20\'ye en yakınlar:':'ilk tarama bekleniyor…';
+$('sizle').innerHTML=d.izle.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'LONG arar':'SHORT arar'} · EMA20'ye %${f(x.uz)}</span></div>`).join('');
+$('sson').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="chip">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${Math.round((g.tk-g.t)/60)} dk · ${g.neden}</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl,3)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
+$('slog').innerHTML=d.log.slice(0,25).map(l=>ts(l[0])+' · '+l[1]).join('<br>');}catch(e){$('salt').textContent='⚠️ bağlantı yok'}}
+let ilk='T';try{ilk=localStorage.getItem('sek')||'T'}catch(e){};if(location.hash=='#scalp')ilk='S';if(location.hash=='#trend')ilk='T';
+sek(ilk);setInterval(()=>AK=='T'?y():z(),8000);</script></body></html>"""
 
 class Panel(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -327,8 +378,7 @@ class Panel(BaseHTTPRequestHandler):
         yol = self.path.split("?")[0].rstrip("/")
         if yol in ("", "/"): b, t = SAYFA.encode(), "text/html; charset=utf-8"
         elif yol == "/api": b, t = json.dumps(veri(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
-        elif yol == "/scalp" and not self.path.split("?")[0].endswith("/"): self.send_response(301); self.send_header("Location", "/scalp/"); self.end_headers(); return
-        elif yol == "/scalp": b, t = scalp.SAYFA.encode(), "text/html; charset=utf-8"
+        elif yol == "/scalp": self.send_response(302); self.send_header("Location", "/#scalp"); self.end_headers(); return   # K1.5: tek sayfa, sekme
         elif yol == "/scalp/api": b, t = json.dumps(scalp.veri(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
         else: self.send_response(404); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Type", t); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(b)
