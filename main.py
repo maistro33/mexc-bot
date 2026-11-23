@@ -22,9 +22,10 @@
 import base64, json, os, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
+import dip                                       # K1.9: 🔍 Dip Bulucu (elle işlem için AL/BEKLE/ALMA sinyali, emir vermez)
 import scalp                                     # K1.4: ⚡ 5 dk Trend Scalp (ayrı kağıt) · K1.5: aynı sayfada sekme
 
-V = "K1.8 (23.11 15:20)"
+V = "K1.9 (23.11 17:15)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -284,7 +285,7 @@ h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--
 .p{background:var(--kart);border:1px solid var(--cizgi);border-radius:16px;padding:14px;margin:12px 0}
 .kartlar{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:12px 0}.k{background:linear-gradient(160deg,var(--kart2),var(--kart));border:1px solid var(--cizgi);border-radius:16px;padding:14px}
 .n{font-size:22px;font-weight:800}.art{color:var(--g)}.eks{color:var(--r)}.r{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #ffffff10}
-.sek{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.sek button{padding:11px;border-radius:12px;border:1px solid var(--cizgi);color:var(--soluk);font:700 15px system-ui;background:var(--kart)}
+.sek{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:12px 0}.sek button{padding:11px;border-radius:12px;border:1px solid var(--cizgi);color:var(--soluk);font:700 15px system-ui;background:var(--kart)}
 .sek button.on{color:#fff;background:linear-gradient(135deg,#5b8cff,#a56bff);border-color:transparent}
 .chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:#ffffff14}.chip.l{background:#22d39b22;color:var(--g)}.chip.sh{background:#ff5c7a22;color:var(--r)}
 .pz{border:1px solid var(--cizgi);border-radius:14px;padding:12px;margin-bottom:10px;background:var(--kart2)}.pz .ust{display:flex;justify-content:space-between;align-items:center}.pz b{font-size:16px}
@@ -295,7 +296,7 @@ h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--
 .tps span.ok{background:#22d39b26;color:var(--g);font-weight:800}.tik{margin-top:6px;font-size:12px;color:var(--sari);font-weight:700}
 .u{background:#ff5c7a22;color:var(--r);padding:8px;border-radius:10px;display:none}</style></head><body><div class="w">
 <h1>🤖 Kağıt botlar</h1><div class="s">Borsaya emir yok · sadece kağıt</div>
-<div class="sek"><button id="bT" onclick="sek('T')">📈 Trend</button><button id="bS" onclick="sek('S')">⚡ 5 dk Scalp</button></div>
+<div class="sek"><button id="bT" onclick="sek('T')">📈 Trend</button><button id="bS" onclick="sek('S')">⚡ Scalp</button><button id="bD" onclick="sek('D')">🔍 Dip Bulucu</button></div>
 
 <div id="T"><div class="s" id="alt"></div><div class="u" id="u"></div>
 <div class="kartlar" id="kart"></div>
@@ -308,6 +309,15 @@ h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--
 <b>Risk:</b> işlem başı kasanın %1'i, açık toplam en çok %3, kaldıraç en çok 5x, günde %3 zararda yeni işlem yok. <b>Maliyet:</b> komisyon %0,06+%0,06, kayma %0,05+%0,05, funding gerçek oranla.</div>
 <div class="p"><h2>🧾 Kayıt</h2><div class="s" id="log"></div></div></div>
 
+<div id="D" style="display:none">
+<div class="p"><h2>🔍 Coin sor</h2><div style="display:flex;gap:8px"><input id="dq" placeholder="ör. EVAA" autocapitalize="characters" style="flex:1;padding:12px;border-radius:12px;border:1px solid var(--cizgi);background:var(--kart2);color:#fff;font:600 16px system-ui" onkeydown="if(event.key=='Enter')sor()"><button onclick="sor()" style="padding:0 18px;border-radius:12px;border:0;background:linear-gradient(135deg,#5b8cff,#a56bff);color:#fff;font:700 15px system-ui">Bak</button></div><div id="dsonuc"></div>
+<div style="display:flex;gap:8px;margin-top:12px;align-items:center"><span class="s">🎯 TP'ler %</span><input id="dtp" value="5,10,15,20,25" inputmode="decimal" onchange="ayar()" style="flex:1;min-width:0;padding:8px;border-radius:10px;border:1px solid var(--cizgi);background:var(--kart2);color:#fff;font:600 14px system-ui">
+<span class="s">⛔ Stop %</span><input id="dsl" value="15" inputmode="decimal" onchange="ayar()" style="width:52px;padding:8px;border-radius:10px;border:1px solid var(--cizgi);background:var(--kart2);color:#fff;font:600 14px system-ui"></div>
+<div class="alt2" style="margin-top:4px">TP'leri virgülle yaz (ör. 3,6,10). Testte denenen: tek hedef %15, stop %15.</div></div>
+<div class="p"><h2>📡 Şu an düşmüş coinler <span class="s" id="dlt"></span></h2><div id="dlist"></div></div>
+<div class="p s"><b>Nasıl kullanılır.</b> İşlem açmadan önce coinin adını yaz, <b>Bak</b>'a bas. <b style="color:var(--g)">AL</b> çıkarsa yazan limit fiyatına emir koy, stop ve hedefi hemen gir. <b style="color:var(--sari)">BEKLE</b> ya da <b style="color:var(--r)">ALMA</b> çıkarsa girme.<br>
+<b>Kural</b> (Dip Alım botuyla aynı, 15 aylık testte artı): son 2 günde tepeden en az %20 düşmüş + fiyat 2 günlük dibe %2'den yakın → şimdiki fiyatın %3 altına limit alış · stop %15 aşağı · hedef %15 yukarı · en çok 7 gün bekle · kaldıraç en çok 3x. Garanti değil; bazıları stop olur. Bot borsaya emir vermez.</div></div>
+
 <div id="S" style="display:none"><div class="s" id="salt"></div>
 <div class="kartlar" id="skart"></div>
 <div class="p"><h2>💼 Açık işlemler <span class="s" id="sadet"></span></h2><div id="sacik"></div></div>
@@ -318,7 +328,21 @@ h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--
 <div class="p"><h2>🧾 Kayıt</h2><div class="s" id="slog"></div></div></div></div><script>
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
 const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:6)},ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}),sa=t=>new Date(t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'});
-let AK='T';function sek(x){AK=x;$('T').style.display=x=='T'?'':'none';$('S').style.display=x=='S'?'':'none';$('bT').className=x=='T'?'on':'';$('bS').className=x=='S'?'on':'';try{localStorage.setItem('sek',x)}catch(e){};history.replaceState(null,'',x=='S'?'#scalp':'#trend');x=='T'?y():z()}
+let AK='T';function sek(x){AK=x;for(const k of 'TSD'){$(k).style.display=x==k?'':'none';$('b'+k).className=x==k?'on':''}try{localStorage.setItem('sek',x)}catch(e){};history.replaceState(null,'',{T:'#trend',S:'#scalp',D:'#dip'}[x]);x=='T'?y():x=='S'?z():dl()}
+const RK={'✅':'var(--g)','⏳':'var(--sari)','⛔':'var(--r)'};
+function dkart(r,kisa){if(r.hata)return `<div class="pz"><b>${r.s}</b><div class="s">${r.hata}</div></div>`;
+const A=ayarlar(),pl=r.plan?`<div class="kartlar" style="grid-template-columns:1fr 1fr;margin:10px 0 4px"><div class="k" style="padding:10px"><div class="alt2">Limit alış</div><b>${fy(r.plan.lim)}</b></div><div class="k" style="padding:10px"><div class="alt2">⛔ Stop −%${f(A.sl,1)}</div><b class="eks">${fy(r.plan.lim*(1-A.sl/100))}</b></div></div>
+<div class="tps">${A.tp.map((p,i)=>`<span class="ok">🎯 TP${i+1} +%${f(p,1)} · ${fy(r.plan.lim*(1+p/100))}</span>`).join('')}</div>`:'';
+return `<div class="pz" style="border-color:${RK[r.k]}"><div class="ust"><div><b>${r.s}</b> <span class="alt2">${fy(r.c)}</span></div><b style="color:${RK[r.k]};font-size:${kisa?15:20}px">${r.k} ${r.baslik.split(' — ')[0]}</b></div>
+<div class="s" style="margin-top:6px">${r.baslik.split(' — ')[1]||''}. ${r.neden}</div>${pl}
+${kisa?'':`<div class="ucl" style="margin-top:8px"><span>2 gün tepe ${fy(r.h2)}</span><span>dip ${fy(r.l2)}</span><span>7 gün tepe ${fy(r.h7)}</span></div><div class="alt2" style="margin-top:6px">${r.notlar.join('<br>')}</div>`}</div>`}
+function ayarlar(){let tp=[5,10,15,20,25],sl=15;try{const a=JSON.parse(localStorage.getItem('dipayar')||'null');if(a){tp=a.tp;sl=a.sl}}catch(e){}return{tp,sl}}
+function ayar(){const tp=$('dtp').value.split(/[,; ]+/).map(x=>parseFloat(x.replace(',','.'))).filter(x=>x>0&&x<500).sort((a,b)=>a-b).slice(0,10),sl=parseFloat($('dsl').value.replace(',','.'));
+if(!tp.length||!(sl>0&&sl<90))return;try{localStorage.setItem('dipayar',JSON.stringify({tp,sl}))}catch(e){};if($('dq').value.trim())sor();dl()}
+async function sor(){const q=$('dq').value.trim();if(!q)return;$('dsonuc').innerHTML='<div class="s" style="margin-top:8px">bakılıyor…</div>';
+try{const r=await(await fetch('dip/api?s='+encodeURIComponent(q),{cache:'no-store'})).json();$('dsonuc').innerHTML='<div style="margin-top:10px">'+dkart(r,0)+'</div>'}catch(e){$('dsonuc').innerHTML='<div class="s">⚠️ bağlantı yok</div>'}}
+async function dl(){try{const d=await(await fetch('dip/liste',{cache:'no-store'})).json();$('dlt').textContent=d.t?'· '+sa(d.t)+' · 5 dk\'da bir':'· ilk tarama…';
+$('dlist').innerHTML=d.liste.map(r=>dkart(r,1)).join('')||'<div class="s">Şu an 2 günde %20+ düşmüş coin yok.</div>'}catch(e){}}
 const kl=(x,a,b)=>Math.max(0,Math.min(100,x));
 function bar(sol,sag,isaret){const pos=x=>kl((x-sol)/(sag-sol)*100);return pos}
 async function y(){try{const d=await(await fetch('api',{cache:'no-store'})).json();
@@ -360,8 +384,8 @@ $('star').textContent=d.tarama_t?'son 5 dk tarama '+ts(d.tarama_t)+' · EMA20\'y
 $('sizle').innerHTML=d.izle.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'LONG arar':'SHORT arar'} · EMA20'ye %${f(x.uz)}</span></div>`).join('');
 $('sson').innerHTML=d.son.map(g=>`<div class="r"><div><b>${g.s}</b> <span class="chip">${g.yon.toUpperCase()}</span><div class="s">${ts(g.tk)} · ${Math.round((g.tk-g.t)/60)} dk · ${g.neden}</div></div><div style="text-align:right"><b class="${rk(g.pnl)}">${sg(g.pnl,3)} $</b><div class="s">${sg(g.R)}R</div></div></div>`).join('')||'<div class="s">Henüz yok.</div>';
 $('slog').innerHTML=d.log.slice(0,25).map(l=>ts(l[0])+' · '+l[1]).join('<br>');}catch(e){$('salt').textContent='⚠️ bağlantı yok'}}
-let ilk='T';try{ilk=localStorage.getItem('sek')||'T'}catch(e){};if(location.hash=='#scalp')ilk='S';if(location.hash=='#trend')ilk='T';
-sek(ilk);setInterval(()=>AK=='T'?y():z(),8000);</script></body></html>"""
+let ilk='T';try{ilk=localStorage.getItem('sek')||'T'}catch(e){};if(location.hash=='#scalp')ilk='S';if(location.hash=='#trend')ilk='T';if(location.hash=='#dip')ilk='D';
+{const A=ayarlar();$('dtp').value=A.tp.join(',');$('dsl').value=A.sl}sek(ilk);setInterval(()=>AK=='T'?y():AK=='S'?z():dl(),8000);</script></body></html>"""
 
 class Panel(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -379,10 +403,15 @@ class Panel(BaseHTTPRequestHandler):
         if yol in ("", "/"): b, t = SAYFA.encode(), "text/html; charset=utf-8"
         elif yol == "/api": b, t = json.dumps(veri(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
         elif yol == "/scalp": self.send_response(302); self.send_header("Location", "/#scalp"); self.end_headers(); return   # K1.5: tek sayfa, sekme
+        elif yol == "/dip/api":
+            from urllib.parse import urlparse, parse_qs
+            q = parse_qs(urlparse(self.path).query).get("s", [""])[0][:20]
+            b, t = json.dumps(dip.analiz(q) if q else {"hata": "coin adı yok"}, ensure_ascii=False).encode(), "application/json; charset=utf-8"
+        elif yol == "/dip/liste": b, t = json.dumps(dip.liste(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
         elif yol == "/scalp/api": b, t = json.dumps(scalp.veri(), ensure_ascii=False).encode(), "application/json; charset=utf-8"
         else: self.send_response(404); self.end_headers(); return
         self.send_response(200); self.send_header("Content-Type", t); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(b)
 
 if __name__ == "__main__":
-    threading.Thread(target=dongu, daemon=True).start(); scalp.basla()
+    threading.Thread(target=dongu, daemon=True).start(); scalp.basla(); dip.basla()
     ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), Panel).serve_forever()
