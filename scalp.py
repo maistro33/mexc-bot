@@ -12,7 +12,7 @@
 import json, os, threading, time, traceback
 import requests
 
-V = "S1.3 (23.11 02:00)"
+V = "S1.3 (23.11 02:00 · sıfırlandı)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "scalp5.json")
@@ -29,7 +29,7 @@ def tp_kur(q):                                          # eski işlemlere de 5 T
     return q
 
 KIL = threading.RLock()
-S = {"v": 1, "kasa": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}}
+S = {"v": 2, "kasa": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}}
 D = {"fiyat": {}, "trend": {}, "trend_t": 0, "evren": [], "kripto": set(), "hata": "", "tarama_t": 0, "izle": []}
 
 def kaydet():
@@ -43,7 +43,7 @@ def kaydet():
 def yukle():
     try:
         with open(DOSYA) as f: d = json.load(f)
-        if d.get("v") == 1: S.update(d)
+        if d.get("v") == 2: S.update(d)          # S1.3: v2 = 23.11 sıfırdan başlangıç (Sadık)
     except Exception: pass
 
 def log(m):
