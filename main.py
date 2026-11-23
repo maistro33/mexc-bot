@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 import scalp                                     # K1.4: ⚡ 5 dk Trend Scalp (ayrı kağıt) · K1.5: aynı sayfada sekme
 
-V = "K1.6 (23.11 02:00)"
+V = "K1.7 (23.11 15:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -313,7 +313,7 @@ h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--
 <div class="p"><h2>💼 Açık işlemler <span class="s" id="sadet"></span></h2><div id="sacik"></div></div>
 <div class="p"><h2>🧭 4 saatlikte güçlü trenddeki coinler</h2><div class="s" id="str"></div><div class="s" style="margin-top:6px" id="star"></div><div id="sizle"></div></div>
 <div class="p"><h2>📒 Kapanan</h2><div id="sson"></div></div>
-<div class="p s"><b>Kural.</b> Bitget'te son 24 saatte en çok yükselen 30 coin (hacim ≥0,5 M$, 30 dk'da bir yenilenir). 4 saatlikte güçlü trend (EMA20>EMA50, 2 günde ≥%10) olan coinde 5 dk mum EMA20'ye geri çekilip trend yönünde dönünce girer. Stop son 4 mumun dibi/tepesi.
+<div class="p s"><b>Kural.</b> Bitget'te son 24 saatte en çok yükselen 30 coin (hacim ≥0,5 M$, 30 dk'da bir yenilenir). 4 saatlikte güçlü trend (EMA20>EMA50, 2 günde ≥%10) olan coinde 5 dk mum EMA20'ye geri çekilip trend yönünde dönünce girer; 15 dk'da da aynı yön (EMA20>EMA50) şart. Stop son 4 mumun dibi/tepesi.
 <b>5 TP:</b> 1R · 1,5R · 2R · 2,5R · 3R. Stop girişe %2'den yakınsa girmez. TP1'de stop yerinde kalır; TP2 geçince stop TP1'e, TP3'te TP2'ye, TP4'te TP3'e çekilir (her biri ▲ tik); TP5'te kapanır. En çok 2 saat. 3 $ × 5x, en çok 10 açık, komisyon+kayma dahil.</div>
 <div class="p"><h2>🧾 Kayıt</h2><div class="s" id="slog"></div></div></div></div><script>
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';

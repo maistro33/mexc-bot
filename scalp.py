@@ -1,5 +1,6 @@
 # ⚡ 5 DK TREND SCALP — KAĞIT (Sadık'ın isteği, 22.11.2026). Borsaya emir kodu YOK.
-# Sürüm S1.4 — hız: 4H trend ayrı iş parçasında (taramayı bekletmiyordu → bir giriş 264 sn geç açılmıştı), 5 dk mumlar paralel, tarama kapanıştan 4 sn sonra
+# Sürüm S1.5 — yön filtresi: 15 dk'da kapanış>EMA20>EMA50 (long; short tersi) değilse girmez (8 günlük testte +9,5 $ → +21,4 $, 4 bölmenin 4'ünde artı)
+# S1.4 — hız: 4H trend ayrı iş parçasında (taramayı bekletmiyordu → bir giriş 264 sn geç açılmıştı), 5 dk mumlar paralel, tarama kapanıştan 4 sn sonra
 # S1.3 — stop %2'den yakınsa girmez · TP1'de stop yerinde kalır, TP2'den itibaren çekilir (6 günlük testte −7,5 $ → +17,8 $)
 # S1.2 — 5 TP (1R·1,5R·2R·2,5R·3R): TP1 → stop girişe, TP2 → stop TP1'e … her kilit ▲ tik; TP5 = çıkış
 # Evren: Bitget'te son 24 saatte EN ÇOK YÜKSELEN ilk 30 kripto (hisse/ETF hariç, hacim ≥0,5 M$), saatte bir yenilenir.
@@ -14,7 +15,7 @@ import json, os, threading, time, traceback
 from concurrent.futures import ThreadPoolExecutor
 import requests
 
-V = "S1.4 (23.11 14:45)"
+V = "S1.5 (23.11 15:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "scalp5.json")
@@ -71,7 +72,7 @@ def mum(s, g, n):
     d = get("candles", symbol=s, granularity=g, limit=str(n))
     if not d: return None
     d = sorted(d, key=lambda x: int(x[0]))
-    adim = {"5m": 300, "4H": 14400}[g] * 1000
+    adim = {"5m": 300, "15m": 900, "4H": 14400}[g] * 1000
     if int(d[-1][0]) + adim > time.time() * 1000: d = d[:-1]          # sadece kapanmış mumlar
     return [[float(x[1]), float(x[2]), float(x[3]), float(x[4])] for x in d]
 
@@ -128,6 +129,13 @@ def tara():                                             # her 5 dk mum kapanış
         if not (dok and don): continue
         st = min(x[2] for x in m[-4:]) * 0.998 if u == 1 else max(x[1] for x in m[-4:]) * 1.002
         p = D["fiyat"].get(s) or c[-1]; g = p * (1 + u * KAYMA); risk = abs(g - st) / g
+        if not (MINR <= risk <= 0.05) or u * (g - st) <= 0: continue
+        m15 = mum(s, "15m", 100)                                       # S1.5: 15 dk yön filtresi (100 mum)
+        if not m15 or len(m15) < 60: continue
+        c15 = [x[3] for x in m15]; a20 = ema(c15, 20)[-1]; a50 = ema(c15, 50)[-1]
+        if not ((c15[-1] > a20 > a50) if u == 1 else (c15[-1] < a20 < a50)):
+            log(f"🚫 {ad(s)} 5 dk sinyal var ama 15 dk yön ters — girmedi"); continue
+        p = D["fiyat"].get(s) or c[-1]; g = p * (1 + u * KAYMA); risk = abs(g - st) / g     # filtre sonrası taze fiyat
         if not (MINR <= risk <= 0.05) or u * (g - st) <= 0: continue
         with KIL:
             if len(S["acik"]) >= MAXA: log(f"⏸ {ad(s)} sinyal ama 10 işlem dolu"); continue
