@@ -1,5 +1,6 @@
 # ⚡ 5 DK TREND SCALP — KAĞIT (Sadık'ın isteği, 22.11.2026). Borsaya emir kodu YOK.
-# Sürüm S1.2 — 5 TP (1R·1,5R·2R·2,5R·3R): TP1 → stop girişe, TP2 → stop TP1'e … her kilit ▲ tik; TP5 = çıkış
+# Sürüm S1.3 — stop %2'den yakınsa girmez · TP1'de stop yerinde kalır, TP2'den itibaren çekilir (6 günlük testte −7,5 $ → +17,8 $)
+# S1.2 — 5 TP (1R·1,5R·2R·2,5R·3R): TP1 → stop girişe, TP2 → stop TP1'e … her kilit ▲ tik; TP5 = çıkış
 # Evren: Bitget'te son 24 saatte EN ÇOK YÜKSELEN ilk 30 kripto (hisse/ETF hariç, hacim ≥0,5 M$), saatte bir yenilenir.
 # Strateji (testlerde 5 dk'da en az kaybettiren): 4 saatlikte güçlü trend + 5 dk'da EMA20'ye geri çekilip dönüş
 #   LONG : 4H kapanış > EMA20 > EMA50 ve son 2 günün dibinden ≥%10 yukarıda · 5 dk: önceki mum EMA20'ye değdi, bu mum yeşil ve EMA20 üstünde kapandı
@@ -11,14 +12,15 @@
 import json, os, threading, time, traceback
 import requests
 
-V = "S1.2 (22.11 22:40)"
+V = "S1.3 (23.11 02:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "scalp5.json")
 KASA0, MJ, LEV, MAXA, EVREN = 100.0, 3.0, 5, 10, 30
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0003
 GUC, RR, MAXDK, BEKLE = 0.10, 1.5, 120, 15 * 60
-TPR = (1.0, 1.5, 2.0, 2.5, 3.0)                         # S1.2: 5 TP (R katı)
+TPR = (1.0, 1.5, 2.0, 2.5, 3.0)
+MINR = 0.02                                             # S1.3: stop girişe %2'den yakınsa girme (gürültüde patlıyordu)                         # S1.2: 5 TP (R katı)
 
 def tp_kur(q):                                          # eski işlemlere de 5 TP ekle
     if "tp" not in q:
@@ -105,7 +107,7 @@ def tara():                                             # her 5 dk mum kapanış
         if not (dok and don): continue
         st = min(x[2] for x in m[-4:]) * 0.998 if u == 1 else max(x[1] for x in m[-4:]) * 1.002
         p = D["fiyat"].get(s) or c[-1]; g = p * (1 + u * KAYMA); risk = abs(g - st) / g
-        if not (0.004 <= risk <= 0.05) or u * (g - st) <= 0: continue
+        if not (MINR <= risk <= 0.05) or u * (g - st) <= 0: continue
         with KIL:
             if len(S["acik"]) >= MAXA: log(f"⏸ {ad(s)} sinyal ama 10 işlem dolu"); continue
             adet = MJ * LEV / g
@@ -136,12 +138,12 @@ def dongu():
                 q = S["acik"][s]; c = D["fiyat"].get(s); u = q["u"]
                 if not c: continue
                 tp_kur(q); k = q["tik"]
-                if u * (c - q["stop"]) <= 0: kapat(s, c * (1 - u * KAYMA), ("🔒 kâr kilidi (TP%d sonrası)" % k) if k >= 2 else "giriş stopu (TP1 sonrası)" if k == 1 else "stop", TAKER)
+                if u * (c - q["stop"]) <= 0: kapat(s, c * (1 - u * KAYMA), ("🔒 kâr kilidi (TP%d sonrası)" % k) if k >= 2 else "stop (TP1 görmüştü)" if k == 1 else "stop", TAKER)
                 elif u * (c - q["tp"][4]) >= 0: kapat(s, q["tp"][4], "🎯 TP5", MAKER)
                 elif k < 4 and u * (c - q["tp"][k]) >= 0:              # ▲ tik: TP geçildi → stop bir basamak yukarı
                     with KIL:
                         while k < 4 and u * (c - q["tp"][k]) >= 0: k += 1
-                        yeni = q["giris"] * (1 + u * 0.0012) if k == 1 else q["tp"][k - 2]
+                        yeni = q["tp"][k - 2] if k >= 2 else q["stop"]          # S1.3: TP1'de stop yerinde, TP2→TP1, TP3→TP2…
                         if u * (yeni - q["stop"]) > 0: q["stop"] = yeni
                         q["tik"] = k; q["tik_t"] = int(time.time())
                     log(f"▲ {ad(s)} TP{k} ✓ · stop → {q['stop']:g} · kilitli {q['adet'] * u * (q['stop'] - q['giris']):+.3f} $"); kaydet()

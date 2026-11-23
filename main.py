@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 import scalp                                     # K1.4: ⚡ 5 dk Trend Scalp (ayrı kağıt) · K1.5: aynı sayfada sekme
 
-V = "K1.5 (22.11 22:40)"
+V = "K1.6 (23.11 02:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "trend_kagit.json")
@@ -313,8 +313,8 @@ h1{font-size:20px;margin:4px 0}h2{font-size:16px;margin:0 0 10px}.s{color:var(--
 <div class="p"><h2>💼 Açık işlemler <span class="s" id="sadet"></span></h2><div id="sacik"></div></div>
 <div class="p"><h2>🧭 4 saatlikte güçlü trenddeki coinler</h2><div class="s" id="str"></div><div class="s" style="margin-top:6px" id="star"></div><div id="sizle"></div></div>
 <div class="p"><h2>📒 Kapanan</h2><div id="sson"></div></div>
-<div class="p s"><b>Kural.</b> Bitget'te son 24 saatte en çok yükselen 30 coin (hacim ≥0,5 M$). 4 saatlikte güçlü trend (EMA20>EMA50, 2 günde ≥%10) olan coinde 5 dk mum EMA20'ye geri çekilip trend yönünde dönünce girer. Stop son 4 mumun dibi/tepesi.
-<b>5 TP:</b> 1R · 1,5R · 2R · 2,5R · 3R. TP1 geçince stop girişe, TP2 geçince TP1'e, TP3'te TP2'ye, TP4'te TP3'e çekilir (her biri ▲ tik); TP5'te kapanır. En çok 2 saat. 3 $ × 5x, en çok 10 açık, komisyon+kayma dahil.</div>
+<div class="p s"><b>Kural.</b> Bitget'te son 24 saatte en çok yükselen 30 coin (hacim ≥0,5 M$, 30 dk'da bir yenilenir). 4 saatlikte güçlü trend (EMA20>EMA50, 2 günde ≥%10) olan coinde 5 dk mum EMA20'ye geri çekilip trend yönünde dönünce girer. Stop son 4 mumun dibi/tepesi.
+<b>5 TP:</b> 1R · 1,5R · 2R · 2,5R · 3R. Stop girişe %2'den yakınsa girmez. TP1'de stop yerinde kalır; TP2 geçince stop TP1'e, TP3'te TP2'ye, TP4'te TP3'e çekilir (her biri ▲ tik); TP5'te kapanır. En çok 2 saat. 3 $ × 5x, en çok 10 açık, komisyon+kayma dahil.</div>
 <div class="p"><h2>🧾 Kayıt</h2><div class="s" id="slog"></div></div></div></div><script>
 const $=i=>document.getElementById(i),f=(x,d=2)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),sg=(x,d=2)=>(x>0?'+':'')+f(x,d),rk=x=>x>0?'art':x<0?'eks':'';
 const fy=x=>{x=Number(x);return f(x,x>=1000?1:x>=1?4:6)},ts=t=>new Date(t*1000).toLocaleString('tr-TR',{timeZone:'Europe/Stockholm',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}),sa=t=>new Date(t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'});
@@ -354,7 +354,7 @@ return `<div class="pz"><div class="ust"><div><b>${p.s}</b> <span class="chip ${
 <div class="tbar"><b style="left:${pos(p.giris)}%"></b>${p.tp.map((t,i)=>`<b style="left:${pos(t)}%;background:${i<p.tik?'var(--g)':'#22d39b66'}"></b>`).join('')}<u style="left:${pos(p.stop)}%;background:${p.tik?'var(--sari)':'var(--r)'}"></u><i style="left:calc(${pos(p.c)}% - 2px)"></i></div>
 <div class="ucl"><span>⛔ ${fy(p.stop)}</span><span>giriş ${fy(p.giris)}</span><span>🎯 ${fy(p.tp[4])}</span></div>
 <div class="tps">${p.tp.map((t,i)=>`<span class="${i<p.tik?'ok':''}">${i<p.tik?'✓ ':''}TP${i+1} ${fy(t)}</span>`).join('')}</div>
-<div class="tik">${p.tik?`▲ iz ${p.tik}× · son ${sa(p.tik_t)} · `:''}${p.kilit>0?'🔒 kilitli '+sg(p.kilit,3)+' $':`<span class="s">${p.tik?'stop girişte':'stop olursa '+sg(p.kilit,3)+' $'}</span>`}</div></div>`}).join('')||'<div class="s">Açık işlem yok — sinyal bekleniyor (5 dk).</div>';
+<div class="tik">${p.tik?`▲ iz ${p.tik}× · son ${sa(p.tik_t)} · `:''}${p.kilit>0?'🔒 kilitli '+sg(p.kilit,3)+' $':`<span class="s">${p.tik&&p.kilit>=0?'stop girişte':'stop olursa '+sg(p.kilit,3)+' $'}</span>`}</div></div>`}).join('')||'<div class="s">Açık işlem yok — sinyal bekleniyor (5 dk).</div>';
 $('str').innerHTML=d.trend.map(t=>`${t.s} ${t.u==1?'↑':'↓'}%${t.guc}`).join(' · ')||'–';
 $('star').textContent=d.tarama_t?'son 5 dk tarama '+ts(d.tarama_t)+' · EMA20\'ye en yakınlar:':'ilk tarama bekleniyor…';
 $('sizle').innerHTML=d.izle.map(x=>`<div class="r"><b>${x.s}</b><span class="s">${x.yon=='long'?'LONG arar':'SHORT arar'} · EMA20'ye %${f(x.uz)}</span></div>`).join('');
