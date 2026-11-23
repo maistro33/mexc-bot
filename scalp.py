@@ -1,5 +1,6 @@
 # ⚡ 5 DK TREND SCALP — KAĞIT (Sadık'ın isteği, 22.11.2026). Borsaya emir kodu YOK.
-# Sürüm S1.5 — yön filtresi: 15 dk'da kapanış>EMA20>EMA50 (long; short tersi) değilse girmez (8 günlük testte +9,5 $ → +21,4 $, 4 bölmenin 4'ünde artı)
+# Sürüm S1.6 — sınırsız TP: 1R,2R,3R… her 1R'de bir TP; geçildikçe yenisi eklenir, stop bir önceki TP'ye (TP2→TP1 …). Kapanış: stop ya da 2 saat (8 günlük testte 1R aralıklı TP: +21,4 → +25,7 $)
+# S1.5 — yön filtresi: 15 dk'da kapanış>EMA20>EMA50 (long; short tersi) değilse girmez (8 günlük testte +9,5 $ → +21,4 $, 4 bölmenin 4'ünde artı)
 # S1.4 — hız: 4H trend ayrı iş parçasında (taramayı bekletmiyordu → bir giriş 264 sn geç açılmıştı), 5 dk mumlar paralel, tarama kapanıştan 4 sn sonra
 # S1.3 — stop %2'den yakınsa girmez · TP1'de stop yerinde kalır, TP2'den itibaren çekilir (6 günlük testte −7,5 $ → +17,8 $)
 # S1.2 — 5 TP (1R·1,5R·2R·2,5R·3R): TP1 → stop girişe, TP2 → stop TP1'e … her kilit ▲ tik; TP5 = çıkış
@@ -15,14 +16,14 @@ import json, os, threading, time, traceback
 from concurrent.futures import ThreadPoolExecutor
 import requests
 
-V = "S1.5 (23.11 15:00)"
+V = "S1.6 (23.11 15:20)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "scalp5.json")
 KASA0, MJ, LEV, MAXA, EVREN = 100.0, 3.0, 5, 10, 30
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0003
 GUC, RR, MAXDK, BEKLE = 0.10, 1.5, 120, 15 * 60
-TPR = (1.0, 1.5, 2.0, 2.5, 3.0)
+TPR = (1.0, 2.0, 3.0, 4.0, 5.0)                         # S1.6: başlangıçta 5 TP görünür, geçildikçe +1R eklenir (sınırsız)
 MINR = 0.02                                             # S1.3: stop girişe %2'den yakınsa girme (gürültüde patlıyordu)                         # S1.2: 5 TP (R katı)
 
 def tp_kur(q):                                          # eski işlemlere de 5 TP ekle
@@ -140,8 +141,8 @@ def tara():                                             # her 5 dk mum kapanış
         with KIL:
             if len(S["acik"]) >= MAXA: log(f"⏸ {ad(s)} sinyal ama 10 işlem dolu"); continue
             adet = MJ * LEV / g
-            q = tp_kur({"u": u, "giris": g, "stop": st, "stop0": st, "adet": adet, "t": int(time.time()), "risk": risk}); S["acik"][s] = q
-        log(f"{'🔺 LONG' if u == 1 else '🔻 SHORT'} {ad(s)} @ {g:g} · stop {st:g} (%{risk * 100:.2f}) · TP1 {q['tp'][0]:g} … TP5 {q['tp'][4]:g} · 4H trend %{guc}")
+            q = tp_kur({"u": u, "giris": g, "stop": st, "stop0": st, "adet": adet, "t": int(time.time()), "risk": risk, "sinirsiz": 1}); S["acik"][s] = q
+        log(f"{'🔺 LONG' if u == 1 else '🔻 SHORT'} {ad(s)} @ {g:g} · stop {st:g} (%{risk * 100:.2f}) · TP1 {q['tp'][0]:g} · TP2 {q['tp'][1]:g} … (sınırsız, her 1R) · 4H trend %{guc}")
     with KIL: D["izle"] = sorted(izle, key=lambda x: abs(x["uz"]))[:10]; D["tarama_t"] = int(time.time())
     kaydet()
 
@@ -167,11 +168,13 @@ def dongu():
                 q = S["acik"][s]; c = D["fiyat"].get(s); u = q["u"]
                 if not c: continue
                 tp_kur(q); k = q["tik"]
-                if u * (c - q["stop"]) <= 0: kapat(s, c * (1 - u * KAYMA), ("🔒 kâr kilidi (TP%d sonrası)" % k) if k >= 2 else "stop (TP1 görmüştü)" if k == 1 else "stop", TAKER)
-                elif u * (c - q["tp"][4]) >= 0: kapat(s, q["tp"][4], "🎯 TP5", MAKER)
-                elif k < 4 and u * (c - q["tp"][k]) >= 0:              # ▲ tik: TP geçildi → stop bir basamak yukarı
+                if u * (c - q["stop"]) <= 0: kapat(s, c * (1 - u * KAYMA), ("🔒 kâr kilidi (TP%d sonrası, stop TP%d)" % (k, k - 1)) if k >= 2 else "stop (TP1 görmüştü)" if k == 1 else "stop", TAKER)
+                elif not q.get("sinirsiz") and u * (c - q["tp"][4]) >= 0: kapat(s, q["tp"][4], "🎯 TP5", MAKER)   # S1.5'ten kalan eski işlemler
+                elif k < len(q["tp"]) and u * (c - q["tp"][k]) >= 0:              # ▲ tik: TP geçildi → stop bir basamak yukarı
                     with KIL:
-                        while k < 4 and u * (c - q["tp"][k]) >= 0: k += 1
+                        while k < len(q["tp"]) and u * (c - q["tp"][k]) >= 0:
+                            k += 1
+                            if k >= len(q["tp"]) - 1 and q.get("sinirsiz"): q["tp"].append(q["tp"][-1] + u * abs(q["giris"] - q["stop0"]))   # S1.6: yeni TP ekle
                         yeni = q["tp"][k - 2] if k >= 2 else q["stop"]          # S1.3: TP1'de stop yerinde, TP2→TP1, TP3→TP2…
                         if u * (yeni - q["stop"]) > 0: q["stop"] = yeni
                         q["tik"] = k; q["tik_t"] = int(time.time())
