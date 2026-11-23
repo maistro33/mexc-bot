@@ -1,5 +1,6 @@
 # ⚡ 5 DK TREND SCALP — KAĞIT (Sadık'ın isteği, 22.11.2026). Borsaya emir kodu YOK.
-# Sürüm S1.3 — stop %2'den yakınsa girmez · TP1'de stop yerinde kalır, TP2'den itibaren çekilir (6 günlük testte −7,5 $ → +17,8 $)
+# Sürüm S1.4 — hız: 4H trend ayrı iş parçasında (taramayı bekletmiyordu → bir giriş 264 sn geç açılmıştı), 5 dk mumlar paralel, tarama kapanıştan 4 sn sonra
+# S1.3 — stop %2'den yakınsa girmez · TP1'de stop yerinde kalır, TP2'den itibaren çekilir (6 günlük testte −7,5 $ → +17,8 $)
 # S1.2 — 5 TP (1R·1,5R·2R·2,5R·3R): TP1 → stop girişe, TP2 → stop TP1'e … her kilit ▲ tik; TP5 = çıkış
 # Evren: Bitget'te son 24 saatte EN ÇOK YÜKSELEN ilk 30 kripto (hisse/ETF hariç, hacim ≥0,5 M$), saatte bir yenilenir.
 # Strateji (testlerde 5 dk'da en az kaybettiren): 4 saatlikte güçlü trend + 5 dk'da EMA20'ye geri çekilip dönüş
@@ -10,9 +11,10 @@
 # Maliyet: giriş/çıkış %0,06 taker + %0,03 kayma (hedef limit: %0,02)
 # Dürüst not: 1 aylık 5 dk testinde bu kural işlem başı ≈ −0,12…−0,19R çıktı. Burada CANLI ölçülüyor.
 import json, os, threading, time, traceback
+from concurrent.futures import ThreadPoolExecutor
 import requests
 
-V = "S1.3 (23.11 02:00 · sıfırlandı)"
+V = "S1.4 (23.11 14:45)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "scalp5.json")
@@ -73,6 +75,13 @@ def mum(s, g, n):
     if int(d[-1][0]) + adim > time.time() * 1000: d = d[:-1]          # sadece kapanmış mumlar
     return [[float(x[1]), float(x[2]), float(x[3]), float(x[4])] for x in d]
 
+def mum5(s):                                             # S1.4: 5 dk kapanmış mumlar + zaman damgası (5. alan, sn)
+    d = get("candles", symbol=s, granularity="5m", limit="60")
+    if not d: return None
+    d = sorted(d, key=lambda x: int(x[0]))
+    if int(d[-1][0]) + 300_000 > time.time() * 1000: d = d[:-1]
+    return [[float(x[1]), float(x[2]), float(x[3]), float(x[4]), int(x[0]) // 1000] for x in d]
+
 def evren():
     if not D["kripto"]:
         c = get("contracts") or []
@@ -85,7 +94,7 @@ def evren():
 def trend_guncelle():                                   # saatte bir: 4H trend yönü
     D["evren"] = evren(); tr = {}
     for s in D["evren"]:
-        m = mum(s, "4H", 100); time.sleep(0.04)
+        m = mum(s, "4H", 100); time.sleep(0.12)          # S1.4: paralel taramaya yer bırak (Bitget limiti)
         if not m or len(m) < 60: continue
         c = [x[3] for x in m]; e20 = ema(c, 20)[-1]; e50 = ema(c, 50)[-1]; son = c[-1]
         dip = min(x[2] for x in m[-13:]); tepe = max(x[1] for x in m[-13:])
@@ -96,9 +105,21 @@ def trend_guncelle():                                   # saatte bir: 4H trend y
 
 def tara():                                             # her 5 dk mum kapanışında
     izle = []
-    for s, (u, guc) in list(D["trend"].items()):
-        if s in S["acik"] or time.time() - S["son_kapanis"].get(s, 0) < BEKLE: continue
-        m = mum(s, "5m", 60); time.sleep(0.04)
+    hedef_bar = (int(time.time()) // 300 - 1) * 300                     # S1.4: az önce kapanan mum
+    def al(s):
+        for _ in range(4):                                             # kapanan mum borsada henüz yoksa kısa bekle
+            m = mum5(s)
+            if m and m[-1][4] >= hedef_bar: return s, m
+            time.sleep(1)
+        return s, m
+    adaylar = [s for s in list(D["trend"]) if s not in S["acik"] and time.time() - S["son_kapanis"].get(s, 0) >= BEKLE]
+    with ThreadPoolExecutor(8) as ex: MM = dict(ex.map(al, adaylar))
+    tk = get("tickers") or []                                          # S1.4: girişte taze fiyat
+    taze = {x["symbol"]: float(x["lastPr"]) for x in tk if x.get("lastPr")}
+    if taze: D["fiyat"] = taze
+    for s in adaylar:
+        u, guc = D["trend"].get(s, (0, 0)); m = MM.get(s)
+        if not u: continue
         if not m or len(m) < 30: continue
         c = [x[3] for x in m]; e = ema(c, 20)
         izle.append({"s": ad(s), "yon": "long" if u == 1 else "short", "guc": guc, "uz": round((c[-1] / e[-1] - 1) * 100, 2)})
@@ -148,8 +169,14 @@ def dongu():
                         q["tik"] = k; q["tik_t"] = int(time.time())
                     log(f"▲ {ad(s)} TP{k} ✓ · stop → {q['stop']:g} · kilitli {q['adet'] * u * (q['stop'] - q['giris']):+.3f} $"); kaydet()
                 elif time.time() - q["t"] > MAXDK * 60: kapat(s, c * (1 - u * KAYMA), "süre (2 sa)", TAKER)
-            if time.time() - D["trend_t"] > 1800: trend_guncelle()
-            b = int((time.time() - 8) // 300)
+            if time.time() - D["trend_t"] > 1800 and not D.get("tr_calisiyor"):      # S1.4: ayrı iş parçası — taramayı bekletmez
+                D["tr_calisiyor"] = True
+                def _tr():
+                    try: trend_guncelle()
+                    except Exception: traceback.print_exc()
+                    finally: D["tr_calisiyor"] = False
+                threading.Thread(target=_tr, daemon=True).start()
+            b = int((time.time() - 4) // 300)
             if b != son5: son5 = b; tara()
             D["hata"] = ""
         except Exception as e:
