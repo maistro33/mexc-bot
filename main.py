@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.2: grafikte bütün TP çizgileri + giriş ● + her TP/basamakta ▲ işareti (sadece görüntü, kurallar aynı)
 # M1.1: + 🪜 MERDİVEN modu (ayrı sekme, ayrı 100 $ kağıt kasa) — 15 dk'da yükselen dipler+tepeler, son tepe kırılınca LONG (tersi SHORT);
 #       stop son dibin altında (en çok %3), her yeni yükselen dipte stop yukarı (▲), TP yok, en çok 12 saat. 3 aylık testte tutmamıştı — kağıtta izleniyor.
 # Sadık: "Bitget'i tarasın, o an hızlı yükselen/düşen coinleri bulsun, işlem açsın; RSI/MACD yok, eski coin yok; panel borsadaki gibi güzel olsun."
@@ -13,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.1 (24.11 23:45)"
+V = "M1.2 (25.11 00:45)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 HAREKET, HACIM_KAT, UC, EVREN, MIN_HAC = 0.03, 3.0, 0.008, 40, 1e6
@@ -96,6 +97,7 @@ def yonet():
         if u * (c - q["tp"][k]) >= 0:
             with KIL:
                 while u * (c - q["tp"][k]) >= 0:
+                    q.setdefault("tikler", []).append([int(time.time()), q["tp"][k], f"TP{k + 1}"])
                     k += 1
                     if k >= len(q["tp"]) - 1: q["tp"].append(q["tp"][-1] + u * q["giris"] * TP_ADIM)
                 yeni = q["tp"][k - 2] if k >= 2 else q["stop"]
@@ -138,11 +140,11 @@ def grafik_guncelle():
     for s in list(S["acik"]):
         if time.time() - D["mum"].get(s, {}).get("t", 0) > 50:
             m = mumlar(s, "15m", 40)
-            if m: D["mum"][s] = {"t": time.time(), "m": [x[1:5] for x in m]}
+            if m: D["mum"][s] = {"t": time.time(), "m": [x[0:5] for x in m]}
     for s in list(R["acik"]):
         if time.time() - D["mum"].get(s, {}).get("t", 0) > 50:
             m = mumlar(s, "15m", 40)
-            if m: D["mum"][s] = {"t": time.time(), "m": [x[1:5] for x in m]}
+            if m: D["mum"][s] = {"t": time.time(), "m": [x[0:5] for x in m]}
     for s in list(D["mum"]):
         if s not in S["acik"] and s not in R["acik"]: D["mum"].pop(s, None)
 
@@ -200,8 +202,9 @@ def r_tara(tk):                                                         # her 15
                 q["son_j"] = son[0]; aday = son[1] * (1 - u * 0.001)
                 if u * (aday - q["stop"]) > 0:
                     q["stop"] = aday; q["tik"] += 1; q["tik_t"] = int(time.time())
+                    q.setdefault("tikler", []).append([int(time.time()), son[1], f"▲{q['tik']}"])
                     rlog(f"▲ {ad(s)} yeni {'yükselen dip' if u == 1 else 'alçalan tepe'} · stop → {q['stop']:.6g} · kilitli {q['adet'] * u * (q['stop'] - q['giris']):+.3f} $")
-            D["mum"][s] = {"t": time.time(), "m": [x[1:5] for x in m[-40:]]}
+            D["mum"][s] = {"t": time.time(), "m": [x[0:5] for x in m[-40:]]}
             if q["bar"] >= MR_MAXBAR: r_kapat(s, (D["fiyat"].get(s) or C[-1]) * (1 - u * 0.0003), "⌛ süre (12 saat)")
             continue
         if len(sh) < 2 or len(sl) < 2: continue
@@ -247,7 +250,7 @@ def veri():
             p = q["adet"] * u * (c - q["giris"]) - q["adet"] * c * TAKER - MJ * LEV * TAKER; acik_pnl += p + MJ * LEV * TAKER
             P.append({"s": ad(s), "yon": "long" if u == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "stop0": q["stop0"],
                       "tp": q["tp"][:max(5, q["tik"] + 2)], "tik": q["tik"], "tik_t": q["tik_t"], "t": q["t"], "neden": q["neden"], "pnl": round(p, 3),
-                      "roe": round(p / MJ * 100, 1), "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", [])})
+                      "roe": round(p / MJ * 100, 1), "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", []), "tikler": q.get("tikler", [])[-12:]})
         G = S["gecmis"]; n = len(G); kaz = sum(1 for g in G if g["pnl"] > 0)
         art = sum(g["pnl"] for g in G if g["pnl"] > 0); eks = -sum(g["pnl"] for g in G if g["pnl"] < 0)
         gun = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 3600))
@@ -258,7 +261,7 @@ def veri():
             c = D["fiyat"].get(s) or q["giris"]; u = q["u"]; p = q["adet"] * u * (c - q["giris"]) - q["adet"] * c * TAKER - MJ * LEV * TAKER; racik += p + MJ * LEV * TAKER
             RP.append({"s": ad(s), "yon": "long" if u == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "stop0": q["stop0"], "tik": q["tik"],
                        "tik_t": q["tik_t"], "t": q["t"], "neden": q["neden"], "pnl": round(p, 3), "roe": round(p / MJ * 100, 1),
-                       "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", [])})
+                       "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", []), "tikler": q.get("tikler", [])[-12:]})
         RG = R["gecmis"]; rart = sum(g["pnl"] for g in RG if g["pnl"] > 0); reks = -sum(g["pnl"] for g in RG if g["pnl"] < 0)
         mr = {"oz": round(R["nakit"] + MJ * len(R["acik"]) + racik, 2), "n": len(RG), "kaz": sum(1 for g in RG if g["pnl"] > 0), "pf": round(rart / reks, 2) if reks else None,
               "bugun": round(sum(g["pnl"] for g in RG if time.strftime("%Y-%m-%d", time.gmtime(g["tk"] + 3600)) == gun), 2), "acik_n": len(RP), "P": RP,

@@ -53,11 +53,15 @@ h2{font-size:15px;margin:18px 0 10px;display:flex;justify-content:space-between;
 let AK='A';function sek(x){AK=x;$('A').style.display=x=='A'?'':'none';$('M').style.display=x=='M'?'':'none';$('bA').className=x=='A'?'on':'';$('bM').className=x=='M'?'on':'';try{localStorage.setItem('sek',x)}catch(e){}}
 const $=i=>document.getElementById(i),f=(x,d)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),fy=x=>{x=Number(x);return f(x,x>=100?2:x>=1?4:x>=0.01?5:7)},sg=(x,d=2)=>(x>0?'+':x<0?'−':'')+f(Math.abs(x),d),rk=x=>x>0?'art':x<0?'eks':'';
 const sa=t=>new Date(t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'}),sure=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<60?m+' dk':Math.floor(m/60)+' sa '+(m%60)+' dk'};
-function grafik(M,cizgi,son,w=412,h=150){if(!M.length)return '<div style="height:60px;display:grid;place-items:center;color:var(--s);font-size:12px">grafik yükleniyor…</div>';
-const pad=48,hi=Math.max(...M.map(m=>m[1]),...cizgi.map(c=>c.v),son),lo=Math.min(...M.map(m=>m[2]),...cizgi.map(c=>c.v),son),Y=v=>8+(hi-v)/(hi-lo||1)*(h-16),bw=(w-pad)/M.length;
+function grafik(M,cizgi,son,isa=[],w=412,h=190){if(!M.length)return '<div style="height:60px;display:grid;place-items:center;color:var(--s);font-size:12px">grafik yükleniyor…</div>';
+const pad=48,hi=Math.max(...M.map(m=>m[2]),...cizgi.map(c=>c.v),son),lo=Math.min(...M.map(m=>m[3]),...cizgi.map(c=>c.v),son),Y=v=>12+(hi-v)/(hi-lo||1)*(h-24),bw=(w-pad)/M.length;
+const X=t=>{t*=1000;let i=M.findIndex(m=>t>=m[0]&&t<m[0]+900000);if(i<0)i=t<M[0][0]?0:M.length-1;return i*bw+bw/2};
 let s=`<svg viewBox="0 0 ${w} ${h}" width="100%" style="display:block">`;for(let k=1;k<4;k++)s+=`<line x1="0" x2="${w-pad}" y1="${h*k/4}" y2="${h*k/4}" stroke="#ffffff08"/>`;
-M.forEach((m,i)=>{const x=i*bw+bw/2,up=m[3]>=m[0],c=up?'#00c087':'#f6465d';s+=`<line x1="${x}" x2="${x}" y1="${Y(m[1])}" y2="${Y(m[2])}" stroke="${c}"/><rect x="${x-bw*.32}" y="${Y(Math.max(m[0],m[3]))}" width="${bw*.64}" height="${Math.max(1,Math.abs(Y(m[0])-Y(m[3])))}" fill="${c}" rx="1"/>`});
-const yer=[];cizgi.forEach(c=>{let y=Y(c.v);while(yer.some(z=>Math.abs(z-y)<15))y+=15;yer.push(y);s+=`<line x1="0" x2="${w-pad}" y1="${Y(c.v)}" y2="${Y(c.v)}" stroke="${c.r}" stroke-dasharray="4 3" opacity=".9"/><rect x="${w-pad+2}" y="${y-8}" width="${pad-4}" height="16" rx="3" fill="${c.r}"/><text x="${w-pad/2}" y="${y+4}" fill="#fff" font-size="9.5" font-weight="700" text-anchor="middle" font-family="system-ui">${c.t}</text>`});
+M.forEach((m,i)=>{const x=i*bw+bw/2,up=m[4]>=m[1],c=up?'#00c087':'#f6465d';s+=`<line x1="${x}" x2="${x}" y1="${Y(m[2])}" y2="${Y(m[3])}" stroke="${c}"/><rect x="${x-bw*.32}" y="${Y(Math.max(m[1],m[4]))}" width="${bw*.64}" height="${Math.max(1,Math.abs(Y(m[1])-Y(m[4])))}" fill="${c}" rx="1"/>`});
+const E=cizgi.map(c=>({c,y:Y(c.v)})).sort((a,b)=>a.y-b.y);for(let i=1;i<E.length;i++)if(E[i].y-E[i-1].y<14)E[i].y=E[i-1].y+14;
+const tas=E.length?Math.max(0,E[E.length-1].y-(h-8)):0;if(tas){E.forEach(e=>e.y-=tas);for(let i=E.length-2;i>=0;i--)if(E[i+1].y-E[i].y<14)E[i].y=E[i+1].y-14}
+E.forEach(({c,y})=>{s+=`<line x1="0" x2="${w-pad}" y1="${Y(c.v)}" y2="${Y(c.v)}" stroke="${c.r}" stroke-dasharray="4 3" opacity="${c.o||.9}"/><rect x="${w-pad+2}" y="${y-7}" width="${pad-4}" height="14" rx="3" fill="${c.r}" opacity="${c.o||1}"/><text x="${w-pad/2}" y="${y+3.5}" fill="#fff" font-size="9" font-weight="700" text-anchor="middle" font-family="system-ui">${c.t}</text>`});
+isa.forEach(k=>{const x=X(k.t),y=Y(k.v);s+=k.g?`<circle cx="${x}" cy="${y}" r="4.5" fill="#fff" stroke="#0a0b0f" stroke-width="1.5"/>`:`<path d="M${x-5} ${y+11} L${x+5} ${y+11} L${x} ${y+3} Z" fill="#00c087" stroke="#0a0b0f" stroke-width=".8"/><text x="${x}" y="${y+21}" fill="#00c087" font-size="8.5" font-weight="800" text-anchor="middle" font-family="system-ui">${k.y}</text>`});
 return s+`<line x1="0" x2="${w-pad}" y1="${Y(son)}" y2="${Y(son)}" stroke="#fff" stroke-width=".7" stroke-dasharray="1 2"/></svg>`}
 function spark(p,yon){if(!p||p.length<2)return '<span></span>';const mn=Math.min(...p),mx=Math.max(...p),dx=70/(p.length-1);return `<svg viewBox="0 0 70 26" width="70" height="26"><polyline fill="none" stroke="${yon>0?'#00c087':'#f6465d'}" stroke-width="1.6" points="${p.map((v,i)=>`${(i*dx).toFixed(1)},${(24-(v-mn)/((mx-mn)||1)*22).toFixed(1)}`).join(' ')}"/></svg>`}
 async function yenile(){try{const d=await(await fetch('api',{cache:'no-store'})).json();
@@ -67,10 +71,11 @@ $('bug').innerHTML=`bugün <b class="${rk(d.bugun)}">${sg(d.bugun)} $</b>`;$('ve
 $('n').textContent=d.n;$('kz').textContent=d.n?'%'+Math.round(d.kaz/d.n*100):'–';$('kz').className=d.n?(d.kaz/d.n>=.5?'art':'eks'):'';$('ac').textContent=d.acik_n+'/'+d.maxa;$('pf').textContent=d.pf==null?'–':f(d.pf,2);$('pf').className=d.pf==null?'':d.pf>=1?'art':'eks';
 $('pbas').textContent=`kağıt · ${d.kural.mj} $ × ${d.kural.lev}x`;
 $('pozlar').innerHTML=d.P.map(p=>{const L=p.yon=='long',hedef=p.tp[Math.min(p.tik,p.tp.length-1)];
-const C=[{v:p.giris,r:'#5b6275',t:'GİRİŞ'},{v:p.stop,r:p.tik>=2?'#f0b90b':'#f6465d',t:p.tik>=2?'KİLİT':'STOP'},{v:hedef,r:'#00c087',t:'TP'+(p.tik+1)}];
+const C=[{v:p.giris,r:'#5b6275',t:'GİRİŞ'},{v:p.stop,r:p.tik>=2?'#f0b90b':'#f6465d',t:p.tik>=2?'KİLİT':'STOP'},...p.tp.map((t,i)=>({v:t,r:'#00c087',t:'TP'+(i+1),o:i<p.tik?.35:i==p.tik?1:.6}))];
+const I=[{t:p.t,v:p.giris,g:1},...(p.tikler||[]).map(k=>({t:k[0],v:k[1],y:k[2]}))];
 return `<div class="poz"><div class="pu"><div><div class="ad">${p.s}<small>/USDT</small><span class="chip ${L?'L':'S'}">${L?'LONG':'SHORT'} ${d.kural.lev}x</span></div><div style="font-size:11.5px;color:var(--s);margin-top:3px">${p.neden} · ${sure(p.t)}</div></div>
 <div class="pnl"><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b><span class="${rk(p.pnl)}">${sg(p.roe,1)}% ROE</span></div></div>
-<div class="grafik">${grafik(p.mum,C,p.c)}</div>
+<div class="grafik">${grafik(p.mum,C,p.c,I)}</div>
 <div class="bilgi"><div><span>Giriş</span><b>${fy(p.giris)}</b></div><div><span>Şimdi</span><b class="${rk(p.pnl)}">${fy(p.c)}</b></div><div><span>${p.tik>=2?'🔒 Kilit':'⛔ Stop'}</span><b style="color:${p.tik>=2?'var(--sari)':'var(--r)'}">${fy(p.stop)}</b></div></div>
 <div class="tps">${p.tp.map((t,i)=>`<i class="${i<p.tik?'ok':''}"></i>`).join('')}</div>
 <div class="tik"><span>${p.tik?`▲ TP${p.tik} ✓ · iz ${p.tik}× · ${sa(p.tik_t)}`:'TP1 bekleniyor · '+fy(p.tp[0])}</span><span>${p.kilit>0?'🔒 kilitli '+sg(p.kilit,2)+' $':'stop olursa '+sg(p.kilit,2)+' $'}</span></div></div>`}).join('')||'<div class="bos">Açık işlem yok — hızlı hareket bekleniyor</div>';
@@ -81,9 +86,9 @@ $('kap').innerHTML=d.son.map(k=>`<div class="ks"><div><b>${k.s}</b> <span class=
 $('log').innerHTML=d.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>');
 const m=d.mr,mt=m.oz-d.kasa0;$('moz').textContent=f(m.oz,2)+' $';$('mtop').innerHTML=`<span class="${rk(mt)}">${mt>=0?'▲':'▼'} ${sg(mt)} $ (%${f(mt/d.kasa0*100,1)})</span>`;$('mbug').innerHTML=`bugün <b class="${rk(m.bugun)}">${sg(m.bugun)} $</b>`;
 $('mn').textContent=m.n;$('mkz').textContent=m.n?'%'+Math.round(m.kaz/m.n*100):'–';$('mkz').className=m.n?(m.kaz/m.n>=.5?'art':'eks'):'';$('mac').textContent=m.acik_n+'/'+d.maxa;$('mpf').textContent=m.pf==null?'–':f(m.pf,2);$('mpf').className=m.pf==null?'':m.pf>=1?'art':'eks';
-$('mpoz').innerHTML=m.P.map(p=>{const L=p.yon=='long',kil=p.kilit>0,C=[{v:p.giris,r:'#5b6275',t:'GİRİŞ'},{v:p.stop,r:kil?'#f0b90b':'#f6465d',t:kil?'KİLİT':'STOP'}];
+$('mpoz').innerHTML=m.P.map(p=>{const L=p.yon=='long',kil=p.kilit>0,C=[{v:p.giris,r:'#5b6275',t:'GİRİŞ'},{v:p.stop,r:kil?'#f0b90b':'#f6465d',t:kil?'KİLİT':'STOP'}],I=[{t:p.t,v:p.giris,g:1},...(p.tikler||[]).map(k=>({t:k[0],v:k[1],y:k[2]}))];
 return `<div class="poz"><div class="pu"><div><div class="ad">${p.s}<small>/USDT</small><span class="chip ${L?'L':'S'}">${L?'LONG':'SHORT'} 5x</span></div><div style="font-size:11.5px;color:var(--s);margin-top:3px">${p.neden} · ${sure(p.t)}</div></div>
-<div class="pnl"><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b><span class="${rk(p.pnl)}">${sg(p.roe,1)}% ROE</span></div></div><div class="grafik">${grafik(p.mum,C,p.c)}</div>
+<div class="pnl"><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b><span class="${rk(p.pnl)}">${sg(p.roe,1)}% ROE</span></div></div><div class="grafik">${grafik(p.mum,C,p.c,I)}</div>
 <div class="bilgi"><div><span>Giriş</span><b>${fy(p.giris)}</b></div><div><span>Şimdi</span><b class="${rk(p.pnl)}">${fy(p.c)}</b></div><div><span>${kil?'🔒 Kilit':'⛔ Stop'}</span><b style="color:${kil?'var(--sari)':'var(--r)'}">${fy(p.stop)}</b></div></div>
 <div class="tik"><span>${p.tik?`▲ ${p.tik} basamak · ${sa(p.tik_t)}`:'ilk basamak bekleniyor'}</span><span>${kil?'🔒 kilitli '+sg(p.kilit,2)+' $':'stop olursa '+sg(p.kilit,2)+' $'}</span></div></div>`}).join('')||'<div class="bos">Açık işlem yok — merdiven kırılımı bekleniyor (15 dk\'da bir)</div>';
 $('mt').textContent=m.t?'son tarama '+sa(m.t):'ilk 15 dk mumu bekleniyor…';
