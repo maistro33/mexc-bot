@@ -1,4 +1,5 @@
 # 🟢 Elle GERÇEK işlem — Dip Bulucu'daki "İşlemi aç" düğmesi (Sadık basınca açar; kendiliğinden ASLA açmaz)
+# Sürüm E1.2 (24.11) — 10x açılmış LISTA/IRYS: marj eklenip 3x'e getirilir, likidasyon kontrol edilip stop %15'e geri konur (Sadık: B)
 # Sürüm E1.1 (24.11) — DÜZELTME: kaldıraç 3x yerine 10x açılıyordu (3x çapraz moda yazılıyordu, emir izole açılıyordu → izolede Bitget varsayılanı 10x).
 #   Artık önce izole moda geçer, 3x'i long+short için ayarlar ve borsadan OKUYUP DOĞRULAR; 3x değilse emir VERMEZ. Bekleyen eski emirler bir kez iptal edilip doğru kaldıraçla yeniden verilir.
 # Sürüm E1.0 (23.11)
@@ -10,7 +11,7 @@
 import hmac, json, math, os, threading, time, traceback
 import dip
 
-V = "E1.1 (24.11 02:10)"
+V = "E1.2 (24.11 02:10)"
 MJ, LEV, MAXA, ZARAR_LIM, GUN, BEKLE_GUN = 3.0, 3, 3, 6.0, 7, 2
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "elle.json")
@@ -100,6 +101,36 @@ def kaldirac(x, cs, yon):
         return False, f"borsada mod {mm}, izole {yon} kaldıraç {lv:g}x (istenen {LEV}x){' · ' + hata if hata else ''}"
     except Exception as e: return False, "kaldıraç okunamadı: " + str(e)[:100]
 
+def plana_cevir(x):
+    """E1.2: E1.0'da 10x açılmış işlemler → marj ekle (3x), likidasyonu borsadan oku, güvenliyse stopu %15'e taşı."""
+    for s, q in list(E["islem"].items()):
+        if q["durum"] != "acik" or q.get("lev_ok"): continue
+        cs = cs_(s); sym = s; u = q["u"]
+        try:
+            p = poz(x, cs)
+            if not p: continue
+            g = q["giris"]; nom = q["adet"] * q["csz"] * g; mj = float(p.get("initialMargin") or p.get("collateral") or 0)
+            ek = round(max(0.0, nom / LEV - mj) + 0.05, 2)
+            if ek > 0.1:
+                if ek > 3: log(f"⚠️ {ad(s)} eklenecek marj {ek:g} $ çok — 3 $ ile sınırlandı"); ek = 3.0
+                tamam = False; hata = ""
+                for hs in (q["yon"], None):
+                    try:
+                        x.private_mix_post_v2_mix_account_set_margin({"symbol": sym, "productType": "USDT-FUTURES", "marginCoin": "USDT", "amount": f"{ek:.2f}", **({"holdSide": hs} if hs else {})})
+                        tamam = True; break
+                    except Exception as e: hata = str(e)[:100]
+                if not tamam: log(f"⚠️ {ad(s)} marj eklenemedi ({hata}) — stop yerinde kalıyor"); q["lev_ok"] = 1; continue
+                log(f"🔧 {ad(s)} pozisyona {ek:g} $ marj eklendi (3x'e getirmek için)"); time.sleep(1.5)
+                p = poz(x, cs)
+            liq = float((p or {}).get("liquidationPrice") or 0); hedef = g * (1 - u * q["sl_y"] / 100)
+            yeni = hedef if (liq and u * (hedef - liq) > 0 and abs(hedef / liq - 1) >= 0.02) else (liq * (1 + u * 0.03) if liq else q["stop"])
+            if u * (q["stop"] - yeni) > 0 and stop_tasi(s, q, x, cs, yeni):     # stopu genişlet (daha uzağa)
+                q["stop0"] = q["stop"]
+                log(f"🔧 {ad(s)} stop {'%' + format(q['sl_y'], 'g') if yeni == hedef else 'likidasyonun önüne'} taşındı → {q['stop']:g} (likidasyon {liq:g})")
+            q["lev_ok"] = 1
+        except Exception as e: log(f"⚠️ {ad(s)} plana çevrilemedi: {str(e)[:100]}")
+    kaydet()
+
 def bekleyen_duzelt(x):
     """E1.1: E1.0'dan kalan bekleyen limit emirleri bir kez iptal et, 3x'i doğrula, aynı fiyattan yeniden ver."""
     for s, q in list(E["islem"].items()):
@@ -169,7 +200,7 @@ def doldu(s, q, x, cs, p):
     u = q["u"]; g = float(p.get("entryPrice") or q["lim"]); adet = float(p["contracts"]); st = g * (1 - u * q["sl_y"] / 100)
     liq = float(p.get("liquidationPrice") or 0); plev = float(p.get("leverage") or 0)
     if plev and abs(plev - LEV) > 0.01: log(f"⚠️ {ad(s)} borsada kaldıraç {plev:g}x (istenen {LEV}x)")
-    q.update({"durum": "acik", "giris": g, "adet": adet, "t_ac": int(time.time()), "stop0": st, "stop": st, "tik": 0})
+    q.update({"durum": "acik", "giris": g, "adet": adet, "t_ac": int(time.time()), "stop0": st, "stop": st, "tik": 0, "lev_ok": 1})
     if liq and u * (st - liq) <= 0:
         log(f"⚠️ {ad(s)} likidasyon {liq:g} stoptan ({st:g}) önce — stop likidasyonun önüne çekiliyor")
         st = liq * (1 + u * 0.03); q["stop"] = q["stop0"] = st
@@ -307,6 +338,9 @@ def dongu():
     if hazir() and any(q["durum"] == "bekliyor" and not q.get("lev_ok") for q in E["islem"].values()):
         try: bekleyen_duzelt(ex())
         except Exception as e: log(f"⚠️ bekleyen emir düzeltme: {str(e)[:100]}")
+    if hazir() and any(q["durum"] == "acik" and not q.get("lev_ok") for q in E["islem"].values()):
+        try: plana_cevir(ex())
+        except Exception as e: log(f"⚠️ plana çevirme: {str(e)[:100]}")
     while True:
         try: X["hata"] = ""; adim()
         except Exception as e: X["hata"] = str(e)[:140]; traceback.print_exc()
