@@ -1,0 +1,74 @@
+<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Momentum Avcısı</title>
+<style>
+:root{--bg:#0a0b0f;--k1:#12141b;--k2:#181b24;--c:#232735;--y:#eef1f7;--s:#7d8597;--g:#00c087;--r:#f6465d;--sari:#f0b90b;--mavi:#3b82f6}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--y);font:14px/1.4 -apple-system,"SF Pro Text",system-ui,sans-serif}
+.w{max-width:440px;margin:auto;padding:14px 14px 40px}
+.ust{display:flex;justify-content:space-between;align-items:center}.logo{font:800 19px system-ui;letter-spacing:-.3px}.logo span{color:var(--sari)}
+.durum{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--s);background:var(--k1);border:1px solid var(--c);padding:5px 10px;border-radius:99px}
+.nok{width:7px;height:7px;border-radius:50%;background:var(--g);box-shadow:0 0 0 3px #00c08733;animation:n 1.6s infinite}@keyframes n{50%{opacity:.35}}
+.kasa{margin:16px 0 6px;padding:16px;border-radius:18px;background:radial-gradient(120% 140% at 0 0,#1d2a24 0,#12141b 55%);border:1px solid var(--c)}
+.kasa .b{font-size:12px;color:var(--s)}.kasa .n{font:800 32px system-ui;letter-spacing:-1px;margin:2px 0}.kasa .alt{display:flex;gap:14px;font-size:12px;color:var(--s)}
+.art{color:var(--g)}.eks{color:var(--r)}
+.dort{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 18px}.dort div{background:var(--k1);border:1px solid var(--c);border-radius:12px;padding:9px 8px}.dort b{display:block;font-size:15px}.dort span{font-size:10.5px;color:var(--s)}
+h2{font-size:15px;margin:18px 0 10px;display:flex;justify-content:space-between;align-items:baseline}h2 small{font-size:11px;color:var(--s);font-weight:500}
+.poz{background:var(--k1);border:1px solid var(--c);border-radius:18px;padding:14px;margin-bottom:12px}
+.pu{display:flex;justify-content:space-between;align-items:flex-start}.ad{font:800 17px system-ui}.ad small{font-weight:500;color:var(--s);font-size:12px;margin-left:4px}
+.chip{display:inline-block;font:700 10.5px system-ui;padding:3px 7px;border-radius:6px;margin-left:6px;vertical-align:2px}.L{background:#00c0871f;color:var(--g)}.S{background:#f6465d1f;color:var(--r)}
+.pnl{text-align:right}.pnl b{font:800 19px system-ui;display:block}.pnl span{font-size:11.5px}
+.grafik{margin:10px -4px 4px;border-radius:12px;background:var(--k2);overflow:hidden}
+.bilgi{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}.bilgi div{background:var(--k2);border-radius:10px;padding:7px 8px}.bilgi span{display:block;font-size:10.5px;color:var(--s)}.bilgi b{font-size:13px}
+.tik{margin-top:9px;font-size:12px;color:var(--sari);font-weight:700;display:flex;justify-content:space-between}
+.tps{display:flex;gap:4px;margin-top:8px}.tps i{flex:1;height:5px;border-radius:3px;background:#ffffff14}.tps i.ok{background:var(--g)}
+.radar{background:var(--k1);border:1px solid var(--c);border-radius:18px;overflow:hidden}
+.sat{display:grid;grid-template-columns:1.25fr .9fr 70px .8fr;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid #ffffff0a}.sat:last-child{border:0}
+.sat .c b{font-size:14px}.sat .c span{display:block;font-size:11px;color:var(--s)}.sat .f{text-align:right;font-size:13px}
+.rozet{justify-self:end;font:800 12.5px system-ui;padding:6px 0;width:72px;text-align:center;border-radius:8px;color:#fff}
+.bas{font-size:10.5px;color:var(--s);padding:8px 14px;display:grid;grid-template-columns:1.25fr .9fr 70px .8fr;gap:6px;border-bottom:1px solid var(--c)}.bas span:nth-child(2),.bas span:last-child{text-align:right}
+.ks{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid #ffffff0a}.ks:last-child{border:0}.ks .s{font-size:11px;color:var(--s)}
+</style>
+<style>.u{background:#f6465d22;color:var(--r);padding:8px 12px;border-radius:10px;font-size:12px;margin-top:8px;display:none}.kural{font-size:12px;color:var(--s);background:var(--k1);border:1px solid var(--c);border-radius:14px;padding:12px;margin-top:16px;line-height:1.55}
+.log{font-size:11.5px;color:var(--s);background:var(--k1);border:1px solid var(--c);border-radius:14px;padding:10px 12px;line-height:1.6}.bos{color:var(--s);font-size:13px;padding:14px;text-align:center;background:var(--k1);border:1px dashed var(--c);border-radius:14px}
+.sat.sin{background:linear-gradient(90deg,#f0b90b14,transparent)}</style></head><body><div class="w">
+<div class="ust"><div class="logo">⚡ Momentum <span>Avcısı</span></div><div class="durum"><i class="nok"></i><span id="dur">bağlanıyor…</span></div></div>
+<div class="u" id="hata"></div>
+<div class="kasa"><div class="b">Kağıt kasa</div><div class="n" id="oz">–</div><div class="alt"><span id="top"></span><span id="bug"></span><span id="ver"></span></div></div>
+<div class="dort"><div><b id="n">–</b><span>işlem</span></div><div><b id="kz">–</b><span>kazanan</span></div><div><b id="ac">–</b><span>açık</span></div><div><b id="pf">–</b><span>kâr faktörü</span></div></div>
+<h2>💼 Açık işlemler <small id="pbas"></small></h2><div id="pozlar"></div>
+<h2>📡 Şu an hızlı hareket edenler <small id="rt"></small></h2>
+<div class="radar"><div class="bas"><span>Coin / hacim</span><span>Fiyat</span><span>Son ~1,5 saat</span><span style="text-align:right">15 dk</span></div><div id="radar"></div></div>
+<h2>📒 Kapanan <small id="kn"></small></h2><div class="radar" id="kap"></div>
+<h2>🧾 Kayıt</h2><div class="log" id="log"></div>
+<div class="kural" id="kural"></div>
+</div><script>
+const $=i=>document.getElementById(i),f=(x,d)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),fy=x=>{x=Number(x);return f(x,x>=100?2:x>=1?4:x>=0.01?5:7)},sg=(x,d=2)=>(x>0?'+':x<0?'−':'')+f(Math.abs(x),d),rk=x=>x>0?'art':x<0?'eks':'';
+const sa=t=>new Date(t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'}),sure=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<60?m+' dk':Math.floor(m/60)+' sa '+(m%60)+' dk'};
+function grafik(M,cizgi,son,w=412,h=150){if(!M.length)return '<div style="height:60px;display:grid;place-items:center;color:var(--s);font-size:12px">grafik yükleniyor…</div>';
+const pad=48,hi=Math.max(...M.map(m=>m[1]),...cizgi.map(c=>c.v),son),lo=Math.min(...M.map(m=>m[2]),...cizgi.map(c=>c.v),son),Y=v=>8+(hi-v)/(hi-lo||1)*(h-16),bw=(w-pad)/M.length;
+let s=`<svg viewBox="0 0 ${w} ${h}" width="100%" style="display:block">`;for(let k=1;k<4;k++)s+=`<line x1="0" x2="${w-pad}" y1="${h*k/4}" y2="${h*k/4}" stroke="#ffffff08"/>`;
+M.forEach((m,i)=>{const x=i*bw+bw/2,up=m[3]>=m[0],c=up?'#00c087':'#f6465d';s+=`<line x1="${x}" x2="${x}" y1="${Y(m[1])}" y2="${Y(m[2])}" stroke="${c}"/><rect x="${x-bw*.32}" y="${Y(Math.max(m[0],m[3]))}" width="${bw*.64}" height="${Math.max(1,Math.abs(Y(m[0])-Y(m[3])))}" fill="${c}" rx="1"/>`});
+const yer=[];cizgi.forEach(c=>{let y=Y(c.v);while(yer.some(z=>Math.abs(z-y)<15))y+=15;yer.push(y);s+=`<line x1="0" x2="${w-pad}" y1="${Y(c.v)}" y2="${Y(c.v)}" stroke="${c.r}" stroke-dasharray="4 3" opacity=".9"/><rect x="${w-pad+2}" y="${y-8}" width="${pad-4}" height="16" rx="3" fill="${c.r}"/><text x="${w-pad/2}" y="${y+4}" fill="#fff" font-size="9.5" font-weight="700" text-anchor="middle" font-family="system-ui">${c.t}</text>`});
+return s+`<line x1="0" x2="${w-pad}" y1="${Y(son)}" y2="${Y(son)}" stroke="#fff" stroke-width=".7" stroke-dasharray="1 2"/></svg>`}
+function spark(p,yon){if(!p||p.length<2)return '<span></span>';const mn=Math.min(...p),mx=Math.max(...p),dx=70/(p.length-1);return `<svg viewBox="0 0 70 26" width="70" height="26"><polyline fill="none" stroke="${yon>0?'#00c087':'#f6465d'}" stroke-width="1.6" points="${p.map((v,i)=>`${(i*dx).toFixed(1)},${(24-(v-mn)/((mx-mn)||1)*22).toFixed(1)}`).join(' ')}"/></svg>`}
+async function yenile(){try{const d=await(await fetch('api',{cache:'no-store'})).json();
+$('dur').textContent=(d.tarama_t?'TARIYOR · '+sa(d.tarama_t):'ilk tarama…');$('hata').textContent=d.hata;$('hata').style.display=d.hata?'block':'none';
+const top=d.oz-d.kasa0;$('oz').textContent=f(d.oz,2)+' $';$('top').innerHTML=`<span class="${rk(top)}">${top>=0?'▲':'▼'} ${sg(top)} $ (%${f(top/d.kasa0*100,1)})</span>`;
+$('bug').innerHTML=`bugün <b class="${rk(d.bugun)}">${sg(d.bugun)} $</b>`;$('ver').textContent=d.v.split(' ')[0];
+$('n').textContent=d.n;$('kz').textContent=d.n?'%'+Math.round(d.kaz/d.n*100):'–';$('kz').className=d.n?(d.kaz/d.n>=.5?'art':'eks'):'';$('ac').textContent=d.acik_n+'/'+d.maxa;$('pf').textContent=d.pf==null?'–':f(d.pf,2);$('pf').className=d.pf==null?'':d.pf>=1?'art':'eks';
+$('pbas').textContent=`kağıt · ${d.kural.mj} $ × ${d.kural.lev}x`;
+$('pozlar').innerHTML=d.P.map(p=>{const L=p.yon=='long',hedef=p.tp[Math.min(p.tik,p.tp.length-1)];
+const C=[{v:p.giris,r:'#5b6275',t:'GİRİŞ'},{v:p.stop,r:p.tik>=2?'#f0b90b':'#f6465d',t:p.tik>=2?'KİLİT':'STOP'},{v:hedef,r:'#00c087',t:'TP'+(p.tik+1)}];
+return `<div class="poz"><div class="pu"><div><div class="ad">${p.s}<small>/USDT</small><span class="chip ${L?'L':'S'}">${L?'LONG':'SHORT'} ${d.kural.lev}x</span></div><div style="font-size:11.5px;color:var(--s);margin-top:3px">${p.neden} · ${sure(p.t)}</div></div>
+<div class="pnl"><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b><span class="${rk(p.pnl)}">${sg(p.roe,1)}% ROE</span></div></div>
+<div class="grafik">${grafik(p.mum,C,p.c)}</div>
+<div class="bilgi"><div><span>Giriş</span><b>${fy(p.giris)}</b></div><div><span>Şimdi</span><b class="${rk(p.pnl)}">${fy(p.c)}</b></div><div><span>${p.tik>=2?'🔒 Kilit':'⛔ Stop'}</span><b style="color:${p.tik>=2?'var(--sari)':'var(--r)'}">${fy(p.stop)}</b></div></div>
+<div class="tps">${p.tp.map((t,i)=>`<i class="${i<p.tik?'ok':''}"></i>`).join('')}</div>
+<div class="tik"><span>${p.tik?`▲ TP${p.tik} ✓ · iz ${p.tik}× · ${sa(p.tik_t)}`:'TP1 bekleniyor · '+fy(p.tp[0])}</span><span>${p.kilit>0?'🔒 kilitli '+sg(p.kilit,2)+' $':'stop olursa '+sg(p.kilit,2)+' $'}</span></div></div>`}).join('')||'<div class="bos">Açık işlem yok — hızlı hareket bekleniyor</div>';
+$('rt').textContent='her dakika';
+$('radar').innerHTML=d.radar.map(x=>`<div class="sat ${x.sinyal?'sin':''}"><div class="c"><b>${x.sinyal?'⚡ ':''}${x.s}</b><span>${f(x.hac,1)} M$ · hacim ${f(x.kat,1)}×</span></div><div class="f">${fy(x.c)}</div>${spark(x.spark,x.h15)}<div class="rozet" style="background:${x.h15>=0?'var(--g)':'var(--r)'}">${sg(x.h15,2)}%</div></div>`).join('')||'<div class="bos" style="border:0">tarama bekleniyor…</div>';
+$('kn').textContent='son '+Math.min(d.son.length,25);
+$('kap').innerHTML=d.son.map(k=>`<div class="ks"><div><b>${k.s}</b> <span class="chip ${k.yon=='long'?'L':'S'}">${k.yon.toUpperCase()}</span><div class="s">${sa(k.tk)} · ${Math.round((k.tk-k.t)/60)} dk · ${k.neden}</div></div><b class="${rk(k.pnl)}">${sg(k.pnl,3)} $</b></div>`).join('')||'<div class="bos" style="border:0">Henüz kapanan yok</div>';
+$('log').innerHTML=d.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>');
+const K=d.kural;$('kural').innerHTML=`<b>Kural (${d.v}).</b> Her dakika Bitget'te en hareketli 40 coin taranır (eski coinler yok, günlük hacim ≥ 1 M$). Son 15 dakikada en az <b>%${K.hareket}</b> hareket + hacim normalin <b>${K.hacim}×</b>'ı + fiyat hareketin ucunda ise hareket yönünde girer (⚡ işaretli). Stop <b>%${K.sl}</b>, TP'ler <b>%${K.tp}</b> arayla (5'ten sonra devam); TP2'de stop TP1'e, TP3'te TP2'ye… çekilir (▲). En çok 2 saat. Kağıt: ${K.mj} $ × ${K.lev}x, en çok 5 açık. RSI/MACD yok. <b>Test edilmedi.</b>`;
+}catch(e){$('dur').textContent='⚠️ bağlantı yok'}}
+yenile();setInterval(yenile,5000);
+</script></body></html>
