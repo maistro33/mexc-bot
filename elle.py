@@ -1,4 +1,6 @@
 # 🟢 Elle GERÇEK işlem — Dip Bulucu'daki "İşlemi aç" düğmesi (Sadık basınca açar; kendiliğinden ASLA açmaz)
+# Sürüm E1.1 (24.11) — DÜZELTME: kaldıraç 3x yerine 10x açılıyordu (3x çapraz moda yazılıyordu, emir izole açılıyordu → izolede Bitget varsayılanı 10x).
+#   Artık önce izole moda geçer, 3x'i long+short için ayarlar ve borsadan OKUYUP DOĞRULAR; 3x değilse emir VERMEZ. Bekleyen eski emirler bir kez iptal edilip doğru kaldıraçla yeniden verilir.
 # Sürüm E1.0 (23.11)
 #   Railway değişkenleri (Sadık kendisi girer, sohbete yazılmaz): BITGET_API, BITGET_SEC, BITGET_PASS, ISLEM_SIFRE (en az 6 karakter)
 #   • Açarken sinyal sunucuda yeniden kontrol edilir (✅ değilse açmaz) · limit emir, 2 gün dolmazsa iptal
@@ -8,7 +10,7 @@
 import hmac, json, math, os, threading, time, traceback
 import dip
 
-V = "E1.0 (23.11 18:30)"
+V = "E1.1 (24.11 02:10)"
 MJ, LEV, MAXA, ZARAR_LIM, GUN, BEKLE_GUN = 3.0, 3, 3, 6.0, 7, 2
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
 DOSYA = os.path.join(KLASOR, "elle.json")
@@ -84,11 +86,38 @@ def plan_koy(x, cs, adet, fiyat, yon, tur="pos_loss"):
     except Exception as e: return None, str(e)[:140]
 
 def kaldirac(x, cs, yon):
-    hata = ""
-    for prm in ({"holdSide": yon, "marginMode": "isolated"}, {"marginMode": "isolated"}, {}):
-        try: x.set_leverage(LEV, cs, prm); return True, ""
-        except Exception as e: hata = str(e)[:140]
-    return False, hata
+    """E1.1: izole + 3x (long ve short), sonra borsadan okuyup doğrula. Döner (True, "") ya da (False, neden)."""
+    sym = cs.split("/")[0] + "USDT"; base = {"symbol": sym, "productType": "USDT-FUTURES", "marginCoin": "USDT"}; hata = ""
+    try: x.private_mix_post_v2_mix_account_set_margin_mode(dict(base, marginMode="isolated"))
+    except Exception as e: hata = "izole mod: " + str(e)[:80]
+    for hs in ("long", "short", None):
+        try: x.private_mix_post_v2_mix_account_set_leverage(dict(base, leverage=str(LEV), **({"holdSide": hs} if hs else {})))
+        except Exception as e: hata = (hata + " · " if hata else "") + f"kaldıraç {hs or ''}: " + str(e)[:80]
+    try:
+        d = x.private_mix_get_v2_mix_account_account(base).get("data") or {}
+        mm = d.get("marginMode"); lv = float(d.get("isolatedLongLever" if yon == "long" else "isolatedShortLever") or 0)
+        if mm == "isolated" and abs(lv - LEV) < 0.01: return True, ""
+        return False, f"borsada mod {mm}, izole {yon} kaldıraç {lv:g}x (istenen {LEV}x){' · ' + hata if hata else ''}"
+    except Exception as e: return False, "kaldıraç okunamadı: " + str(e)[:100]
+
+def bekleyen_duzelt(x):
+    """E1.1: E1.0'dan kalan bekleyen limit emirleri bir kez iptal et, 3x'i doğrula, aynı fiyattan yeniden ver."""
+    for s, q in list(E["islem"].items()):
+        if q["durum"] != "bekliyor" or q.get("lev_ok"): continue
+        cs = cs_(s)
+        try:
+            o = x.fetch_order(q["oid"], cs)
+            if float(o.get("filled") or 0) > 0 or o.get("status") == "closed": continue      # dolmuşsa normal akış
+            x.cancel_order(q["oid"], cs); time.sleep(1)
+            ok, h = kaldirac(x, cs, q["yon"])
+            if not ok:
+                with KIL: E["islem"].pop(s, None)
+                log(f"✖️ {ad(s)} bekleyen emir iptal edildi — 3x ayarlanamadı: {h}"); continue
+            o = x.create_order(cs, "limit", "buy" if q["u"] == 1 else "sell", q["adet"], q["lim"], {"marginMode": "isolated", "timeInForce": "GTC"})
+            q["oid"] = o.get("id") or (o.get("info") or {}).get("orderId"); q["lev_ok"] = 1
+            log(f"🔧 {ad(s)} bekleyen emir 3x ile yeniden verildi @ {q['lim']:g}")
+        except Exception as e: log(f"⚠️ {ad(s)} bekleyen emir düzeltilemedi: {str(e)[:100]}")
+    kaydet()
 
 # ───────────────────────── AÇ ─────────────────────────
 def ac(s, yon, tps, sl_y):
@@ -115,7 +144,7 @@ def ac(s, yon, tps, sl_y):
         if poz(x, cs): return False, f"{ad(s)} için borsada zaten açık pozisyon var."
     except Exception as e: return False, f"Borsaya ulaşılamadı: {str(e)[:80]}"
     ok, h = kaldirac(x, cs, yon)
-    if not ok: return False, f"Kaldıraç ayarlanamadı: {h}"
+    if not ok: return False, f"Emir VERİLMEDİ — 3x kaldıraç doğrulanamadı: {h}"
     lim = float(x.price_to_precision(cs, r["plan"]["lim"])); mk = x.market(cs); csz = mk.get("contractSize") or 1
     adet = float(x.amount_to_precision(cs, MJ * LEV / lim / csz))
     if adet * csz * lim < 5.5:
@@ -130,7 +159,7 @@ def ac(s, yon, tps, sl_y):
     oid = o.get("id") or (o.get("info") or {}).get("orderId")
     with KIL:
         E["islem"][s] = {"s": s, "yon": yon, "u": u, "durum": "bekliyor", "oid": oid, "lim": lim, "adet": adet, "csz": csz, "t": int(time.time()),
-                         "son": int(time.time()) + BEKLE_GUN * 86400, "tps_y": tps, "sl_y": sl_y, "tik": 0, "lev": LEV}
+                         "son": int(time.time()) + BEKLE_GUN * 86400, "tps_y": tps, "sl_y": sl_y, "tik": 0, "lev": LEV, "lev_ok": 1}
     log(f"🟢 {ad(s)} {yon.upper()} LİMİT emir verildi @ {lim:g} · {adet:g} adet (~{adet * csz * lim:.2f} $ · {LEV}x) · stop %{sl_y:g} · "
         + ("TP'ler %" + ", ".join(f"{t:g}" for t in tps) + " sonra devam" if yon == "long" else "hedef %15") + f" · {BEKLE_GUN} gün geçerli")
     return True, f"{ad(s)} {yon.upper()} limit emri verildi @ {lim:g}. Dolunca borsaya stop konacak."
@@ -138,7 +167,8 @@ def ac(s, yon, tps, sl_y):
 # ───────────────────────── DOLUNCA ─────────────────────────
 def doldu(s, q, x, cs, p):
     u = q["u"]; g = float(p.get("entryPrice") or q["lim"]); adet = float(p["contracts"]); st = g * (1 - u * q["sl_y"] / 100)
-    liq = float(p.get("liquidationPrice") or 0)
+    liq = float(p.get("liquidationPrice") or 0); plev = float(p.get("leverage") or 0)
+    if plev and abs(plev - LEV) > 0.01: log(f"⚠️ {ad(s)} borsada kaldıraç {plev:g}x (istenen {LEV}x)")
     q.update({"durum": "acik", "giris": g, "adet": adet, "t_ac": int(time.time()), "stop0": st, "stop": st, "tik": 0})
     if liq and u * (st - liq) <= 0:
         log(f"⚠️ {ad(s)} likidasyon {liq:g} stoptan ({st:g}) önce — stop likidasyonun önüne çekiliyor")
@@ -274,6 +304,9 @@ def adim():
 
 def dongu():
     yukle()
+    if hazir() and any(q["durum"] == "bekliyor" and not q.get("lev_ok") for q in E["islem"].values()):
+        try: bekleyen_duzelt(ex())
+        except Exception as e: log(f"⚠️ bekleyen emir düzeltme: {str(e)[:100]}")
     while True:
         try: X["hata"] = ""; adim()
         except Exception as e: X["hata"] = str(e)[:140]; traceback.print_exc()
