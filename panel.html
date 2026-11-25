@@ -52,8 +52,10 @@ h2{font-size:15px;margin:18px 0 10px;display:flex;justify-content:space-between;
 <div id="B" style="display:none"><div class="kasa" style="background:radial-gradient(120% 140% at 0 0,#26162a 0,#12141b 55%)"><div class="b">🎲 Serbest · kağıt kasa</div><div class="n" id="boz">–</div><div class="alt"><span id="btop"></span><span id="bbug"></span></div></div>
 <div class="dort"><div><b id="bn">–</b><span>işlem</span></div><div><b id="bkz">–</b><span>kazanan</span></div><div><b id="bac">–</b><span>açık</span></div><div><b id="bpf">–</b><span>kâr faktörü</span></div></div>
 <div class="u" id="bis" style="background:#f0b90b22;color:var(--sari)">⏳ Isınıyor — her coinin 15 dakikalık fiyat geçmişi birikince (≈15 dk) işlem açmaya başlar.</div>
-<h2>📒 Kapanan <small>son 25</small></h2><div class="radar" id="bkap"></div>
 <h2>💼 Açık işlemler <small>kağıt · 3 $ × 5x</small></h2><div id="bpoz"></div>
+<h2>📡 Şu an en hareketli <small>bütün coinler · 15 dk</small></h2>
+<div class="radar"><div class="bas"><span>Coin / hacim</span><span>Fiyat</span><span>Son 15 dk</span><span style="text-align:right">15 dk</span></div><div id="bradar"></div></div>
+<h2>📒 Kapanan <small>son 25</small></h2><div class="radar" id="bkap"></div>
 <h2>🧾 Kayıt</h2><div class="log" id="blog"></div>
 <div class="kural"><b>🎲 Serbest kuralı.</b> Hiç şart yok: hacim sınırı yok (düşük hacimli coinler dahil, sadece eski coinler hariç), yüzde şartı yok. Her dakika, son 15 dakikada düşen coine SHORT, yükselene LONG açar — en çok hareket edenden başlar. Hedef net +0,30 $, stop %10, en çok 2 saat; aynı coine 10 dk sonra tekrar girer. En çok 30 açık, 3 $ × 5x. <b>Testte çok kaybettirmişti</b> (1. hafta −71 $, 2. hafta −44 $) — Sadık görmek istedi, kağıtta deneniyor.</div></div>
 </div><script>
@@ -107,6 +109,7 @@ $('mlog').innerHTML=m.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>')|
 const b=d.sb,bt=b.oz-d.kasa0;$('boz').textContent=f(b.oz,2)+' $';$('btop').innerHTML=`<span class="${rk(bt)}">${bt>=0?'▲':'▼'} ${sg(bt)} $ (%${f(bt/d.kasa0*100,1)})</span>`;$('bbug').innerHTML=`bugün <b class="${rk(b.bugun)}">${sg(b.bugun)} $</b>`;
 $('bn').textContent=b.n;$('bkz').textContent=b.n?'%'+Math.round(b.kaz/b.n*100):'–';$('bkz').className=b.n?(b.kaz/b.n>=.5?'art':'eks'):'';$('bac').textContent=b.acik_n+'/'+b.maxa;$('bpf').textContent=b.pf==null?'–':f(b.pf,2);$('bpf').className=b.pf==null?'':b.pf>=1?'art':'eks';
 $('bis').style.display=b.isinma?'block':'none';
+$('bradar').innerHTML=b.radar.map(x=>`<div class="sat ${x.acik?'sin':''}"><div class="c"><b>${x.acik?'🎲 ':''}${x.s}</b><span>${f(x.hac,x.hac<1?2:1)} M$${x.acik?' · işlemde':''}</span></div><div class="f">${fy(x.c)}</div>${spark(x.spark,x.h15)}<div class="rozet" style="background:${x.h15>=0?'var(--g)':'var(--r)'}">${sg(x.h15,2)}%</div></div>`).join('')||'<div class="bos" style="border:0">ısınıyor…</div>';
 if(AK=='B')$('bpoz').innerHTML=b.P.map(p=>kartA(p,d)).join('')||'<div class="bos">Açık işlem yok</div>';
 $('bkap').innerHTML=b.son.map(k=>`<div class="ks"><div><b>${k.s}</b> <span class="chip ${k.yon=='long'?'L':'S'}">${k.yon.toUpperCase()}</span><div class="s">${sa(k.tk)} · ${Math.round((k.tk-k.t)/60)} dk · ${k.neden}</div></div><b class="${rk(k.pnl)}">${sg(k.pnl,3)} $</b></div>`).join('')||'<div class="bos" style="border:0">Henüz kapanan yok</div>';
 $('blog').innerHTML=b.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>')||'–';

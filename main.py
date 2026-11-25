@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.7: 🎲 serbest sekmesine "şu an en hareketli" listesi
 # M1.6: + 🎲 SERBEST (ayrı sekme, ayrı 100 $ kağıt) — Sadık "içimde kaldı, denemek istiyorum": hacim/yüzde şartı yok, düşük hacimli coinler dahil (eski coinler hariç),
 #       her dakika son 15 dk düşüyorsa SHORT yükseliyorsa LONG (en hareketliden başlar); çıkış ani patlamayla aynı (net +0,30 $, stop %10, 2 saat), 10 dk bekleme, en çok 30 açık.
 #       Testte çok kaybettirmişti (hiç şartsız: 1. hafta −71 $, 2. hafta −44 $) — kağıtta görmek için.
@@ -21,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.6 (25.11 22:00)"
+V = "M1.7 (25.11 22:05)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
@@ -296,6 +297,13 @@ def b_tara(tk):
             B["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * A_SL), "stop0": g * (1 - u * A_SL), "tp": [hd], "tek": 1, "tik": 0, "tik_t": 0,
                             "adet": MJ * LEV / g, "t": int(now), "neden": f"15 dk'da {h * 100:+.2f}% · şartsız"}
         blog(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · 15 dk {h * 100:+.2f}% · 🎯 {hd:.6g}")
+    hepsi = []                                                          # M1.7: liste — açık olanlar dahil bütün coinler
+    for s, L in FG.items():
+        c = D["fiyat"].get(s)
+        if s in kr and ad(s) not in ESKI and L and now - L[0][0] >= 14 * 60 and c and L[0][1]: hepsi.append((abs(c / L[0][1] - 1), s, c / L[0][1] - 1, c))
+    hepsi.sort(reverse=True); hac = {x["symbol"]: float(x.get("usdtVolume") or 0) for x in tk}
+    D["sb_radar"] = [{"s": ad(s), "c": c, "h15": round(h * 100, 2), "hac": round(hac.get(s, 0) / 1e6, 2), "spark": [p for _, p in FG.get(s, [])][::2] + [c],
+                      "acik": s in B["acik"]} for _, s, h, c in hepsi[:12]]
     kaydet()
 
 def dongu():
@@ -333,7 +341,7 @@ def sb_veri(gun):
     hazir = sum(1 for L in FG.values() if L and time.time() - L[0][0] >= 14 * 60)
     return {"oz": round(B["nakit"] + MJ * len(B["acik"]) + bacik, 2), "n": len(BG_), "kaz": sum(1 for g in BG_ if g["pnl"] > 0), "pf": round(art / eks, 2) if eks else None,
             "bugun": round(sum(g["pnl"] for g in BG_ if time.strftime("%Y-%m-%d", time.gmtime(g["tk"] + 3600)) == gun), 2), "acik_n": len(BP), "maxa": SB_MAXA,
-            "P": BP, "son": BG_[-25:][::-1], "log": B["log"][-30:][::-1], "isinma": hazir == 0}
+            "P": BP, "radar": D.get("sb_radar", []), "son": BG_[-25:][::-1], "log": B["log"][-30:][::-1], "isinma": hazir == 0}
 
 def veri():
     with KIL:
