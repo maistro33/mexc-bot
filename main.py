@@ -1,4 +1,7 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.6: + 🎲 SERBEST (ayrı sekme, ayrı 100 $ kağıt) — Sadık "içimde kaldı, denemek istiyorum": hacim/yüzde şartı yok, düşük hacimli coinler dahil (eski coinler hariç),
+#       her dakika son 15 dk düşüyorsa SHORT yükseliyorsa LONG (en hareketliden başlar); çıkış ani patlamayla aynı (net +0,30 $, stop %10, 2 saat), 10 dk bekleme, en çok 30 açık.
+#       Testte çok kaybettirmişti (hiç şartsız: 1. hafta −71 $, 2. hafta −44 $) — kağıtta görmek için.
 # M1.5: ⚡ ani patlama çıkışı değişti (Sadık: küçük ve sürekli kazanç) — hedef NET +0,30 $ (≈%2,1), stop %10, en çok 2 saat,
 #       aynı coine 10 dk sonra tekrar girebilir, en çok 10 açık (14 günlük testte iki haftada da artı: +2,0 $ / +14,2 $). Merdiven aynı.
 # M1.4: 🪜 merdivene de %1,5 arayla TP merdiveni (TP2'den itibaren stop bir önceki TP'ye); dip/tepe kuralıyla hangisi stopu daha iyi koyarsa o geçerli
@@ -18,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.5 (25.11 21:50)"
+V = "M1.6 (25.11 22:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
@@ -33,6 +36,9 @@ KIL = threading.RLock()
 S = {"v": 1, "nakit": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}}
 R = {"nakit": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}, "bar": 0}     # 🪜 merdiven hesabı (S["mr"])
 MR_W, MR_MINR, MR_MAXR, MR_MAXBAR = 3, 0.003, 0.03, 48
+B = {"nakit": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}}     # 🎲 serbest hesabı (S["sb"])
+SB_MAXA = 30
+FG = {}                                                                 # sembol → [(zaman, fiyat)] son ~16 dk (tickers'tan, ek istek yok)
 D = {"fiyat": {}, "radar": [], "tarama_t": 0, "hata": "", "mum": {}, "kripto": set(), "kripto_t": 0}
 
 def get(yol, **q):
@@ -51,14 +57,14 @@ def log(m):
 def kaydet():
     with KIL:
         tmp = DOSYA + ".tmp"
-        with open(tmp, "w") as f: json.dump(dict(S, mr=R), f, ensure_ascii=False); f.flush(); os.fsync(f.fileno())
+        with open(tmp, "w") as f: json.dump(dict(S, mr=R, sb=B), f, ensure_ascii=False); f.flush(); os.fsync(f.fileno())
         os.replace(tmp, DOSYA)
 
 def yukle():
     try:
         d = json.load(open(DOSYA))
         if d.get("v") == 1: S.update(d)
-        R.update(S.pop("mr", {}) or {})
+        R.update(S.pop("mr", {}) or {}); B.update(S.pop("sb", {}) or {})
     except Exception: pass
 
 def ad(s): return s[:-4]
@@ -144,17 +150,14 @@ def tara(tk):
     radar.sort(key=lambda r: -abs(r["h15"]))
     D["radar"] = radar[:12]; D["tarama_t"] = int(time.time())
 
-def grafik_guncelle():
-    for s in list(S["acik"]):
-        if time.time() - D["mum"].get(s, {}).get("t", 0) > 50:
-            m = mumlar(s, "15m", 40)
-            if m: D["mum"][s] = {"t": time.time(), "m": [x[0:5] for x in m]}
-    for s in list(R["acik"]):
-        if time.time() - D["mum"].get(s, {}).get("t", 0) > 50:
-            m = mumlar(s, "15m", 40)
-            if m: D["mum"][s] = {"t": time.time(), "m": [x[0:5] for x in m]}
+def grafik_guncelle():                                                  # M1.6: paralel (30+ işlemde döngüyü bekletmesin)
+    ist = [s for s in set(S["acik"]) | set(R["acik"]) | set(B["acik"]) if time.time() - D["mum"].get(s, {}).get("t", 0) > 50]
+    if ist:
+        with ThreadPoolExecutor(8) as ex:
+            for s, m in zip(ist, ex.map(lambda s: mumlar(s, "15m", 40), ist)):
+                if m: D["mum"][s] = {"t": time.time(), "m": [x[0:5] for x in m]}
     for s in list(D["mum"]):
-        if s not in S["acik"] and s not in R["acik"]: D["mum"].pop(s, None)
+        if s not in S["acik"] and s not in R["acik"] and s not in B["acik"]: D["mum"].pop(s, None)
 
 # ───────────────────────── 🪜 MERDİVEN ─────────────────────────
 def rlog(m):
@@ -243,6 +246,58 @@ def r_tara(tk):                                                         # her 15
     izle.sort(key=lambda x: x["uz"]); D["mr_izle"] = izle[:10]; D["mr_t"] = int(time.time())
     kaydet()
 
+# ───────────────────────── 🎲 SERBEST ─────────────────────────
+def blog(m):
+    with KIL: B["log"].append([int(time.time()), m]); del B["log"][:-150]
+    print("SB", m, flush=True)
+
+def b_kapat(s, cik, neden, ucret):
+    with KIL:
+        q = B["acik"].pop(s, None)
+        if not q: return
+        u = q["u"]; brut = q["adet"] * u * (cik - q["giris"]) - q["adet"] * cik * ucret
+        B["nakit"] += MJ + brut; top = brut - MJ * LEV * TAKER
+        B["gecmis"].append({"s": ad(s), "yon": "long" if u == 1 else "short", "giris": q["giris"], "cik": cik, "t": q["t"], "tk": int(time.time()),
+                            "pnl": round(top, 3), "neden": neden, "tik": 0})
+        del B["gecmis"][:-300]; B["son_kapanis"][s] = time.time()
+    blog(f"{'💰' if top > 0 else '🔻'} {ad(s)} kapandı · {neden} · {top:+.3f} $"); kaydet()
+
+def b_fiyat_kaydet():
+    now = time.time()
+    for s, c in D["fiyat"].items():
+        L = FG.setdefault(s, [])
+        if not L or now - L[-1][0] >= 20: L.append((now, c))
+        while L and now - L[0][0] > 16 * 60: L.pop(0)
+
+def b_yonet():
+    for s, q in list(B["acik"].items()):
+        c = D["fiyat"].get(s)
+        if not c: continue
+        u = q["u"]
+        if u * (c - q["stop"]) <= 0: b_kapat(s, c * (1 - u * KAYMA), "⛔ stop", TAKER)
+        elif time.time() - q["t"] > MAXDK * 60: b_kapat(s, c * (1 - u * 0.0003), "⌛ süre (2 saat)", TAKER)
+        elif u * (c - q["tp"][0]) >= 0: b_kapat(s, q["tp"][0], f"🎯 hedef (net +{A_NET:.2f} $)", MAKER)
+
+def b_tara(tk):
+    kr = kripto_listesi(); now = time.time(); aday = []
+    for x in tk:
+        s = x["symbol"]
+        if s not in kr or ad(s) in ESKI or s in B["acik"] or now - B["son_kapanis"].get(s, 0) < A_BEKLE: continue
+        L = FG.get(s)
+        if not L or now - L[0][0] < 14 * 60: continue                   # 15 dk geçmiş birikmeden girmez
+        c = D["fiyat"].get(s); h = c / L[0][1] - 1 if c and L[0][1] else 0
+        if h: aday.append((abs(h), s, 1 if h > 0 else -1, h, c))
+    aday.sort(reverse=True)
+    for _, s, u, h, c in aday:
+        if len(B["acik"]) >= SB_MAXA or B["nakit"] < MJ * 1.1: break
+        g = c * (1 + u * KAYMA); nt = MJ * LEV; hd = g * (1 + u * (A_NET + nt * TAKER + nt * MAKER) / nt)
+        with KIL:
+            B["nakit"] -= MJ + MJ * LEV * TAKER
+            B["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * A_SL), "stop0": g * (1 - u * A_SL), "tp": [hd], "tek": 1, "tik": 0, "tik_t": 0,
+                            "adet": MJ * LEV / g, "t": int(now), "neden": f"15 dk'da {h * 100:+.2f}% · şartsız"}
+        blog(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · 15 dk {h * 100:+.2f}% · 🎯 {hd:.6g}")
+    kaydet()
+
 def dongu():
     yukle(); log(f"⚡ Momentum Avcısı {V} başladı · kağıt")
     son_tara = 0
@@ -251,8 +306,12 @@ def dongu():
             tk = get("tickers")
             if tk:
                 D["fiyat"] = {x["symbol"]: float(x["lastPr"]) for x in tk if x.get("lastPr")}
-                yonet(); r_yonet()
-                if time.time() - son_tara >= 60: son_tara = time.time(); tara(tk); grafik_guncelle()
+                yonet(); r_yonet(); b_fiyat_kaydet(); b_yonet()
+                if time.time() - son_tara >= 60:
+                    son_tara = time.time(); tara(tk)
+                    try: b_tara(tk)
+                    except Exception as e: D["hata"] = "serbest: " + str(e)[:100]; traceback.print_exc()
+                    grafik_guncelle()
                 b = int((time.time() - 6) // 900)
                 if b != R.get("bar"):
                     R["bar"] = b
@@ -261,6 +320,20 @@ def dongu():
             D["hata"] = "" if tk else "Bitget'e ulaşılamadı"
         except Exception as e: D["hata"] = str(e)[:120]; traceback.print_exc()
         time.sleep(4)
+
+def sb_veri(gun):
+    BP = []; bacik = 0
+    for s, q in B["acik"].items():
+        c = D["fiyat"].get(s) or q["giris"]; u = q["u"]; p = q["adet"] * u * (c - q["giris"]) - q["adet"] * c * TAKER - MJ * LEV * TAKER; bacik += p + MJ * LEV * TAKER
+        BP.append({"s": ad(s), "yon": "long" if u == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "stop0": q["stop0"], "tp": q["tp"], "tek": 1,
+                   "tik": 0, "tik_t": 0, "t": q["t"], "neden": q["neden"], "pnl": round(p, 3), "roe": round(p / MJ * 100, 1),
+                   "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", []), "tikler": []})
+    BP.sort(key=lambda p: -p["t"])
+    BG_ = B["gecmis"]; art = sum(g["pnl"] for g in BG_ if g["pnl"] > 0); eks = -sum(g["pnl"] for g in BG_ if g["pnl"] < 0)
+    hazir = sum(1 for L in FG.values() if L and time.time() - L[0][0] >= 14 * 60)
+    return {"oz": round(B["nakit"] + MJ * len(B["acik"]) + bacik, 2), "n": len(BG_), "kaz": sum(1 for g in BG_ if g["pnl"] > 0), "pf": round(art / eks, 2) if eks else None,
+            "bugun": round(sum(g["pnl"] for g in BG_ if time.strftime("%Y-%m-%d", time.gmtime(g["tk"] + 3600)) == gun), 2), "acik_n": len(BP), "maxa": SB_MAXA,
+            "P": BP, "son": BG_[-25:][::-1], "log": B["log"][-30:][::-1], "isinma": hazir == 0}
 
 def veri():
     with KIL:
@@ -289,7 +362,7 @@ def veri():
               "izle": D.get("mr_izle", []), "son": RG[-25:][::-1], "log": R["log"][-30:][::-1], "t": D.get("mr_t", 0)}
         return {"v": V, "oz": round(oz, 2), "kasa0": KASA0, "n": n, "kaz": kaz, "pf": round(art / eks, 2) if eks else None, "bugun": round(bugun, 2),
                 "acik_n": len(P), "maxa": A_MAXA, "mr_maxa": MAXA, "P": P, "radar": D["radar"], "son": G[-25:][::-1], "log": S["log"][-30:][::-1],
-                "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"], "mr": mr, "kural": {"hareket": HAREKET * 100, "hacim": HACIM_KAT, "sl": A_SL * 100, "net": A_NET, "tp": TP_ADIM * 100, "mj": MJ, "lev": LEV, "maxa": A_MAXA}}
+                "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"], "mr": mr, "sb": sb_veri(gun), "kural": {"hareket": HAREKET * 100, "hacim": HACIM_KAT, "sl": A_SL * 100, "net": A_NET, "tp": TP_ADIM * 100, "mj": MJ, "lev": LEV, "maxa": A_MAXA}}
 
 SAYFA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html"), encoding="utf-8").read()
 
