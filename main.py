@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.3: grafik sade — sağda boşluk, küçük ▲ mumun yanında, sadece geçilen + sıradaki 2 TP çizgisi
 # M1.2: grafikte bütün TP çizgileri + giriş ● + her TP/basamakta ▲ işareti (sadece görüntü, kurallar aynı)
 # M1.1: + 🪜 MERDİVEN modu (ayrı sekme, ayrı 100 $ kağıt kasa) — 15 dk'da yükselen dipler+tepeler, son tepe kırılınca LONG (tersi SHORT);
 #       stop son dibin altında (en çok %3), her yeni yükselen dipte stop yukarı (▲), TP yok, en çok 12 saat. 3 aylık testte tutmamıştı — kağıtta izleniyor.
@@ -14,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.2 (25.11 00:45)"
+V = "M1.3 (25.11 01:45)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 HAREKET, HACIM_KAT, UC, EVREN, MIN_HAC = 0.03, 3.0, 0.008, 40, 1e6
