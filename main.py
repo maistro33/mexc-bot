@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.9: 🎲 açık işlemler kısa liste (dokununca grafik açılır)
 # M1.8: 🎲 açılışta son 16 dk fiyatlar 1 dk mumlardan doldurulur (yeniden başlayınca 15 dk ısınma beklemez)
 # M1.7: 🎲 serbest sekmesine "şu an en hareketli" listesi
 # M1.6: + 🎲 SERBEST (ayrı sekme, ayrı 100 $ kağıt) — Sadık "içimde kaldı, denemek istiyorum": hacim/yüzde şartı yok, düşük hacimli coinler dahil (eski coinler hariç),
@@ -23,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.8 (25.11 22:10)"
+V = "M1.9 (25.11 22:15)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
