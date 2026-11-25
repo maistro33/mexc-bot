@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M2.1: hedef net +0,30 $ → +0,20 $ (ani + serbest; 14 günlük testte iki haftada da artı, daha istikrarlı — Sadık seçti)
 # M2.0: 🎲 serbest sadece YENİ coinler — Bitget'te son 12 ayda listelenenler (listelenme tarihi; eskilerde bu alan boş)
 # M1.9: 🎲 açık işlemler kısa liste (dokununca grafik açılır)
 # M1.8: 🎲 açılışta son 16 dk fiyatlar 1 dk mumlardan doldurulur (yeniden başlayınca 15 dk ısınma beklemez)
@@ -25,10 +26,10 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M2.0 (25.11 22:20)"
+V = "M2.1 (25.11 23:35)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
-A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
+A_NET, A_SL, A_MAXA, A_BEKLE = 0.20, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
 HAREKET, HACIM_KAT, UC, EVREN, MIN_HAC = 0.03, 3.0, 0.008, 40, 1e6
 SL, TP_ADIM, MAXDK, BEKLE = 0.025, 0.015, 120, 3600
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0005
