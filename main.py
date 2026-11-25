@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.8: 🎲 açılışta son 16 dk fiyatlar 1 dk mumlardan doldurulur (yeniden başlayınca 15 dk ısınma beklemez)
 # M1.7: 🎲 serbest sekmesine "şu an en hareketli" listesi
 # M1.6: + 🎲 SERBEST (ayrı sekme, ayrı 100 $ kağıt) — Sadık "içimde kaldı, denemek istiyorum": hacim/yüzde şartı yok, düşük hacimli coinler dahil (eski coinler hariç),
 #       her dakika son 15 dk düşüyorsa SHORT yükseliyorsa LONG (en hareketliden başlar); çıkış ani patlamayla aynı (net +0,30 $, stop %10, 2 saat), 10 dk bekleme, en çok 30 açık.
@@ -22,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.7 (25.11 22:05)"
+V = "M1.8 (25.11 22:10)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
@@ -270,6 +271,20 @@ def b_fiyat_kaydet():
         if not L or now - L[-1][0] >= 20: L.append((now, c))
         while L and now - L[0][0] > 16 * 60: L.pop(0)
 
+def b_isit():                                                           # M1.8: açılışta geçmişi mumlardan doldur
+    try:
+        tk = get("tickers") or []; kr = kripto_listesi()
+        ss = [x["symbol"] for x in tk if x["symbol"] in kr and ad(x["symbol"]) not in ESKI]
+        def al(s):
+            m = mumlar(s, "1m", 17)
+            return s, [(x[0] / 1000 + 60, x[4]) for x in m] if m else []
+        with ThreadPoolExecutor(8) as ex:
+            for s, L in ex.map(al, ss):
+                if L and s not in FG: FG[s] = L
+                elif L: FG[s] = L + [p for p in FG[s] if p[0] > L[-1][0]]
+        blog(f"🔥 ısınma: {sum(1 for L in FG.values() if L)} coinin son 15 dk'sı yüklendi")
+    except Exception as e: blog(f"⚠️ ısınma: {str(e)[:80]}")
+
 def b_yonet():
     for s, q in list(B["acik"].items()):
         c = D["fiyat"].get(s)
@@ -308,6 +323,7 @@ def b_tara(tk):
 
 def dongu():
     yukle(); log(f"⚡ Momentum Avcısı {V} başladı · kağıt")
+    threading.Thread(target=b_isit, daemon=True).start()
     son_tara = 0
     while True:
         try:
