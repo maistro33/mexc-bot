@@ -1,4 +1,6 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.5: ⚡ ani patlama çıkışı değişti (Sadık: küçük ve sürekli kazanç) — hedef NET +0,30 $ (≈%2,1), stop %10, en çok 2 saat,
+#       aynı coine 10 dk sonra tekrar girebilir, en çok 10 açık (14 günlük testte iki haftada da artı: +2,0 $ / +14,2 $). Merdiven aynı.
 # M1.4: 🪜 merdivene de %1,5 arayla TP merdiveni (TP2'den itibaren stop bir önceki TP'ye); dip/tepe kuralıyla hangisi stopu daha iyi koyarsa o geçerli
 # M1.3: grafik sade — sağda boşluk, küçük ▲ mumun yanında, sadece geçilen + sıradaki 2 TP çizgisi
 # M1.2: grafikte bütün TP çizgileri + giriş ● + her TP/basamakta ▲ işareti (sadece görüntü, kurallar aynı)
@@ -16,9 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.4 (25.11 12:45)"
+V = "M1.5 (25.11 21:50)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
+A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
 HAREKET, HACIM_KAT, UC, EVREN, MIN_HAC = 0.03, 3.0, 0.008, 40, 1e6
 SL, TP_ADIM, MAXDK, BEKLE = 0.025, 0.015, 120, 3600
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0005
@@ -67,13 +70,13 @@ def mumlar(s, g, n):
 
 # ───────────────────────── İŞLEM ─────────────────────────
 def ac(s, u, c, neden):
-    g = c * (1 + u * KAYMA); adet = MJ * LEV / g
-    tp = [g * (1 + u * TP_ADIM * k) for k in range(1, 6)]
+    g = c * (1 + u * KAYMA); adet = MJ * LEV / g; nt = MJ * LEV
+    hd = g * (1 + u * (A_NET + nt * TAKER + nt * MAKER) / nt)          # komisyonlar sonrası net +0,30 $
     with KIL:
         S["nakit"] -= MJ + MJ * LEV * TAKER
-        S["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * SL), "stop0": g * (1 - u * SL), "tp": tp, "tik": 0, "tik_t": 0,
+        S["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * A_SL), "stop0": g * (1 - u * A_SL), "tp": [hd], "tek": 1, "tik": 0, "tik_t": 0,
                         "adet": adet, "t": int(time.time()), "neden": neden}
-    log(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · {neden} · stop {g * (1 - u * SL):.6g} · TP1 {tp[0]:.6g}")
+    log(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · {neden} · 🎯 {hd:.6g} (net +{A_NET:.2f} $) · stop {g * (1 - u * A_SL):.6g}")
     kaydet()
 
 def kapat(s, cik, neden, ucret):
@@ -96,6 +99,9 @@ def yonet():
         if u * (c - q["stop"]) <= 0:
             kapat(s, c * (1 - u * KAYMA), ("🔒 kâr kilidi (TP%d sonrası)" % k) if k >= 2 else "⛔ stop", TAKER); continue
         if time.time() - q["t"] > MAXDK * 60: kapat(s, c * (1 - u * 0.0003), "⌛ süre (2 saat)", TAKER); continue
+        if q.get("tek"):                                                # M1.5: tek hedef
+            if u * (c - q["tp"][0]) >= 0: kapat(s, q["tp"][0], f"🎯 hedef (net +{A_NET:.2f} $)", MAKER)
+            continue
         if u * (c - q["tp"][k]) >= 0:
             with KIL:
                 while u * (c - q["tp"][k]) >= 0:
@@ -133,7 +139,7 @@ def tara(tk):
         sinyal = abs(h15) >= HAREKET and kat >= HACIM_KAT and uc <= UC
         radar.append({"s": ad(s), "c": c, "h15": round(h15 * 100, 2), "kat": round(kat, 1), "hac": round(hac.get(s, 0) / 1e6, 1),
                       "spark": [x[4] for x in m[-100::4]], "sinyal": sinyal})
-        if sinyal and s not in S["acik"] and len(S["acik"]) < MAXA and time.time() - S["son_kapanis"].get(s, 0) >= BEKLE and S["nakit"] >= MJ * 1.1:
+        if sinyal and s not in S["acik"] and len(S["acik"]) < A_MAXA and time.time() - S["son_kapanis"].get(s, 0) >= A_BEKLE and S["nakit"] >= MJ * 1.1:
             ac(s, u, c, f"15 dk'da {h15 * 100:+.1f}% · hacim {kat:.1f}×")
     radar.sort(key=lambda r: -abs(r["h15"]))
     D["radar"] = radar[:12]; D["tarama_t"] = int(time.time())
@@ -263,7 +269,7 @@ def veri():
             c = D["fiyat"].get(s) or q["giris"]; u = q["u"]
             p = q["adet"] * u * (c - q["giris"]) - q["adet"] * c * TAKER - MJ * LEV * TAKER; acik_pnl += p + MJ * LEV * TAKER
             P.append({"s": ad(s), "yon": "long" if u == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "stop0": q["stop0"],
-                      "tp": q["tp"][:max(5, q["tik"] + 2)], "tik": q["tik"], "tik_t": q["tik_t"], "t": q["t"], "neden": q["neden"], "pnl": round(p, 3),
+                      "tp": q["tp"][:max(5, q["tik"] + 2)], "tek": q.get("tek", 0), "tik": q["tik"], "tik_t": q["tik_t"], "t": q["t"], "neden": q["neden"], "pnl": round(p, 3),
                       "roe": round(p / MJ * 100, 1), "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", []), "tikler": q.get("tikler", [])[-12:]})
         G = S["gecmis"]; n = len(G); kaz = sum(1 for g in G if g["pnl"] > 0)
         art = sum(g["pnl"] for g in G if g["pnl"] > 0); eks = -sum(g["pnl"] for g in G if g["pnl"] < 0)
@@ -282,8 +288,8 @@ def veri():
               "bugun": round(sum(g["pnl"] for g in RG if time.strftime("%Y-%m-%d", time.gmtime(g["tk"] + 3600)) == gun), 2), "acik_n": len(RP), "P": RP,
               "izle": D.get("mr_izle", []), "son": RG[-25:][::-1], "log": R["log"][-30:][::-1], "t": D.get("mr_t", 0)}
         return {"v": V, "oz": round(oz, 2), "kasa0": KASA0, "n": n, "kaz": kaz, "pf": round(art / eks, 2) if eks else None, "bugun": round(bugun, 2),
-                "acik_n": len(P), "maxa": MAXA, "P": P, "radar": D["radar"], "son": G[-25:][::-1], "log": S["log"][-30:][::-1],
-                "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"], "mr": mr, "kural": {"hareket": HAREKET * 100, "hacim": HACIM_KAT, "sl": SL * 100, "tp": TP_ADIM * 100, "mj": MJ, "lev": LEV}}
+                "acik_n": len(P), "maxa": A_MAXA, "mr_maxa": MAXA, "P": P, "radar": D["radar"], "son": G[-25:][::-1], "log": S["log"][-30:][::-1],
+                "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"], "mr": mr, "kural": {"hareket": HAREKET * 100, "hacim": HACIM_KAT, "sl": A_SL * 100, "net": A_NET, "tp": TP_ADIM * 100, "mj": MJ, "lev": LEV, "maxa": A_MAXA}}
 
 SAYFA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html"), encoding="utf-8").read()
 
