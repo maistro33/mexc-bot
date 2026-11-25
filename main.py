@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M1.4: 🪜 merdivene de %1,5 arayla TP merdiveni (TP2'den itibaren stop bir önceki TP'ye); dip/tepe kuralıyla hangisi stopu daha iyi koyarsa o geçerli
 # M1.3: grafik sade — sağda boşluk, küçük ▲ mumun yanında, sadece geçilen + sıradaki 2 TP çizgisi
 # M1.2: grafikte bütün TP çizgileri + giriş ● + her TP/basamakta ▲ işareti (sadece görüntü, kurallar aynı)
 # M1.1: + 🪜 MERDİVEN modu (ayrı sekme, ayrı 100 $ kağıt kasa) — 15 dk'da yükselen dipler+tepeler, son tepe kırılınca LONG (tersi SHORT);
@@ -15,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.3 (25.11 01:45)"
+V = "M1.4 (25.11 12:45)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 HAREKET, HACIM_KAT, UC, EVREN, MIN_HAC = 0.03, 3.0, 0.008, 40, 1e6
@@ -179,10 +180,22 @@ def r_kapat(s, cik, neden):
         del R["gecmis"][:-300]; R["son_kapanis"][s] = time.time()
     rlog(f"{'💰' if top > 0 else '🔻'} {ad(s)} kapandı · {neden} · {top:+.3f} $"); kaydet()
 
-def r_yonet():                                                          # her 4 sn: stop kontrolü
+def r_yonet():                                                          # her 4 sn: stop kontrolü + M1.4 TP merdiveni
     for s, q in list(R["acik"].items()):
         c = D["fiyat"].get(s)
-        if c and q["u"] * (c - q["stop"]) <= 0:
+        if not c: continue
+        u = q["u"]
+        if "tp" not in q: q["tp"] = [q["giris"] * (1 + u * TP_ADIM * k) for k in range(1, 6)]; q["tpk"] = 0
+        k = q["tpk"]
+        if u * (c - q["stop"]) > 0 and u * (c - q["tp"][k]) >= 0:
+            with KIL:
+                while u * (c - q["tp"][k]) >= 0:
+                    q.setdefault("tikler", []).append([int(time.time()), q["tp"][k], f"TP{k + 1}"]); k += 1
+                    if k >= len(q["tp"]) - 1: q["tp"].append(q["tp"][-1] + u * q["giris"] * TP_ADIM)
+                q["tpk"] = k; aday = q["tp"][k - 2] if k >= 2 else None
+                if aday and u * (aday - q["stop"]) > 0: q["stop"] = aday; q["tik_t"] = int(time.time())
+            rlog(f"▲ {ad(s)} TP{k} ✓ · " + (f"stop → {q['stop']:.6g} · kilitli {q['adet'] * u * (q['stop'] - q['giris']):+.3f} $" if k >= 2 else "stop yerinde")); kaydet()
+        if u * (c - q["stop"]) <= 0:
             r_kapat(s, c * (1 - q["u"] * KAYMA), "🔒 merdiven bozuldu (kâr kilitli)" if q["u"] * (q["stop"] - q["giris"]) > 0 else "⛔ merdiven bozuldu (stop)")
 
 def r_tara(tk):                                                         # her 15 dk mum kapanışında
@@ -219,7 +232,7 @@ def r_tara(tk):                                                         # her 15
         with KIL:
             R["nakit"] -= MJ + MJ * LEV * TAKER
             R["acik"][s] = {"u": u, "giris": g, "stop": st, "stop0": st, "adet": MJ * LEV / g, "t": int(time.time()), "tik": 0, "tik_t": 0, "bar": 0,
-                            "son_j": (sl[-1][0] if u == 1 else sh[-1][0]), "neden": f"merdiven {'yukarı' if u == 1 else 'aşağı'} kırıldı · stop %{rk * 100:.1f}"}
+                            "tp": [g * (1 + u * TP_ADIM * k) for k in range(1, 6)], "tpk": 0, "son_j": (sl[-1][0] if u == 1 else sh[-1][0]), "neden": f"merdiven {'yukarı' if u == 1 else 'aşağı'} kırıldı · stop %{rk * 100:.1f}"}
         rlog(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · son {'tepe' if u == 1 else 'dip'} kırıldı · stop {st:.6g} (%{rk * 100:.1f})"); kaydet()
     izle.sort(key=lambda x: x["uz"]); D["mr_izle"] = izle[:10]; D["mr_t"] = int(time.time())
     kaydet()
@@ -262,7 +275,8 @@ def veri():
             c = D["fiyat"].get(s) or q["giris"]; u = q["u"]; p = q["adet"] * u * (c - q["giris"]) - q["adet"] * c * TAKER - MJ * LEV * TAKER; racik += p + MJ * LEV * TAKER
             RP.append({"s": ad(s), "yon": "long" if u == 1 else "short", "giris": q["giris"], "c": c, "stop": q["stop"], "stop0": q["stop0"], "tik": q["tik"],
                        "tik_t": q["tik_t"], "t": q["t"], "neden": q["neden"], "pnl": round(p, 3), "roe": round(p / MJ * 100, 1),
-                       "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", []), "tikler": q.get("tikler", [])[-12:]})
+                       "kilit": round(q["adet"] * u * (q["stop"] - q["giris"]), 3), "mum": D["mum"].get(s, {}).get("m", []), "tikler": q.get("tikler", [])[-12:],
+                       "tp": q.get("tp", [])[:max(5, q.get("tpk", 0) + 2)], "tpk": q.get("tpk", 0)})
         RG = R["gecmis"]; rart = sum(g["pnl"] for g in RG if g["pnl"] > 0); reks = -sum(g["pnl"] for g in RG if g["pnl"] < 0)
         mr = {"oz": round(R["nakit"] + MJ * len(R["acik"]) + racik, 2), "n": len(RG), "kaz": sum(1 for g in RG if g["pnl"] > 0), "pf": round(rart / reks, 2) if reks else None,
               "bugun": round(sum(g["pnl"] for g in RG if time.strftime("%Y-%m-%d", time.gmtime(g["tk"] + 3600)) == gun), 2), "acik_n": len(RP), "P": RP,
