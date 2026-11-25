@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M2.0: 🎲 serbest sadece YENİ coinler — Bitget'te son 12 ayda listelenenler (listelenme tarihi; eskilerde bu alan boş)
 # M1.9: 🎲 açık işlemler kısa liste (dokununca grafik açılır)
 # M1.8: 🎲 açılışta son 16 dk fiyatlar 1 dk mumlardan doldurulur (yeniden başlayınca 15 dk ısınma beklemez)
 # M1.7: 🎲 serbest sekmesine "şu an en hareketli" listesi
@@ -24,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M1.9 (25.11 22:15)"
+V = "M2.0 (25.11 22:20)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 A_NET, A_SL, A_MAXA, A_BEKLE = 0.30, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
@@ -41,6 +42,7 @@ R = {"nakit": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time())
 MR_W, MR_MINR, MR_MAXR, MR_MAXBAR = 3, 0.003, 0.03, 48
 B = {"nakit": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}}     # 🎲 serbest hesabı (S["sb"])
 SB_MAXA = 30
+YENI_GUN = 365                                                          # M2.0: serbest — son 12 ayda listelenen coinler
 FG = {}                                                                 # sembol → [(zaman, fiyat)] son ~16 dk (tickers'tan, ek istek yok)
 D = {"fiyat": {}, "radar": [], "tarama_t": 0, "hata": "", "mum": {}, "kripto": set(), "kripto_t": 0}
 
@@ -127,7 +129,10 @@ def yonet():
 def kripto_listesi():
     if time.time() - D["kripto_t"] < 3600 and D["kripto"]: return D["kripto"]
     ks = get("contracts") or []
-    if ks: D["kripto"] = {x["symbol"] for x in ks if x.get("isRwa") != "YES" and x.get("symbolStatus") == "normal"}; D["kripto_t"] = time.time()
+    if ks:
+        D["kripto"] = {x["symbol"] for x in ks if x.get("isRwa") != "YES" and x.get("symbolStatus") == "normal"}; D["kripto_t"] = time.time()
+        D["yeni"] = {x["symbol"] for x in ks if x["symbol"] in D["kripto"] and str(x.get("openTime") or "").isdigit()
+                     and time.time() * 1000 - int(x["openTime"]) < YENI_GUN * 86400e3}
     return D["kripto"]
 
 def tara(tk):
@@ -275,7 +280,7 @@ def b_fiyat_kaydet():
 def b_isit():                                                           # M1.8: açılışta geçmişi mumlardan doldur
     try:
         tk = get("tickers") or []; kr = kripto_listesi()
-        ss = [x["symbol"] for x in tk if x["symbol"] in kr and ad(x["symbol"]) not in ESKI]
+        ss = [x["symbol"] for x in tk if x["symbol"] in D.get("yeni", ())]
         def al(s):
             m = mumlar(s, "1m", 17)
             return s, [(x[0] / 1000 + 60, x[4]) for x in m] if m else []
@@ -291,6 +296,7 @@ def b_yonet():
         c = D["fiyat"].get(s)
         if not c: continue
         u = q["u"]
+        if D.get("yeni") and s not in D["yeni"]: b_kapat(s, c * (1 - u * KAYMA), "🧹 eski coin — kapatıldı (M2.0)", TAKER); continue
         if u * (c - q["stop"]) <= 0: b_kapat(s, c * (1 - u * KAYMA), "⛔ stop", TAKER)
         elif time.time() - q["t"] > MAXDK * 60: b_kapat(s, c * (1 - u * 0.0003), "⌛ süre (2 saat)", TAKER)
         elif u * (c - q["tp"][0]) >= 0: b_kapat(s, q["tp"][0], f"🎯 hedef (net +{A_NET:.2f} $)", MAKER)
@@ -299,7 +305,7 @@ def b_tara(tk):
     kr = kripto_listesi(); now = time.time(); aday = []
     for x in tk:
         s = x["symbol"]
-        if s not in kr or ad(s) in ESKI or s in B["acik"] or now - B["son_kapanis"].get(s, 0) < A_BEKLE: continue
+        if s not in kr or s not in D.get("yeni", ()) or s in B["acik"] or now - B["son_kapanis"].get(s, 0) < A_BEKLE: continue
         L = FG.get(s)
         if not L or now - L[0][0] < 14 * 60: continue                   # 15 dk geçmiş birikmeden girmez
         c = D["fiyat"].get(s); h = c / L[0][1] - 1 if c and L[0][1] else 0
@@ -316,7 +322,7 @@ def b_tara(tk):
     hepsi = []                                                          # M1.7: liste — açık olanlar dahil bütün coinler
     for s, L in FG.items():
         c = D["fiyat"].get(s)
-        if s in kr and ad(s) not in ESKI and L and now - L[0][0] >= 14 * 60 and c and L[0][1]: hepsi.append((abs(c / L[0][1] - 1), s, c / L[0][1] - 1, c))
+        if s in kr and s in D.get("yeni", ()) and L and now - L[0][0] >= 14 * 60 and c and L[0][1]: hepsi.append((abs(c / L[0][1] - 1), s, c / L[0][1] - 1, c))
     hepsi.sort(reverse=True); hac = {x["symbol"]: float(x.get("usdtVolume") or 0) for x in tk}
     D["sb_radar"] = [{"s": ad(s), "c": c, "h15": round(h * 100, 2), "hac": round(hac.get(s, 0) / 1e6, 2), "spark": [p for _, p in FG.get(s, [])][::2] + [c],
                       "acik": s in B["acik"]} for _, s, h, c in hepsi[:12]]
