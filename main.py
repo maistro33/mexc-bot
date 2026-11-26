@@ -1,4 +1,5 @@
 # ⚡ MOMENTUM AVCISI — KAĞIT bot (borsaya emir YOK). Sürüm M1.1 (24.11)
+# M2.2: ⚡ ani patlama tekrar TP merdiveni (stop %2,5, TP %1,5 arayla, TP2'de stop TP1'e…, 2 saat) — Sadık; 🎲 serbest aynı (+0,20 $)
 # M2.1: hedef net +0,30 $ → +0,20 $ (ani + serbest; 14 günlük testte iki haftada da artı, daha istikrarlı — Sadık seçti)
 # M2.0: 🎲 serbest sadece YENİ coinler — Bitget'te son 12 ayda listelenenler (listelenme tarihi; eskilerde bu alan boş)
 # M1.9: 🎲 açık işlemler kısa liste (dokununca grafik açılır)
@@ -26,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "M2.1 (25.11 23:35)"
+V = "M2.2 (26.11 22:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 5
 A_NET, A_SL, A_MAXA, A_BEKLE = 0.20, 0.10, 10, 600            # M1.5: ani patlama hedef/stop/en çok açık/bekleme
@@ -82,13 +83,13 @@ def mumlar(s, g, n):
 
 # ───────────────────────── İŞLEM ─────────────────────────
 def ac(s, u, c, neden):
-    g = c * (1 + u * KAYMA); adet = MJ * LEV / g; nt = MJ * LEV
-    hd = g * (1 + u * (A_NET + nt * TAKER + nt * MAKER) / nt)          # komisyonlar sonrası net +0,30 $
+    g = c * (1 + u * KAYMA); adet = MJ * LEV / g                       # M2.2: TP merdiveni
+    tp = [g * (1 + u * TP_ADIM * k) for k in range(1, 6)]
     with KIL:
         S["nakit"] -= MJ + MJ * LEV * TAKER
-        S["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * A_SL), "stop0": g * (1 - u * A_SL), "tp": [hd], "tek": 1, "tik": 0, "tik_t": 0,
+        S["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * SL), "stop0": g * (1 - u * SL), "tp": tp, "tik": 0, "tik_t": 0,
                         "adet": adet, "t": int(time.time()), "neden": neden}
-    log(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · {neden} · 🎯 {hd:.6g} (net +{A_NET:.2f} $) · stop {g * (1 - u * A_SL):.6g}")
+    log(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · {neden} · stop {g * (1 - u * SL):.6g} (%{SL * 100:g}) · TP1 {tp[0]:.6g}")
     kaydet()
 
 def kapat(s, cik, neden, ucret):
@@ -394,7 +395,7 @@ def veri():
               "izle": D.get("mr_izle", []), "son": RG[-25:][::-1], "log": R["log"][-30:][::-1], "t": D.get("mr_t", 0)}
         return {"v": V, "oz": round(oz, 2), "kasa0": KASA0, "n": n, "kaz": kaz, "pf": round(art / eks, 2) if eks else None, "bugun": round(bugun, 2),
                 "acik_n": len(P), "maxa": A_MAXA, "mr_maxa": MAXA, "P": P, "radar": D["radar"], "son": G[-25:][::-1], "log": S["log"][-30:][::-1],
-                "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"], "mr": mr, "sb": sb_veri(gun), "kural": {"hareket": HAREKET * 100, "hacim": HACIM_KAT, "sl": A_SL * 100, "net": A_NET, "tp": TP_ADIM * 100, "mj": MJ, "lev": LEV, "maxa": A_MAXA}}
+                "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"], "mr": mr, "sb": sb_veri(gun), "kural": {"hareket": HAREKET * 100, "hacim": HACIM_KAT, "sl": SL * 100, "net": A_NET, "tp": TP_ADIM * 100, "mj": MJ, "lev": LEV, "maxa": A_MAXA}}
 
 SAYFA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html"), encoding="utf-8").read()
 
