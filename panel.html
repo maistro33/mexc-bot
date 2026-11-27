@@ -1,4 +1,4 @@
-<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Momentum Avcısı</title>
+<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Üçlü Onay</title>
 <style>
 :root{--bg:#0a0b0f;--k1:#12141b;--k2:#181b24;--c:#232735;--y:#eef1f7;--s:#7d8597;--g:#00c087;--r:#f6465d;--sari:#f0b90b;--mavi:#3b82f6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--y);font:14px/1.4 -apple-system,"SF Pro Text",system-ui,sans-serif}
@@ -29,37 +29,20 @@ h2{font-size:15px;margin:18px 0 10px;display:flex;justify-content:space-between;
 <style>.u{background:#f6465d22;color:var(--r);padding:8px 12px;border-radius:10px;font-size:12px;margin-top:8px;display:none}.kural{font-size:12px;color:var(--s);background:var(--k1);border:1px solid var(--c);border-radius:14px;padding:12px;margin-top:16px;line-height:1.55}
 .log{font-size:11.5px;color:var(--s);background:var(--k1);border:1px solid var(--c);border-radius:14px;padding:10px 12px;line-height:1.6}.bos{color:var(--s);font-size:13px;padding:14px;text-align:center;background:var(--k1);border:1px dashed var(--c);border-radius:14px}
 .sek{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:14px 0 4px}.sek button{padding:11px 4px;border-radius:12px;border:1px solid var(--c);background:var(--k1);color:var(--s);font:700 13px system-ui;white-space:nowrap}.sek button.on{background:var(--sari);color:#111;border-color:transparent}
-.sat.sin{background:linear-gradient(90deg,#f0b90b14,transparent)}</style></head><body><div class="w">
-<div class="ust"><div class="logo">⚡ Momentum <span>Avcısı</span></div><div class="durum"><i class="nok"></i><span id="dur">bağlanıyor…</span></div></div>
+.sat.sin{background:linear-gradient(90deg,#f0b90b14,transparent)}</style>
+<style>.on3{display:flex;gap:4px;justify-content:flex-end}.on3 i{font-style:normal;font-size:11px;font-weight:800;padding:3px 6px;border-radius:6px;background:#ffffff10;color:var(--s)}.on3 i.y{background:#00c08726;color:var(--g)}.on3 i.k{background:#f6465d26;color:var(--r)}
+.sat3{display:grid;grid-template-columns:1.1fr .9fr 64px 1fr;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid #ffffff0a}.sat3.tam{background:linear-gradient(90deg,#f0b90b14,transparent)}.sat3 .c span{display:block;font-size:11px;color:var(--s)}.sat3 .f{text-align:right;font-size:13px}</style></head><body><div class="w">
+<div class="ust"><div class="logo">🎯 Üçlü <span>Onay</span></div><div class="durum"><i class="nok"></i><span id="dur">bağlanıyor…</span></div></div>
 <div class="u" id="hata"></div>
-<div class="sek"><button id="bA" onclick="sek('A')">⚡ Ani patlama</button><button id="bM" onclick="sek('M')">🪜 Merdiven</button><button id="bB" onclick="sek('B')">🎲 Serbest</button></div>
-<div id="A"><div class="kasa"><div class="b">Kağıt kasa</div><div class="n" id="oz">–</div><div class="alt"><span id="top"></span><span id="bug"></span><span id="ver"></span></div></div>
+<div class="kasa"><div class="b">Kağıt kasa</div><div class="n" id="oz">–</div><div class="alt"><span id="top"></span><span id="bug"></span><span id="ver"></span></div></div>
 <div class="dort"><div><b id="n">–</b><span>işlem</span></div><div><b id="kz">–</b><span>kazanan</span></div><div><b id="ac">–</b><span>açık</span></div><div><b id="pf">–</b><span>kâr faktörü</span></div></div>
-<h2>💼 Açık işlemler <small id="pbas"></small></h2><div id="pozlar"></div>
-<h2>📡 Şu an hızlı hareket edenler <small id="rt"></small></h2>
-<div class="radar"><div class="bas"><span>Coin / hacim</span><span>Fiyat</span><span>Son ~1,5 saat</span><span style="text-align:right">15 dk</span></div><div id="radar"></div></div>
-<h2>📒 Kapanan <small id="kn"></small></h2><div class="radar" id="kap"></div>
+<h2>💼 Açık işlemler <small>dokun → grafik</small></h2><div id="poz"></div>
+<h2>📡 2 günde trendde olanlar <small id="tt"></small></h2>
+<div class="radar"><div class="bas" style="grid-template-columns:1.1fr .9fr 64px 1fr"><span>Coin / 2 gün</span><span style="text-align:right">Fiyat</span><span>Son 1 gün</span><span style="text-align:right">2G · 1S · 15D</span></div><div id="izle"></div></div>
+<h2>📒 Kapanan <small>son 30</small></h2><div class="radar" id="kap"></div>
 <h2>🧾 Kayıt</h2><div class="log" id="log"></div>
-<div class="kural" id="kural"></div></div>
-<div id="M" style="display:none"><div class="kasa" style="background:radial-gradient(120% 140% at 0 0,#2a2614 0,#12141b 55%)"><div class="b">🪜 Merdiven · kağıt kasa</div><div class="n" id="moz">–</div><div class="alt"><span id="mtop"></span><span id="mbug"></span></div></div>
-<div class="dort"><div><b id="mn">–</b><span>işlem</span></div><div><b id="mkz">–</b><span>kazanan</span></div><div><b id="mac">–</b><span>açık</span></div><div><b id="mpf">–</b><span>kâr faktörü</span></div></div>
-<h2>💼 Açık işlemler <small>kağıt · 3 $ × 5x</small></h2><div id="mpoz"></div>
-<h2>🪜 Merdivende olanlar <small id="mt"></small></h2>
-<div class="radar"><div class="bas"><span>Coin / yön</span><span>Fiyat</span><span>Son 6 saat</span><span style="text-align:right">Kırılıma</span></div><div id="mizle"></div></div>
-<h2>📒 Kapanan</h2><div class="radar" id="mkap"></div>
-<h2>🧾 Kayıt</h2><div class="log" id="mlog"></div>
-<div class="kural"><b>🪜 Merdiven kuralı.</b> 15 dakikalık grafikte son iki dip ve son iki tepe yükseliyorsa (merdiven) ve mum son tepenin üstünde kapanırsa LONG; tam tersi (alçalan tepe ve dipler, son dip kırılırsa) SHORT. Stop son dibin hemen altında (girişten en çok %3). Her yeni yükselen dip oluşunca stop o dibin altına çekilir (🪜 basamak). Ayrıca %1,5 arayla TP'ler var (TP5'ten sonra devam): TP2'de stop TP1'e, TP3'te TP2'ye… çekilir (▲) — hangisi stopu daha iyi koyarsa o geçerli. Stop gelince çıkar; en çok 12 saat. Mumlar 3 mum önce/sonra ile karşılaştırılarak dip/tepe sayılır. Kağıt: 3 $ × 5x, en çok 5 açık. <b>3 aylık testte tutmamıştı</b> — burada izliyoruz.</div></div>
-<div id="B" style="display:none"><div class="kasa" style="background:radial-gradient(120% 140% at 0 0,#26162a 0,#12141b 55%)"><div class="b">🎲 Serbest · kağıt kasa</div><div class="n" id="boz">–</div><div class="alt"><span id="btop"></span><span id="bbug"></span></div></div>
-<div class="dort"><div><b id="bn">–</b><span>işlem</span></div><div><b id="bkz">–</b><span>kazanan</span></div><div><b id="bac">–</b><span>açık</span></div><div><b id="bpf">–</b><span>kâr faktörü</span></div></div>
-<div class="u" id="bis" style="background:#f0b90b22;color:var(--sari)">⏳ Isınıyor — her coinin 15 dakikalık fiyat geçmişi birikince (≈15 dk) işlem açmaya başlar.</div>
-<h2>💼 Açık işlemler <small>dokun → grafik · çubuk = hedefe ilerleme</small></h2><div id="bpoz"></div>
-<h2>📡 Şu an en hareketli <small>bütün coinler · 15 dk</small></h2>
-<div class="radar"><div class="bas"><span>Coin / hacim</span><span>Fiyat</span><span>Son 15 dk</span><span style="text-align:right">15 dk</span></div><div id="bradar"></div></div>
-<h2>📒 Kapanan <small>son 25</small></h2><div class="radar" id="bkap"></div>
-<h2>🧾 Kayıt</h2><div class="log" id="blog"></div>
-<div class="kural"><b>🎲 Serbest kuralı.</b> Hiç şart yok: hacim sınırı yok (düşük hacimli coinler dahil), yüzde şartı yok. <b>Sadece yeni coinler</b> — Bitget'te son 12 ayda listelenenler (~65 coin). Her dakika, son 15 dakikada düşen coine SHORT, yükselene LONG açar — en çok hareket edenden başlar. Hedef net +0,30 $, stop %10, en çok 2 saat; aynı coine 10 dk sonra tekrar girer. En çok 30 açık, 3 $ × 5x. <b>Testte çok kaybettirmişti</b> (1. hafta −71 $, 2. hafta −44 $) — Sadık görmek istedi, kağıtta deneniyor.</div></div>
+<div class="kural" id="kural"></div>
 </div><script>
-let AK='A',ACK={};function sek(x){AK=x;for(const k of 'AMB'){$(k).style.display=x==k?'':'none';$('b'+k).className=x==k?'on':''}try{localStorage.setItem('sek',x)}catch(e){};if(typeof yenile=='function')yenile()}
 const $=i=>document.getElementById(i),f=(x,d)=>Number(x).toLocaleString('tr-TR',{minimumFractionDigits:d,maximumFractionDigits:d}),fy=x=>{x=Number(x);return f(x,x>=100?2:x>=1?4:x>=0.01?5:7)},sg=(x,d=2)=>(x>0?'+':x<0?'−':'')+f(Math.abs(x),d),rk=x=>x>0?'art':x<0?'eks':'';
 const sa=t=>new Date(t*1000).toLocaleTimeString('tr-TR',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit'}),sure=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<60?m+' dk':Math.floor(m/60)+' sa '+(m%60)+' dk'};
 function grafik(M,cizgi,son,isa=[],w=412,h=190){if(!M.length)return '<div style="height:60px;display:grid;place-items:center;color:var(--s);font-size:12px">grafik yükleniyor…</div>';
@@ -82,40 +65,21 @@ return `<div class="poz"><div class="pu"><div><div class="ad">${p.s}<small>/USDT
 <div class="bilgi"><div><span>Giriş</span><b>${fy(p.giris)}</b></div><div><span>Şimdi</span><b class="${rk(p.pnl)}">${fy(p.c)}</b></div><div><span>${p.tik>=2?'🔒 Kilit':'⛔ Stop'}</span><b style="color:${p.tik>=2?'var(--sari)':'var(--r)'}">${fy(p.stop)}</b></div></div>
 ${p.tek?`<div class="tps"><i class="${p.pnl>0?'ok':''}" style="flex:none;width:${Math.max(3,Math.min(100,p.pnl/d.kural.net*100))}%"></i></div><div class="tik"><span>🎯 hedef net +${f(d.kural.net,2)} $ · ${fy(p.tp[0])}</span><span>⌛ ${Math.max(0,120-Math.round((Date.now()/1000-p.t)/60))} dk kaldı</span></div></div>`:`<div class="tps">${p.tp.map((t,i)=>`<i class="${i<p.tik?'ok':''}"></i>`).join('')}</div>
 <div class="tik"><span>${p.tik?`▲ TP${p.tik} ✓ · iz ${p.tik}× · ${sa(p.tik_t)}`:'TP1 bekleniyor · '+fy(p.tp[0])}</span><span>${p.kilit>0?'🔒 kilitli '+sg(p.kilit,2)+' $':'stop olursa '+sg(p.kilit,2)+' $'}</span></div></div>`}`}
+let ACK={};
+const ok=(v,t)=>`<i class="${v>0?'y':v<0?'k':''}">${t} ${v>0?'▲':v<0?'▼':'–'}</i>`;
 async function yenile(){try{const d=await(await fetch('api',{cache:'no-store'})).json();
-$('dur').textContent=(d.tarama_t?'TARIYOR · '+sa(d.tarama_t):'ilk tarama…');$('hata').textContent=d.hata;$('hata').style.display=d.hata?'block':'none';
+$('dur').textContent=d.tarama_t?'TARIYOR · '+sa(d.tarama_t):'ilk 15 dk mumu bekleniyor…';$('hata').textContent=d.hata;$('hata').style.display=d.hata?'block':'none';
 const top=d.oz-d.kasa0;$('oz').textContent=f(d.oz,2)+' $';$('top').innerHTML=`<span class="${rk(top)}">${top>=0?'▲':'▼'} ${sg(top)} $ (%${f(top/d.kasa0*100,1)})</span>`;
 $('bug').innerHTML=`bugün <b class="${rk(d.bugun)}">${sg(d.bugun)} $</b>`;$('ver').textContent=d.v.split(' ')[0];
 $('n').textContent=d.n;$('kz').textContent=d.n?'%'+Math.round(d.kaz/d.n*100):'–';$('kz').className=d.n?(d.kaz/d.n>=.5?'art':'eks'):'';$('ac').textContent=d.acik_n+'/'+d.maxa;$('pf').textContent=d.pf==null?'–':f(d.pf,2);$('pf').className=d.pf==null?'':d.pf>=1?'art':'eks';
-$('pbas').textContent=`kağıt · ${d.kural.mj} $ × ${d.kural.lev}x`;
-$('pozlar').innerHTML=d.P.map(p=>kartA(p,d)).join('')||'<div class="bos">Açık işlem yok — hızlı hareket bekleniyor</div>';
-$('rt').textContent='her dakika';
-$('radar').innerHTML=d.radar.map(x=>`<div class="sat ${x.sinyal?'sin':''}"><div class="c"><b>${x.sinyal?'⚡ ':''}${x.s}</b><span>${f(x.hac,1)} M$ · hacim ${f(x.kat,1)}×</span></div><div class="f">${fy(x.c)}</div>${spark(x.spark,x.h15)}<div class="rozet" style="background:${x.h15>=0?'var(--g)':'var(--r)'}">${sg(x.h15,2)}%</div></div>`).join('')||'<div class="bos" style="border:0">tarama bekleniyor…</div>';
-$('kn').textContent='son '+Math.min(d.son.length,25);
+$('poz').innerHTML=d.P.length?'<div class="radar">'+d.P.map(p=>{const L=p.yon=='long',kal=Math.max(0,d.kural.saat*60-Math.round((Date.now()/1000-p.t)/60));
+return `<div class="ks" style="cursor:pointer;display:block" onclick="ACK['${p.s}']=!ACK['${p.s}'];yenile()"><div style="display:flex;justify-content:space-between;align-items:center"><div><b>${p.s}</b> <span class="chip ${L?'L':'S'}">${L?'LONG':'SHORT'}</span> <span class="s">· ${p.tik?'▲TP'+p.tik+' · ':''}⌛ ${Math.floor(kal/60)} sa ${kal%60} dk ${ACK[p.s]?'▴':'▾'}</span></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
+<div class="tps" style="margin-top:7px">${p.tp.slice(0,5).map((t,i)=>`<i class="${i<p.tik?'ok':''}"></i>`).join('')}</div></div>${ACK[p.s]?'<div style="padding:0 8px 8px">'+kartA(p,d)+'</div>':''}`}).join('')+'</div>':'<div class="bos">Açık işlem yok — üç zaman dilimi aynı yönü gösterince açar (15 dk\'da bir bakar)</div>';
+$('tt').textContent=d.tarama_t?'son tarama '+sa(d.tarama_t):'';
+$('izle').innerHTML=d.izle.map(x=>`<div class="sat3 ${x.tam?'tam':''}"><div class="c"><b>${x.tam?'🎯 ':''}${x.s}</b><span class="${x.g2>0?'art':'eks'}">2 gün ${sg(x.g2,1)}%</span></div><div class="f">${fy(x.c)}</div>${spark(x.spark,x.g2)}<div class="on3">${ok(Math.sign(x.g2),'2G')}${ok(x.s1,'1S')}${ok(x.d15,'15D')}</div></div>`).join('')||'<div class="bos" style="border:0">Şu an 2 günde %10+ trendde coin yok</div>';
 $('kap').innerHTML=d.son.map(k=>`<div class="ks"><div><b>${k.s}</b> <span class="chip ${k.yon=='long'?'L':'S'}">${k.yon.toUpperCase()}</span><div class="s">${sa(k.tk)} · ${Math.round((k.tk-k.t)/60)} dk · ${k.neden}</div></div><b class="${rk(k.pnl)}">${sg(k.pnl,3)} $</b></div>`).join('')||'<div class="bos" style="border:0">Henüz kapanan yok</div>';
 $('log').innerHTML=d.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>');
-const m=d.mr,mt=m.oz-d.kasa0;$('moz').textContent=f(m.oz,2)+' $';$('mtop').innerHTML=`<span class="${rk(mt)}">${mt>=0?'▲':'▼'} ${sg(mt)} $ (%${f(mt/d.kasa0*100,1)})</span>`;$('mbug').innerHTML=`bugün <b class="${rk(m.bugun)}">${sg(m.bugun)} $</b>`;
-$('mn').textContent=m.n;$('mkz').textContent=m.n?'%'+Math.round(m.kaz/m.n*100):'–';$('mkz').className=m.n?(m.kaz/m.n>=.5?'art':'eks'):'';$('mac').textContent=m.acik_n+'/'+d.mr_maxa;$('mpf').textContent=m.pf==null?'–':f(m.pf,2);$('mpf').className=m.pf==null?'':m.pf>=1?'art':'eks';
-$('mpoz').innerHTML=m.P.map(p=>{const L=p.yon=='long',kil=p.kilit>0,C=[{v:p.giris,r:'#5b6275',t:'GİRİŞ'},{v:p.stop,r:kil?'#f0b90b':'#f6465d',t:kil?'KİLİT':'STOP'},...(p.tp||[]).map((t,i)=>({v:t,r:'#00c087',t:'TP'+(i+1)+(i<p.tpk?' ✓':''),o:i<p.tpk?.45:i==p.tpk?1:.6,i})).filter(c=>c.i<=p.tpk+1)],I=[{t:p.t,v:p.giris,g:1},...(p.tikler||[]).map(k=>({t:k[0],v:k[1],y:k[2]}))];
-return `<div class="poz"><div class="pu"><div><div class="ad">${p.s}<small>/USDT</small><span class="chip ${L?'L':'S'}">${L?'LONG':'SHORT'} 5x</span></div><div style="font-size:11.5px;color:var(--s);margin-top:3px">${p.neden} · ${sure(p.t)}</div></div>
-<div class="pnl"><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b><span class="${rk(p.pnl)}">${sg(p.roe,1)}% ROE</span></div></div><div class="grafik">${grafik(p.mum,C,p.c,I)}</div>
-<div class="bilgi"><div><span>Giriş</span><b>${fy(p.giris)}</b></div><div><span>Şimdi</span><b class="${rk(p.pnl)}">${fy(p.c)}</b></div><div><span>${kil?'🔒 Kilit':'⛔ Stop'}</span><b style="color:${kil?'var(--sari)':'var(--r)'}">${fy(p.stop)}</b></div></div>
-<div class="tps">${(p.tp||[]).slice(0,Math.max(5,p.tpk+1)).map((t,i)=>`<i class="${i<p.tpk?'ok':''}"></i>`).join('')}</div>
-<div class="tik"><span>${p.tpk?`▲ TP${p.tpk} ✓`:'TP1 '+fy((p.tp||[0])[0])}${p.tik?` · 🪜 ${p.tik} basamak`:''}</span><span>${kil?'🔒 kilitli '+sg(p.kilit,2)+' $':'stop olursa '+sg(p.kilit,2)+' $'}</span></div></div>`}).join('')||'<div class="bos">Açık işlem yok — merdiven kırılımı bekleniyor (15 dk\'da bir)</div>';
-$('mt').textContent=m.t?'son tarama '+sa(m.t):'ilk 15 dk mumu bekleniyor…';
-$('mizle').innerHTML=m.izle.map(x=>`<div class="sat"><div class="c"><b>${x.s}</b><span>${x.yon=='long'?'🪜 yukarı merdiven':'🪜 aşağı merdiven'}</span></div><div class="f">${fy(x.c)}</div>${spark(x.spark,x.yon=='long'?1:-1)}<div class="rozet" style="background:${x.yon=='long'?'var(--g)':'var(--r)'}">%${f(x.uz,2)}</div></div>`).join('')||'<div class="bos" style="border:0">Şu an merdivende coin yok</div>';
-$('mkap').innerHTML=m.son.map(k=>`<div class="ks"><div><b>${k.s}</b> <span class="chip ${k.yon=='long'?'L':'S'}">${k.yon.toUpperCase()}</span><div class="s">${sa(k.tk)} · ${Math.round((k.tk-k.t)/60)} dk · ▲${k.tik} · ${k.neden}</div></div><b class="${rk(k.pnl)}">${sg(k.pnl,3)} $</b></div>`).join('')||'<div class="bos" style="border:0">Henüz kapanan yok</div>';
-$('mlog').innerHTML=m.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>')||'–';
-const b=d.sb,bt=b.oz-d.kasa0;$('boz').textContent=f(b.oz,2)+' $';$('btop').innerHTML=`<span class="${rk(bt)}">${bt>=0?'▲':'▼'} ${sg(bt)} $ (%${f(bt/d.kasa0*100,1)})</span>`;$('bbug').innerHTML=`bugün <b class="${rk(b.bugun)}">${sg(b.bugun)} $</b>`;
-$('bn').textContent=b.n;$('bkz').textContent=b.n?'%'+Math.round(b.kaz/b.n*100):'–';$('bkz').className=b.n?(b.kaz/b.n>=.5?'art':'eks'):'';$('bac').textContent=b.acik_n+'/'+b.maxa;$('bpf').textContent=b.pf==null?'–':f(b.pf,2);$('bpf').className=b.pf==null?'':b.pf>=1?'art':'eks';
-$('bis').style.display=b.isinma?'block':'none';
-$('bradar').innerHTML=b.radar.map(x=>`<div class="sat ${x.acik?'sin':''}"><div class="c"><b>${x.acik?'🎲 ':''}${x.s}</b><span>${f(x.hac,x.hac<1?2:1)} M$${x.acik?' · işlemde':''}</span></div><div class="f">${fy(x.c)}</div>${spark(x.spark,x.h15)}<div class="rozet" style="background:${x.h15>=0?'var(--g)':'var(--r)'}">${sg(x.h15,2)}%</div></div>`).join('')||'<div class="bos" style="border:0">ısınıyor…</div>';
-if(AK=='B'){const P=[...b.P].sort((x,y)=>y.pnl-x.pnl);$('bpoz').innerHTML=P.length?'<div class="radar">'+P.map(p=>{const L=p.yon=='long',yz=Math.max(0,Math.min(100,p.pnl/d.kural.net*100)),kal=Math.max(0,120-Math.round((Date.now()/1000-p.t)/60));
-return `<div class="ks" style="cursor:pointer;display:block" onclick="ACK[\'${p.s}\']=!ACK[\'${p.s}\'];yenile()"><div style="display:flex;justify-content:space-between;align-items:center"><div><b>${p.s}</b> <span class="chip ${L?'L':'S'}">${L?'LONG':'SHORT'}</span> <span class="s">· ⌛ ${kal} dk ${ACK[p.s]?'▴':'▾'}</span></div><b class="${rk(p.pnl)}">${sg(p.pnl,3)} $</b></div>
-<div style="height:4px;border-radius:3px;background:#ffffff12;margin-top:7px;overflow:hidden"><i style="display:block;height:100%;width:${yz}%;background:var(--g)"></i></div></div>${ACK[p.s]?'<div style="padding:0 8px 8px">'+kartA(p,d)+'</div>':''}`}).join('')+'</div>':'<div class="bos">Açık işlem yok</div>'}
-$('bkap').innerHTML=b.son.map(k=>`<div class="ks"><div><b>${k.s}</b> <span class="chip ${k.yon=='long'?'L':'S'}">${k.yon.toUpperCase()}</span><div class="s">${sa(k.tk)} · ${Math.round((k.tk-k.t)/60)} dk · ${k.neden}</div></div><b class="${rk(k.pnl)}">${sg(k.pnl,3)} $</b></div>`).join('')||'<div class="bos" style="border:0">Henüz kapanan yok</div>';
-$('blog').innerHTML=b.log.slice(0,15).map(l=>sa(l[0])+' · '+l[1]).join('<br>')||'–';
-const K=d.kural;$('kural').innerHTML=`<b>Kural (${d.v}).</b> Her dakika Bitget'te en hareketli 40 coin taranır (eski coinler yok, günlük hacim ≥ 1 M$). Son 15 dakikada en az <b>%${K.hareket}</b> hareket + hacim normalin <b>${K.hacim}×</b>'ı + fiyat hareketin ucunda ise hareket yönünde girer (⚡ işaretli). Stop <b>%${K.sl}</b>, TP'ler <b>%${K.tp}</b> arayla (TP5'ten sonra devam); TP2'de stop TP1'e, TP3'te TP2'ye… çekilir (▲). En çok 2 saat. Aynı coine 10 dk sonra tekrar girebilir. Kağıt: ${K.mj} $ × ${K.lev}x, en çok ${K.maxa} açık. RSI/MACD yok.`;
+const K=d.kural;$('kural').innerHTML=`<b>🎯 Üçlü onay kuralı (${d.v}).</b> Her 15 dakikalık mum kapanınca en hareketli 40 coine bakar (eski coinler yok, hacim ≥ 3 M$). <b>2 gün</b> önceye göre en az %${K.g2} yükselmiş + <b>son 1 saat</b> yükselmiş + <b>son 15 dk</b> mumu yeşil → LONG; üçü de aşağıysa SHORT. Stop %${K.sl}, TP'ler %${K.tp} arayla (sınırsız); TP2'de stop TP1'e, TP3'te TP2'ye… (▲). En çok ${K.saat} saat. Kağıt: ${K.mj} $ × ${K.lev}x, en çok ${K.maxa} açık. RSI/MACD yok. 3 aylık testte 4 dönemin dördünde de artı (toplam +86 $), ama avantaj ince.`;
 }catch(e){$('dur').textContent='⚠️ bağlantı yok'}}
-try{sek(localStorage.getItem('sek')||'A')}catch(e){sek('A')}yenile();setInterval(yenile,5000);
+yenile();setInterval(yenile,5000);
 </script></body></html>
