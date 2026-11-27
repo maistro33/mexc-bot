@@ -1,4 +1,5 @@
 # 🎯 ÜÇLÜ ONAY — KAĞIT scalp bot (borsaya emir YOK). Sürüm U2.0 (27.11)
+# U2.1: TP görmeden ASIL stop olan işlemde aynı coinde TERS yönde yeni işlem açılır (ters işlem bir daha dönmez) — laboratuvarda 4 ay +54,8 → +86,7 $
 # U2.0: GERİ ÇEKİLMEDE GİRİŞ — dürüst laboratuvar testini geçen ilk ayar (432 coin, 4 ay, coinler o anki bilgiyle, ayar sadece geçmiş aylarda seçildi):
 #       üç onay gelince hemen girmez; fiyat %5 geri çekilirse limitten girer (emir 8 saat geçerli) · stop %15 · TP'ler %2 arayla · dolduktan sonra en çok 6 saat
 #       görmediği 3 ay: +20,4 / −25,8 / +44,3 $ (toplam +38,9 $, ayda ~900 işlem, %60 kazanan) — ince avantaj. Kasa 100 $'dan yeniden (uclu2.json).
@@ -19,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U2.0 (27.11 19:45)"
+V = "U2.1 (27.11 20:00)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 10
 YON_MAX = 5                                                             # U1.2: aynı yönde en çok 5 (3 ayda +123 → +148 $, en büyük düşüş 35 → 28 $)
@@ -82,12 +83,12 @@ def kripto_listesi():
 # ───────────────────────── İŞLEM ─────────────────────────
 def tp_fiyat(q, k): return q["giris"] * (1 + q["u"] * TP_ADIM * (k + 1))      # k=0 → TP1
 
-def ac(s, u, c, neden):
+def ac(s, u, c, neden, ters=0):
     g = c * (1 + u * KAYMA)
     with KIL:
         S["nakit"] -= MJ + MJ * LEV * TAKER
         S["acik"][s] = {"u": u, "giris": g, "stop": g * (1 - u * SL), "stop0": g * (1 - u * SL), "tik": 0, "tik_t": 0, "tikler": [],
-                        "adet": MJ * LEV / g, "t": int(time.time()), "neden": neden}
+                        "adet": MJ * LEV / g, "t": int(time.time()), "neden": neden, "ters": ters}
     log(f"{'🟢 LONG' if u == 1 else '🔴 SHORT'} {ad(s)} @ {g:.6g} · {neden} · stop {g * (1 - u * SL):.6g} · TP1 {g * (1 + u * TP_ADIM):.6g}")
 
 def kapat(s, cik, neden):
@@ -117,7 +118,11 @@ def yonet():                                                            # her 4 
         if not c: continue
         u = q["u"]; k = q["tik"]
         if u * (c - q["stop"]) <= 0:
-            kapat(s, q["stop"] * (1 - u * KAYMA * 2), (f"🔒 kâr kilidi (TP{k} sonrası)" if u * (q["stop"] - q["giris"]) > 0 else "⛔ stop")); continue
+            asil = u * (q["stop"] - q["giris"]) < 0                     # kâr kilidi değil, asıl stop
+            kapat(s, q["stop"] * (1 - u * KAYMA * 2), (f"🔒 kâr kilidi (TP{k} sonrası)" if not asil else "⛔ stop"))
+            if asil and not q.get("ters") and len(S["acik"]) < MAXA and sum(1 for x in S["acik"].values() if x["u"] == -u) < YON_MAX and S["nakit"] >= MJ * 1.1:
+                ac(s, -u, c, f"↩️ ters — {'long' if u == 1 else 'short'} stop oldu, trend döndü", ters=1)   # U2.1
+            continue
         if time.time() - q["t"] > MAX_SAAT * 3600: kapat(s, c * (1 - u * 0.0003), f"⌛ süre ({MAX_SAAT} saat)"); continue
         if u * (c - tp_fiyat(q, k)) >= 0:
             with KIL:
