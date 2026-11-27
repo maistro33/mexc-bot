@@ -1,5 +1,6 @@
 # 🎯 ÜÇLÜ ONAY — KAĞIT scalp bot (borsaya emir YOK). Sürüm U2.0 (27.11)
-# U2.1: TP görmeden ASIL stop olan işlemde aynı coinde TERS yönde yeni işlem açılır (ters işlem bir daha dönmez) — laboratuvarda 4 ay +54,8 → +86,7 $
+# U2.2: (sadece açıklama düzeltmesi) ASIL stop'a gelip zararla kapanan işlemde (TP1 görmüş olsa da) aynı coinde TERS yönde yeni işlem açılır; kâr kilidiyle kapananlar çevrilmez
+# U2.1: asıl stop olan işlemde aynı coinde TERS yönde yeni işlem açılır (ters işlem bir daha dönmez) — laboratuvarda 4 ay +54,8 → +86,7 $
 # U2.0: GERİ ÇEKİLMEDE GİRİŞ — dürüst laboratuvar testini geçen ilk ayar (432 coin, 4 ay, coinler o anki bilgiyle, ayar sadece geçmiş aylarda seçildi):
 #       üç onay gelince hemen girmez; fiyat %5 geri çekilirse limitten girer (emir 8 saat geçerli) · stop %15 · TP'ler %2 arayla · dolduktan sonra en çok 6 saat
 #       görmediği 3 ay: +20,4 / −25,8 / +44,3 $ (toplam +38,9 $, ayda ~900 işlem, %60 kazanan) — ince avantaj. Kasa 100 $'dan yeniden (uclu2.json).
@@ -20,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U2.1 (27.11 20:00)"
+V = "U2.2 (27.11 22:05)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 10
 YON_MAX = 5                                                             # U1.2: aynı yönde en çok 5 (3 ayda +123 → +148 $, en büyük düşüş 35 → 28 $)
