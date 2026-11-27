@@ -6,6 +6,7 @@
 #   çıkış: stop %4 · TP'ler %1 arayla (sınırsız) · TP2'de stop TP1'e, TP3'te TP2'ye… (▲) · en çok 6 saat
 #   para : 100 $ kağıt · 3 $ × 5x · en çok 30 açık · aynı coine 30 dk sonra tekrar
 #   test : 3 ayda 4.679 işlem, %60 kazanan, +85,9 $ (dönemler +2,2 / +10,6 / +14,5 / +61,2) — avantaj ince (işlem başı ~2 sent), kârın çoğu son dönemde
+# U1.2: aynı yönde en çok 5 işlem (5 long + 5 short) — piyasa tek yöne gidince toplu stop riskini azaltır
 # U1.1: stop %4 → %8 (Sadık: biraz geniş) — 3 ayda +85,9 → +123,2 $, dört dönemde de artı (+17 / +7 / +20 / +81)
 # Eski Momentum botları (ani patlama / merdiven / serbest) arsiv/ klasöründe.
 import json, os, threading, time, traceback, base64, hmac
@@ -13,9 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U1.1 (27.11 10:15)"
+V = "U1.2 (27.11 14:20)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
-KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 30
+KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 10
+YON_MAX = 5                                                             # U1.2: aynı yönde en çok 5 (3 ayda +123 → +148 $, en büyük düşüş 35 → 28 $)
 GUN2, SL, TP_ADIM, MAX_SAAT, BEKLE = 0.10, 0.08, 0.01, 6, 1800
 EVREN, MIN_HAC = 40, 3e6
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0005
@@ -130,6 +132,7 @@ def tara(tk):
         if t2: izle.append({"s": ad(s), "c": C[-1], "g2": round(g2 * 100, 1), "s1": s1, "d15": d15, "tam": t2 == s1 == d15, "hac": round(hac.get(s, 0) / 1e6, 1),
                             "spark": C[-96::4]})
         if t2 and t2 == s1 == d15 and s not in S["acik"] and len(S["acik"]) < MAXA and time.time() - S["son_kapanis"].get(s, 0) >= BEKLE \
+                and sum(1 for q in S["acik"].values() if q["u"] == t2) < YON_MAX \
                 and S["nakit"] >= MJ * 1.1:
             ac(s, t2, D["fiyat"].get(s) or C[-1], f"2 gün {g2 * 100:+.0f}% · 1s ✓ · 15dk ✓")
         if s in S["acik"] or t2: D["mum"][s] = {"t": time.time(), "m": m[-40:]}
@@ -181,7 +184,7 @@ def veri():
         return {"v": V, "oz": round(S["nakit"] + MJ * len(S["acik"]) + acik_pnl, 2), "kasa0": KASA0, "n": n, "kaz": kaz, "pf": round(art / eks, 2) if eks else None,
                 "bugun": round(bugun, 2), "acik_n": len(P), "maxa": MAXA, "P": P, "izle": D["izle"], "son": G[-30:][::-1], "log": S["log"][-30:][::-1],
                 "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"],
-                "kural": {"g2": GUN2 * 100, "sl": SL * 100, "tp": TP_ADIM * 100, "saat": MAX_SAAT, "mj": MJ, "lev": LEV, "maxa": MAXA}}
+                "kural": {"yon": YON_MAX, "g2": GUN2 * 100, "sl": SL * 100, "tp": TP_ADIM * 100, "saat": MAX_SAAT, "mj": MJ, "lev": LEV, "maxa": MAXA}}
 
 SAYFA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html"), encoding="utf-8").read()
 
