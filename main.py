@@ -6,6 +6,7 @@
 #   çıkış: stop %4 · TP'ler %1 arayla (sınırsız) · TP2'de stop TP1'e, TP3'te TP2'ye… (▲) · en çok 6 saat
 #   para : 100 $ kağıt · 3 $ × 5x · en çok 30 açık · aynı coine 30 dk sonra tekrar
 #   test : 3 ayda 4.679 işlem, %60 kazanan, +85,9 $ (dönemler +2,2 / +10,6 / +14,5 / +61,2) — avantaj ince (işlem başı ~2 sent), kârın çoğu son dönemde
+# U1.4: panelde TP çubukları TP5'ten sonra da çoğalır (TP6, TP7…)
 # U1.3: stop olunca kapanış fiyatı = stop fiyatı (+ kayma) — gerçek borsadaki stop emri gibi; önceden 4 sn gecikmeyle o anki fiyattan kapanıyordu (EVAA/INIT)
 # U1.2: aynı yönde en çok 5 işlem (5 long + 5 short) — piyasa tek yöne gidince toplu stop riskini azaltır
 # U1.1: stop %4 → %8 (Sadık: biraz geniş) — 3 ayda +85,9 → +123,2 $, dört dönemde de artı (+17 / +7 / +20 / +81)
@@ -15,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U1.3 (27.11 14:30)"
+V = "U1.4 (27.11 17:50)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 10
 YON_MAX = 5                                                             # U1.2: aynı yönde en çok 5 (3 ayda +123 → +148 $, en büyük düşüş 35 → 28 $)
