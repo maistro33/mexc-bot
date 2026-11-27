@@ -6,6 +6,7 @@
 #   çıkış: stop %4 · TP'ler %1 arayla (sınırsız) · TP2'de stop TP1'e, TP3'te TP2'ye… (▲) · en çok 6 saat
 #   para : 100 $ kağıt · 3 $ × 5x · en çok 30 açık · aynı coine 30 dk sonra tekrar
 #   test : 3 ayda 4.679 işlem, %60 kazanan, +85,9 $ (dönemler +2,2 / +10,6 / +14,5 / +61,2) — avantaj ince (işlem başı ~2 sent), kârın çoğu son dönemde
+# U1.3: stop olunca kapanış fiyatı = stop fiyatı (+ kayma) — gerçek borsadaki stop emri gibi; önceden 4 sn gecikmeyle o anki fiyattan kapanıyordu (EVAA/INIT)
 # U1.2: aynı yönde en çok 5 işlem (5 long + 5 short) — piyasa tek yöne gidince toplu stop riskini azaltır
 # U1.1: stop %4 → %8 (Sadık: biraz geniş) — 3 ayda +85,9 → +123,2 $, dört dönemde de artı (+17 / +7 / +20 / +81)
 # Eski Momentum botları (ani patlama / merdiven / serbest) arsiv/ klasöründe.
@@ -14,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U1.2 (27.11 14:20)"
+V = "U1.3 (27.11 14:30)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 10
 YON_MAX = 5                                                             # U1.2: aynı yönde en çok 5 (3 ayda +123 → +148 $, en büyük düşüş 35 → 28 $)
@@ -101,7 +102,7 @@ def yonet():                                                            # her 4 
         if not c: continue
         u = q["u"]; k = q["tik"]
         if u * (c - q["stop"]) <= 0:
-            kapat(s, c * (1 - u * KAYMA), (f"🔒 kâr kilidi (TP{k} sonrası)" if u * (q["stop"] - q["giris"]) > 0 else "⛔ stop")); continue
+            kapat(s, q["stop"] * (1 - u * KAYMA * 2), (f"🔒 kâr kilidi (TP{k} sonrası)" if u * (q["stop"] - q["giris"]) > 0 else "⛔ stop")); continue
         if time.time() - q["t"] > MAX_SAAT * 3600: kapat(s, c * (1 - u * 0.0003), f"⌛ süre ({MAX_SAAT} saat)"); continue
         if u * (c - tp_fiyat(q, k)) >= 0:
             with KIL:
