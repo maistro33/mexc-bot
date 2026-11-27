@@ -6,16 +6,17 @@
 #   çıkış: stop %4 · TP'ler %1 arayla (sınırsız) · TP2'de stop TP1'e, TP3'te TP2'ye… (▲) · en çok 6 saat
 #   para : 100 $ kağıt · 3 $ × 5x · en çok 30 açık · aynı coine 30 dk sonra tekrar
 #   test : 3 ayda 4.679 işlem, %60 kazanan, +85,9 $ (dönemler +2,2 / +10,6 / +14,5 / +61,2) — avantaj ince (işlem başı ~2 sent), kârın çoğu son dönemde
+# U1.1: stop %4 → %8 (Sadık: biraz geniş) — 3 ayda +85,9 → +123,2 $, dört dönemde de artı (+17 / +7 / +20 / +81)
 # Eski Momentum botları (ani patlama / merdiven / serbest) arsiv/ klasöründe.
 import json, os, threading, time, traceback, base64, hmac
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U1.0 (27.11 10:30)"
+V = "U1.1 (27.11 10:15)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 30
-GUN2, SL, TP_ADIM, MAX_SAAT, BEKLE = 0.10, 0.04, 0.01, 6, 1800
+GUN2, SL, TP_ADIM, MAX_SAAT, BEKLE = 0.10, 0.08, 0.01, 6, 1800
 EVREN, MIN_HAC = 40, 3e6
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0005
 ESKI = {"BTC", "ETH", "XRP", "ADA", "DOGE", "TRX", "LTC", "BCH", "BNB", "XLM", "ETC", "DOT", "LINK", "SHIB", "AVAX", "XMR", "UNI", "ATOM",
