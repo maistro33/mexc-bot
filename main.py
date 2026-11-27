@@ -1,4 +1,7 @@
-# 🎯 ÜÇLÜ ONAY — KAĞIT scalp bot (borsaya emir YOK). Sürüm U1.0 (27.11)
+# 🎯 ÜÇLÜ ONAY — KAĞIT scalp bot (borsaya emir YOK). Sürüm U2.0 (27.11)
+# U2.0: GERİ ÇEKİLMEDE GİRİŞ — dürüst laboratuvar testini geçen ilk ayar (432 coin, 4 ay, coinler o anki bilgiyle, ayar sadece geçmiş aylarda seçildi):
+#       üç onay gelince hemen girmez; fiyat %5 geri çekilirse limitten girer (emir 8 saat geçerli) · stop %15 · TP'ler %2 arayla · dolduktan sonra en çok 6 saat
+#       görmediği 3 ay: +20,4 / −25,8 / +44,3 $ (toplam +38,9 $, ayda ~900 işlem, %60 kazanan) — ince avantaj. Kasa 100 $'dan yeniden (uclu2.json).
 # Sadık: "bütün botları kaldıralım, 1 yeni scalp: 2 günlük trend var mı, sonra 1 saatlik, sonra 15 dakika — aynı yöndeyse işlem açsın"
 # 3 aylık 15 dk verisinde (40 coin, 54 ayar denendi) 4 dönemin dördünde de artı kalan TEK ayar seçildi:
 #   giriş (her 15 dk mum kapanışı): 2 gün önceye göre ≥ %10 yükseliş + son 1 saat yükselmiş (1s mum yeşil ve önceki 1s kapanışın üstü)
@@ -16,19 +19,20 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-V = "U1.4 (27.11 17:50)"
+V = "U2.0 (27.11 19:45)"
 BG = "https://api.bitget.com/api/v2/mix/market/"
 KASA0, MJ, LEV, MAXA = 100.0, 3.0, 5, 10
 YON_MAX = 5                                                             # U1.2: aynı yönde en çok 5 (3 ayda +123 → +148 $, en büyük düşüş 35 → 28 $)
-GUN2, SL, TP_ADIM, MAX_SAAT, BEKLE = 0.10, 0.08, 0.01, 6, 1800
+GUN2, SL, TP_ADIM, MAX_SAAT, BEKLE = 0.10, 0.15, 0.02, 6, 1800
+GERI, GERI_SAAT = 0.05, 8                                              # U2.0: %5 geri çekilmede limit, 8 saat geçerli
 EVREN, MIN_HAC = 40, 3e6
 TAKER, MAKER, KAYMA = 0.0006, 0.0002, 0.0005
 ESKI = {"BTC", "ETH", "XRP", "ADA", "DOGE", "TRX", "LTC", "BCH", "BNB", "XLM", "ETC", "DOT", "LINK", "SHIB", "AVAX", "XMR", "UNI", "ATOM",
         "FIL", "NEAR", "SOL", "HBAR", "AAVE", "QNT", "ALGO", "VET", "ICP", "EOS", "XTZ", "THETA", "MKR", "AXS", "SAND", "MANA"}
 KLASOR = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else ".")
-DOSYA = os.path.join(KLASOR, "uclu.json")
+DOSYA = os.path.join(KLASOR, "uclu2.json")
 KIL = threading.RLock()
-S = {"v": 1, "nakit": KASA0, "acik": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}, "bar": 0}
+S = {"v": 1, "nakit": KASA0, "acik": {}, "bek": {}, "gecmis": [], "log": [], "t0": int(time.time()), "son_kapanis": {}, "bar": 0}
 D = {"fiyat": {}, "izle": [], "tarama_t": 0, "hata": "", "mum": {}, "kripto": set(), "kripto_t": 0}
 
 def get(yol, **q):
@@ -98,6 +102,16 @@ def kapat(s, cik, neden):
     log(f"{'💰' if top > 0 else '🔻'} {ad(s)} kapandı · {neden} · {top:+.3f} $"); kaydet()
 
 def yonet():                                                            # her 4 sn
+    for s, b in list(S["bek"].items()):                                 # U2.0: bekleyen geri çekilme limitleri
+        c = D["fiyat"].get(s)
+        if time.time() > b["son"]:
+            with KIL: S["bek"].pop(s, None)
+            log(f"⌛ {ad(s)} limit {b['p']:.6g} — {GERI_SAAT} saatte dolmadı, iptal"); continue
+        if not c or s in S["acik"] or b["u"] * (c - b["p"]) > 0: continue
+        with KIL: S["bek"].pop(s, None)
+        if len(S["acik"]) >= MAXA or sum(1 for q in S["acik"].values() if q["u"] == b["u"]) >= YON_MAX or S["nakit"] < MJ * 1.1:
+            log(f"✖️ {ad(s)} limit doldu ama sınır dolu — girilmedi"); continue
+        ac(s, b["u"], b["p"] / (1 + b["u"] * KAYMA), b["neden"] + f" · %{GERI * 100:g} geri çekilmede limit")
     for s, q in list(S["acik"].items()):
         c = D["fiyat"].get(s)
         if not c: continue
@@ -133,10 +147,11 @@ def tara(tk):
         t2 = 1 if g2 >= GUN2 else -1 if g2 <= -GUN2 else 0
         if t2: izle.append({"s": ad(s), "c": C[-1], "g2": round(g2 * 100, 1), "s1": s1, "d15": d15, "tam": t2 == s1 == d15, "hac": round(hac.get(s, 0) / 1e6, 1),
                             "spark": C[-96::4]})
-        if t2 and t2 == s1 == d15 and s not in S["acik"] and len(S["acik"]) < MAXA and time.time() - S["son_kapanis"].get(s, 0) >= BEKLE \
-                and sum(1 for q in S["acik"].values() if q["u"] == t2) < YON_MAX \
-                and S["nakit"] >= MJ * 1.1:
-            ac(s, t2, D["fiyat"].get(s) or C[-1], f"2 gün {g2 * 100:+.0f}% · 1s ✓ · 15dk ✓")
+        if t2 and t2 == s1 == d15 and s not in S["acik"] and s not in S["bek"] and time.time() - S["son_kapanis"].get(s, 0) >= BEKLE:
+            p = C[-1] * (1 - t2 * GERI)                                 # U2.0: hemen girme — %5 geri çekilmeyi bekle
+            with KIL: S["bek"][s] = {"u": t2, "p": p, "t": int(time.time()), "son": int(time.time()) + GERI_SAAT * 3600, "c0": C[-1],
+                                     "neden": f"2 gün {g2 * 100:+.0f}% · 1s ✓ · 15dk ✓"}
+            log(f"⏳ {ad(s)} {'LONG' if t2 == 1 else 'SHORT'} sinyali @ {C[-1]:.6g} → limit {p:.6g} (%{GERI * 100:g} geri çekilme bekleniyor, {GERI_SAAT} saat)")
         if s in S["acik"] or t2: D["mum"][s] = {"t": time.time(), "m": m[-40:]}
     izle.sort(key=lambda x: (not x["tam"], -abs(x["g2"])))
     D["izle"] = izle[:15]; D["tarama_t"] = int(time.time()); kaydet()
@@ -184,9 +199,11 @@ def veri():
         gun = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 3600))
         bugun = sum(g["pnl"] for g in G if time.strftime("%Y-%m-%d", time.gmtime(g["tk"] + 3600)) == gun)
         return {"v": V, "oz": round(S["nakit"] + MJ * len(S["acik"]) + acik_pnl, 2), "kasa0": KASA0, "n": n, "kaz": kaz, "pf": round(art / eks, 2) if eks else None,
-                "bugun": round(bugun, 2), "acik_n": len(P), "maxa": MAXA, "P": P, "izle": D["izle"], "son": G[-30:][::-1], "log": S["log"][-30:][::-1],
+                "bugun": round(bugun, 2), "acik_n": len(P), "maxa": MAXA, "P": P, "izle": D["izle"],
+                "bek": sorted([{"s": ad(s), "yon": "long" if b["u"] == 1 else "short", "p": b["p"], "c0": b["c0"], "c": D["fiyat"].get(s), "son": b["son"], "t": b["t"],
+                                "kalan": round(abs((D["fiyat"].get(s) or b["c0"]) / b["p"] - 1) * 100, 2)} for s, b in S["bek"].items()], key=lambda x: x["kalan"]), "son": G[-30:][::-1], "log": S["log"][-30:][::-1],
                 "tarama_t": D["tarama_t"], "hata": D["hata"], "t0": S["t0"],
-                "kural": {"yon": YON_MAX, "g2": GUN2 * 100, "sl": SL * 100, "tp": TP_ADIM * 100, "saat": MAX_SAAT, "mj": MJ, "lev": LEV, "maxa": MAXA}}
+                "kural": {"geri": GERI * 100, "geri_saat": GERI_SAAT, "yon": YON_MAX, "g2": GUN2 * 100, "sl": SL * 100, "tp": TP_ADIM * 100, "saat": MAX_SAAT, "mj": MJ, "lev": LEV, "maxa": MAXA}}
 
 SAYFA = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.html"), encoding="utf-8").read()
 
